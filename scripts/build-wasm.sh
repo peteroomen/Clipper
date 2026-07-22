@@ -28,7 +28,11 @@ WORKLET_SRC="$REPO_ROOT/web/worklet/clipper-processor.js"
 
 # Make emcc available. Prefer an already-active emcc; otherwise source emsdk.
 if ! command -v emcc >/dev/null 2>&1; then
-    EMSDK_DIR="${EMSDK_DIR:-/home/user/emsdk}"
+    EMSDK_DIR="${EMSDK_DIR:-$HOME/emsdk}"
+    # Fall back to the CI/container install location if the default is absent.
+    if [ ! -f "$EMSDK_DIR/emsdk_env.sh" ] && [ -f /home/user/emsdk/emsdk_env.sh ]; then
+        EMSDK_DIR=/home/user/emsdk
+    fi
     if [ -f "$EMSDK_DIR/emsdk_env.sh" ]; then
         # emsdk_env.sh references unset vars; relax nounset while sourcing it.
         set +u

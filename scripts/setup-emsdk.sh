@@ -6,7 +6,7 @@
 # `emcc` is on PATH.
 set -euo pipefail
 
-EMSDK_DIR="${EMSDK_DIR:-/home/user/emsdk}"
+EMSDK_DIR="${EMSDK_DIR:-$HOME/emsdk}"
 EMSDK_VERSION="${EMSDK_VERSION:-latest}"
 
 # 1. Already have emcc on PATH? Nothing to do.
