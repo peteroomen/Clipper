@@ -1,0 +1,19 @@
+# Build outputs
+core/build/
+web/dist/
+web/node_modules/
+
+# Generated WASM artifact (produced by scripts/build-wasm.sh)
+web/public/generated/
+
+# Playwright
+web/test-results/
+web/playwright-report/
+web/.playwright/
+
+# Emscripten SDK (installed outside the repo, but ignore if placed inside)
+/emsdk/
+
+# Misc
+.DS_Store
+*.log
