@@ -79,9 +79,12 @@ void testSmoothingRamps() {
 
     // Settle at gain 0 first.
     p.setParameter(clipper::PARAM_GAIN, 0.0f);
+    // 4096 samples ~= 17 time constants of the ~5 ms smoother: residual ~4e-8,
+    // comfortably inside the 1e-4 tolerance below. (2048 left ~2e-4 — the test
+    // only "passed" before because NDEBUG had disabled the assert.)
     {
-        std::vector<float> in(2048, 1.0f), out(2048, 0.0f);
-        p.process(in.data(), out.data(), 2048);
+        std::vector<float> in(4096, 1.0f), out(4096, 0.0f);
+        p.process(in.data(), out.data(), 4096);
     }
     assert(std::fabs(p.currentGain() - 0.0f) < 1e-4f);
 

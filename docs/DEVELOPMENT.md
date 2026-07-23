@@ -137,6 +137,126 @@ The container ships a preinstalled Chromium under `PLAYWRIGHT_BROWSERS_PATH`
 auto-discovers the `chromium-<build>/chrome-linux/chrome` binary and launches it
 with `--no-sandbox` (required when running as root).
 
+## 6. M1 — RAT diode-clipper model (offline)
+
+M1 adds the first real DSP model — a RAT-style diode-clipper distortion — as
+**new code beside** the M0 gain core. It is developed and tested entirely
+offline (no browser). Wiring it into the worklet is deferred to M3, so nothing
+in `web/` or `scripts/build-wasm.sh` changed.
+
+New source:
+
+```
+core/include/clipper/dsp/OnePoleSmoother.h   one-pole param smoother (extracted from M0 gain smoothing)
+core/include/clipper/dsp/RatModel.h          public API (pimpl; hides the WDF template tree)
+core/src/dsp/RatModel.cpp                     the 3-stage model + all circuit values/mappings
+core/tests/test_rat_model.cpp                 plain-assert tests (Goertzel, no FFT/framework)
+core/tools/render/main.cpp                    clipper-render CLI (native only)
+core/tools/third_party/dr_wav.h              vendored WAV I/O (tool-only; never in the DSP core)
+```
+
+### Dependency: chowdsp_wdf
+
+The WDF diode stage uses [`chowdsp_wdf`](https://github.com/Chowdhury-DSP/chowdsp_wdf),
+pulled by CMake `FetchContent` and **pinned to release v1.0.0**
+(commit `36b5775555af21f0f417d2bc866ba7b4b2788614`). It is header-only; the
+checkout is cached under `core/build/_deps`, so re-configuring an
+already-populated build does not re-download. Its headers are included as
+`SYSTEM` so they do not trip our `-Wall -Wextra`. The library's own
+tests/benchmarks are force-disabled (no transitive CPM downloads).
+
+`dr_wav` (public domain, `mackron/dr_libs`, v0.14.6, commit
+`34a89ffe6bfc4d78db6888fef76cd408dba18185`) is vendored verbatim and included
+**only** by the render tool.
+
+### Build and test
+
+Same flow as §1 — the M1 targets are added to the existing `core` build:
+
+```bash
+cd core
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+./build/clipper_tests       # M0 gain tests: "All tests passed."
+./build/clipper_rat_tests   # M1 model tests: "All RatModel tests passed."
+```
+
+The first configure clones `chowdsp_wdf` (needs network); later builds are
+offline. `clipper_rat_tests` is compiled with `-UNDEBUG` so `assert()` stays
+live even in a Release build.
+
+### Render harness (`clipper-render`)
+
+WAV in → WAV out, or a generated test signal (no input file needed). Output is
+**32-bit float mono**; input may be mono/stereo 16/24-bit PCM or 32-bit float
+(stereo is down-mixed to mono). Params are knob positions in `[0,1]`; defaults
+are distortion 0.7, filter 0.4, level 0.8. Run from `core/`:
+
+```bash
+# Generated 220 Hz sine, 2 s, three distortion settings, dumping spectra:
+./build/clipper-render --gen sine:220:2.0 /tmp/s220_d30.wav --distortion 0.30 --filter 0.3 --level 0.8 --spectrum /tmp/s220_d30.csv
+./build/clipper-render --gen sine:220:2.0 /tmp/s220_d70.wav --distortion 0.70 --filter 0.3 --level 0.8 --spectrum /tmp/s220_d70.csv
+./build/clipper-render --gen sine:220:2.0 /tmp/s220_d95.wav --distortion 0.95 --filter 0.3 --level 0.8 --spectrum /tmp/s220_d95.csv
+
+# Log sweep 20 Hz -> 20 kHz over 4 s:
+./build/clipper-render --gen sweep:20:20000:4.0 /tmp/sweep.wav --distortion 0.8 --filter 0.4 --level 0.8
+
+# Process a real WAV file:
+./build/clipper-render in.wav out.wav --distortion 0.5 --filter 0.6 --level 0.7
+```
+
+Other flags: `--sr SR` (sample rate for `--gen`, default 48000), `--amp A`
+(generated amplitude in "volts", default 0.3), `--spectrum file.csv` (magnitude
+spectrum of the last second, `freq,magnitude_db` rows at ~1 Hz resolution up to
+20 kHz — harmonics of a periodic tone land on bins).
+
+Sanity check: the odd harmonics of a 220 Hz tone grow with distortion while even
+harmonics stay near the noise floor (symmetric clipping), e.g. from the CSVs
+above the 660 Hz / 1100 Hz bins rise roughly `-21.7 / -28.8 dB` (dist 0.30) →
+`-17.7 / -22.7 dB` (dist 0.95), while 440 Hz sits below `-190 dB`.
+
+### Parameter mapping
+
+All three params are normalized knob positions `[0,1]` (`clipper::dsp::RatModel::ParamId`),
+mapped internally and one-pole smoothed (~5 ms, the M0 philosophy):
+
+| Param (id) | Knob 0 | Knob 1 | Mapping | Notes |
+|---|---|---|---|---|
+| `PARAM_DISTORTION` (0) | 0 dB | +54 dB | linear-in-dB pre-clip gain | plus a fixed pre-clip high-shelf (see below) |
+| `PARAM_FILTER` (1) | 20 kHz (bright) | 500 Hz (dark) | log-swept one-pole LP cutoff | RAT convention: clockwise = darker |
+| `PARAM_LEVEL` (2) | 0.0 | 1.0 | identity linear gain | audio-taper law is a future refinement |
+
+### Circuit model & assumptions (circuit-informed, NOT SPICE-accurate)
+
+Reference level: input float `1.0f == 1.0 V` at the diode stage (a hot humbucker
+DI peaks ~0.3 V), so pre-gain must lift the signal past the diode knee to clip —
+as the real LM308 stage does.
+
+1. **Gain / shaping (LM308 non-inverting amp).** Variable pre-gain (0…+54 dB;
+   the real RAT reaches ~+66 dB via `1 + P1/Rg`, P1 = 100 k Distortion pot, Rg ≈
+   47 Ω — capped lower here since we do not model the LM308's slew limiting).
+   The RAT feedback network (47 Ω + 2.2 µF leg to ground, ~100 pF across the
+   feedback) makes the stage gain **rise toward the mids/highs** with corners
+   roughly in the 100–800 Hz band — this is the RAT's tightness. Modeled as a
+   first-order high-shelf: unity above ~320 Hz, bass shelved to 0.30 (≈ −10.5 dB).
+   *Assumption:* a single shelf approximates the two-pole feedback transfer; exact
+   component-accurate EQ and op-amp slew limiting are future refinements.
+2. **Clipper (WDF, `chowdsp_wdf`).** Antiparallel silicon diode pair to ground
+   (1N914-ish: Is = 2.52 nA, Vt = 25.85 mV, one diode/side → ±0.6 V knee), built
+   exactly like the library's RC diode-clipper example: a resistive voltage
+   source (series Rs = 1 kΩ) in **parallel** with a shunt capacitor (Cp = 10 nF),
+   feeding a `DiodePairT` root (Werner et al. "Best" model). Output is the
+   voltage across the shunt cap (= the clipping-node voltage). The shunt cap is
+   from the library example — it aids stability and adds a gentle ~16 kHz HF
+   corner. *Assumptions:* Rs and Cp are modeling choices, not measured RAT values.
+3. **Tone / output (RAT "Filter" + "Volume").** One-pole passive low-pass whose
+   cutoff the FILTER knob log-sweeps (bright→dark), then LEVEL as clean linear
+   gain.
+
+**No oversampling/antialiasing in M1** (that is M2): high-gain settings alias
+("fizz") on purpose. The model runs at the host sample rate; the WDF stage runs
+in `double` for numerical stability.
+
 ## Notes / conventions
 
 - `core/` must never include platform/OS/browser/Emscripten headers. The only
