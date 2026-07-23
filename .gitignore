@@ -19,3 +19,4 @@ web/.playwright/
 
 # M6.1 A/B evidence (untracked scratch renders)
 core/.ab-scratch/
+.claude/worktrees/
