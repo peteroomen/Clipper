@@ -1,0 +1,11 @@
+{
+  "name": "clipper",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Clipper — web-first guitar rig simulator + conversational tone assistant.",
+  "scripts": {
+    "server": "node server/index.mjs",
+    "test:server": "node --test 'server/*.test.mjs'"
+  }
+}

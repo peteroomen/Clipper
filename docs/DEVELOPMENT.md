@@ -839,6 +839,166 @@ cd .. && bash scripts/build-wasm.sh
 cd web && npm install && npm run build && npm test   # 10 passed
 ```
 
+## 11. M6 — The assistant (MVP ships)
+
+M6 adds the conversational **tone coach** — the product's differentiator. A user
+says "give me the rhythm tone from The Bends," and the assistant reasons about
+their guitar + current rig, changes parameters via tool calls (the knobs
+visibly move), explains *why* in terms of what the ear hears, and iterates on
+feedback — including non-rig advice ("roll your guitar volume back to 8")
+alongside knob moves. **No audio-path changes**: the worklet, C ABI, `core/`,
+and `scripts/` are all untouched — the assistant drives the same `RigState`
+setters the knobs use.
+
+### Architecture
+
+```
+browser (web/)                          server/ (zero-dep Node proxy)
+  Chat.tsx ── POST /api/chat ─────────▶  index.mjs ── x-api-key ──▶ api.anthropic.com
+   │  (system, tools, messages)              (injects model, max_tokens,
+   │                                          stream, thinking; pipes SSE back)
+   ├─ assistant/client.ts   SSE parse + tool-use loop (cap 6 iterations)
+   ├─ assistant/tools.ts    executes tool_use against the live rig (RigController)
+   ├─ assistant/prompt.ts   coaching system prompt + per-turn context preamble
+   └─ guitar.ts             guitar profile (localStorage, separate key)
+```
+
+- **Proxy (`server/`)** — a minimal Node 22 HTTP server, **zero npm
+  dependencies** (built-in `http` + global `fetch`). `server/index.mjs` is the
+  http glue (routing, CORS, body reading, SSE piping); `server/handler.mjs`
+  holds the request-shaping core and upstream call, written injectable so the
+  handler could be **lifted into a serverless function** (see the Vercel note
+  below). The API key lives only in the server's environment — never sent to the
+  client, never logged; message contents are never logged.
+  - `POST /api/chat` — accepts `{messages, tools, system}`, forwards to
+    `https://api.anthropic.com/v1/messages` with streaming, and pipes the SSE
+    response back verbatim. The proxy **injects** `model`, `max_tokens`,
+    `stream: true`, and `thinking: {type: "adaptive"}` server-side — a
+    client-supplied `model` is ignored, so the client can never choose the model.
+  - `GET /api/health` — `{ok: true, hasKey: boolean}` (advertises key presence
+    without leaking it). The chat surfaces `hasKey: false` as a clear notice.
+  - With **no key**: `/api/health` reports `hasKey:false` and `/api/chat` returns
+    a clear **500** with fix instructions; the UI shows that state gracefully.
+
+- **Client tool-use loop (`web/src/assistant/client.ts`)** — parses the SSE
+  stream (`message_start` / `content_block_start|delta|stop` /`message_delta` /
+  `message_stop`), accumulating content blocks: `text_delta` streams to the UI
+  live, `input_json_delta` accumulates each tool's input JSON. On
+  `stop_reason == "tool_use"` it executes **all** tool_use blocks locally, then
+  appends the assistant message (**full content array, including thinking blocks
+  with their signatures**) + **one** user message containing **all**
+  `tool_result` blocks, and continues. Loops until `end_turn` (capped at 6).
+  `refusal` and `max_tokens` are handled gracefully (in-chat notice, no crash).
+
+### Anthropic API facts (current — do not rely on training priors)
+
+- Model **`claude-opus-4-8`** (env `MODEL`), `max_tokens` **8192** (env
+  `MAX_TOKENS`), **streaming always** (`stream: true`).
+- **Thinking**: `thinking: {type: "adaptive"}` is sent explicitly — on Opus 4.8
+  omitting it runs *without* thinking. `budget_tokens` / `temperature` / `top_p`
+  / `top_k` are **never** sent (they 400 on Opus 4.8). Thinking blocks stream
+  with empty text (display omitted) — fine, but their signatures are preserved
+  when echoed back in the tool loop.
+- **System prompt** is an array with one stable text block carrying
+  `cache_control: {type: "ephemeral"}`; the big coaching prompt stays there.
+  **Volatile context (rig JSON + guitar profile) goes in the USER turn**, not
+  the system prompt, so caching works.
+
+### Tool schema (the AI's hands — small and typed)
+
+| Tool | Input | Effect |
+|---|---|---|
+| `set_param` | `{unit: "pedal"\|"amp", param, value 0..1}` | Sets a knob (clamped). Pedal: `dist`/`filter`/`level`; amp: `volume`/`bass`/`middle`/`treble`. |
+| `set_engaged` | `{unit: "pedal"\|"amp", engaged: boolean}` | Pedal bypass / amp power. |
+| `set_switch` | `{name: "bright"\|"cab", on: boolean}` | Amp bright / cab toggle. |
+
+Tool executor (`web/src/assistant/tools.ts`) operates through a `RigController`
+implemented by `App` over its existing setters, so the AI's changes move the
+knobs, reach the worklet, and persist. Each `tool_result` returns a short applied
+JSON (e.g. `{"applied":{"unit":"pedal","param":"dist","value":0.6}}`), and the
+change renders as a chip in the chat flow (e.g. `Dist 70 → 55`).
+
+### Guitar profile
+
+A small form in a settings well inside the chat panel (`Guitar` toggle):
+model (free text), pickup type (SSS/HSS/HH/P90/other), pickup position (free
+text or 1-5). Stored in localStorage under `clipper.guitar.v1` (separate from
+the rig's `clipper.rig.v1`), editable anytime, and injected into the assistant's
+per-turn context so advice is instrument-specific.
+
+### Chat UI (liquid glass)
+
+`web/src/components/Chat.tsx` + `web/src/styles/chat.css` port the approved glass
+design (backdrop blur, 1px specular edge, top sheen — `--glass-*` / `--ai`
+tokens): assistant bubbles on glass, user bubbles as inset wells, a typing
+indicator, applied tool calls as chips, and a pill input with a send button.
+Placed as a right-side panel next to the rig on wide screens; stacks below on
+narrow. Conversation is in memory (not persisted across reloads — fine for MVP).
+Error states (proxy down, no key) render as a clear in-chat notice with fix
+instructions.
+
+### How to run
+
+```bash
+# 1. The proxy needs a real Anthropic API key (this is the one path the test
+#    suite cannot cover — it must be verified live):
+export ANTHROPIC_API_KEY=sk-ant-...
+npm run server            # http://localhost:8787  (root package.json)
+
+# 2. The web app (separate terminal). Vite proxies /api -> :8787, so the app
+#    calls same-origin /api/chat and the key stays server-side.
+cd web && npm run dev     # http://localhost:5173
+```
+
+Model / env config (all read by `server/index.mjs`):
+
+| Env | Default | Meaning |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — (required for `/api/chat`) | Anthropic key; server-side only. |
+| `MODEL` | `claude-opus-4-8` | Injected server-side; client can't override. |
+| `MAX_TOKENS` | `8192` | Injected server-side. |
+| `PORT` | `8787` | Proxy port (matches the Vite dev proxy target). |
+
+### Security notes
+
+- The API key is read from the server's environment, used only as the
+  `x-api-key` header, and is **never** sent to the client, logged, or included in
+  any error body. Message contents are never logged. It does **not** appear in
+  the client bundle (the browser only ever talks to same-origin `/api`).
+- The tool surface is small and typed; the assistant never sends freeform
+  parameter values — only the three tools above, all clamped/validated.
+
+### Vercel-deploy note (handler is liftable)
+
+`server/handler.mjs` is dependency-free and split from the http glue on purpose:
+`buildUpstreamPayload` / `proxyChat` take an injected `fetch` and touch no Node
+globals. To deploy on Vercel, add `api/chat.js` and `api/health.js` (Vercel
+functions) that import from `handler.mjs`, read `process.env.ANTHROPIC_API_KEY` /
+`MODEL` / `MAX_TOKENS`, call `proxyChat`, and stream the upstream body back
+(`Response`/`ReadableStream`). Set the same env vars in the Vercel project;
+same-origin `/api/*` needs no CORS. `server/index.mjs` remains the local dev
+entry point.
+
+### Build and test (M6)
+
+```bash
+# Server unit tests (request shaping; no live API call — fetch is stubbed):
+npm run test:server            # 6 passed  (root package.json)
+
+# Web build + headless Playwright suite (14 tests = 10 existing + 4 new):
+cd web && npm run build && npm test   # 14 passed
+```
+
+M6 web test coverage (`web/tests/assistant.spec.ts`, proxy MOCKED via
+`page.route` — **no live Anthropic call**): (a) streamed text renders in the
+chat; (b) a canned `set_param dist 0.55` tool_use visibly updates the knob
+readout + rig state and the follow-up request carries a `tool_result` block
+(asserted by inspecting the second request body); (c) proxy-down shows the error
+notice; (d) a 500 (no key) surfaces the server's error message. The existing 10
+audio/UI tests stay green. **The one thing the suite cannot cover is the live-key
+path** — a real end-to-end request to Anthropic requires a valid
+`ANTHROPIC_API_KEY` and must be verified by hand.
+
 ## Notes / conventions
 
 - `core/` must never include platform/OS/browser/Emscripten headers. The only

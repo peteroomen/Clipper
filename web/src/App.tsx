@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { startEngine, listInputDevices, type Engine } from './audio';
 import { PARAM_ID, AMP_PARAM_ID, OVERSAMPLING_FACTORS } from './params';
 import {
@@ -11,14 +11,18 @@ import {
   type AmpParamName,
   type SourceKind,
 } from './rig';
+import { loadGuitar, saveGuitar, type GuitarProfile } from './guitar';
+import type { RigController } from './assistant/tools';
 import { Pedal } from './components/Pedal';
 import { Amp } from './components/Amp';
+import { Chat } from './components/Chat';
 
 import './styles/tokens.css';
 import './styles/base.css';
 import './styles/pedal.css';
 import './styles/amp.css';
 import './styles/app.css';
+import './styles/chat.css';
 
 type ThemeChoice = 'system' | 'light' | 'dark';
 
@@ -48,10 +52,18 @@ export default function App() {
   const [deviceId, setDeviceId] = useState<string>('');
   const [theme, setTheme] = useState<ThemeChoice>('system');
 
+  // The guitar profile (M6): injected into the assistant's context. Separate
+  // localStorage key from the rig; editable anytime from the chat panel.
+  const [guitar, setGuitar] = useState<GuitarProfile>(() => loadGuitar());
+
   // Persist the rig on every change.
   useEffect(() => {
     saveRig(rig);
   }, [rig]);
+
+  useEffect(() => {
+    saveGuitar(guitar);
+  }, [guitar]);
 
   useEffect(() => {
     applyTheme(theme);
@@ -91,12 +103,17 @@ export default function App() {
     if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastParam = { id, value };
   }
 
-  function toggleEngaged() {
-    const engaged = !rigRef.current.pedal.engaged;
+  // Set the pedal engaged state to an explicit value (used by the footswitch and
+  // the assistant's set_engaged tool). engaged=false -> bypassed.
+  function setPedalEngaged(engaged: boolean) {
     engineRef.current?.setBypass(!engaged); // bypass = not engaged
     setRig((r) => ({ ...r, pedal: { ...r.pedal, engaged } }));
     const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
     if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastBypass = !engaged;
+  }
+
+  function toggleEngaged() {
+    setPedalEngaged(!rigRef.current.pedal.engaged);
   }
 
   // ---- amp mutations ----
@@ -114,13 +131,42 @@ export default function App() {
     setAmpParam(name, next);
   }
 
-  function toggleAmpPower() {
-    const engaged = !rigRef.current.amp.engaged;
+  // Set the amp power (engaged) state explicitly (used by the Power rocker and
+  // the assistant's set_engaged tool). engaged=false -> amp+cab bypassed.
+  function setAmpEngaged(engaged: boolean) {
     engineRef.current?.setAmpBypass(!engaged); // amp bypass = power off
     setRig((r) => ({ ...r, amp: { ...r.amp, engaged } }));
     const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
     if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastAmpBypass = !engaged;
   }
+
+  function toggleAmpPower() {
+    setAmpEngaged(!rigRef.current.amp.engaged);
+  }
+
+  // The assistant's rig-control seam (M6): the tool executor mutates the rig ONLY
+  // through here, reusing the same setters the knobs/switches use so the AI's
+  // changes visibly move knobs, reach the worklet, and persist. Built once —
+  // every method routes through stable setState/ref-based setters.
+  const rigController = useMemo<RigController>(
+    () => ({
+      getRig: () => rigRef.current,
+      setParam: (unit, param, value) => {
+        const v = Math.min(1, Math.max(0, value));
+        if (unit === 'pedal') setParam(param as ParamName, v);
+        else setAmpParam(param as AmpParamName, v);
+        return v;
+      },
+      setEngaged: (unit, engaged) => {
+        if (unit === 'pedal') setPedalEngaged(engaged);
+        else setAmpEngaged(engaged);
+      },
+      setSwitch: (name, on) => setAmpParam(name as AmpParamName, on ? 1 : 0),
+    }),
+    // The referenced setters are behaviorally stable (functional setState + refs).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
 
   function setOversampling(factor: number) {
     setRig((r) => ({ ...r, oversampling: factor }));
@@ -214,7 +260,8 @@ export default function App() {
           </div>
         </header>
 
-        <div className="stage">
+        <div className="workspace">
+          <div className="stage">
           <div className="rig">
             <Pedal pedal={rig.pedal} onParam={setParam} onToggleEngaged={toggleEngaged} />
             <Amp
@@ -322,6 +369,9 @@ export default function App() {
               </div>
             </section>
           </div>
+          </div>
+
+          <Chat controller={rigController} guitar={guitar} onGuitarChange={setGuitar} />
         </div>
       </div>
     </div>

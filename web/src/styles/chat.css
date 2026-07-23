@@ -1,0 +1,156 @@
+/* ---------- M6 glass chat ----------
+   The intelligence layer: liquid glass (backdrop blur, 1px specular edge, top
+   sheen) per the approved design. Steel below, glass above. Tokens (--glass-*,
+   --ai) already ship in tokens.css. Assistant bubbles are glass; user bubbles
+   are inset wells; applied tool calls render as chips in the flow. */
+
+/* workspace: rig on the left, chat on the right (wide) / stacked (narrow) */
+.workspace { display: flex; gap: 40px; align-items: flex-start; }
+.workspace .stage { flex: 1; min-width: 0; margin-top: 0; }
+
+.chat {
+  width: 380px; flex-shrink: 0; position: sticky; top: 24px;
+  display: flex; flex-direction: column;
+  max-height: calc(100vh - 48px);
+  border-radius: 26px;
+  background: linear-gradient(160deg, var(--glass-tint), transparent 60%), var(--glass-bg);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  backdrop-filter: blur(22px) saturate(1.5);
+  border: 1px solid var(--glass-edge);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .28), inset 0 1px 0 var(--glass-edge);
+  padding: 18px 18px 16px;
+  color: var(--glass-ink);
+  overflow: hidden;
+}
+.chat::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 46%;
+  border-radius: 26px 26px 40% 40%;
+  background: linear-gradient(rgba(255, 255, 255, .14), transparent);
+  pointer-events: none;
+}
+.chat > * { position: relative; z-index: 1; }
+
+.chat-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.chat-head .avatar {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: radial-gradient(circle at 32% 28%, color-mix(in srgb, var(--ai) 55%, #fff), var(--ai));
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--ai) 55%, transparent);
+}
+.chat-head .who { font-size: 12.5px; font-weight: 600; letter-spacing: .02em; }
+.chat-gear {
+  margin-left: auto; font: inherit; font-size: 9.5px; letter-spacing: .18em; text-transform: uppercase;
+  font-family: ui-monospace, Menlo, monospace; color: var(--ai);
+  background: transparent; border: 1px solid var(--glass-edge); border-radius: 999px;
+  padding: 5px 12px; cursor: pointer;
+}
+.chat-gear:hover { background: rgba(255, 255, 255, .1); }
+.chat-gear:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
+
+/* guitar profile form (settings well) */
+.chat-settings { padding: 14px; margin-bottom: 14px; display: grid; gap: 10px; }
+.gf-field { display: grid; gap: 5px; }
+.gf-field > span {
+  font-size: 9.5px; letter-spacing: .18em; text-transform: uppercase;
+  font-family: ui-monospace, Menlo, monospace; color: var(--ink-dim);
+}
+.gf-field input, .gf-field select {
+  font: inherit; font-size: 13px; color: var(--ink);
+  background: var(--ground); border: 1px solid var(--glass-edge); border-radius: 10px;
+  padding: 8px 10px; width: 100%;
+}
+.gf-field input:focus-visible, .gf-field select:focus-visible {
+  outline: 2px solid var(--ai); outline-offset: 1px;
+}
+
+/* message scroll area */
+.chat-scroll {
+  flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 220px;
+  padding-right: 4px; margin-bottom: 12px;
+  display: flex; flex-direction: column;
+}
+.chat-scroll::-webkit-scrollbar { width: 8px; }
+.chat-scroll::-webkit-scrollbar-thumb { background: var(--glass-edge); border-radius: 8px; }
+
+.bubble {
+  border-radius: 18px; padding: 10px 14px; font-size: 13.5px; line-height: 1.5;
+  margin-bottom: 10px; max-width: 92%; white-space: pre-wrap; word-wrap: break-word;
+}
+.bubble.user {
+  margin-left: auto; background: var(--well); color: var(--ink);
+  box-shadow: inset 2px 2px 5px var(--sh-darker), inset -2px -2px 4px var(--sh-light);
+  border-radius: 18px 18px 6px 18px;
+}
+.bubble.ai {
+  background: linear-gradient(160deg, rgba(255, 255, 255, .16), rgba(255, 255, 255, .04));
+  border: 1px solid var(--glass-edge); border-radius: 18px 18px 18px 6px;
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  align-self: flex-start;
+}
+
+/* applied tool calls, as chips in the flow */
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 12px; }
+.chip {
+  font-size: 11.5px; padding: 6px 13px; border-radius: 999px;
+  border: 1px solid var(--glass-edge);
+  background: linear-gradient(160deg, rgba(255, 255, 255, .2), rgba(255, 255, 255, .05));
+  color: var(--glass-ink); font-weight: 600; letter-spacing: .02em;
+  font-family: ui-monospace, Menlo, monospace;
+}
+
+/* typing indicator */
+.typing { display: inline-flex; gap: 4px; padding: 12px 16px; align-self: flex-start; }
+.typing i {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--glass-ink); opacity: .4;
+  animation: tpulse 1.2s infinite;
+}
+.typing i:nth-child(2) { animation-delay: .18s; }
+.typing i:nth-child(3) { animation-delay: .36s; }
+@keyframes tpulse {
+  0%, 60%, 100% { transform: translateY(0); opacity: .35; }
+  30% { transform: translateY(-4px); opacity: .9; }
+}
+
+/* in-chat notices (error / refusal / truncated / no key) */
+.chat-notice {
+  border-radius: 14px; padding: 11px 14px; font-size: 12.5px; line-height: 1.45;
+  margin-bottom: 10px; border: 1px solid var(--glass-edge);
+  background: rgba(240, 96, 60, .12); color: var(--ink);
+}
+.chat-notice.error, .chat-notice.nokey {
+  border-color: color-mix(in srgb, var(--led) 55%, transparent);
+  background: color-mix(in srgb, var(--led) 12%, transparent);
+}
+.chat-notice.refusal, .chat-notice.truncated {
+  background: rgba(255, 255, 255, .08); color: var(--ink-dim);
+}
+
+/* pill input */
+.chat-input {
+  display: flex; align-items: center; gap: 10px; margin-top: 4px;
+  border-radius: 999px; padding: 7px 8px 7px 16px;
+  background: rgba(255, 255, 255, .1); border: 1px solid var(--glass-edge);
+}
+.chat-input input {
+  flex: 1; min-width: 0; font: inherit; font-size: 13px; color: var(--glass-ink);
+  background: transparent; border: none; outline: none;
+}
+.chat-input input::placeholder { color: var(--glass-ink); opacity: .5; }
+.chat-input input:disabled { opacity: .6; }
+.chat-input .send {
+  flex-shrink: 0; width: 30px; height: 30px; border-radius: 50%; border: none;
+  background: var(--ai); color: #fff; font-size: 14px; cursor: pointer;
+  display: grid; place-items: center;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--ai) 50%, transparent);
+}
+.chat-input .send:disabled { opacity: .45; cursor: not-allowed; }
+.chat-input .send:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
+
+/* stacked layout on narrow screens */
+@media (max-width: 980px) {
+  .workspace { flex-direction: column; }
+  .chat { position: relative; top: auto; width: 100%; max-width: 440px; max-height: none; }
+  .chat-scroll { max-height: 50vh; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typing i { animation: none !important; }
+}
