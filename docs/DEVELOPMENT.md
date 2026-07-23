@@ -257,6 +257,181 @@ as the real LM308 stage does.
 ("fizz") on purpose. The model runs at the host sample rate; the WDF stage runs
 in `double` for numerical stability.
 
+## 7. M2 — Antialiasing (oversampling + ADAA)
+
+M2 kills the aliasing ("fizz") that M1 left in on purpose. Only the **nonlinear**
+stage-2 clipper is antialiased; stages 1 (gain/shaping) and 3 (tone LP) are
+linear and stay at the base rate. Everything here is measurement-driven — the
+tests assert on measured spectra, not vibes.
+
+New source (all header-only DSP, platform-free C++17):
+
+```
+core/include/clipper/dsp/HalfbandFilter.h    Kaiser halfband taps + polyphase 2x interp/decim
+core/include/clipper/dsp/Oversampler.h       1x/2x/4x/8x cascade of 2x halfband stages
+core/include/clipper/dsp/DiodeClipperADAA.h  memoryless tanh clipper w/ 1st-order ADAA (experimental)
+core/tools/measure/AliasMetric.h             shared aliasing metric (Goertzel) for tests + CLI
+```
+
+`RatModel.cpp` gains `setOversampling`, `setStage2Mode`, `latencySamples`, and an
+internal `processChunk` (see below). No `web/` or `scripts/build-wasm.sh` change:
+the WASM build still ships only the M0 gain core; the RAT model is wired to the
+browser in M3.
+
+### New RatModel API
+
+| Method | Effect |
+|---|---|
+| `setOversampling(int factor)` | Select 1 / 2 / 4 / 8× for the nonlinear stage (other values snap **down** to the nearest valid power of two). **Default 4×.** Takes effect **immediately**, resetting the oversampling filter state and re-preparing the WDF cap at the oversampled rate (a click is possible on a live change — set it before playing). |
+| `oversampling()` | Current factor. |
+| `latencySamples()` | Round-trip group delay of the OS filters, in **base-rate** samples (0 at 1×). |
+| `setStage2Mode(mode)` | `STAGE2_WDF` (production default) or `STAGE2_ADAA` (experimental memoryless comparison path). |
+
+The public 3-param knob API is unchanged. **Factor 1 reproduces the M1 signal
+path bit-for-bit** (verified: `max |os1 − M1 golden| = 0.0`), so it is the
+regression guard.
+
+`process()` now **chunks** the input into ≤ `maxBlockSize` sub-blocks internally
+(the render tool and tests hand it the whole signal at once), so the fixed
+oversampling scratch — allocated once in `prepare()` for the 8× worst case — is
+never overrun and `process()` performs **no heap allocation**.
+
+### Oversampling filter design
+
+A hand-rolled **polyphase halfband cascade**: each 2× stage is a Kaiser-windowed
+halfband FIR (cutoff π/2; every even tap zero except the centre = 0.5). 4× = two
+stages, 8× = three. Up = zero-stuff + halfband LP (the even output phase is a
+delayed copy of the input via the centre tap, the odd phase is the odd polyphase
+branch); down = halfband LP + decimate (sparse FIR, one output per two inputs).
+Coefficients are generated at `prepare()` (`makeHalfband(M, beta)`), never in
+`process()`.
+
+The **first** (lowest-rate) 2× stage has the tightest transition: at a 44.1 kHz
+base the 20 kHz audio edge sits at 0.2268 of the 88.2 kHz stage rate, just below
+the π/2 (0.25) cutoff. Every later stage runs at ≥ 176.4 kHz where 20 kHz is a
+small fraction of the rate, so a much shorter halfband clears the stopband target
+with margin.
+
+| Stage | Taps (L = 2M+1) | Kaiser β | Passband ripple (≤20 kHz @ 44.1k) | Stopband |
+|---|---|---|---|---|
+| First 2× (tight) | **129** (M=64) | 7.857 | 0.0013 dB | −81 dB |
+| Later 2× (relaxed) | **33** (M=16) | 7.857 | ≤ 0.0006 dB | −88 dB |
+
+Cascaded passband ripple ≪ ±0.1 dB (measured 1 kHz through-gain shift 1× → 4× is
+**0.0007 dB**). Group delay (base-rate samples), from `latencySamples()`:
+
+| Factor | Stages | Latency (base samples @ 44.1k) |
+|---|---|---|
+| 1× | 0 | 0 |
+| 2× | 1 | 64 |
+| 4× | 2 | 72 |
+| 8× | 3 | 76 |
+
+The WDF capacitor is `prepare()`d at the **oversampled** rate (`sampleRate ×
+factor`) so its ~16 kHz HF corner lands correctly; the diode impedance
+propagates from the cap.
+
+### ADAA comparison path (experimental)
+
+`DiodeClipperADAA` is a **memoryless** stand-in for the WDF diode stage, used only
+to compare first-order antiderivative antialiasing against oversampling — it is
+**not** the production clipper.
+
+- **Transfer curve match:** `f(x) = Vk·tanh(x/Vk)`, `Vk = 0.35`. The WDF diode
+  node's *static* curve (measured by settling the WDF at DC) has small-signal
+  slope ≈ 1 (diodes off) and a soft knee whose output saturates around
+  0.33–0.39 V under realistic overdrive (it keeps rising ~logarithmically rather
+  than hard-limiting at 0.6 V). `tanh(x/Vk)·Vk` matches the unity origin slope
+  exactly and limits at ±Vk; Vk = 0.35 places the ceiling in the WDF's measured
+  mid/high-drive band. The tanh flattens where the diode keeps creeping up — a
+  documented approximation; the comparison is about aliasing, not an exact curve.
+- **ADAA:** first-order (Parker/Esqueda/Bilbao/Välimäki 2016)
+  `y[n] = (F1(x[n]) − F1(x[n−1]))/(x[n] − x[n−1])`, `F1(x) = Vk²·ln(cosh(x/Vk))`
+  (evaluated stably), with the divided-difference fall-back
+  `f((x[n]+x[n−1])/2)` when successive inputs are within 1e−6.
+
+**Findings** (f0 = 4186 Hz, dist 0.9, fs = 44.1 kHz, worst-alias dB rel.
+fundamental; CPU = ms to process 1 s of audio in 128-frame blocks, native
+`-O3`):
+
+| Path | worst-alias | sum-alias | CPU (ms/s) |
+|---|---|---|---|
+| WDF 1× (M1 baseline) | −18.4 | −13.2 | 2.9 |
+| WDF 2× | −26.7 | −21.0 | 27.9 |
+| **WDF 4× (shipped default)** | **−86.6** | **−80.3** | **45.3** |
+| WDF 8× | −90.6 | −88.2 | 81.0 |
+| ADAA 1× | −25.3 | −24.2 | 1.6 |
+| ADAA 2× | −38.5 | −36.7 | 25.3 |
+| ADAA 4× | −115.0 | −107.8 | 40.0 |
+
+**Verdict.** ADAA@1× (−25.3 dB, 1.6 ms) beats WDF@1× (−18.4 dB) for *less* CPU,
+and ADAA@2× (−38.5 dB) beats WDF@2× by ~12 dB — first-order ADAA is a cheap,
+genuine win at low oversampling. But it **plateaus**: it does not on its own reach
+the ≥60-dB-below-fundamental "inaudible alias" bar. Oversampling does — WDF@4×
+hits −86.6 dB, limited by the ~81 dB halfband stopband floor (which is why 8× only
+adds ~4 dB over 4× here: 4× already sits near the filter floor). At high factors
+the halfband filtering dominates CPU, so WDF and ADAA converge (81 vs 70 ms @ 8×).
+**Shipped default: WDF + 4× oversampling** — inaudible aliasing at ~0.045× real
+time natively, with generous headroom. ADAA stays available (`--stage2 adaa`) for
+measurement and as a future cheap low-OS option.
+
+On a first-order ADAA note: its benefit grows with input frequency, so the
+in-test demonstration uses f0 = 12 kHz (odd harmonics fold hard), where ADAA beats
+the naive memoryless clipper by **15.6 dB** (worst) / 16.5 dB (sum). Avoid
+f0 = fs/4 for these measurements — every odd harmonic folds onto the fundamental
+(degenerate).
+
+### CLI additions (`clipper-render`)
+
+```bash
+# Aliasing metric table for os=1/2/4/8 (renders a 4186 Hz tone at high drive):
+./build/clipper-render --alias-report --sr 44100 --distortion 0.9
+./build/clipper-render --alias-report --sr 44100 --distortion 0.9 --stage2 adaa
+
+# Render with an explicit oversampling factor / stage-2 mode:
+./build/clipper-render --gen sine:4186:1.0 out.wav --distortion 0.9 --os 8
+./build/clipper-render in.wav out.wav --os 4 --stage2 wdf
+
+# Sweep A/B: alias foldover in the last-second spectrum, 1x vs 8x (high drive):
+./build/clipper-render --gen sweep:20:20000:4.0 s1.wav --distortion 0.9 --filter 0.0 --level 0.9 --sr 44100 --os 1 --spectrum s1.csv
+./build/clipper-render --gen sweep:20:20000:4.0 s8.wav --distortion 0.9 --filter 0.0 --level 0.9 --sr 44100 --os 8 --spectrum s8.csv
+```
+
+The `--alias-report` table prints worst-alias, sum-alias, fundamental amplitude,
+and latency per factor — the expected monotonic story at 44.1 kHz:
+
+```
+  os  worst-alias(dB)  sum-alias(dB)  fund-amp   latency(smp)
+   1         -18.4          -13.2    0.44726   0
+   2         -26.7          -21.0    0.45470   64
+   4         -86.6          -80.3    0.46202   72
+   8         -90.6          -88.2    0.46580   76
+```
+
+For the sweep A/B: the last-second spectrum's **sub-2 kHz** band (no legitimate
+signal there — the fundamental is 3.5–20 kHz over that second) carries the alias
+foldover. Summing that band's energy from the two CSVs gives **1×  −24.4 dB vs
+8×  −45.2 dB = 20.7 dB less aliasing**, while full-band energy is unchanged
+(0.2 dB) — oversampling removes aliases without altering the tone.
+
+### Build and test (M2)
+
+Same flow as §6; the M2 tests are added to `clipper_rat_tests`:
+
+```bash
+cd core
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+./build/clipper_rat_tests   # M1 + M2 tests: "All RatModel tests passed."
+```
+
+M2 test coverage (all Goertzel-based, no FFT): aliasing improves monotonically
+1×→2×→4×→8× (strict at 44.1 kHz; weaker floor-limited checks at 96 kHz), 4× ≥ 20 dB
+better than 1×, 8× worst-alias < −60 dB; passband integrity (1 kHz within 0.2 dB,
+3rd/5th harmonic ratios within 3 dB of 1×); factor-1 bit-regression vs an M1
+golden; ADAA ≥ 12 dB better than the naive memoryless clipper; and an 8× perf
+sanity bound (1 s in ≪ 500 ms; measured ~60–75 ms).
+
 ## Notes / conventions
 
 - `core/` must never include platform/OS/browser/Emscripten headers. The only

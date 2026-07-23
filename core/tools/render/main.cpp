@@ -21,6 +21,7 @@
 #include "dr_wav.h"
 
 #include "clipper/dsp/RatModel.h"
+#include "measure/AliasMetric.h"
 
 #include <cmath>
 #include <cstdio>
@@ -43,6 +44,9 @@ struct Args {
     float level = 0.8f;
     double sampleRate = 48000.0;  // used for --gen only
     float amplitude = 0.3f;       // used for --gen only
+    int os = 4;                   // oversampling factor (1/2/4/8), M2 default 4
+    std::string stage2 = "wdf";   // nonlinear stage: "wdf" or "adaa"
+    bool aliasReport = false;     // print the alias metric table and exit
 };
 
 [[noreturn]] void usage(const char* argv0) {
@@ -51,8 +55,11 @@ struct Args {
         "  %s in.wav out.wav [--distortion D] [--filter F] [--level L] [--spectrum s.csv]\n"
         "  %s --gen sine:FREQ:SECONDS out.wav [params] [--sr SR] [--amp A] [--spectrum s.csv]\n"
         "  %s --gen sweep:F0:F1:SECONDS out.wav [params]\n"
-        "Params are knob positions in [0,1] (defaults: distortion 0.7, filter 0.4, level 0.8).\n",
-        argv0, argv0, argv0);
+        "  %s --alias-report [--sr SR] [--distortion D] [--stage2 wdf|adaa]\n"
+        "Params are knob positions in [0,1] (defaults: distortion 0.7, filter 0.4, level 0.8).\n"
+        "M2 flags: --os 1|2|4|8 (oversampling, default 4), --stage2 wdf|adaa (default wdf),\n"
+        "          --alias-report (print the aliasing metric table for os=1/2/4/8 and exit).\n",
+        argv0, argv0, argv0, argv0);
     std::exit(2);
 }
 
@@ -177,11 +184,51 @@ int main(int argc, char** argv) {
         else if (s == "--spectrum") a.spectrum = need("--spectrum");
         else if (s == "--sr") a.sampleRate = std::atof(need("--sr"));
         else if (s == "--amp") a.amplitude = std::atof(need("--amp"));
+        else if (s == "--os") a.os = std::atoi(need("--os"));
+        else if (s == "--stage2") a.stage2 = need("--stage2");
+        else if (s == "--alias-report") a.aliasReport = true;
         else if (s == "-h" || s == "--help") usage(argv[0]);
         else if (!s.empty() && s[0] == '-') {
             std::fprintf(stderr, "error: unknown flag %s\n", s.c_str());
             usage(argv[0]);
         } else positional.push_back(s);
+    }
+
+    const int stage2Mode = (a.stage2 == "adaa")
+                               ? clipper::dsp::RatModel::STAGE2_ADAA
+                               : clipper::dsp::RatModel::STAGE2_WDF;
+
+    // --alias-report: render a high sine (whose harmonics fold to predictable
+    // inharmonic bins) at high distortion through os=1/2/4/8 and print the
+    // signal-to-worst-alias and summed-alias metrics. See AliasMetric.h.
+    if (a.aliasReport) {
+        const double fs = a.sampleRate;
+        const double f0 = 4186.0;  // C8; folds cleanly at fs=44100
+        const int n = static_cast<int>(1.0 * fs);
+        std::vector<float> sig(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i)
+            sig[static_cast<size_t>(i)] =
+                a.amplitude * static_cast<float>(std::sin(kTwoPi * f0 * i / fs));
+        std::printf(
+            "Alias report: f0=%.0f Hz, fs=%.0f Hz, dist=%.2f, filter=0 (bright), stage2=%s\n",
+            f0, fs, a.distortion, a.stage2.c_str());
+        std::printf("  os  worst-alias(dB)  sum-alias(dB)  fund-amp   latency(smp)\n");
+        for (int os : {1, 2, 4, 8}) {
+            clipper::dsp::RatModel m;
+            m.prepare(fs, 128);
+            m.setOversampling(os);
+            m.setStage2Mode(stage2Mode);
+            m.setParameter(clipper::dsp::RatModel::PARAM_DISTORTION, a.distortion);
+            m.setParameter(clipper::dsp::RatModel::PARAM_FILTER, 0.0f);
+            m.setParameter(clipper::dsp::RatModel::PARAM_LEVEL, 0.9f);
+            std::vector<float> out(sig.size(), 0.0f);
+            m.process(sig.data(), out.data(), static_cast<int>(sig.size()));
+            const clipper::measure::AliasReport r =
+                clipper::measure::measureAliasing(out, fs, f0);
+            std::printf("  %2d   %11.1f    %11.1f    %.5f   %d\n", os, r.worstAliasDb,
+                        r.sumAliasDb, r.fundAmp, m.latencySamples());
+        }
+        return 0;
     }
 
     // Resolve input source and output path.
@@ -226,6 +273,8 @@ int main(int argc, char** argv) {
     // Process through the model.
     clipper::dsp::RatModel model;
     model.prepare(fs, 128);
+    model.setOversampling(a.os);
+    model.setStage2Mode(stage2Mode);
     model.setParameter(clipper::dsp::RatModel::PARAM_DISTORTION, a.distortion);
     model.setParameter(clipper::dsp::RatModel::PARAM_FILTER, a.filter);
     model.setParameter(clipper::dsp::RatModel::PARAM_LEVEL, a.level);
@@ -257,9 +306,11 @@ int main(int argc, char** argv) {
     }
     rms = out.empty() ? 0.0 : std::sqrt(rms / out.size());
     std::printf(
-        "Rendered %zu frames @ %.0f Hz -> %s  (dist=%.2f filter=%.2f level=%.2f)\n"
-        "  peak=%.4f  rms=%.4f\n",
-        out.size(), fs, a.outFile.c_str(), a.distortion, a.filter, a.level, peak, rms);
+        "Rendered %zu frames @ %.0f Hz -> %s  (dist=%.2f filter=%.2f level=%.2f "
+        "os=%dx stage2=%s)\n"
+        "  peak=%.4f  rms=%.4f  latency=%d smp\n",
+        out.size(), fs, a.outFile.c_str(), a.distortion, a.filter, a.level,
+        model.oversampling(), a.stage2.c_str(), peak, rms, model.latencySamples());
 
     if (!a.spectrum.empty() && !out.empty()) writeSpectrum(a.spectrum, out, fs);
     return 0;

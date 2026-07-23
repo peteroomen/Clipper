@@ -5,7 +5,11 @@
 
 #include "clipper/dsp/RatModel.h"
 
+#include "clipper/dsp/DiodeClipperADAA.h"
+#include "measure/AliasMetric.h"
+
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -223,6 +227,182 @@ void testHygiene() {
     std::printf("  [ok] hygiene: finite grid, silence->silence, deterministic\n");
 }
 
+// ===========================================================================
+// M2 — antialiasing tests.
+// ===========================================================================
+
+using clipper::measure::AliasReport;
+using clipper::measure::measureAliasing;
+// NB: the file already defines a local goertzelAmp with the same signature as
+// clipper::measure::goertzelAmp; the local one is used below.
+
+// Render through a fresh model with a chosen oversampling factor / stage-2 mode.
+std::vector<float> renderOS(const std::vector<float>& in, Params p, double fs,
+                            int os, int stage2 = RatModel::STAGE2_WDF) {
+    RatModel m;
+    m.prepare(fs, 128);
+    m.setOversampling(os);
+    m.setStage2Mode(stage2);
+    m.setParameter(RatModel::PARAM_DISTORTION, p.distortion);
+    m.setParameter(RatModel::PARAM_FILTER, p.filter);
+    m.setParameter(RatModel::PARAM_LEVEL, p.level);
+    std::vector<float> out(in.size(), 0.0f);
+    if (!in.empty())
+        m.process(in.data(), out.data(), static_cast<int>(in.size()));
+    return out;
+}
+
+// --- Test M2-1: oversampling reduces aliasing monotonically. -----------------
+// f0 = 4186 Hz (C8): its odd harmonics above Nyquist fold to predictable
+// inharmonic bins (see AliasMetric.h). Drive hard (dist 0.9, bright) so the
+// clipper generates lots of high harmonics. At 44.1 kHz base the full 1x->8x
+// chain must improve strictly; at 96 kHz the higher OS factors bottom out at the
+// numerical floor, so only the weaker guarantees are asserted there.
+void testAliasingMonotonic(double fs, bool strict) {
+    const double f0 = 4186.0;
+    auto in = sine(f0, 0.3f, 1.0, fs);
+    double worst[4];
+    int idx = 0;
+    for (int os : {1, 2, 4, 8}) {
+        auto out = renderOS(in, {0.9f, 0.0f, 0.9f}, fs, os);
+        worst[idx++] = measureAliasing(out, fs, f0).worstAliasDb;
+    }
+    const double w1 = worst[0], w2 = worst[1], w4 = worst[2], w8 = worst[3];
+
+    // 4x must be >= 20 dB better than 1x (explicit requirement).
+    assert(w4 < w1 - 20.0 && "4x oversampling not >=20 dB better than 1x");
+    // 8x worst-alias at least 60 dB below the fundamental.
+    assert(w8 < -60.0 && "8x worst-alias not >=60 dB below fundamental");
+    // 2x improves on 1x.
+    assert(w2 < w1 - 3.0 && "2x did not improve on 1x");
+
+    if (strict) {
+        // Full strict monotonic chain (44.1 kHz base, all above the floor).
+        assert(w4 < w2 - 3.0 && "4x did not improve on 2x");
+        assert(w8 < w4 - 1.0 && "8x did not improve on 4x");
+    } else {
+        // 96 kHz: 4x/8x hit the numerical floor; just require both very low.
+        assert(w4 < -60.0 && w8 < -60.0 && "4x/8x not well below fundamental");
+    }
+    std::printf(
+        "  [ok] aliasing @ %.0f Hz base: worst-alias 1x=%.1f 2x=%.1f 4x=%.1f 8x=%.1f dB\n",
+        fs, w1, w2, w4, w8);
+}
+
+// --- Test M2-2: passband integrity — OS removes aliases, not tone. -----------
+void testPassbandIntegrity() {
+    const double fs = 44100.0;
+    // (a) A clean-ish 1 kHz tone at low distortion: 4x amplitude within ~0.2 dB
+    //     of 1x.
+    {
+        auto in = sine(1000.0, 0.05f, 0.5, fs);
+        auto o1 = renderOS(in, {0.2f, 0.0f, 1.0f}, fs, 1);
+        auto o4 = renderOS(in, {0.2f, 0.0f, 1.0f}, fs, 4);
+        const size_t n = o1.size(), win = n / 2, start = n - win;
+        const double a1 = toDb(goertzelAmp(o1, start, win, 1000.0, fs));
+        const double a4 = toDb(goertzelAmp(o4, start, win, 1000.0, fs));
+        assert(std::fabs(a4 - a1) < 0.2 && "1 kHz passband amplitude shifted >0.2 dB at 4x");
+        std::printf("  [ok] passband: 1 kHz 1x=%.4f dB 4x=%.4f dB (delta %.4f dB)\n",
+                    a1, a4, a4 - a1);
+    }
+    // (b) Harmonic character at moderate drive: 3rd/5th ratios within a few dB of
+    //     1x (oversampling must not change the tone).
+    {
+        auto in = sine(220.0, 0.1f, 1.0, fs);
+        auto o1 = renderOS(in, {0.6f, 0.0f, 1.0f}, fs, 1);
+        auto o4 = renderOS(in, {0.6f, 0.0f, 1.0f}, fs, 4);
+        const size_t n = o1.size(), win = n / 2, start = n - win;
+        auto ratio = [&](const std::vector<float>& o, double h) {
+            return toDb(goertzelAmp(o, start, win, 220.0 * h, fs)) -
+                   toDb(goertzelAmp(o, start, win, 220.0, fs));
+        };
+        const double r3_1 = ratio(o1, 3), r3_4 = ratio(o4, 3);
+        const double r5_1 = ratio(o1, 5), r5_4 = ratio(o4, 5);
+        assert(std::fabs(r3_4 - r3_1) < 3.0 && "3rd harmonic ratio moved >3 dB at 4x");
+        assert(std::fabs(r5_4 - r5_1) < 3.0 && "5th harmonic ratio moved >3 dB at 4x");
+        std::printf("  [ok] passband: 3rd %.2f->%.2f  5th %.2f->%.2f dB (1x->4x)\n",
+                    r3_1, r3_4, r5_1, r5_4);
+    }
+}
+
+// --- Test M2-3: factor-1 regression — os=1 reproduces the M1 path. -----------
+// Golden samples captured from the committed M1 RatModel (pre-M2) rendering a
+// 987 Hz sine (amp 0.25) at dist 0.8 / filter 0.35 / level 0.9. os=1 is a pure
+// pass-through around the identical WDF stage, so it must match bit-closely.
+void testFactorOneRegression() {
+    const double fs = 44100.0, f0 = 987.0;
+    const int N = 4096;
+    std::vector<float> in(N);
+    for (int i = 0; i < N; ++i)
+        in[i] = 0.25f * static_cast<float>(std::sin(kTwoPi * f0 * i / fs));
+    auto out = renderOS(in, {0.8f, 0.35f, 0.9f}, fs, 1);
+    struct G { int i; float v; };
+    const G golden[] = {
+        {128, -1.467215121e-01f}, {256, -2.349628359e-01f}, {512, 2.845178246e-01f},
+        {1024, -3.341084719e-01f}, {2048, -3.481807411e-01f}, {3000, 3.482832611e-01f},
+        {4095, -3.490836918e-01f},
+    };
+    double maxDiff = 0.0;
+    for (const auto& g : golden)
+        maxDiff = std::max(maxDiff, static_cast<double>(std::fabs(out[g.i] - g.v)));
+    assert(maxDiff < 1e-5 && "os=1 output diverged from the M1 golden reference");
+    std::printf("  [ok] factor-1 regression: max |os1 - M1 golden| = %.2e\n", maxDiff);
+}
+
+// --- Test M2-4: ADAA effectiveness on the memoryless clipper. -----------------
+// Build a naive (aliasing) reference and an ADAA version from the SAME transfer
+// curve (DiodeClipperADAA) and drive them with a high sine. f0 = 12 kHz so its
+// odd harmonics fold aggressively; ADAA must beat naive by >= 12 dB.
+void testAdaaEffectiveness() {
+    const double fs = 44100.0, f0 = 12000.0;
+    const int N = static_cast<int>(fs);
+    std::vector<float> in(N), naive(N), adaa(N);
+    for (int i = 0; i < N; ++i)
+        in[i] = 1.5f * static_cast<float>(std::sin(kTwoPi * f0 * i / fs));
+    clipper::dsp::DiodeClipperADAA a, b;
+    a.reset();
+    b.reset();
+    for (int i = 0; i < N; ++i) naive[i] = a.processSampleNaive(in[i]);
+    for (int i = 0; i < N; ++i) adaa[i] = b.processSampleADAA(in[i]);
+    const AliasReport rn = measureAliasing(naive, fs, f0);
+    const AliasReport ra = measureAliasing(adaa, fs, f0);
+    const double worstImpr = rn.worstAliasDb - ra.worstAliasDb;
+    const double sumImpr = rn.sumAliasDb - ra.sumAliasDb;
+    assert(worstImpr >= 12.0 && "ADAA worst-alias not >=12 dB better than naive");
+    assert(sumImpr >= 12.0 && "ADAA summed alias not >=12 dB better than naive");
+    std::printf(
+        "  [ok] ADAA: worst %.1f->%.1f (%.1f dB), sum %.1f->%.1f (%.1f dB) vs naive\n",
+        rn.worstAliasDb, ra.worstAliasDb, worstImpr, rn.sumAliasDb, ra.sumAliasDb,
+        sumImpr);
+}
+
+// --- Test M2-5: perf sanity — 8x processes 1 s well under real time. ---------
+void testPerfSanity() {
+    const double fs = 44100.0;
+    auto in = sine(4186.0, 0.3f, 1.0, fs);
+    RatModel m;
+    m.prepare(fs, 128);
+    m.setOversampling(8);
+    m.setParameter(RatModel::PARAM_DISTORTION, 0.9f);
+    m.setParameter(RatModel::PARAM_FILTER, 0.3f);
+    m.setParameter(RatModel::PARAM_LEVEL, 0.9f);
+    std::vector<float> out(in.size(), 0.0f);
+    // Process in 128-frame blocks like a real host would.
+    const auto t0 = std::chrono::high_resolution_clock::now();
+    for (size_t off = 0; off < in.size(); off += 128) {
+        const int n = static_cast<int>(std::min<size_t>(128, in.size() - off));
+        m.process(in.data() + off, out.data() + off, n);
+    }
+    const auto t1 = std::chrono::high_resolution_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    assert(ms < 500.0 && "8x processing not comfortably faster than real time");
+    // Sanity: output is finite and non-trivial.
+    double pk = 0.0;
+    for (float v : out) { assert(std::isfinite(v)); pk = std::max(pk, (double)std::fabs(v)); }
+    assert(pk > 1e-3 && "8x produced no output");
+    std::printf("  [ok] perf: 1 s @ 8x (128-frame blocks) in %.1f ms (< 500 ms)\n", ms);
+}
+
 }  // namespace
 
 int main() {
@@ -234,6 +414,13 @@ int main() {
     testFilter(96000.0);      // Test 6: SR robustness for test 3
     testLevelLinearity();
     testHygiene();
+    std::printf("Running M2 (antialiasing) tests...\n");
+    testAliasingMonotonic(44100.0, /*strict=*/true);
+    testAliasingMonotonic(96000.0, /*strict=*/false);
+    testPassbandIntegrity();
+    testFactorOneRegression();
+    testAdaaEffectiveness();
+    testPerfSanity();
     std::printf("All RatModel tests passed.\n");
     return 0;
 }

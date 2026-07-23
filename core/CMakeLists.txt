@@ -78,6 +78,9 @@ if(NOT EMSCRIPTEN)
 
     add_executable(clipper_rat_tests tests/test_rat_model.cpp)
     target_link_libraries(clipper_rat_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (aliasing metric) lives under tools/measure and is
+    # included by both the tests and the render CLI. Never part of the DSP core.
+    target_include_directories(clipper_rat_tests PRIVATE tools)
     if(NOT MSVC)
         # -UNDEBUG keeps assert() live even in a Release build (the documented
         # build type), so these tests actually check something.
@@ -89,7 +92,8 @@ if(NOT EMSCRIPTEN)
     add_executable(clipper-render tools/render/main.cpp)
     target_link_libraries(clipper-render PRIVATE clipper_dsp)
     # dr_wav lives here and is included ONLY by the tool, never by the DSP core.
-    target_include_directories(clipper-render PRIVATE tools/third_party)
+    # tools/ also carries the shared measurement infra (measure/AliasMetric.h).
+    target_include_directories(clipper-render PRIVATE tools/third_party tools)
     if(NOT MSVC)
         target_compile_options(clipper-render PRIVATE -Wall -Wextra)
     endif()

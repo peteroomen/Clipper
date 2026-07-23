@@ -11,8 +11,12 @@
 //   3. Tone / output   — one-pole passive low-pass whose cutoff the FILTER knob
 //                        sweeps (clockwise = darker), then LEVEL as clean gain.
 //
-// NO oversampling / antialiasing here — that is M2. High-gain settings will
-// alias ("fizz"); that is expected and accepted for this milestone.
+// M2 (antialiasing): only the nonlinear stage-2 clipper runs oversampled. The
+// linear stages 1 and 3 stay at the base rate. setOversampling() selects a 1x /
+// 2x / 4x / 8x polyphase-halfband cascade (default 4x); factor 1 reproduces the
+// M1 signal path exactly. An experimental ADAA (antiderivative-antialiasing)
+// memoryless clipper is available as an alternate stage 2 for measurement
+// (setStage2Mode); the production default stays WDF + oversampling.
 //
 // This header is platform-free (C++17, no OS/browser/Emscripten includes). The
 // heavy WDF members live behind a pimpl so this header does not drag the whole
@@ -40,6 +44,13 @@ public:
         PARAM_COUNT
     };
 
+    // Stage-2 nonlinearity selection. WDF is the production default; ADAA is an
+    // experimental memoryless comparison path (see DiodeClipperADAA.h).
+    enum Stage2Mode : int {
+        STAGE2_WDF = 0,
+        STAGE2_ADAA = 1,
+    };
+
     RatModel();
     ~RatModel();
 
@@ -48,9 +59,26 @@ public:
     RatModel& operator=(const RatModel&) = delete;
 
     // Configure for a sample rate and maximum block size; resets all state and
-    // snaps smoothers to their current targets. maxBlockSize is accepted for API
-    // symmetry (no scratch buffers are needed yet).
+    // snaps smoothers to their current targets. maxBlockSize sizes the fixed
+    // oversampling scratch buffers (worst case 8x); process() never exceeds it.
     void prepare(double sampleRate, int maxBlockSize);
+
+    // Select the oversampling factor for the nonlinear stage: 1, 2, 4, or 8
+    // (other values snap down to the nearest valid power of two). Default 4.
+    // Takes effect immediately, resetting the oversampling filter state (a click
+    // is possible on a live change; intended to be set before playing). Factor 1
+    // reproduces the M1 (non-oversampled) path exactly. Must be called after
+    // prepare() (or before — it is re-applied on the next prepare()).
+    void setOversampling(int factor);
+    int oversampling() const;
+
+    // Round-trip latency introduced by the oversampling filters, in base-rate
+    // samples (0 at factor 1). Useful for host plugin delay compensation later.
+    int latencySamples() const;
+
+    // Select the stage-2 nonlinearity (WDF default, or experimental ADAA).
+    void setStage2Mode(int mode);
+    int stage2Mode() const;
 
     // Set a normalized parameter (id in ParamId, value in [0, 1]). Out-of-range
     // values are clamped. Applied with one-pole smoothing inside process().
@@ -62,6 +90,10 @@ public:
     void process(const float* in, float* out, int numFrames);
 
 private:
+    // Process a single sub-block of at most maxBlockSize frames (the fixed
+    // oversampling scratch size). process() chunks larger buffers into these.
+    void processChunk(const float* in, float* out, int numFrames);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

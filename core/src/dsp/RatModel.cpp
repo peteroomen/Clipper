@@ -52,14 +52,25 @@
 //   * LEVEL knob -> clean linear output gain, identity map [0, 1] (0 = silence,
 //     1 = unity). A proper audio-taper volume law is a future refinement.
 //
-// No oversampling / ADAA in M1 (that is M2): high gain WILL alias/fizz.
+// M2 — antialiasing. Stage 2 (and ONLY stage 2, the nonlinearity) now runs
+// oversampled through a polyphase halfband cascade (1x/2x/4x/8x, default 4x);
+// stages 1 and 3 are linear and stay at the base rate. The WDF capacitor is
+// prepared at the OVERSAMPLED rate so its HF corner lands correctly. An
+// experimental first-order ADAA memoryless clipper is selectable as an alternate
+// stage 2 for measurement (see DiodeClipperADAA.h); the production default is
+// WDF + oversampling.
 
 #include "clipper/dsp/RatModel.h"
+
+#include "clipper/dsp/DiodeClipperADAA.h"
+#include "clipper/dsp/Oversampler.h"
 
 #include <chowdsp_wdf/chowdsp_wdf.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
+#include <vector>
 
 namespace clipper::dsp {
 
@@ -96,6 +107,9 @@ float onePoleCoeff(double cutoffHz, double sampleRate) {
 
 struct RatModel::Impl {
     double sampleRate = 44100.0;
+    int maxBlockSize = 128;
+    int osFactor = 4;            // M2 default oversampling
+    int stage2Mode = RatModel::STAGE2_WDF;
 
     // Knob smoothers (mapped physical values, not raw knob positions).
     OnePoleSmoother preGain;    // linear pre-clip gain
@@ -110,6 +124,11 @@ struct RatModel::Impl {
     // Stage 3 low-pass state.
     float loPassState = 0.0f;
 
+    // M2: oversampling cascade for the nonlinear stage, plus the ADAA alternate.
+    Oversampler os;
+    DiodeClipperADAA adaa;
+    std::vector<float> stage1Buf;  // base-rate stage-1 output (sized in prepare)
+
     // Stage 2: WDF diode-clipper tree (double precision for stability).
     // Declaration order matters: children before the adaptors that reference
     // them, root last.
@@ -117,6 +136,17 @@ struct RatModel::Impl {
     chowdsp::wdft::CapacitorT<double> Cp { kCp, 48000.0 };
     chowdsp::wdft::WDFParallelT<double, decltype(Vs), decltype(Cp)> P1 { Vs, Cp };
     chowdsp::wdft::DiodePairT<double, decltype(P1)> diodes { P1, kDiodeIs, kDiodeVt, 1.0 };
+
+    // Re-prepare the stage-2 nonlinearity for the current oversampled rate and
+    // reset its state. Called on prepare() and on any oversampling change.
+    void reprepareStage2() {
+        os.setFactor(osFactor);
+        const double osRate = sampleRate * os.factor();
+        Cp.prepare(osRate);  // WDF cap runs at the OVERSAMPLED rate
+        Vs.setVoltage(0.0);
+        adaa.setKnee(DiodeClipperADAA::kDefaultVk);
+        adaa.reset();
+    }
 
     // Map a FILTER knob position (0 = bright .. 1 = dark) to a cutoff in Hz,
     // log-swept, then to a one-pole coefficient.
@@ -130,11 +160,12 @@ struct RatModel::Impl {
 RatModel::RatModel() : impl_(std::make_unique<Impl>()) {}
 RatModel::~RatModel() = default;
 
-void RatModel::prepare(double sampleRate, int /*maxBlockSize*/) {
+void RatModel::prepare(double sampleRate, int maxBlockSize) {
     Impl& d = *impl_;
     d.sampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
+    d.maxBlockSize = maxBlockSize > 0 ? maxBlockSize : 128;
 
-    // Smoothers.
+    // Smoothers (base rate — stages 1 and 3 are not oversampled).
     d.preGain.prepare(kSmoothSeconds, d.sampleRate);
     d.filterCoef.prepare(kSmoothSeconds, d.sampleRate);
     d.level.prepare(kSmoothSeconds, d.sampleRate);
@@ -146,11 +177,31 @@ void RatModel::prepare(double sampleRate, int /*maxBlockSize*/) {
     // Stage 3.
     d.loPassState = 0.0f;
 
-    // Stage 2 WDF: prepare cap at the real sample rate (resets state + impedance,
-    // which propagates to the diode model).
-    d.Cp.prepare(d.sampleRate);
-    d.Vs.setVoltage(0.0);
+    // M2: allocate the oversampling scratch for the worst case (8x) once, here,
+    // plus the base-rate stage-1 buffer used before upsampling.
+    d.os.prepare(d.maxBlockSize);
+    d.stage1Buf.assign(static_cast<size_t>(d.maxBlockSize), 0.0f);
+
+    // Stage 2 WDF/ADAA: prepare at the oversampled rate.
+    d.reprepareStage2();
 }
+
+void RatModel::setOversampling(int factor) {
+    Impl& d = *impl_;
+    d.osFactor = factor;
+    d.reprepareStage2();
+}
+
+int RatModel::oversampling() const { return impl_->os.factor(); }
+
+int RatModel::latencySamples() const { return impl_->os.latencySamples(); }
+
+void RatModel::setStage2Mode(int mode) {
+    impl_->stage2Mode = (mode == STAGE2_ADAA) ? STAGE2_ADAA : STAGE2_WDF;
+    impl_->adaa.reset();
+}
+
+int RatModel::stage2Mode() const { return impl_->stage2Mode; }
 
 void RatModel::setParameter(int paramId, float value) {
     Impl& d = *impl_;
@@ -174,29 +225,53 @@ void RatModel::setParameter(int paramId, float value) {
 
 void RatModel::process(const float* in, float* out, int numFrames) {
     Impl& d = *impl_;
+    // Chunk into <= maxBlockSize pieces so the fixed oversampling scratch is
+    // never overrun regardless of the caller's block size (the render tool and
+    // tests hand us the whole signal at once). No allocation on this path.
+    int off = 0;
+    while (off < numFrames) {
+        const int n = std::min(d.maxBlockSize, numFrames - off);
+        processChunk(in + off, out + off, n);
+        off += n;
+    }
+}
+
+void RatModel::processChunk(const float* in, float* out, int numFrames) {
+    Impl& d = *impl_;
+    assert(numFrames <= d.maxBlockSize && "chunk exceeds maxBlockSize");
     const float shelfCoef = d.shelfCoef;
 
+    // --- Stage 1 (base rate, linear): pre-clip shaping + variable gain. ---
+    // bass = LP(x); shaped = x - (1 - bassGain) * bass => unity above the corner,
+    // kShelfBassGain below it. Computed into stage1Buf so in/out may alias.
     for (int i = 0; i < numFrames; ++i) {
         const float x = in[i];
-
-        // --- Stage 1: pre-clip shaping (high-shelf) then variable gain. ---
-        // bass = LP(x); shaped = x - (1 - bassGain) * bass  => unity above the
-        // corner, kShelfBassGain below it.
         d.shelfLpState += shelfCoef * (x - d.shelfLpState);
         const float shaped = x - (1.0f - kShelfBassGain) * d.shelfLpState;
-        const float g = d.preGain.next();
-        const double v = static_cast<double>(shaped * g);  // volts into diodes
+        d.stage1Buf[static_cast<size_t>(i)] = shaped * d.preGain.next();
+    }
 
-        // --- Stage 2: WDF diode clipper. ---
-        d.Vs.setVoltage(v);
-        d.diodes.incident(d.P1.reflected());
-        d.P1.incident(d.diodes.reflected());
-        const float clipped =
-            static_cast<float>(chowdsp::wdft::voltage<double>(d.Cp));
+    // --- Stage 2 (oversampled, nonlinear): upsample -> clip -> downsample. ---
+    d.os.upsample(d.stage1Buf.data(), numFrames);
+    float* w = d.os.buffer();
+    const int osN = d.os.bufferLength();
+    if (d.stage2Mode == STAGE2_ADAA) {
+        for (int i = 0; i < osN; ++i)
+            w[i] = d.adaa.processSampleADAA(w[i]);
+    } else {
+        for (int i = 0; i < osN; ++i) {
+            d.Vs.setVoltage(static_cast<double>(w[i]));
+            d.diodes.incident(d.P1.reflected());
+            d.P1.incident(d.diodes.reflected());
+            w[i] = static_cast<float>(chowdsp::wdft::voltage<double>(d.Cp));
+        }
+    }
+    d.os.downsample(out, numFrames);  // -> out (base rate)
 
-        // --- Stage 3: tone low-pass (smoothed cutoff) then level. ---
+    // --- Stage 3 (base rate, linear): tone low-pass then level. ---
+    for (int i = 0; i < numFrames; ++i) {
         const float a = d.filterCoef.next();
-        d.loPassState += a * (clipped - d.loPassState);
+        d.loPassState += a * (out[i] - d.loPassState);
         out[i] = d.loPassState * d.level.next();
     }
 }
