@@ -1628,6 +1628,152 @@ delayed-bit-identity through the real stateful limiter.
 Render-tool contrast: `--limiter-thresh` now sets the gain-rider ceiling; the
 legacy tanh `softLimit()` remains in the tool ONLY for OLD-tree A/B builds.
 
+## 12. M9.1 — 12AX7 triode stage (the amp building block)
+
+M9 (JCM800 2204) is built bottom-up: its preamp is one 12AX7 common-cathode gain
+stage repeated 3-4× plus a cathode follower, so **phase 1 builds and validates
+that single stage standalone**, offline, with the M2 measurement discipline. No
+user-facing feature yet — **module fidelity IS the milestone**. Every future
+valve amp reuses it.
+
+New source (all portable, platform-free C++17; zero web/server/electron touch):
+
+```
+core/include/clipper/dsp/TriodeStage.h    Koren 12AX7 stage, nodal-Newton solver, config
+core/src/dsp/TriodeStage.cpp              device law + derivatives + per-sample solve
+core/tests/test_triode_stage.cpp          measurement suite (clipper_triode_tests)
+```
+
+CLI: `clipper-render --triode` renders a single stage alone (below). CMake adds
+`TriodeStage.cpp` to `clipper_dsp` and registers the `clipper_triode_tests` ctest.
+
+### Device model — Koren 12AX7
+
+Norman Koren's triode approximation ("Improved SPICE models for vacuum-tube
+amplifiers", 1996), the canonical law in the modelling literature. Published
+12AX7 parameters `mu=100, ex=1.4, kg1=1060, kp=600, kvb=300`:
+
+```
+E1 = (Va/kp)·ln(1 + exp(kp·(1/mu + Vgk/√(kvb + Va²))))
+Ip = (E1^ex / kg1)·(1 + sign(E1))          # sign() rectifies to cutoff
+```
+
+`Va` = plate-cathode V, `Vgk` = grid-cathode V. The `(1+sign(E1))` factor is part
+of the fit (with these constants a −2 V / 250 V bias gives ≈0.95 mA, matching the
+datasheet). `korenPlateCurrent()` is exposed `static` so the tests derive the
+analytic operating point / small-signal `rp, gm, mu` independently. Overflow-safe
+`softplus`/`sigmoid` guard the `exp` for large arguments.
+
+### Circuit — JCM800 first-stage-style (parameterizable `Config`)
+
+`B+ = 320 V`, `Ra = 100 k`, `Rk = 820 Ω` (self-bias) with optional bypass `Ck`
+(**0.68 µF** first-stage voicing, or **22 µF** fully bypassed), grid stopper
+`Rg = 68 k`, and the interstage **coupling cap `Cc = 22 nF` + next-stage grid
+leak `Rgl = 1 M`** (τ = `Rgl·Cc` = **22 ms** — the blocking-distortion RC). The
+stage is a faithful cascade element: an **input** coupling (the driving stage's
+output coupling / this grid's DC block) **and** an **output** coupling that both
+DC-blocks the output and **loads the plate with the next 1 M grid leak**, so the
+mid-band gain is `−gm·(Ra‖Rgl‖rp)`, not `−gm·(Ra‖rp)`. Every stage is identical,
+so both couplings share `Cc`/`Rgl`. Blocking distortion is testable on a single
+stage because it is *this* grid conducting into *this* input coupling cap that
+shifts the bias.
+
+Two large-signal behaviours the ideal transfer curve lacks:
+- **Grid conduction** — for `Vgk ≳ 0` the grid draws current (soft clamp,
+  `Igk = (Vgn/Rgk)·softplus((Vgk−Vgt)/Vgn)`, ≈2 kΩ conduction resistance, 0.1 V
+  knee so idle leakage at `Vgk≈−1.1 V` is negligible). Fed back through the 68 k
+  grid stopper it squashes positive grid peaks — the source of even-harmonic
+  (2nd) dominance / one-sided soft clip.
+- **Blocking distortion** — that same grid current charges `Cc`; it recovers
+  through `Rgl` with τ = 22 ms, so a hard burst shifts the bias toward cutoff and
+  recovers over ~one RC.
+
+### Solver — per-sample nodal Newton (3 unknowns: Va, Vg, Vk)
+
+Each sample solves the KCL system for the plate, grid and cathode nodes. The
+reactive elements (`Cc`, `Ck`) are **backward-Euler companions**: the input
+coupling network collapses to a Thévenin source into the grid; the cathode is
+`Rk‖Ck`; the output coupling is a series-RC companion loading the plate. Residuals
+`r1` (plate), `r2` (cathode), `r3` (grid) with an **analytic 3×3 Jacobian** from
+the Koren + grid-current derivatives; solved by Cramer's rule.
+
+**Convergence (measured):** warm-started from the previous sample's solution (the
+RC constants are ms, the step is µs), it converges in **2-4 iterations** in
+normal use and **≤8 even under a ±10 V slam** — cap `kMaxNewtonIter = 50`, never
+approached. Fallback: singular Jacobian → keep the current iterate; per-iteration
+steps are **damped** (`|ΔVa|≤60`, `|ΔVg|,|ΔVk|≤20 V`) to stay out of `exp`
+overflow. An **unbypassed** `Rk` is instantaneous local feedback (degeneration).
+At `prepare()`/OS change the stage **settles** silent samples to the exact
+discrete zero-input fixed point (no turn-on thump; silence→silence from sample 0).
+
+The whole (nonlinear + reactive) stage runs **oversampled** (the shared M2
+`Oversampler`); `setOversampling(1/2/4/8)`, default **4×**.
+
+### Validation — `clipper_triode_tests` (deterministic, 44.1 k & 96 k)
+
+All numbers below are asserted against analytic targets **derived in the test**
+(load-line bisection, central-difference small-signal params, complex cathode
+shelf) — the suite pins the solver against the physics, not against itself.
+
+1. **DC operating point** vs the analytic load line (`B+ = Va + Ra·Ip`,
+   self-bias `Vgk = −Ip·Rk`): **Va = 185.7 V** (analytic 185.6, ±5 %), **Iq =
+   1.34 mA**, `Vk = 1.10 V`. *Note:* the modelled JCM800 first stage runs a hot
+   bias — 1.34 mA sits just above the nominal 1.0-1.2 mA "textbook" figure, an
+   honest consequence of the published Koren fit + the 820 Ω self-bias; band
+   asserted 1.0-1.6 mA, Va 170-200 V.
+2. **Small-signal gain** at 10 mV / 1 kHz vs `−gm·(RL‖rp)` (bypassed) and
+   `−mu·RL/(RL+rp+(mu+1)·Rk)` (unbypassed), `RL = Ra‖Rgl = 90.9 k`, with
+   `gm = 2.20 mS, rp = 43.3 k, mu = 95.3` from the Koren linearisation:
+   **bypassed −64.4× (36.2 dB)**, **unbypassed −40.8× (32.2 dB)** — both within
+   **0.02 dB** of analytic (tol ±1.5 dB). The −64× lands in the JCM800
+   first-stage window; unbypassed is reduced exactly by the feedback term.
+3. **Transfer shape** (1 kHz, 0.68 µF): asymmetric soft clip — **2nd harmonic
+   dominant** (−43.9 dBc vs 3rd −71.6 dBc at 0.2 Vpk; window −30..−55 dBc),
+   **monotonic THD** 0.64 → 1.45 → 2.78 % across 0.2/0.5/1.0 Vpk, and
+   **27.8 % peak asymmetry** at 3 Vpk (cutoff vs saturation+conduction).
+4. **Blocking distortion**: a 2 Vpk / 200 Hz burst shifts the coupling-cap bias
+   **0.67 V**; after the burst it recovers to 1/e in **20.5 ms** vs the
+   `Rgl·Cc = 22 ms` RC (tol ±25 % — the tail discharges slightly faster while
+   residual conduction lingers early).
+5. **Stability**: white noise + DC steps + **±10 V slam** at 44.1 k/96 k, 4×/8×
+   — all finite, output bounded (~160 V plate scale), **max Newton iters 8**
+   (cap 50).
+6. **Cathode bypass** (0.68 µF): the gain shelf vs the analytic complex transfer
+   `|A(f)| = mu·RL/|RL+rp+(mu+1)·Zk|`, `Zk = Rk/(1+jω·Rk·Ck)`, shelf zero at
+   `1/(2π·Rk·Ck) = 285 Hz` — measured **40.3×(50 Hz) → 63.9×(3 kHz)**, worst
+   deviation **0.15 dB** (tol ±1.5 dB).
+
+### Aliasing & the oversampling requirement
+
+Same M2 sweep method (a hard-driven 4186 Hz tone, worst folded-alias vs
+fundamental). The smooth triode transfer + reactive band-limiting alias far less
+than a hard clipper:
+
+| base | 1× | 2× | 4× | 8× |
+|---|---|---|---|---|
+| 44.1 kHz | −54.4 dB | −89.2 dB | **−140.0 dB** | −137.7 dB |
+| 96 kHz   | −74.7 dB | −152.0 dB | −155.1 dB | −155.0 dB |
+
+**Required OS factor: 4× at a 44.1 kHz base** (matches the M2 pedal budget). 2×
+already clears −89 dB; 4× reaches the numerical floor; 8× buys nothing audible.
+The stage ships at **4×**.
+
+### Render harness (`clipper-render --triode`)
+
+```bash
+# A single 12AX7 stage, driven pluck (grid = input × drive), JCM800-voiced cathode:
+./build/clipper-render --gen pluck:110:2.0 --amp 0.3 \
+    --triode --triode-drive 4 --triode-cathode 0.68 out.wav
+# Sine + spectrum (even-harmonic signature); fully-bypassed cathode, 8×:
+./build/clipper-render --gen sine:220:2.0 --amp 0.3 --triode --triode-drive 5 \
+    --triode-cathode 22 --os 8 --spectrum spec.csv out.wav
+```
+
+Grid drive is the input × `--triode-drive` (a bare 0.3 V DI barely moves a 12AX7;
+~1-3 V grid is where it distorts). Output is the plate AC (next-grid) voltage in
+the tens of volts, peak-normalized to 0.9 for the WAV (raw plate peak reported).
+`--triode-cathode` sets the bypass µF (0 = unbypassed), `--os` the factor.
+
 ## Built DSP artifacts are committed
 
 `web/public/generated/` (the Emscripten-built WASM engine + the worklet copy)

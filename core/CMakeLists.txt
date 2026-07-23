@@ -61,12 +61,14 @@ FetchContent_MakeAvailable(chowdsp_wdf)
 #   - AmpModel.cpp     : M5 JC-120-style clean amp (linear tone stack)
 #   - CabConvolver.cpp : M5 partitioned FFT cab convolver
 #   - CabIR.cpp        : M5 procedural default 2x12 cab impulse response
+#   - TriodeStage.cpp  : M9.1 12AX7 common-cathode gain stage (Koren + nodal Newton)
 add_library(clipper_dsp STATIC
     src/dsp/RatModel.cpp
     src/dsp/AmpModel.cpp
     src/dsp/ChorusModel.cpp
     src/dsp/CabConvolver.cpp
     src/dsp/CabIR.cpp
+    src/dsp/TriodeStage.cpp
 )
 target_include_directories(clipper_dsp PUBLIC include)
 target_link_libraries(clipper_dsp PUBLIC chowdsp_wdf)
@@ -106,6 +108,17 @@ if(NOT EMSCRIPTEN)
         target_compile_options(clipper_amp_tests PRIVATE -Wall -Wextra -UNDEBUG)
     endif()
     add_test(NAME clipper_amp_tests COMMAND clipper_amp_tests)
+
+    # --- M9.1: 12AX7 triode stage tests ---------------------------------------
+    add_executable(clipper_triode_tests tests/test_triode_stage.cpp)
+    target_link_libraries(clipper_triode_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (aliasing metric) under tools/measure.
+    target_include_directories(clipper_triode_tests PRIVATE tools)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_triode_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_triode_tests COMMAND clipper_triode_tests)
 
     # --- CLI render harness (native only, NOT part of the WASM build) ---------
     add_executable(clipper-render tools/render/main.cpp)
