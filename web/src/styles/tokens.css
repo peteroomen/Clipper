@@ -31,6 +31,11 @@
   --cap: linear-gradient(145deg, #EFEDE8, #D9D6CF);
   --cap-edge: linear-gradient(145deg, #DDDAD3, #EFEDE8);
   --panel-grad: linear-gradient(160deg, #EAE8E3, #DFDCD6);
+  /* M6.4 pedalboard patch cable — dark rubber tube with a specular top edge and
+     a nickel plug, reading as a raised cable on the porcelain surface. */
+  --cable: #35383E;
+  --cable-hi: rgba(255, 255, 255, 0.5);
+  --cable-plug: #C4C0B8;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -56,6 +61,10 @@
     --cap: linear-gradient(145deg, #2E3238, #212429);
     --cap-edge: linear-gradient(145deg, #1E2126, #2C3036);
     --panel-grad: linear-gradient(160deg, #292C32, #222529);
+    /* M6.4 patch cable (graphite) */
+    --cable: #14161A;
+    --cable-hi: rgba(255, 255, 255, 0.11);
+    --cable-plug: #474C54;
   }
 }
 :root[data-theme="light"] {
@@ -68,6 +77,7 @@
   --blob-a: rgba(240,96,60,.35); --blob-b: rgba(62,111,214,.30);
   --cap: linear-gradient(145deg,#EFEDE8,#D9D6CF); --cap-edge: linear-gradient(145deg,#DDDAD3,#EFEDE8);
   --panel-grad: linear-gradient(160deg,#EAE8E3,#DFDCD6);
+  --cable: #35383E; --cable-hi: rgba(255,255,255,.5); --cable-plug: #C4C0B8;
 }
 :root[data-theme="dark"] {
   --ground: #26292E; --ground-deep: #202329;
@@ -79,4 +89,5 @@
   --blob-a: rgba(255,92,54,.20); --blob-b: rgba(92,132,255,.16);
   --cap: linear-gradient(145deg,#2E3238,#212429); --cap-edge: linear-gradient(145deg,#1E2126,#2C3036);
   --panel-grad: linear-gradient(160deg,#292C32,#222529);
+  --cable: #14161A; --cable-hi: rgba(255,255,255,.11); --cable-plug: #474C54;
 }

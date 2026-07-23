@@ -1,0 +1,343 @@
+/* ---------- pedalboard (M6.4) ----------
+   The signal chain laid out left-to-right: guitar-in jack -> pedal instances
+   (drag/keyboard reorderable, removable, swappable) -> amp at the end, joined by
+   neumorphic SVG patch cables. All surfaces reuse the token palette + the
+   .raised / .well recipes; cable colors are the --cable* tokens. */
+
+.board {
+  position: relative;
+  margin-top: 44px;
+}
+
+/* Cable layer — an absolute overlay sitting BEHIND the units (z 0), so a plug
+   reads as going into the socket rather than floating over it. */
+.board-cables {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 0;
+}
+.cable {
+  /* soft cast shadow on the surface below the rubber tube */
+  filter: drop-shadow(1px 3px 2.5px var(--sh-dark));
+}
+.cable-body {
+  fill: none;
+  stroke: var(--cable);
+  stroke-width: 7;
+  stroke-linecap: round;
+}
+.cable-hi {
+  fill: none;
+  stroke: var(--cable-hi);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  transform: translateY(-1.4px); /* specular edge hugs the top of the tube */
+}
+.cable-plug {
+  fill: var(--cable-plug);
+  stroke: none;
+}
+
+.board-track {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 52px 40px;
+  padding-top: 24px;
+}
+
+/* guitar-in source node */
+.board-source {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  width: 44px;
+  min-height: 168px;
+  border-radius: 16px;
+  background: var(--well);
+  box-shadow: inset 4px 4px 10px var(--sh-darker), inset -3px -3px 8px var(--sh-light);
+  display: flex;
+  justify-content: center;
+  padding-top: 16px;
+}
+.src-label {
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* a unit wrapper (pedal or amp) — a pure positioning layer, no chrome of its own */
+.board-unit {
+  position: relative;
+  flex: 0 0 auto;
+  transition: transform 0.14s ease, filter 0.14s ease;
+}
+.board-amp {
+  flex: 1 1 auto;
+  min-width: 340px;
+}
+.board-unit.dragging {
+  transform: translateY(-4px) scale(1.02);
+  z-index: 10;
+  filter: drop-shadow(0 12px 22px var(--sh-dark));
+}
+
+/* side jacks — carved sockets at a common mid-height so the cables run level */
+.jack {
+  position: absolute;
+  top: 120px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  z-index: 2;
+  background: var(--well);
+  box-shadow: inset 2px 2px 4px var(--sh-darker), inset -1px -1px 3px var(--sh-light),
+    0 1px 0 var(--sh-light);
+}
+.jack::after {
+  /* the socket bore */
+  content: '';
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--ground-deep);
+  box-shadow: inset 1px 1px 2px var(--sh-darker);
+}
+.jack-in {
+  left: -8px;
+}
+.jack-out {
+  right: -8px;
+}
+.board-source .jack-out {
+  right: -8px;
+  top: 120px;
+}
+
+/* ---- chain control rack (floats above each pedal; no layout shift) ---- */
+.unit-rack {
+  position: absolute;
+  top: -16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: var(--panel-grad);
+  box-shadow: 5px 5px 12px var(--sh-dark), -4px -4px 10px var(--sh-light);
+}
+.rack-pos {
+  font-size: 10px;
+  color: var(--ink-faint);
+  min-width: 1ch;
+  text-align: center;
+}
+.rack-grip {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 7px;
+  cursor: grab;
+  background: var(--cap-edge);
+  box-shadow: 2px 2px 5px var(--sh-dark), -2px -2px 5px var(--sh-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+.rack-grip:active {
+  cursor: grabbing;
+}
+.grip-dots {
+  width: 8px;
+  height: 12px;
+  background-image: radial-gradient(var(--ink-dim) 40%, transparent 42%);
+  background-size: 4px 4px;
+  opacity: 0.75;
+}
+.rack-btn {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--ink-dim);
+  background: var(--cap-edge);
+  box-shadow: 2px 2px 5px var(--sh-dark), -2px -2px 5px var(--sh-light);
+}
+.rack-btn:hover:not(:disabled) {
+  color: var(--ink);
+}
+.rack-btn:active:not(:disabled) {
+  box-shadow: inset 2px 2px 5px var(--sh-darker), inset -1px -1px 3px var(--sh-light);
+}
+.rack-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.rack-remove {
+  color: var(--led);
+}
+.rack-grip:focus-visible,
+.rack-btn:focus-visible,
+.tray-add:focus-visible,
+.amp-slot-select:focus-visible,
+.unit-menu-item:focus-visible {
+  outline: 2px solid var(--ai);
+  outline-offset: 2px;
+}
+.rack-swap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* ---- popover menus (swap / add / amp) ---- */
+.unit-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  min-width: 210px;
+  padding: 10px;
+  border-radius: 16px;
+  background: var(--panel-grad);
+  box-shadow: 8px 8px 20px var(--sh-dark), -6px -6px 16px var(--sh-light);
+}
+.unit-menu-head {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-family: ui-monospace, Menlo, monospace;
+  margin: 2px 4px 8px;
+}
+.unit-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--well);
+  box-shadow: inset 2px 2px 5px var(--sh-darker), inset -2px -2px 5px var(--sh-light);
+  margin-bottom: 6px;
+}
+.unit-menu-item:hover {
+  color: var(--led);
+}
+.unit-menu-item.current {
+  color: var(--ink-dim);
+  cursor: default;
+}
+.unit-menu-note {
+  font-size: 11px;
+  color: var(--ink-faint);
+  padding: 4px 6px 2px;
+  line-height: 1.4;
+}
+
+/* ---- gear tray (add a pedal, before the amp) ---- */
+.board-tray {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  margin-top: 96px; /* drop the button to roughly the jack line */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.tray-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border: none;
+  border-radius: 14px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-family: ui-monospace, Menlo, monospace;
+  color: var(--ink-dim);
+  background: var(--cap-edge);
+  box-shadow: 6px 6px 14px var(--sh-dark), -5px -5px 12px var(--sh-light);
+}
+.tray-add:hover {
+  color: var(--ink);
+}
+.tray-add:active {
+  box-shadow: inset 4px 4px 9px var(--sh-darker), inset -3px -3px 7px var(--sh-light);
+}
+.tray-plus {
+  font-size: 18px;
+  line-height: 1;
+  color: var(--led);
+}
+.tray-menu {
+  top: calc(100% + 10px);
+}
+.tray-empty {
+  max-width: 130px;
+  font-size: 11px;
+  text-align: center;
+  color: var(--ink-faint);
+  line-height: 1.4;
+}
+
+/* ---- amp slot select (amp swap affordance) ---- */
+.amp-slot-head {
+  position: absolute;
+  top: -16px;
+  left: 24px;
+  z-index: 6;
+}
+.amp-slot-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-dim);
+  background: var(--panel-grad);
+  box-shadow: 5px 5px 12px var(--sh-dark), -4px -4px 10px var(--sh-light);
+}
+.amp-slot-select:hover {
+  color: var(--ink);
+}
+.amp-slot-head .unit-menu {
+  left: 0;
+  transform: none;
+}
+
+@media (max-width: 760px) {
+  .board-track {
+    gap: 40px 24px;
+  }
+  .board-source {
+    display: none; /* the cables still start at the first pedal on narrow screens */
+  }
+}

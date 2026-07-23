@@ -1,9 +1,6 @@
 // Main-thread audio engine (M3): a selectable source (built-in test tone or
 // live guitar input) -> Clipper RAT worklet -> output.
 import {
-  PARAM_DISTORTION,
-  PARAM_FILTER,
-  PARAM_LEVEL,
   AMP_PARAM_VOLUME,
   AMP_PARAM_BASS,
   AMP_PARAM_MIDDLE,
@@ -16,25 +13,45 @@ import {
   WORKLET_URL,
   trimKnobToGain,
 } from './params';
-import type { SourceKind, AmpParams } from './rig';
+import type { SourceKind, AmpParams, PedalInstance } from './rig';
 
 export type { SourceKind };
 
 export type Unit = 'pedal' | 'amp';
 
+// A compact pedal descriptor sent to the worklet's `chain` message: enough for it
+// to create/reuse the DSP handle and apply the knobs.
+export interface ChainPedal {
+  id: string;
+  type: string;
+  engaged: boolean;
+  params: { distortion: number; filter: number; level: number };
+}
+
+// Serialize the rig chain into the worklet's `chain` message payload.
+export function toChainPayload(pedals: PedalInstance[]): ChainPedal[] {
+  return pedals.map((p) => ({
+    id: p.id,
+    type: p.type,
+    engaged: p.engaged,
+    params: {
+      distortion: p.params.distortion,
+      filter: p.params.filter,
+      level: p.params.level,
+    },
+  }));
+}
+
 export interface StartOptions {
   source: SourceKind;
   deviceId?: string; // preferred audio input (live only)
   inputTrim: number; // 0..1 knob position, rig-level pre-pedal input trim
-  distortion: number; // 0..1 knob (pedal)
-  filter: number; // 0..1 knob (pedal)
-  level: number; // 0..1 knob (pedal)
+  pedals: PedalInstance[]; // the ordered pedal chain (may be empty)
   amp: AmpParams; // amp knob positions (0..1)
   ampEngaged: boolean; // false = amp+cab bypassed
   oversampling: number; // 1 | 2 | 4 | 8
-  bypass: boolean; // pedal bypass
-  // Called whenever the model reports a new latency (e.g. after an oversampling
-  // or cab-toggle change). samples are base-rate samples.
+  // Called whenever the model reports a new latency (e.g. after a chain edit,
+  // oversampling, or cab-toggle change). samples are base-rate samples.
   onLatencySamples?: (samples: number) => void;
   // Called ~43x/s with the worklet's post-trim input block peak (linear 0..1+),
   // for the input meter.
@@ -44,14 +61,18 @@ export interface StartOptions {
 export interface Engine {
   context: AudioContext;
   node: AudioWorkletNode;
-  // Total model latency, in base-rate samples (pedal oversampling + cab
-  // partition). Mutated in place when oversampling / cab / amp-power change.
+  // Total model latency, in base-rate samples (engaged pedals' oversampling +
+  // cab partition). Mutated in place when the chain / oversampling / cab / power
+  // change.
   latencySamples: number;
-  setParam(id: number, value: number): void; // pedal param
+  // Push the whole ordered chain (add / remove / reorder / swap) — applied
+  // click-free in the worklet via a short output fade.
+  setChain(pedals: PedalInstance[]): void;
+  setPedalParam(pedalId: string, id: number, value: number): void;
+  setPedalBypass(pedalId: string, on: boolean): void; // per-instance bypass
   setAmpParam(id: number, value: number): void; // amp param
   setInputTrim(knob: number): void; // 0..1 knob -> linear gain, applied pre-pedal
   setOversampling(factor: number): void;
-  setBypass(on: boolean): void; // pedal bypass
   setAmpBypass(on: boolean): void; // amp power off = bypass
   stop(): Promise<void>;
 }
@@ -103,8 +124,14 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
     context,
     node,
     latencySamples,
-    setParam(id, value) {
-      node.port.postMessage({ type: 'param', unit: 'pedal', id, value });
+    setChain(pedals) {
+      node.port.postMessage({ type: 'chain', pedals: toChainPayload(pedals) });
+    },
+    setPedalParam(pedalId, id, value) {
+      node.port.postMessage({ type: 'param', unit: 'pedal', pedalId, id, value });
+    },
+    setPedalBypass(pedalId, on) {
+      node.port.postMessage({ type: 'bypass', unit: 'pedal', pedalId, on });
     },
     setAmpParam(id, value) {
       node.port.postMessage({ type: 'param', unit: 'amp', id, value });
@@ -114,9 +141,6 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
     },
     setOversampling(factor) {
       node.port.postMessage({ type: 'oversampling', factor });
-    },
-    setBypass(on) {
-      node.port.postMessage({ type: 'bypass', unit: 'pedal', on });
     },
     setAmpBypass(on) {
       node.port.postMessage({ type: 'bypass', unit: 'amp', on });
@@ -135,13 +159,12 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
     }
   };
 
-  // Apply the initial configuration.
+  // Apply the initial configuration. Oversampling first (so chain handles are
+  // created at the right factor), then the whole chain (which carries per-pedal
+  // params + engaged), then input/amp.
   engine.setInputTrim(opts.inputTrim);
   engine.setOversampling(opts.oversampling);
-  engine.setParam(PARAM_DISTORTION, opts.distortion);
-  engine.setParam(PARAM_FILTER, opts.filter);
-  engine.setParam(PARAM_LEVEL, opts.level);
-  engine.setBypass(opts.bypass);
+  engine.setChain(opts.pedals);
   engine.setAmpParam(AMP_PARAM_VOLUME, opts.amp.volume);
   engine.setAmpParam(AMP_PARAM_BASS, opts.amp.bass);
   engine.setAmpParam(AMP_PARAM_MIDDLE, opts.amp.middle);

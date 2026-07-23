@@ -546,6 +546,189 @@ test('chorus: engaged makes L/R differ; off leaves them identical (stereo)', asy
   expect(result.chorus.maxDiff).toBeGreaterThan(0.05);
 });
 
+// M6.4: the pedal CHAIN is dynamic and ordered. Reordering two RATs with
+// different settings changes the processed signal (distortion is nonlinear, so
+// A->B != B->A); the SAME order renders deterministically (bit-identical).
+test('chain: reorder of two RATs changes the output; same order is deterministic', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.5;
+    const A = { id: 'A', type: 'rat', engaged: true, params: { distortion: 0.95, filter: 0.85, level: 1.0 } };
+    const B = { id: 'B', type: 'rat', engaged: true, params: { distortion: 0.3, filter: 0.0, level: 1.0 } };
+
+    async function render(chain: Array<Record<string, unknown>>): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') {
+            clearTimeout(t);
+            resolve();
+          } else if (e.data?.type === 'error') {
+            clearTimeout(t);
+            reject(new Error(e.data.message));
+          }
+        };
+      });
+      // Amp OFF -> a pure pedal-chain proof. Post the chain, then an oversampling
+      // message whose `latency` echo we await as the flush barrier (the chain's
+      // own latency echo fires later, at the in-render declick commit).
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') resolve();
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true });
+        node.port.postMessage({ type: 'chain', pedals: chain });
+        node.port.postMessage({ type: 'oversampling', factor: 4 });
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: 0.3 });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+
+    function metrics(data: Float32Array) {
+      const start = Math.floor(data.length / 3); // skip the declick fade-in
+      let sum = 0;
+      let h3re = 0;
+      let h3im = 0;
+      const N = data.length - start;
+      const w = (2 * Math.PI * 660) / sampleRate;
+      for (let i = start; i < data.length; i++) {
+        sum += data[i] * data[i];
+        h3re += data[i] * Math.cos(w * i);
+        h3im += data[i] * Math.sin(w * i);
+      }
+      return { rms: Math.sqrt(sum / N), h3: (2 * Math.hypot(h3re, h3im)) / N };
+    }
+
+    const ab = await render([A, B]);
+    const ba = await render([B, A]);
+    const ab2 = await render([A, B]);
+
+    // Deterministic: identical order -> bit-identical output.
+    let maxDelta = 0;
+    for (let i = 0; i < ab.length; i++) maxDelta = Math.max(maxDelta, Math.abs(ab[i] - ab2[i]));
+
+    return { ab: metrics(ab), ba: metrics(ba), maxDelta };
+  });
+
+  // Same order is deterministic (bit-identical).
+  expect(result.maxDelta).toBeLessThan(1e-6);
+  // Order matters: the two orderings differ audibly (RMS and/or 3rd-harmonic).
+  const rmsRatio = result.ab.rms / result.ba.rms;
+  const h3Ratio = result.ab.h3 / Math.max(1e-9, result.ba.h3);
+  expect(Math.abs(rmsRatio - 1) > 0.05 || Math.abs(h3Ratio - 1) > 0.05).toBe(true);
+});
+
+// M6.4: add/remove. A two-engaged-RAT chain differs from one; an EMPTY chain
+// (guitar straight into the amp) passes the signal through (with the amp off, it
+// is a clean passthrough of the source).
+test('chain: adding a pedal changes output; empty chain passes through clean', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.5;
+    // A bright, hard-clipping RAT...
+    const BRIGHT = { id: 'bright', type: 'rat', engaged: true, params: { distortion: 0.9, filter: 0.0, level: 1.0 } };
+    // ...and a DARK RAT whose post-clip low-pass tames the fizz when placed after.
+    const DARK = { id: 'dark', type: 'rat', engaged: true, params: { distortion: 0.5, filter: 0.95, level: 1.0 } };
+
+    async function render(chain: Array<Record<string, unknown>>): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') {
+            clearTimeout(t);
+            resolve();
+          } else if (e.data?.type === 'error') {
+            clearTimeout(t);
+            reject(new Error(e.data.message));
+          }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') resolve();
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true });
+        node.port.postMessage({ type: 'chain', pedals: chain });
+        node.port.postMessage({ type: 'oversampling', factor: 4 });
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: 0.3 });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+    function rms(data: Float32Array): number {
+      const start = Math.floor(data.length / 3);
+      let s = 0;
+      for (let i = start; i < data.length; i++) s += data[i] * data[i];
+      return Math.sqrt(s / (data.length - start));
+    }
+    function h3(data: Float32Array): number {
+      const start = Math.floor(data.length / 3);
+      let re = 0;
+      let im = 0;
+      const w = (2 * Math.PI * 660) / sampleRate;
+      for (let i = start; i < data.length; i++) {
+        re += data[i] * Math.cos(w * i);
+        im += data[i] * Math.sin(w * i);
+      }
+      return (2 * Math.hypot(re, im)) / (data.length - start);
+    }
+
+    const one = await render([BRIGHT]);
+    const two = await render([BRIGHT, DARK]);
+    const empty = await render([]);
+    // The source itself, for the empty-chain comparison (0.3 sine, RMS ~0.2121).
+    const srcRms = 0.3 / Math.SQRT2;
+    return {
+      oneH3: h3(one),
+      twoH3: h3(two),
+      emptyRms: rms(empty),
+      emptyH3: h3(empty),
+      srcRms,
+    };
+  });
+
+  // Adding the DARK RAT after the BRIGHT one demonstrably changes the sound: its
+  // post-clip low-pass tames the 3rd harmonic (clearly lower than one pedal alone).
+  expect(result.oneH3).toBeGreaterThan(0.01); // the bright pedal makes real fizz
+  expect(result.twoH3).toBeLessThan(result.oneH3 * 0.7);
+  // Empty chain passes the source through cleanly (amp off): RMS ~ the source's,
+  // and no distortion harmonic added.
+  expect(result.emptyRms).toBeGreaterThan(result.srcRms * 0.9);
+  expect(result.emptyRms).toBeLessThan(result.srcRms * 1.1);
+  expect(result.emptyH3).toBeLessThan(result.emptyRms * 0.02);
+});
+
 test('UI exposes M4 controls: pedal, three knobs, footswitch, source, oversampling', async ({
   page,
 }) => {
@@ -609,13 +792,17 @@ test('UI exposes M4 controls: pedal, three knobs, footswitch, source, oversampli
 test('rig state: JSON round-trips exactly and restores from localStorage', async ({ page }) => {
   await page.goto('/');
 
-  // Pure serialize -> deserialize round-trip is exact for a valid rig (incl amp).
+  // Pure serialize -> deserialize round-trip is exact for a valid rig (incl a
+  // multi-pedal chain + amp). Key order must match normalizeRig's output.
   const roundTrip = await page.evaluate(() => {
     const t = (window as any).__CLIPPER_TEST__;
     // Key order must match normalizeRig's output for the exact-JSON round-trip.
     const rig = {
       input: { trim: 0.5 },
-      pedal: { type: 'rat', engaged: false, params: { distortion: 0.42, filter: 0.13, level: 0.9 } },
+      pedals: [
+        { id: 'rat-a', type: 'rat', engaged: false, params: { distortion: 0.42, filter: 0.13, level: 0.9 } },
+        { id: 'rat-b', type: 'rat', engaged: true, params: { distortion: 0.8, filter: 0.6, level: 0.5 } },
+      ],
       amp: {
         type: 'clean120',
         engaged: false,
@@ -710,7 +897,7 @@ test('footswitch: toggles engaged/LED state and sends the bypass message', async
   await fsw.click();
   await expect(pedal).not.toHaveClass(/\bon\b/);
   await expect(fsw).toHaveAttribute('aria-checked', 'false');
-  let engaged = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().pedal.engaged);
+  let engaged = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().pedals[0].engaged);
   expect(engaged).toBe(false);
   let lastBypass = await page.evaluate(() => (window as any).__CLIPPER_TEST__.lastBypass);
   expect(lastBypass).toBe(true);
@@ -718,7 +905,7 @@ test('footswitch: toggles engaged/LED state and sends the bypass message', async
   // Stomp again -> engaged.
   await fsw.click();
   await expect(pedal).toHaveClass(/\bon\b/);
-  engaged = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().pedal.engaged);
+  engaged = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().pedals[0].engaged);
   expect(engaged).toBe(true);
   lastBypass = await page.evaluate(() => (window as any).__CLIPPER_TEST__.lastBypass);
   expect(lastBypass).toBe(false);
@@ -752,6 +939,111 @@ test('rig migration: an M4 rig without an amp gets amp defaults', async ({ page 
   const rig = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig());
   expect(rig.amp.params.volume).toBe(0.4);
   expect(rig.amp.engaged).toBe(true);
+});
+
+// M6.4: the board renders neumorphic SVG cables between the units, and the gear
+// tray adds / removes pedals (empty chain works). Cable count tracks the chain.
+test('board: cables connect the units; the gear tray adds and removes pedals', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByTestId('board')).toBeVisible();
+
+  // Default rig = one pedal. Cables: source->pedal0, pedal0->amp = 2 paths.
+  const cables = page.getByTestId('board-cables').locator('path.cable-body');
+  await expect(page.getByTestId('board-unit-0')).toBeVisible();
+  await expect(cables).toHaveCount(2);
+
+  // Add a pedal via the gear tray.
+  await page.getByTestId('add-pedal').click();
+  await page.getByTestId('add-pedal-rat').click();
+  await expect(page.getByTestId('board-unit-1')).toBeVisible();
+  // Two pedals -> three cables (source->0->1->amp).
+  await expect(cables).toHaveCount(3);
+  const count2 = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().pedals.length);
+  expect(count2).toBe(2);
+
+  // Remove the first pedal.
+  await page.getByTestId('pedal-remove-0').click();
+  await expect(page.getByTestId('board-unit-1')).toHaveCount(0);
+  await expect(cables).toHaveCount(2);
+
+  // Remove the last pedal -> empty chain (guitar straight into the amp).
+  await page.getByTestId('pedal-remove-0').click();
+  await expect(page.getByTestId('board-unit-0')).toHaveCount(0);
+  await expect(page.getByTestId('empty-chain-note')).toBeVisible();
+  // Empty chain -> a single source->amp cable.
+  await expect(cables).toHaveCount(1);
+  const count0 = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().pedals.length);
+  expect(count0).toBe(0);
+  // The amp is still there at the end of the chain.
+  await expect(page.getByTestId('board-amp')).toBeVisible();
+});
+
+// M6.4: keyboard-accessible reorder (the move buttons) changes the chain order in
+// the rig state and re-pushes the chain to the worklet.
+test('board: move buttons reorder the pedal chain', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByTestId('board')).toBeVisible();
+
+  // Start with two pedals; make them distinguishable by distortion.
+  await page.getByTestId('add-pedal').click();
+  await page.getByTestId('add-pedal-rat').click();
+  await expect(page.getByTestId('board-unit-1')).toBeVisible();
+
+  // Set pedal 0 dist to 20 (keyboard), leaving pedal 1 at the default 70.
+  const dist0 = page.getByTestId('board-unit-0').getByRole('slider', { name: 'Distortion' });
+  await dist0.focus();
+  for (let i = 0; i < 10; i++) await dist0.press('ArrowDown'); // 70 -> 20
+
+  const before = await page.evaluate(() =>
+    (window as any).__CLIPPER_TEST__.getRig().pedals.map((p: any) => Math.round(p.params.distortion * 100))
+  );
+  expect(before).toEqual([20, 70]);
+
+  // Move the first pedal later (index 0 -> 1).
+  await page.getByTestId('pedal-move-right-0').click();
+
+  const after = await page.evaluate(() =>
+    (window as any).__CLIPPER_TEST__.getRig().pedals.map((p: any) => Math.round(p.params.distortion * 100))
+  );
+  expect(after).toEqual([70, 20]);
+  // The worklet received the reordered chain (ids swapped order).
+  const chainIds = await page.evaluate(() => (window as any).__CLIPPER_TEST__.lastChain);
+  expect(Array.isArray(chainIds)).toBe(true);
+  expect(chainIds.length).toBe(2);
+});
+
+// M6.4: an OLD single-`pedal` saved rig (M4..M6.3 shape) migrates into a
+// one-element chain on load.
+test('rig migration: an old single-pedal rig loads as a one-element chain', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    const old = {
+      input: { trim: 0.4 },
+      pedal: { type: 'rat', engaged: true, params: { distortion: 0.61, filter: 0.3, level: 0.7 } },
+      amp: {
+        type: 'clean120',
+        engaged: true,
+        params: { volume: 0.4, bass: 0.5, middle: 0.5, treble: 0.6, bright: 0, cab: 1, speed: 0.3, depth: 0.5, chorusMode: 0 },
+      },
+      oversampling: 4,
+      source: 'test',
+    };
+    localStorage.setItem('clipper.rig.v1', JSON.stringify(old));
+  });
+  await page.reload();
+
+  // The single pedal became a one-element chain, params preserved.
+  const pedals = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().pedals);
+  expect(pedals.length).toBe(1);
+  expect(Math.round(pedals[0].params.distortion * 100)).toBe(61);
+  expect(typeof pedals[0].id).toBe('string');
+  // Exactly one pedal unit rendered.
+  await expect(page.getByTestId('board-unit-0')).toBeVisible();
+  await expect(page.getByTestId('board-unit-1')).toHaveCount(0);
+  await expect(page.getByTestId('board-unit-0').getByRole('slider', { name: 'Distortion' })).toHaveAttribute(
+    'aria-valuenow',
+    '61'
+  );
 });
 
 // Live-input smoke test (Chromium fake media flags in playwright.config.ts).

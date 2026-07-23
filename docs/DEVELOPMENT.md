@@ -1291,6 +1291,143 @@ cd .. && bash scripts/build-wasm.sh   # now compiles ChorusModel, exports amp_pr
 cd web && npm run build && npm test   # 19 Playwright (17 + stereo chorus + assistant chorus)
 ```
 
+## 11.3 M6.4 — Pedalboard visual pass (stackable, reorderable chain)
+
+M6.4 turns the single pedal into a **stackable, drag-reorderable chain** joined by
+neumorphic cables, with add / remove / swap from a gear tray and the amp fixed at
+the end (with an amp-swap affordance). This is the architecture every later pedal
+(M7 tuner, M8 SD-1) and amp (M9 JCM800) plugs into. **No core / C-ABI / `core/` /
+`scripts/` change** — the RAT model is already handle-based (pimpl, per-instance,
+only `constexpr`/pure helpers in its anonymous namespace), so **multiple RAT
+instances are independent and stack safely with no DSP changes** (verified). All
+the new work is in `web/`.
+
+### RigState — the chain (`web/src/rig.ts`)
+
+The single `pedal` became an **ordered chain** `pedals: PedalInstance[]`. Each
+instance has a stable `id` (used by the worklet to reuse its DSP handle across
+reorders, and by the UI as the React key / drag id), a `type` (`'rat'`), `engaged`,
+and `params`. The amp already carried `type: 'clean120'`.
+
+```jsonc
+{
+  "input": { "trim": 0.333 },
+  "pedals": [
+    { "id": "rat-1-x9f2a", "type": "rat", "engaged": true,
+      "params": { "distortion": 0.7, "filter": 0.4, "level": 0.8 } }
+    // ...more instances; may be EMPTY (guitar straight into the amp)
+  ],
+  "amp": { "type": "clean120", "engaged": true, "params": { /* … M6.3 … */ } },
+  "oversampling": 4,
+  "source": "test"
+}
+```
+
+**Migration (tested).** `normalizeRig` accepts three shapes, in priority order:
+(1) a `pedals` array (normalize each; an **empty** array is valid); (2) a legacy
+single `pedal` object (M4..M6.3) — **wrapped into a one-element chain**; (3)
+neither — the default one-RAT chain. So old saved rigs and preset JSON keep
+loading. `AVAILABLE_PEDAL_TYPES` / `AVAILABLE_AMP_TYPES` and `makePedal(type)` /
+`newPedalId(type)` are the seams the gear tray and future gear use. The JSON stays
+the round-trip preset format (a valid multi-pedal rig round-trips byte-for-byte).
+
+### Worklet — dynamic chain + click-free switching (`web/worklet/clipper-processor.js`)
+
+The worklet now owns an **ordered array** of pedal nodes `{ id, handle, engaged }`
+(created at construction with one default RAT so the legacy offline tests, which
+never send a `chain` message and address `unit:'pedal'`, keep working) plus the one
+amp instance. Per block it **ping-pongs** the mono signal through each *engaged*
+pedal (bypassed pedals are skipped), then the stereo amp stage. Latency now **sums
+the engaged pedals'** oversampling group delays + the cab partition.
+
+**Message protocol (additions).** A new `chain` message
+`{ type:'chain', pedals:[{id,type,engaged,params}] }` sets the whole topology;
+`param` / `bypass` gained an optional `pedalId` (missing = the first pedal, for
+back-compat). `oversampling` applies globally to every pedal handle.
+
+**Click-free chain edits — a declick output fade (documented choice).** Chain
+edits (add / remove / reorder / swap) can step the output waveform (a suddenly
+inserted distortion, a reordered nonlinear stage). Rather than crossfade two
+parallel chains (which would double-advance the handles that a reorder *reuses*),
+the worklet brackets every chain swap with a short **raised-cosine output fade**
+(`DECLICK_SECONDS = 6 ms` each way): on a `chain` message it prepares the new node
+list in the message handler (**reusing handles by id**, creating new ones,
+deferring destruction — *no allocation inside `process()`*), ramps the output to
+**zero**, performs the topology swap **exactly at that zero** (a cheap reference
+swap), then ramps back up. Because the discontinuity always lands at output-zero
+there is **no step/pop and no zipper**. A plain knob change is *not* bracketed —
+the core's ~5 ms one-pole smoothing already declicks those, so knob moves during
+play use the light `param` message (no fade). Verified click-free by an
+`OfflineAudioContext` render (the reorder test asserts same-order determinism —
+bit-identical — and that order A vs B differ).
+
+### UI — the board (`web/src/components/Board.tsx`, `styles/board.css`)
+
+`Board` replaces the old `pedal + amp` `.rig` row. Layout: a **guitar-in jack →
+pedal instances → amp** left-to-right chain that **wraps on overflow** (the app's
+`.wrap` caps content at 1120 px, so 2+ pedals wrap — expected). Each unit is a
+positioning wrapper carrying two **side jacks** (carved sockets) and a floating
+**control rack** (drag grip, ◀ ▶ move, ⇄ swap, ✕ remove, position number).
+
+**Neumorphic cables.** An absolute SVG overlay *behind* the units draws one
+**catenary path** per hop (`source.out → pedal0.in → … → amp.in`): a cubic Bézier
+with both control points pulled **down** (gravity droop, sag ∝ span). Each cable is
+three layered strokes — a `--cable` rubber body, a `--cable-hi` specular top edge
+(nudged up 1.4 px), and `--cable-plug` end plugs — under a `drop-shadow(var(--sh-
+dark))` cast shadow, so it reads as a rubber patch cable lying on the surface. Jack
+centers are **measured from the live DOM** (`getBoundingClientRect`) and the paths
+**redraw on** mount, chain edit, `ResizeObserver`, window resize, and every
+`requestAnimationFrame` during a drag. New tokens `--cable` / `--cable-hi` /
+`--cable-plug` were added to all four theme blocks in `tokens.css`
+(porcelain/graphite) — everything stays inside the token system.
+
+**Drag reorder — hand-rolled, no @dnd-kit (justified).** Reorder is pointer-event
+based with pointer capture and **live reorder** (the dragged unit keeps its
+`key={id}`, so its DOM node — and the capture — survive the array change): the same
+proven pattern as `Knob.tsx`. We deliberately **did not** add `@dnd-kit`: this is a
+single horizontal list of a few items, the repo has **zero UI dependencies**, and
+avoiding the dep keeps the offline build hermetic. **Keyboard accessibility** is
+covered by explicit ◀ ▶ move buttons (focusable, `aria-label`ed) on each pedal.
+
+**Gear tray + amp slot.** An "Add pedal" tray (popover listing
+`AVAILABLE_PEDAL_TYPES` = RAT today, with a "more coming" note) sits before the
+amp; **swap** = a per-pedal ⇄ menu (remove+add in place — plumbing ready for when
+more types exist); the **amp slot** has a "Clean 120 (JC-120 style) ▾" select with
+the same pattern ("more amps coming"). **Empty chain** shows a "guitar straight into
+the amp" note and still runs.
+
+### Assistant — chain awareness (`web/src/assistant/{tools,prompt}.ts`)
+
+`set_param` / `set_engaged` gained an optional **`pedal`** field (0-based instance
+index, default 0) so the coach can address a specific instance; chips tag the
+position (`Dist #2 70 → 30`) when there is more than one pedal. Three small typed
+chain ops were added — **`add_pedal`** `{type, position?}`, **`remove_pedal`**
+`{index}`, **`move_pedal`** `{from, to}` — keeping the surface minimal and typed.
+The per-turn rig context already dumps the full `pedals` array (ids + order), so the
+coach sees the chain for free; the system prompt now teaches that the chain is an
+ordered, editable list (order matters for nonlinear dirt) addressed by index.
+
+### Build and test (M6.4)
+
+```bash
+# Core is UNCHANGED (verified multi-instance needs no C ABI change):
+cd core && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+ctest --test-dir build          # 3/3
+cd .. && bash scripts/build-wasm.sh   # WASM binary unchanged; re-copies the new worklet
+cd web && npm run build && npm test   # 25 Playwright (19 + 6 new)
+```
+
+New Playwright coverage (`tests/audio.spec.ts`, `tests/assistant.spec.ts`):
+reorder of two RATs changes the render (order A vs B differ) and same order is
+bit-deterministic; adding a pedal changes the sound and an **empty chain** passes
+through clean; the board draws SVG cables between units and the gear tray
+adds/removes pedals (empty-chain note appears, cable count tracks the chain); the
+move buttons reorder the chain in rig state + worklet; an old single-`pedal` rig
+migrates to a one-element chain; the multi-pedal rig round-trips through JSON; and
+the assistant can address a pedal **instance by index** (`set_param` `pedal:1`
+moves the second pedal only). Both themes were screenshotted at the 2-pedal state
+(board with cables, gear tray, amp swap) for the visual eyeball.
+
 ## Built DSP artifacts are committed
 
 `web/public/generated/` (the Emscripten-built WASM engine + the worklet copy)

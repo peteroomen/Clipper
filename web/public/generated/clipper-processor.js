@@ -1,39 +1,47 @@
-// Clipper AudioWorklet processor (M5).
+// Clipper AudioWorklet processor (M6.4).
 //
-// Owns TWO WASM DSP instances driven in sequence on the audio thread:
-//   input -> RatModel (pedal) -> AmpModel+Cab (amp) -> output
-// The pedal is rat_* (M3) and the amp is amp_* (M5, a linear tone stack + volume
-// + bright, followed by the partitioned cab convolver). They are separate WASM
-// instances; the worklet owns the buffers and runs them back to back.
+// Owns a DYNAMIC, ORDERED CHAIN of pedal DSP instances plus one amp instance,
+// driven in sequence on the audio thread:
+//
+//   input(trim) -> pedals[0] -> pedals[1] -> ... -> AmpModel+Cab(stereo) -> out
+//
+// Each pedal is a rat_* WASM instance (M3); the amp is amp_* (M5, linear tone
+// stack + volume + bright + M6.3 stereo chorus + per-side cab). They are separate
+// WASM instances; the worklet owns the heap scratch buffers and runs them back to
+// back. Multiple RAT instances are independent (the model is handle-based with no
+// shared/global DSP state), so an arbitrary number of pedals stack safely.
+//
+// M6.4 chain edits (add / remove / reorder / swap) arrive as a single `chain`
+// message and are applied CLICK-FREE via a short raised-cosine output fade
+// (declick): the output ramps to zero, the topology swap happens at that zero
+// point (between render quanta, in the message handler — no allocation inside
+// process()), then ramps back up. Because the discontinuity always lands at
+// output-zero there is no step/pop and no zipper. A plain PARAMETER change (knob)
+// is NOT bracketed — the core's ~5 ms one-pole smoothing already declicks those.
 //
 // Authored as plain JS (no bundler transform): build-wasm.sh copies this next to
 // the generated clipper.js so the static import below resolves as a sibling. The
 // WASM is SINGLE_FILE (embedded base64) so there is no fetch/XHR here.
 import createModule from './clipper.js';
 
-// Pedal (RAT) param ids are 0/1/2 (RatModel::ParamId); amp param ids are 0..4
-// plus the M6.3 chorus params 6/7/8 (AmpModel::ParamId). All arrive by numeric id
-// in the message and flow straight through to _amp_set_param, so the worklet only
-// needs the ONE chain-level id it treats specially: the cab on/off toggle
-// (AMP_PARAM_CAB == AmpModel::PARAM_COUNT == 5, handled by the C ABI wrapper),
-// because flipping it changes the amp's reported latency. (Chorus params 6/7/8
-// need no special handling here — the C ABI routes them into the ChorusModel.)
+// Amp param ids flow straight through to _amp_set_param by numeric id; the only
+// one the worklet treats specially is the cab on/off toggle (it changes reported
+// latency). (Chorus params 6/7/8 route into the ChorusModel in the C ABI.)
 const AMP_PARAM_CAB = 5;
 
 const RENDER_QUANTUM = 128;
 
-// Peak meter: report the post-trim input block peak back to the main thread
-// every PEAK_REPORT_BLOCKS render quanta (~2.9 ms/block => ~23 ms at 128/44.1k,
-// ~43 Hz), carrying the max seen across the window. Cheap and smooth for a UI
-// meter without flooding the message port.
+// Peak meter: report the post-trim input block peak back to the main thread every
+// PEAK_REPORT_BLOCKS render quanta (~23 ms at 128/44.1k), carrying the window max.
 const PEAK_REPORT_BLOCKS = 8;
 
 // Output soft limiter (M6.1). Transparent below ±LIM_THRESH, then a tanh knee
-// asymptoting to ±1.0 so the louder M6.1 staging can never hand the browser raw
-// overs. C1-continuous at the threshold (slope 1). Threshold kept high (0.9) so
-// in-range signals (incl. a full-scale bypass passthrough) are ~untouched — a
-// ±1.0 sine picks up only ~0.6% 3rd harmonic. See _softLimit below.
+// asymptoting to ±1.0 so the louder staging can never emit raw overs.
 const LIM_THRESH = 0.9;
+
+// Declick fade for chain edits (M6.4): ~6 ms each way. Long enough to be
+// inaudible as a transient, short enough that a reorder feels instant.
+const DECLICK_SECONDS = 0.006;
 
 class ClipperProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -42,49 +50,70 @@ class ClipperProcessor extends AudioWorkletProcessor {
     this._ready = false;
     this._module = null;
 
-    // Two model handles + heap scratch buffers. The amp stage is STEREO from the
-    // chorus split on (M6.3), so the output is a PAIR: in -> mid (mono) -> outL/outR.
-    this._rat = 0;
+    // The ORDERED pedal chain: [{ id, handle, engaged }]. Built once WASM is
+    // ready with a single default RAT (so the offline audio tests, which never
+    // send a `chain` message and address the pedal by the legacy unit:'pedal',
+    // keep working). The app replaces it with a real `chain` message on start.
+    this._chain = [];
     this._amp = 0;
+
+    // Heap scratch: trimmed input, two ping-pong pedal buffers, the amp input
+    // (mono), and the stereo amp output pair.
     this._inPtr = 0;
+    this._pbufA = 0;
+    this._pbufB = 0;
     this._midPtr = 0;
     this._outLPtr = 0;
     this._outRPtr = 0;
 
-    // Per-unit bypass is worklet-local (pass audio through untouched), always
-    // applicable even before WASM is ready. pedal bypass = skip the RAT; amp
-    // bypass ("power off") = skip amp+cab, passing the pedal output straight out.
-    this._bypass = { pedal: false, amp: false };
+    // Amp bypass ("power off") is worklet-local; pedal bypass is per-instance
+    // (node.engaged). Both always apply even before WASM is ready.
+    this._bypassAmp = false;
 
-    // Rig-level input trim (M6.1): a LINEAR gain applied to the input BEFORE the
-    // pedal chain (calibration for real-world interface levels). Default unity.
+    // Global nonlinear-stage oversampling factor (rig-level), applied to every
+    // pedal handle (existing + newly created).
+    this._oversampling = 4;
+
+    // Rig-level input trim (M6.1): a LINEAR gain applied BEFORE the chain.
     this._inputGain = 1.0;
 
-    // Peak meter accumulator (post-trim block peak) + block counter.
+    // Peak meter accumulator + block counter.
     this._peakAccum = 0.0;
     this._blockCount = 0;
 
-    // Queue param/oversampling messages that arrive before WASM is ready.
-    this._pending = [];
+    // Declick state machine (M6.4).
+    this._declickGain = 1.0; // current applied output gain
+    this._declickPhase = 'idle'; // 'idle' | 'out' | 'in'
+    this._declickStep = 0; // per-sample gain delta (set in prepare)
+    this._pending = null; // { nodes, removed } waiting for the fade-out zero
+
+    // Queue messages that arrive before WASM is ready.
+    this._pending_msgs = [];
     this.port.onmessage = (e) => this._onMessage(e.data);
 
     const sr =
       (options && options.processorOptions && options.processorOptions.sampleRate) || sampleRate;
     this._sr = sr;
+    this._declickStep = 1 / Math.max(1, Math.round(DECLICK_SECONDS * sr));
 
     createModule()
       .then((mod) => {
         this._module = mod;
-        this._rat = mod._rat_create(sr);
         this._amp = mod._amp_create(sr);
         this._inPtr = mod._malloc(RENDER_QUANTUM * 4);
+        this._pbufA = mod._malloc(RENDER_QUANTUM * 4);
+        this._pbufB = mod._malloc(RENDER_QUANTUM * 4);
         this._midPtr = mod._malloc(RENDER_QUANTUM * 4);
         this._outLPtr = mod._malloc(RENDER_QUANTUM * 4);
         this._outRPtr = mod._malloc(RENDER_QUANTUM * 4);
+
+        // Default chain: a single engaged RAT (legacy addressing target).
+        this._chain = [this._createPedal('default', 'rat', null, true)];
+
         this._ready = true;
 
-        for (const msg of this._pending) this._apply(msg);
-        this._pending.length = 0;
+        for (const msg of this._pending_msgs) this._apply(msg);
+        this._pending_msgs.length = 0;
 
         this.port.postMessage({
           type: 'ready',
@@ -97,13 +126,36 @@ class ClipperProcessor extends AudioWorkletProcessor {
       });
   }
 
-  // Total model latency, in base-rate samples: pedal oversampling filters +
-  // (when the amp is engaged) the cab partition. Amp bypass removes the cab path.
+  // Create a pedal DSP instance for the chain. `params` (optional) is
+  // {distortion, filter, level} in 0..1; the global oversampling factor is
+  // applied. Returns a chain node.
+  _createPedal(id, _type, params, engaged) {
+    const mod = this._module;
+    const handle = mod._rat_create(this._sr);
+    mod._rat_set_oversampling(handle, this._oversampling | 0);
+    if (params) {
+      mod._rat_set_param(handle, 0, +params.distortion);
+      mod._rat_set_param(handle, 1, +params.filter);
+      mod._rat_set_param(handle, 2, +params.level);
+    }
+    return { id, handle, engaged: !!engaged };
+  }
+
+  _destroyPedal(node) {
+    if (node && node.handle) this._module._rat_destroy(node.handle);
+  }
+
+  // Total model latency in base-rate samples: every ENGAGED pedal's oversampling
+  // group delay (they run in series) + (when the amp is powered) the cab
+  // partition. Bypassed pedals and a powered-off amp contribute nothing.
   _latency() {
     if (!this._ready) return 0;
     const mod = this._module;
-    let n = mod._rat_latency_samples(this._rat);
-    if (!this._bypass.amp) n += mod._amp_latency_samples(this._amp);
+    let n = 0;
+    for (const node of this._chain) {
+      if (node.engaged) n += mod._rat_latency_samples(node.handle);
+    }
+    if (!this._bypassAmp) n += mod._amp_latency_samples(this._amp);
     return n;
   }
 
@@ -111,42 +163,105 @@ class ClipperProcessor extends AudioWorkletProcessor {
     this.port.postMessage({ type: 'latency', latencySamples: this._latency() });
   }
 
+  // Find a chain node by id, or fall back to the first pedal (legacy
+  // unit:'pedal' addressing from the M3..M6.3 offline tests / messages).
+  _pedalById(id) {
+    if (id != null) {
+      for (const node of this._chain) if (node.id === id) return node;
+      return null;
+    }
+    return this._chain[0] || null;
+  }
+
   _onMessage(data) {
     if (!data) return;
+
     // Bypass is worklet-local; apply immediately regardless of WASM readiness.
-    // Back-compat: a bypass message with no `unit` targets the pedal (M3/M4).
+    // unit:'amp' powers the amp; unit:'pedal' (default) toggles a pedal instance
+    // (by pedalId, else the first pedal — back-compat).
     if (data.type === 'bypass') {
-      const unit = data.unit === 'amp' ? 'amp' : 'pedal';
-      this._bypass[unit] = !!data.on;
-      if (unit === 'amp' && this._ready) this._postLatency();
+      if (data.unit === 'amp') {
+        this._bypassAmp = !!data.on;
+        if (this._ready) this._postLatency();
+      } else {
+        const node = this._pedalById(data.pedalId);
+        if (node) node.engaged = !data.on; // bypass on => not engaged
+        if (this._ready) this._postLatency();
+      }
       return;
     }
-    // Input trim is a worklet-local sample multiply — no core state, apply
-    // immediately regardless of WASM readiness. Carries a LINEAR gain.
+
+    // Input trim: a worklet-local sample multiply — no core state.
     if (data.type === 'input') {
       const g = +data.gain;
       this._inputGain = Number.isFinite(g) && g >= 0 ? g : 1.0;
       return;
     }
+
     if (this._ready) this._apply(data);
-    else this._pending.push(data);
+    else this._pending_msgs.push(data);
+  }
+
+  // Build the new chain from a `chain` message (ordered [{id,type,engaged,
+  // params}]), REUSING existing handles for ids that persist (so a reorder keeps
+  // each pedal's smoothing/oversampler state) and creating handles for new ids.
+  // Handles for removed ids are destroyed only AFTER the fade reaches zero.
+  _prepareChain(spec) {
+    const oldById = new Map(this._chain.map((n) => [n.id, n]));
+    const nodes = [];
+    const keep = new Set();
+    for (const p of spec) {
+      const existing = oldById.get(p.id);
+      if (existing) {
+        existing.engaged = !!p.engaged;
+        // Refresh params on reused handles (cheap; core smooths them).
+        if (p.params) {
+          const mod = this._module;
+          mod._rat_set_param(existing.handle, 0, +p.params.distortion);
+          mod._rat_set_param(existing.handle, 1, +p.params.filter);
+          mod._rat_set_param(existing.handle, 2, +p.params.level);
+        }
+        nodes.push(existing);
+        keep.add(p.id);
+      } else {
+        nodes.push(this._createPedal(p.id, p.type || 'rat', p.params, p.engaged));
+      }
+    }
+    const removed = this._chain.filter((n) => !keep.has(n.id));
+    return { nodes, removed };
+  }
+
+  // Immediately install a prepared chain (destroy removed handles, swap in the
+  // new node array). Called at the fade-out zero, or up front if a new chain
+  // edit arrives while a previous one is still fading.
+  _commitPending() {
+    if (!this._pending) return;
+    for (const node of this._pending.removed) this._destroyPedal(node);
+    this._chain = this._pending.nodes;
+    this._pending = null;
+    this._postLatency();
   }
 
   _apply(data) {
     const mod = this._module;
     if (data.type === 'param') {
-      // Back-compat: a param message with no `unit` targets the pedal.
-      const unit = data.unit === 'amp' ? 'amp' : 'pedal';
-      if (unit === 'amp') {
+      if (data.unit === 'amp') {
         mod._amp_set_param(this._amp, data.id | 0, +data.value);
-        // The cab on/off toggle changes the amp's latency; re-report it.
         if ((data.id | 0) === AMP_PARAM_CAB) this._postLatency();
       } else {
-        mod._rat_set_param(this._rat, data.id | 0, +data.value);
+        const node = this._pedalById(data.pedalId);
+        if (node) mod._rat_set_param(node.handle, data.id | 0, +data.value);
       }
     } else if (data.type === 'oversampling') {
-      mod._rat_set_oversampling(this._rat, data.factor | 0);
+      this._oversampling = data.factor | 0;
+      for (const node of this._chain) mod._rat_set_oversampling(node.handle, this._oversampling);
       this._postLatency();
+    } else if (data.type === 'chain') {
+      // A new topology. If an edit is still fading, commit it first so the diff
+      // is against the current committed chain, then prepare + start a new fade.
+      if (this._pending) this._commitPending();
+      this._pending = this._prepareChain(data.pedals || []);
+      this._declickPhase = 'out'; // ramp to zero, swap at the bottom, ramp back
     }
   }
 
@@ -174,9 +289,7 @@ class ClipperProcessor extends AudioWorkletProcessor {
 
     const mod = this._module;
 
-    // 1. Copy input into the WASM heap (or zeros if nothing upstream), applying
-    // the rig-level input trim FIRST (before the pedal chain), and track the
-    // post-trim block peak for the meter.
+    // 1. Trimmed input into the WASM heap; track the post-trim block peak.
     // Re-fetch HEAPF32 each block: ALLOW_MEMORY_GROWTH can detach old views.
     let heap = mod.HEAPF32;
     const inBase = this._inPtr >> 2;
@@ -192,8 +305,6 @@ class ClipperProcessor extends AudioWorkletProcessor {
     } else {
       for (let i = 0; i < n; i++) heap[inBase + i] = 0;
     }
-    // Accumulate + periodically report the post-trim peak (dBFS computed on the
-    // main thread) so the UI meter reflects the level actually hitting the pedal.
     if (blockPeak > this._peakAccum) this._peakAccum = blockPeak;
     if (++this._blockCount >= PEAK_REPORT_BLOCKS) {
       this.port.postMessage({ type: 'peak', peak: this._peakAccum });
@@ -201,17 +312,25 @@ class ClipperProcessor extends AudioWorkletProcessor {
       this._blockCount = 0;
     }
 
-    // 2. Pedal stage: RAT into _midPtr, or bypass (copy input -> mid).
-    if (this._bypass.pedal) {
-      heap.copyWithin(this._midPtr >> 2, inBase, inBase + n);
-    } else {
-      mod._rat_process(this._rat, this._inPtr, this._midPtr, n);
+    // 2. Pedal chain: ping-pong the mono signal through each ENGAGED pedal in
+    // order (bypassed pedals are skipped — a true pass-through). Start from a
+    // copy of the trimmed input; end in _midPtr (the amp input).
+    let cur = this._pbufA;
+    let other = this._pbufB;
+    heap.copyWithin(cur >> 2, inBase, inBase + n); // trimmed input -> cur
+    for (const node of this._chain) {
+      if (!node.engaged) continue;
+      mod._rat_process(node.handle, cur, other, n);
+      const t = cur;
+      cur = other;
+      other = t;
     }
+    heap = mod.HEAPF32;
+    heap.copyWithin(this._midPtr >> 2, cur >> 2, (cur >> 2) + n); // chain out -> mid
 
-    // 3. Amp stage: amp -> chorus split -> per-side cab, into _outLPtr/_outRPtr.
-    // With chorus OFF the two sides are identical. Amp bypass ("power off") copies
-    // the mono pedal signal to BOTH sides (a true stereo passthrough).
-    if (this._bypass.amp) {
+    // 3. Amp stage: amp -> chorus split -> per-side cab into _outLPtr/_outRPtr.
+    // Powered off copies the mono chain signal to BOTH sides (stereo passthrough).
+    if (this._bypassAmp) {
       heap = mod.HEAPF32;
       const midWords = this._midPtr >> 2;
       heap.copyWithin(this._outLPtr >> 2, midWords, midWords + n);
@@ -220,19 +339,37 @@ class ClipperProcessor extends AudioWorkletProcessor {
       mod._amp_process_stereo(this._amp, this._midPtr, this._outLPtr, this._outRPtr, n);
     }
 
-    // 4. Read the stereo pair to the output (re-fetch heap in case of growth),
-    // each channel through the soft limiter so louder staging can never emit raw
-    // overs past ±1.0. A 1-channel output (e.g. an OfflineAudioContext configured
-    // mono) takes the LEFT side only.
+    // 4. Read the stereo pair out through the declick fade + soft limiter. A
+    // 1-channel output (mono OfflineAudioContext) takes the LEFT side only.
     heap = mod.HEAPF32;
     const outLBase = this._outLPtr >> 2;
     const outRBase = this._outRPtr >> 2;
     const rCh = output[1];
+    let dg = this._declickGain;
+    const step = this._declickStep;
     for (let i = 0; i < n; i++) {
-      outCh[i] = this._softLimit(heap[outLBase + i]);
-      if (rCh) rCh[i] = this._softLimit(heap[outRBase + i]);
+      // Advance the declick envelope (raised-cosine shaped for C1 smoothness).
+      if (this._declickPhase === 'out') {
+        dg -= step;
+        if (dg <= 0) {
+          dg = 0;
+          this._commitPending(); // topology swap happens exactly at zero
+          this._declickPhase = 'in';
+        }
+      } else if (this._declickPhase === 'in') {
+        dg += step;
+        if (dg >= 1) {
+          dg = 1;
+          this._declickPhase = 'idle';
+        }
+      }
+      // Raised-cosine map of the linear ramp dg in [0,1] -> smooth gain.
+      const env = this._declickPhase === 'idle' && dg >= 1 ? 1 : 0.5 - 0.5 * Math.cos(Math.PI * dg);
+      outCh[i] = this._softLimit(heap[outLBase + i] * env);
+      if (rCh) rCh[i] = this._softLimit(heap[outRBase + i] * env);
     }
-    // Any channels beyond stereo mirror the left (unusual; keeps output valid).
+    this._declickGain = dg;
+    // Any channels beyond stereo mirror the left (keeps the output valid).
     for (let c = 2; c < output.length; c++) output[c].set(outCh);
 
     return true;

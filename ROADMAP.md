@@ -124,9 +124,18 @@ Field feedback from real playing, prioritized ahead of new pedals:
   cubic-Lagrange fractional delay), offline-validated — vibrato pitch deviation
   measured against the depth×rate prediction, chorus dry-L/wet-R decorrelation,
   bit-exact off. Stereo chain runs at ~0.6 % of a core (44.1 k).
-- **M6.4 — Pedalboard visual pass** — stackable, drag-reorderable pedals
-  joined by neumorphic cables, add/remove/swap from a gear tray, amp slot at
-  the end with amp swapping. Architecture for everything M7+ plugs into.
+- **M6.4 — Pedalboard visual pass — SHIPPED.** The single pedal became a
+  stackable, drag- and keyboard-reorderable **chain** (`RigState.pedals[]`,
+  each instance handle-diffed in the worklet) joined by **neumorphic SVG
+  catenary cables** (measured live, redraw on drag/resize), with add / remove /
+  swap from a gear tray and the amp fixed at the end (amp-swap affordance).
+  Chain edits are **click-free** via a raised-cosine output declick fade (swap at
+  output-zero — no zipper, proven in an OfflineAudioContext test). Empty chain
+  (guitar straight into the amp) works. The assistant addresses pedals by
+  instance index and gained `add_pedal`/`remove_pedal`/`move_pedal`. Old
+  single-`pedal` rigs migrate to a one-element chain. **No core/C-ABI change** —
+  the RAT is already handle-based, so multiple instances stack safely.
+  Architecture for everything M7+ plugs into.
 
 ### M7 — Tuner *(S)*
 

@@ -6,15 +6,16 @@ import {
   saveRig,
   serializeRig,
   deserializeRig,
+  makePedal,
   type RigState,
   type ParamName,
   type AmpParamName,
   type SourceKind,
+  type PedalType,
 } from './rig';
 import { loadGuitar, saveGuitar, type GuitarProfile } from './guitar';
 import type { RigController } from './assistant/tools';
-import { Pedal } from './components/Pedal';
-import { Amp } from './components/Amp';
+import { Board } from './components/Board';
 import { InputStage } from './components/InputStage';
 import { Chat } from './components/Chat';
 
@@ -22,6 +23,7 @@ import './styles/tokens.css';
 import './styles/base.css';
 import './styles/pedal.css';
 import './styles/amp.css';
+import './styles/board.css';
 import './styles/app.css';
 import './styles/chat.css';
 
@@ -101,15 +103,31 @@ export default function App() {
 
   // ---- rig mutations (single source of truth -> worklet) ----
 
-  function setParam(name: ParamName, value: number) {
-    setRig((r) => ({ ...r, pedal: { ...r.pedal, params: { ...r.pedal.params, [name]: value } } }));
-    const id = PARAM_ID[name];
-    engineRef.current?.setParam(id, value);
-    const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
-    if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastParam = { id, value };
+  // Resolve a pedal index (0-based, used by the assistant + Board) to its stable
+  // id, clamped to the current chain.
+  function pedalIdAt(index: number): string | null {
+    const list = rigRef.current.pedals;
+    if (list.length === 0) return null;
+    const i = Math.min(list.length - 1, Math.max(0, index | 0));
+    return list[i].id;
   }
 
-  // Rig-level input trim (0..1 knob). Applied in the worklet before the pedal.
+  // Set a knob on a specific pedal instance (by id). Lightweight per-pedal
+  // message — does NOT re-push the chain (so no declick fade on a knob move).
+  function setPedalParamById(pedalId: string, name: ParamName, value: number) {
+    setRig((r) => ({
+      ...r,
+      pedals: r.pedals.map((p) =>
+        p.id === pedalId ? { ...p, params: { ...p.params, [name]: value } } : p
+      ),
+    }));
+    const id = PARAM_ID[name];
+    engineRef.current?.setPedalParam(pedalId, id, value);
+    const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
+    if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastParam = { id, value, pedalId };
+  }
+
+  // Rig-level input trim (0..1 knob). Applied in the worklet before the pedals.
   function setInputTrim(value: number) {
     setRig((r) => ({ ...r, input: { ...r.input, trim: value } }));
     engineRef.current?.setInputTrim(value);
@@ -117,17 +135,73 @@ export default function App() {
     if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastInputTrim = value;
   }
 
-  // Set the pedal engaged state to an explicit value (used by the footswitch and
-  // the assistant's set_engaged tool). engaged=false -> bypassed.
-  function setPedalEngaged(engaged: boolean) {
-    engineRef.current?.setBypass(!engaged); // bypass = not engaged
-    setRig((r) => ({ ...r, pedal: { ...r.pedal, engaged } }));
+  // Set a pedal instance's engaged state (footswitch / assistant). Per-instance
+  // bypass message; engaged=false -> bypassed.
+  function setPedalEngagedById(pedalId: string, engaged: boolean) {
+    engineRef.current?.setPedalBypass(pedalId, !engaged); // bypass = not engaged
+    setRig((r) => ({
+      ...r,
+      pedals: r.pedals.map((p) => (p.id === pedalId ? { ...p, engaged } : p)),
+    }));
     const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
     if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastBypass = !engaged;
   }
 
-  function toggleEngaged() {
-    setPedalEngaged(!rigRef.current.pedal.engaged);
+  function toggleEngagedById(pedalId: string) {
+    const p = rigRef.current.pedals.find((x) => x.id === pedalId);
+    if (p) setPedalEngagedById(pedalId, !p.engaged);
+  }
+
+  // ---- chain edits (add / remove / reorder / swap) -> whole-chain push ----
+  // Every chain edit re-pushes the full ordered chain to the worklet, which
+  // applies it click-free (short output fade). Persisted like any rig change.
+
+  function pushChain(next: RigState) {
+    setRig(next);
+    engineRef.current?.setChain(next.pedals);
+    const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
+    if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastChain = next.pedals.map((p) => p.id);
+  }
+
+  // Add a pedal of `type` at `position` (default: end of chain). Returns the new
+  // instance's index.
+  function addPedal(type: PedalType = 'rat', position?: number): number {
+    const r = rigRef.current;
+    const pedal = makePedal(type);
+    const pedals = [...r.pedals];
+    const at = position == null ? pedals.length : Math.min(pedals.length, Math.max(0, position));
+    pedals.splice(at, 0, pedal);
+    pushChain({ ...r, pedals });
+    return at;
+  }
+
+  function removePedal(pedalId: string) {
+    const r = rigRef.current;
+    pushChain({ ...r, pedals: r.pedals.filter((p) => p.id !== pedalId) });
+  }
+
+  // Swap a pedal in place (remove + add the new type at the same slot). Keeps the
+  // chain position; today only 'rat' exists so this is the plumbing for M7/M8.
+  function swapPedal(pedalId: string, type: PedalType) {
+    const r = rigRef.current;
+    const idx = r.pedals.findIndex((p) => p.id === pedalId);
+    if (idx < 0) return;
+    const pedals = [...r.pedals];
+    pedals[idx] = makePedal(type);
+    pushChain({ ...r, pedals });
+  }
+
+  // Move the pedal at `from` to index `to` (reorder). Both are chain indices.
+  function movePedal(from: number, to: number) {
+    const r = rigRef.current;
+    const n = r.pedals.length;
+    if (from < 0 || from >= n) return;
+    const clampedTo = Math.min(n - 1, Math.max(0, to));
+    if (clampedTo === from) return;
+    const pedals = [...r.pedals];
+    const [moved] = pedals.splice(from, 1);
+    pedals.splice(clampedTo, 0, moved);
+    pushChain({ ...r, pedals });
   }
 
   // ---- amp mutations ----
@@ -176,16 +250,20 @@ export default function App() {
         const p = inputPeakRef.current;
         return p != null && p > 0 ? 20 * Math.log10(p) : null;
       },
-      setParam: (unit, param, value) => {
+      setParam: (unit, param, value, pedalIndex) => {
         const v = Math.min(1, Math.max(0, value));
         if (unit === 'input') setInputTrim(v);
-        else if (unit === 'pedal') setParam(param as ParamName, v);
-        else setAmpParam(param as AmpParamName, v);
+        else if (unit === 'pedal') {
+          const id = pedalIdAt(pedalIndex ?? 0);
+          if (id) setPedalParamById(id, param as ParamName, v);
+        } else setAmpParam(param as AmpParamName, v);
         return v;
       },
-      setEngaged: (unit, engaged) => {
-        if (unit === 'pedal') setPedalEngaged(engaged);
-        else setAmpEngaged(engaged);
+      setEngaged: (unit, engaged, pedalIndex) => {
+        if (unit === 'pedal') {
+          const id = pedalIdAt(pedalIndex ?? 0);
+          if (id) setPedalEngagedById(id, engaged);
+        } else setAmpEngaged(engaged);
       },
       setSwitch: (name, on) => {
         // bright/cab are 0/1 toggles; chorus/vibrato select the 3-way chorus mode
@@ -194,6 +272,12 @@ export default function App() {
         else if (name === 'vibrato') setChorusMode(on ? 2 : 0);
         else setAmpParam(name as AmpParamName, on ? 1 : 0);
       },
+      addPedal: (type, position) => addPedal((type as PedalType) ?? 'rat', position),
+      removePedal: (index) => {
+        const id = pedalIdAt(index);
+        if (id) removePedal(id);
+      },
+      movePedal: (from, to) => movePedal(from, to),
     }),
     // The referenced setters are behaviorally stable (functional setState + refs).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -220,13 +304,10 @@ export default function App() {
         source: r.source,
         deviceId: r.source === 'live' && deviceId ? deviceId : undefined,
         inputTrim: r.input.trim,
-        distortion: r.pedal.params.distortion,
-        filter: r.pedal.params.filter,
-        level: r.pedal.params.level,
+        pedals: r.pedals,
         amp: r.amp.params,
         ampEngaged: r.amp.engaged,
         oversampling: r.oversampling,
-        bypass: !r.pedal.engaged,
         onLatencySamples: setLatencySamples,
         onPeak: setInputPeak,
       });
@@ -303,16 +384,20 @@ export default function App() {
             peak={inputPeak}
             running={running}
           />
-          <div className="rig">
-            <Pedal pedal={rig.pedal} onParam={setParam} onToggleEngaged={toggleEngaged} />
-            <Amp
-              amp={rig.amp}
-              onParam={setAmpParam}
-              onToggle={toggleAmp}
-              onTogglePower={toggleAmpPower}
-              onChorusMode={setChorusMode}
-            />
-          </div>
+          <Board
+            pedals={rig.pedals}
+            amp={rig.amp}
+            onPedalParam={setPedalParamById}
+            onPedalToggle={toggleEngagedById}
+            onAddPedal={addPedal}
+            onRemovePedal={removePedal}
+            onSwapPedal={swapPedal}
+            onMovePedal={movePedal}
+            onAmpParam={setAmpParam}
+            onAmpToggle={toggleAmp}
+            onAmpPower={toggleAmpPower}
+            onChorusMode={setChorusMode}
+          />
 
           <div className="rig desk-row">
             <section className="desk raised" aria-label="Control desk">

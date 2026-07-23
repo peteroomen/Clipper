@@ -108,7 +108,7 @@ test('assistant: a tool_use moves the knob, updates rig state, and sends a tool_
   await expect(page.getByTestId('knob-distortion-value')).toHaveText('55');
   // ...and the live rig state reflects it.
   const dist = await page.evaluate(
-    () => (window as unknown as { __CLIPPER_TEST__: { getRig: () => any } }).__CLIPPER_TEST__.getRig().pedal.params.distortion
+    () => (window as unknown as { __CLIPPER_TEST__: { getRig: () => any } }).__CLIPPER_TEST__.getRig().pedals[0].params.distortion
   );
   expect(dist).toBe(0.55);
   // The model's follow-up confirmation rendered.
@@ -217,6 +217,56 @@ test('assistant: set_switch chorus + set_param speed engage the JC chorus', asyn
   });
   expect(state.mode).toBe(1);
   expect(state.speed).toBe(0.35);
+});
+
+// M6.4: the coach can address a specific pedal INSTANCE by index. With two RATs
+// in the chain, a set_param carrying pedal:1 moves the SECOND pedal's knob only.
+const PEDAL1_TURN = sse([
+  { type: 'message_start', message: { id: 'msg_p', type: 'message', role: 'assistant', content: [] } },
+  { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+  { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Backing off the second RAT.' } },
+  { type: 'content_block_stop', index: 0 },
+  { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_p', name: 'set_param', input: {} } },
+  { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"unit":"pedal","pedal":1,"param":"dist","value":0.3}' } },
+  { type: 'content_block_stop', index: 1 },
+  { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 12 } },
+  { type: 'message_stop' },
+]);
+
+test('assistant: set_param addresses a pedal instance by index', async ({ page }) => {
+  let call = 0;
+  await page.route('**/api/health', mockHealthOk);
+  await page.route('**/api/chat', async (route) => {
+    call += 1;
+    if (call === 1) {
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: PEDAL1_TURN });
+    } else {
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: FOLLOWUP });
+    }
+  });
+
+  await page.goto('/');
+  // Add a second RAT so index 1 exists.
+  await page.getByTestId('add-pedal').click();
+  await page.getByTestId('add-pedal-rat').click();
+  await expect(page.getByTestId('board-unit-1')).toBeVisible();
+
+  await page.getByTestId('chat-input').fill('the second dirt box is too much');
+  await page.getByTestId('chat-send').click();
+
+  // The chip is tagged with the pedal position, and pedal #2's dist knob moved.
+  await expect(page.getByTestId('tool-chips')).toContainText('Dist #2');
+  await expect(
+    page.getByTestId('board-unit-1').getByRole('slider', { name: 'Distortion' })
+  ).toHaveAttribute('aria-valuenow', '30');
+  // Pedal #1 (index 0) is unchanged at its default 70.
+  await expect(
+    page.getByTestId('board-unit-0').getByRole('slider', { name: 'Distortion' })
+  ).toHaveAttribute('aria-valuenow', '70');
+  const dists = await page.evaluate(() =>
+    (window as any).__CLIPPER_TEST__.getRig().pedals.map((p: any) => p.params.distortion)
+  );
+  expect(dists).toEqual([0.7, 0.3]);
 });
 
 test('assistant: proxy-down shows a clear in-chat error notice', async ({ page }) => {

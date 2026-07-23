@@ -15,15 +15,22 @@ export type SwitchName = 'bright' | 'cab' | 'chorus' | 'vibrato';
 
 // The seam between the assistant and the live rig. App implements this over its
 // existing setters; the tool executor only ever touches the rig through here.
+// M6.4: pedal ops address a pedal INSTANCE by its 0-based chain index, and the
+// chain can be edited (add/remove/move).
 export interface RigController {
   getRig: () => RigState;
   // Current post-trim input peak in dBFS (null when not running), for the coach
   // to help calibrate the input trim.
   getPeakDbFs?: () => number | null;
   // Apply a normalized param; returns the clamped value actually applied.
-  setParam: (unit: Unit, param: string, value: number) => number;
-  setEngaged: (unit: Unit, engaged: boolean) => void;
+  // pedalIndex targets a specific pedal instance (default 0) when unit==='pedal'.
+  setParam: (unit: Unit, param: string, value: number, pedalIndex?: number) => number;
+  setEngaged: (unit: Unit, engaged: boolean, pedalIndex?: number) => void;
   setSwitch: (name: SwitchName, on: boolean) => void;
+  // Chain edits (M6.4). addPedal returns the new instance's chain index.
+  addPedal: (type: string, position?: number) => number;
+  removePedal: (index: number) => void;
+  movePedal: (from: number, to: number) => void;
 }
 
 // JSON-schema tool definitions sent to the API (name/description/input_schema).
@@ -65,6 +72,13 @@ export const TOOLS = [
           ],
         },
         value: { type: 'number', minimum: 0, maximum: 1 },
+        pedal: {
+          type: 'integer',
+          minimum: 0,
+          description:
+            "Which pedal INSTANCE (0-based position in the chain) when unit is 'pedal'. " +
+            'Defaults to 0 (the first pedal). Ignored for amp/input.',
+        },
       },
       required: ['unit', 'param', 'value'],
       additionalProperties: false,
@@ -73,14 +87,20 @@ export const TOOLS = [
   {
     name: 'set_engaged',
     description:
-      'Engage or bypass a unit. For the pedal, engaged=false is true bypass ' +
-      '(clean signal, LED dark). For the amp, engaged=false powers the amp+cab ' +
-      'off (signal passes straight through).',
+      'Engage or bypass a unit. For a pedal, engaged=false is true bypass ' +
+      '(clean signal, LED dark) — address a specific pedal instance with `pedal`. ' +
+      'For the amp, engaged=false powers the amp+cab off (signal passes straight ' +
+      'through).',
     input_schema: {
       type: 'object',
       properties: {
         unit: { type: 'string', enum: ['pedal', 'amp'] },
         engaged: { type: 'boolean' },
+        pedal: {
+          type: 'integer',
+          minimum: 0,
+          description: "Which pedal instance (0-based) when unit is 'pedal'. Defaults to 0.",
+        },
       },
       required: ['unit', 'engaged'],
       additionalProperties: false,
@@ -103,6 +123,49 @@ export const TOOLS = [
         on: { type: 'boolean' },
       },
       required: ['name', 'on'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'add_pedal',
+    description:
+      'Add a pedal to the chain. Signal runs guitar -> pedals in order -> amp, so ' +
+      'ORDER matters: a distortion earlier vs later in the chain hits the amp ' +
+      'differently. Only the RAT-type distortion exists today. Omit `position` to ' +
+      'append at the end (just before the amp), or give a 0-based slot to insert.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: ['rat'] },
+        position: { type: 'integer', minimum: 0 },
+      },
+      required: ['type'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'remove_pedal',
+    description: 'Remove the pedal instance at the given 0-based chain index.',
+    input_schema: {
+      type: 'object',
+      properties: { index: { type: 'integer', minimum: 0 } },
+      required: ['index'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'move_pedal',
+    description:
+      'Reorder the chain: move the pedal at 0-based index `from` to index `to`. ' +
+      'Use this to change how pedals stack (e.g. put a booster before or after ' +
+      'the dirt).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'integer', minimum: 0 },
+        to: { type: 'integer', minimum: 0 },
+      },
+      required: ['from', 'to'],
       additionalProperties: false,
     },
   },
@@ -144,6 +207,15 @@ const PARAM_LABEL: Record<string, string> = {
 const clamp01 = (n: number) => Math.min(1, Math.max(0, typeof n === 'number' ? n : 0));
 const to100 = (n: number) => Math.round(clamp01(n) * 100);
 
+// Resolve a tool's optional `pedal` (0-based instance index) to a valid chain
+// index, clamped to [0, count-1] (0 when the chain is empty).
+function pedalIndexOf(input: Record<string, unknown>, count: number): number {
+  const raw = input.pedal;
+  const i = typeof raw === 'number' && Number.isFinite(raw) ? raw | 0 : 0;
+  if (count <= 0) return 0;
+  return Math.min(count - 1, Math.max(0, i));
+}
+
 export interface ToolExecution {
   // The tool_result content string returned to the model (a short applied JSON).
   content: string;
@@ -173,27 +245,91 @@ export function executeTool(
         chip: `? ${param}`,
       };
     }
-    const params =
-      unit === 'pedal' ? rig.pedal.params : unit === 'amp' ? rig.amp.params : rig.input;
-    const from = to100((params as unknown as Record<string, number>)[rigParam] ?? 0);
-    const applied = controller.setParam(unit, rigParam, target);
+    const pedalIndex = pedalIndexOf(input, rig.pedals.length);
+    let params: Record<string, number>;
+    if (unit === 'pedal') {
+      const inst = rig.pedals[pedalIndex];
+      if (!inst) {
+        return {
+          content: JSON.stringify({ error: `no pedal at index ${pedalIndex}` }),
+          chip: `? pedal ${pedalIndex + 1}`,
+        };
+      }
+      params = inst.params as unknown as Record<string, number>;
+    } else if (unit === 'amp') {
+      params = rig.amp.params as unknown as Record<string, number>;
+    } else {
+      params = rig.input as unknown as Record<string, number>;
+    }
+    const from = to100(params[rigParam] ?? 0);
+    const applied = controller.setParam(unit, rigParam, target, pedalIndex);
     const to = to100(applied);
+    // Tag the chip with the pedal position when there is more than one pedal.
+    const posTag = unit === 'pedal' && rig.pedals.length > 1 ? ` #${pedalIndex + 1}` : '';
     return {
-      content: JSON.stringify({ applied: { unit, param, value: applied } }),
-      chip: `${PARAM_LABEL[param] ?? param} ${from} → ${to}`,
+      content: JSON.stringify({ applied: { unit, param, value: applied, pedal: unit === 'pedal' ? pedalIndex : undefined } }),
+      chip: `${PARAM_LABEL[param] ?? param}${posTag} ${from} → ${to}`,
     };
   }
 
   if (name === 'set_engaged') {
     const unit = input.unit === 'amp' ? 'amp' : 'pedal';
     const engaged = Boolean(input.engaged);
-    controller.setEngaged(unit, engaged);
-    const label = unit === 'pedal' ? 'Pedal' : 'Amp';
+    const rig = controller.getRig();
+    const pedalIndex = pedalIndexOf(input, rig.pedals.length);
+    controller.setEngaged(unit, engaged, pedalIndex);
+    const posTag = unit === 'pedal' && rig.pedals.length > 1 ? ` #${pedalIndex + 1}` : '';
+    const label = unit === 'pedal' ? `Pedal${posTag}` : 'Amp';
     const state =
       unit === 'pedal' ? (engaged ? 'engaged' : 'bypassed') : engaged ? 'on' : 'off';
     return {
-      content: JSON.stringify({ applied: { unit, engaged } }),
+      content: JSON.stringify({ applied: { unit, engaged, pedal: unit === 'pedal' ? pedalIndex : undefined } }),
       chip: `${label} ${state}`,
+    };
+  }
+
+  if (name === 'add_pedal') {
+    const type = 'rat'; // only RAT today
+    const rawPos = input.position;
+    const position =
+      typeof rawPos === 'number' && Number.isFinite(rawPos) ? Math.max(0, rawPos | 0) : undefined;
+    const index = controller.addPedal(type, position);
+    return {
+      content: JSON.stringify({ applied: { added: type, index } }),
+      chip: `+ RAT #${index + 1}`,
+    };
+  }
+
+  if (name === 'remove_pedal') {
+    const rig = controller.getRig();
+    const index = Math.max(0, Number(input.index) | 0);
+    if (index >= rig.pedals.length) {
+      return {
+        content: JSON.stringify({ error: `no pedal at index ${index}` }),
+        chip: `? remove ${index + 1}`,
+      };
+    }
+    controller.removePedal(index);
+    return {
+      content: JSON.stringify({ applied: { removed: index } }),
+      chip: `− Pedal #${index + 1}`,
+    };
+  }
+
+  if (name === 'move_pedal') {
+    const rig = controller.getRig();
+    const from = Math.max(0, Number(input.from) | 0);
+    const to = Math.max(0, Number(input.to) | 0);
+    if (from >= rig.pedals.length) {
+      return {
+        content: JSON.stringify({ error: `no pedal at index ${from}` }),
+        chip: `? move ${from + 1}`,
+      };
+    }
+    controller.movePedal(from, to);
+    return {
+      content: JSON.stringify({ applied: { moved: from, to } }),
+      chip: `Move #${from + 1} → #${to + 1}`,
     };
   }
 
