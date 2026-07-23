@@ -1302,6 +1302,11 @@ new UI bound to an old engine — trim knobs that do nothing, etc.).
 
 ## Mac app (Electron)
 
+**One-shot build & launch (on the Mac):** `bash scripts/mac.sh` — builds the
+web app, packages the arm64 .app, and opens it. `--dmg` also produces the
+installer; `--dev` skips packaging for the fastest loop. Refuses to run under
+Rosetta Node.
+
 `electron/` wraps the exact same runtime as `npm run server` in a native macOS
 window. **Electron on purpose:** it ships the same Chromium the whole Playwright
 suite runs on, so the desktop app renders and behaves identically to the browser
