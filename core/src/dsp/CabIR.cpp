@@ -22,7 +22,8 @@
 //       speaker sound like a guitar speaker and not a tweeter),
 //     * presence bump: peaking +4 dB @ 2.5 kHz, Q 1.1 (the upper-mid bite).
 //
-//   Normalized so the peak sample magnitude is 1.0.
+//   Normalized so the peak SPECTRAL magnitude is 1.0 (M6.6): the cab never
+//   boosts any band above its input level; 1 kHz sits ~-3 dB below unity.
 //
 // Measured magnitude response of the generated IR (raw DTFT of the IR, dB
 // relative to the 1 kHz bin; measured @ 48 kHz, see test_amp_model.cpp which
@@ -117,20 +118,32 @@ std::vector<float> generateDefaultCab2x12IR(double sampleRate) {
         h[static_cast<size_t>(n)] = x;
     }
 
-    // Normalize to UNITY PASSBAND GAIN (|H(1 kHz)| = 1), not unit time-domain
-    // peak: a cab should color the tone, not shove the level up/down ~14 dB. We
-    // measure |H(1 kHz)| as the raw DTFT of the IR and divide the whole IR by it,
-    // so a 1 kHz tone passes through the cab at ~0 dB and the rest of the band
-    // sits at the documented relative shape around it.
-    const double w = 2.0 * kPi * 1000.0 / fs;
-    double re = 0.0, im = 0.0;
-    for (int n = 0; n < len; ++n) {
-        re += h[static_cast<size_t>(n)] * std::cos(w * n);
-        im -= h[static_cast<size_t>(n)] * std::sin(w * n);
+    // Normalize to UNITY SPECTRAL PEAK (max |H(f)| = 1 over the audio band):
+    // a cab may COLOR the tone but must never BOOST any frequency past the
+    // level entering it. M5/M6.5 normalized |H(1 kHz)| = 1, which left the
+    // +3 dB presence bump ABOVE unity — engaging the cab then pushed presence-
+    // band peaks into the output limiter and fizzed the clean path (M6.6 field
+    // report: "fizzy only with the cab on"). With peak normalization the 1 kHz
+    // reference sits ~-3 dB and the documented relative shape is unchanged.
+    auto dtftMag = [&](double f) {
+        const double w = 2.0 * kPi * f / fs;
+        double re = 0.0, im = 0.0;
+        for (int n = 0; n < len; ++n) {
+            re += h[static_cast<size_t>(n)] * std::cos(w * n);
+            im -= h[static_cast<size_t>(n)] * std::sin(w * n);
+        }
+        return std::sqrt(re * re + im * im);
+    };
+    // Log-spaced search grid over the audible band (the response is smooth by
+    // construction — biquad cascade — so 160 points bound the true peak well).
+    double peakMag = 0.0;
+    const double fLo = 40.0, fHi = std::min(16000.0, fs * 0.45);
+    for (int k = 0; k < 160; ++k) {
+        const double f = fLo * std::pow(fHi / fLo, k / 159.0);
+        peakMag = std::max(peakMag, dtftMag(f));
     }
-    const double refMag = std::sqrt(re * re + im * im);
-    if (refMag > 1e-9) {
-        const float g = static_cast<float>(1.0 / refMag);
+    if (peakMag > 1e-9) {
+        const float g = static_cast<float>(1.0 / peakMag);
         for (float& v : h) v *= g;
     }
 

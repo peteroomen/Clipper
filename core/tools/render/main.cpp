@@ -24,6 +24,7 @@
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
+#include "clipper/dsp/OutputLimiter.h"
 #include "measure/AliasMetric.h"
 
 #include <cmath>
@@ -336,7 +337,14 @@ int main(int argc, char** argv) {
         cab.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
         if (!out.empty())
             cab.process(out.data(), out.data(), static_cast<int>(out.size()));
-        for (float& v : out) v = softLimit(v, a.limThresh);
+        // M6.6: the shipped limiter is the gain-riding clipper::dsp::OutputLimiter.
+        // --limiter-thresh sets its ceiling; the legacy tanh softLimit() above is
+        // kept ONLY for the A/B script's OLD-tree contrast builds.
+        {
+            clipper::dsp::OutputLimiter lim(a.limThresh);
+            lim.prepare(fs);
+            if (!out.empty()) lim.processMono(out.data(), static_cast<int>(out.size()));
+        }
     } else {
         // Process through the RAT pedal model.
         clipper::dsp::RatModel model;

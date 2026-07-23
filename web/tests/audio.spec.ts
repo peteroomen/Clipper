@@ -464,10 +464,13 @@ test('output level: default rig is healthily loud and never overs (limiter)', as
     return { defPeak: peak(def), hotPeak: peak(hot) };
   });
 
-  // Default rig at a 0.1 input is loud (~-3 dBFS peak) — NOT the old ~-26 dBFS.
-  expect(result.defPeak).toBeGreaterThan(0.35); // > ~-9 dBFS
+  // Default rig at a 0.1 input is healthily loud — NOT the old M5 ~-26 dBFS
+  // (0.05). M6.6 peak-normalized the cab IR (max |H| = 1, ~-3 dB vs the old
+  // 1 kHz-unity norm) so the absolute level sits a few dB lower than M6.5 in
+  // exchange for a clean path that can never push the limiter via the cab.
+  expect(result.defPeak).toBeGreaterThan(0.15); // > ~-16.5 dBFS, ~3x the old M5 level
   expect(result.defPeak).toBeLessThanOrEqual(1.0);
-  // Cranked, the soft limiter holds the output at/below full scale (no overs).
+  // Cranked, the gain-riding limiter holds the output at/below full scale.
   expect(result.hotPeak).toBeLessThanOrEqual(1.0);
 });
 

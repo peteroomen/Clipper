@@ -1595,6 +1595,39 @@ A/B). Web: `worklet/clipper-processor.js` (`LIM_THRESH` 0.97),
 `public/generated/clipper.js` + `clipper-processor.js` (rebuilt, committed). No UI
 changes (no new knobs — the LM308 is the pedal's identity, not user-adjustable).
 
+## 11.5 M6.6 — Clean-path fizz, root-caused: gain-riding limiter + peak-normalized cab IR
+
+Field report after M6.5: still "fizzy — only with the cab on; the RAT is fixed."
+Two root causes, both structural:
+
+1. **The cab IR could BOOST.** The IR was normalized to unity at 1 kHz, leaving
+   its +3 dB presence bump (2.5 kHz) above unity — engaging the cab pushed
+   presence-band peaks INTO the output limiter. Fix: the IR is now normalized to
+   its SPECTRAL PEAK (max |H(f)| = 1 over 40 Hz–16 kHz): a cab may color, never
+   boost. 1 kHz now sits ≈ −3 dB; the documented relative shape is unchanged;
+   default chain gain moved from ≈ −7 dB to ≈ −10..−12 dB (testChainGain band
+   updated; the Playwright loudness floor updated accordingly).
+2. **The limiter was a waveshaper.** Any tanh knee bends every sample above
+   threshold into harmonics — riding into it at ALL means fizz. Replaced with a
+   **lookahead gain-rider** (`OutputLimiter`, mirrored as `LookaheadLimiter` in
+   the worklet): 64-sample lookahead delay + monotonic-deque sliding maximum →
+   target gain = ceiling/peak; attack completes inside the window, **50 ms
+   hold** (prevents inter-peak gain ripple = AM sidebands), 40 ms release,
+   double-precision gain accumulator (a float32 gain stalls below the
+   snap-to-unity threshold near 1.0 — observed at 96 kHz). Gain scaling adds
+   ZERO harmonics; when no over is in the window the gain is exactly 1.0 and the
+   output is bit-identical to the delayed input. Hard clamp at ±1 remains as a
+   never-engaged backstop. Latency +64 samples (~1.3–1.5 ms).
+
+Measured (`testLimiterGainRiding`, 44.1 k & 96 k): steady 220 Hz at +1 dB over →
+output pinned at the 0.97 ceiling with THD < −70 dB (the tanh measured ~−35 dB
+here — that WAS the fizz); after the over ends the gain recovers to EXACT unity
+(bit-transparent) within ~0.4 s. `testCleanPathTHD` transparency is now
+delayed-bit-identity through the real stateful limiter.
+
+Render-tool contrast: `--limiter-thresh` now sets the gain-rider ceiling; the
+legacy tanh `softLimit()` remains in the tool ONLY for OLD-tree A/B builds.
+
 ## Built DSP artifacts are committed
 
 `web/public/generated/` (the Emscripten-built WASM engine + the worklet copy)

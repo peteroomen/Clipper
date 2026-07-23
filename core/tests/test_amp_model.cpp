@@ -288,10 +288,13 @@ void testChainGain(double fs) {
     // it to the -6 +/- 2.5 dB region (still ~+15 dB above the old M5 -21.6 dB).
     assert(ampGainDb < -3.0 && ampGainDb > -9.0 &&
            "amp default volume (0.4) not ~ -6 dB (M6.5 headroom staging)");
-    // amp+cab net gain sits below unity with headroom (cab colors ~+/-3 dB around
-    // the amp's -6 dB); must NOT be back near/over unity (that was the fizz cause).
-    assert(chainGainDb < 0.0 && chainGainDb > -11.0 &&
-           "amp+cab chain gain at default not in the headroom band (staging wrong)");
+    // amp+cab net gain sits below unity with headroom. M6.6: the cab IR is
+    // peak-normalized (max |H| = 1, so ~-3 dB at 1 kHz vs the old 1 kHz-unity
+    // norm — the cab may color but never boost past its input), which moves the
+    // default chain to ~ -9..-10 dB. Must NOT be near/over unity (fizz cause),
+    // must NOT collapse back toward the old M5 -21.6 dB either.
+    assert(chainGainDb < -3.0 && chainGainDb > -14.0 &&
+           "amp+cab chain gain at default not in the M6.6 headroom band (staging wrong)");
     std::printf("  [ok] chain gain @ default vol 0.4 (M6.5): amp %.1f dB, amp+cab %.1f dB (fs=%g)\n",
                 ampGainDb, chainGainDb, fs);
 }
@@ -332,11 +335,17 @@ void testCleanPathTHD(double fs) {
         cab.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
         cab.process(amped.data(), amped.data(), static_cast<int>(amped.size()));
         double pk = 0.0;
+        for (float v : amped) pk = std::max(pk, static_cast<double>(std::fabs(v)));
+        // M6.6: transparency = the gain-riding limiter's output is BIT-IDENTICAL
+        // to its input delayed by the lookahead (gain pinned at exactly 1.0).
+        clipper::dsp::OutputLimiter lim;
+        lim.prepare(fs);
+        const int K = lim.latencySamples();
+        std::vector<float> limmed = amped;
+        lim.processMono(limmed.data(), static_cast<int>(limmed.size()));
         bool transparent = true;
-        for (float v : amped) {
-            pk = std::max(pk, static_cast<double>(std::fabs(v)));
-            if (clipper::dsp::OutputLimiter::process(v) != v) transparent = false;
-        }
+        for (size_t i = 0; i + static_cast<size_t>(K) < amped.size(); ++i)
+            if (limmed[i + static_cast<size_t>(K)] != amped[i]) transparent = false;
         return std::make_tuple(amped, pk, transparent);
     };
 
@@ -387,6 +396,60 @@ void testCleanPathTHD(double fs) {
         assert(transparent && "output limiter engaged on the clean pluck (transient soft-clip = fizz)");
         std::printf("  [ok] clean-path low-E pluck: out-peak %.3f (<0.97, limiter dormant, fs=%g)\n", pk, fs);
     }
+}
+
+// --- Test 4b (M6.6): the limiter is a GAIN-RIDER, not a waveshaper — overs are
+//     turned down, never bent, so limiting can NEVER create fizz. ---------------
+void testLimiterGainRiding(double fs) {
+    using clipper::dsp::OutputLimiter;
+    OutputLimiter lim;
+    lim.prepare(fs);
+    const int K = lim.latencySamples();
+    const int n = static_cast<int>(fs);  // 1 s
+
+    // Steady 220 Hz sine at peak 1.10 — 1 dB OVER the 0.97 ceiling.
+    auto in = sine(220.0, 1.10f, 1.0, fs);
+    std::vector<float> out = in;
+    lim.processMono(out.data(), n);
+
+    // (a) Output honors the ceiling (small smoothing overshoot allowed, and the
+    //     hard backstop guarantees <= 1.0 absolutely).
+    double pk = 0.0;
+    for (int i = n / 2; i < n; ++i) pk = std::max(pk, static_cast<double>(std::fabs(out[static_cast<size_t>(i)])));
+    assert(pk <= 1.0 && "limiter emitted a raw over");
+    assert(pk < OutputLimiter::kThreshold * 1.02 && "limiter ceiling not held on a steady over");
+
+    // (b) NO added harmonics: a steady over is pure gain scaling. The tanh knee
+    //     this replaces measured ~-35 dB THD here; gain riding must be clean.
+    const size_t win = static_cast<size_t>(fs * 0.4);
+    const size_t start = static_cast<size_t>(n) - win;
+    const double fund = binMag(out, start, win, 220.0, fs);
+    double h = 0.0;
+    for (int k = 2; k <= 12; ++k) {
+        const double a = binMag(out, start, win, 220.0 * k, fs);
+        h += a * a;
+    }
+    const double thd = 20.0 * std::log10(std::sqrt(h) / (fund + 1e-12) + 1e-12);
+    assert(thd < -70.0 && "gain-riding limiter added harmonics on a steady over");
+
+    // (c) Recovery: after the over stops, gain returns to exactly 1.0 within a
+    //     few release constants and the output is again bit-identical (delayed).
+    OutputLimiter lim2;
+    lim2.prepare(fs);
+    std::vector<float> burst(static_cast<size_t>(n), 0.0f);
+    for (int i = 0; i < n / 4; ++i)  // 250 ms over, then 750 ms at 0.5
+        burst[static_cast<size_t>(i)] = 1.10f * static_cast<float>(std::sin(kTwoPi * 220.0 * i / fs));
+    for (int i = n / 4; i < n; ++i)
+        burst[static_cast<size_t>(i)] = 0.50f * static_cast<float>(std::sin(kTwoPi * 220.0 * i / fs));
+    std::vector<float> bOut = burst;
+    lim2.processMono(bOut.data(), n);
+    bool recovered = true;
+    for (int i = 3 * n / 4; i + K < n; ++i)  // last 250 ms
+        if (bOut[static_cast<size_t>(i + K)] != burst[static_cast<size_t>(i)]) recovered = false;
+    assert(recovered && "limiter gain did not recover to exact unity after an over");
+
+    std::printf("  [ok] limiter gain-riding: steady +1 dB over -> peak %.3f, THD %.1f dB (no harmonics), exact-unity recovery (fs=%g)\n",
+                pk, thd, fs);
 }
 
 // --- Test 5: impulse through the convolver reproduces the IR, delayed by the
@@ -740,6 +803,7 @@ int main() {
         testCabIR(fs);
         testChainGain(fs);
         testCleanPathTHD(fs);
+        testLimiterGainRiding(fs);
         testConvolverImpulse(fs);
         testConvolverChunking(fs);
         testSmoothing(fs);

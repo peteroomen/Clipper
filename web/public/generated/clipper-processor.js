@@ -35,15 +35,88 @@ const RENDER_QUANTUM = 128;
 // PEAK_REPORT_BLOCKS render quanta (~23 ms at 128/44.1k), carrying the window max.
 const PEAK_REPORT_BLOCKS = 8;
 
-// Output soft limiter — a TRUE SAFETY catch, not a tone stage. Transparent below
-// ±LIM_THRESH, then a narrow tanh knee asymptoting to ±1.0 so the output can
-// never emit raw overs. M6.5: raised 0.9 -> 0.97 and the amp gain staging pulled
-// down (volume tops out at unity, see AmpModel.cpp) so the CLEAN pedal-bypassed
-// chain stays below the knee at realistic levels instead of soft-clipping every
-// cycle ("fizz"). MIRRORS clipper::dsp::OutputLimiter::kThreshold and its tanh
-// formula (core/include/clipper/dsp/OutputLimiter.h) — keep the two in sync; the
-// native tests exercise that C++ implementation.
-const LIM_THRESH = 0.97;
+// Output limiter (M6.6) — a TRUE SAFETY catch, not a tone stage, and now a
+// LOOKAHEAD GAIN-RIDER, not a waveshaper: the tanh knee it replaces bent every
+// sample above threshold into harmonics, which is exactly the clean-path "fizz"
+// the user kept hearing (the cab's presence bump pushed peaks into the knee).
+// Gain-riding turns overs DOWN instead of bending them — briefly ducks level,
+// adds zero harmonics, and is bit-transparent (gain exactly 1) whenever no over
+// is in the lookahead window. One shared gain for L/R so the image never shifts.
+// MIRRORS clipper::dsp::OutputLimiter (core/include/clipper/dsp/OutputLimiter.h)
+// — keep the two in sync; the native tests exercise that C++ implementation.
+const LIM_THRESH = 0.97;      // ceiling
+const LIM_LOOKAHEAD = 64;     // samples of delay / sliding-max window
+const LIM_RELEASE_S = 0.040;
+const LIM_HOLD_S = 0.050;     // pin gain after attack: no inter-peak AM ripple
+
+class LookaheadLimiter {
+  constructor(sampleRate) {
+    this.attackCoeff = Math.exp(-1 / (LIM_LOOKAHEAD / 3));
+    this.releaseCoeff = Math.exp(-1 / (LIM_RELEASE_S * sampleRate));
+    this.holdSamples = Math.floor(LIM_HOLD_S * sampleRate);
+    this.holdCount = 0;
+    this.delayL = new Float32Array(LIM_LOOKAHEAD);
+    this.delayR = new Float32Array(LIM_LOOKAHEAD);
+    // Monotonic deque (ring) for the sliding-window maximum; +2 so a full
+    // deque is distinguishable from an empty one.
+    const cap = LIM_LOOKAHEAD + 2;
+    this.dqIdx = new Float64Array(cap);
+    this.dqVal = new Float32Array(cap);
+    this.dqCap = cap;
+    this.dqHead = 0;
+    this.dqTail = 0;
+    this.writePos = 0;
+    this.sampleCount = 0;
+    this.gain = 1;
+  }
+
+  // Process one stereo sample; results land in this.outL / this.outR (no
+  // per-sample allocation — the audio thread must not create garbage). JS
+  // numbers are doubles, so the release cannot stall like a float32 accumulator.
+  processSample(inL, inR) {
+    const mag = Math.max(Math.abs(inL), Math.abs(inR));
+    // push
+    while (this.dqTail !== this.dqHead) {
+      const prev = (this.dqTail + this.dqCap - 1) % this.dqCap;
+      if (this.dqVal[prev] > mag) break;
+      this.dqTail = prev;
+    }
+    this.dqIdx[this.dqTail] = this.sampleCount;
+    this.dqVal[this.dqTail] = mag;
+    this.dqTail = (this.dqTail + 1) % this.dqCap;
+    // expire
+    const oldest = this.sampleCount - LIM_LOOKAHEAD;
+    while (this.dqHead !== this.dqTail && this.dqIdx[this.dqHead] < oldest)
+      this.dqHead = (this.dqHead + 1) % this.dqCap;
+    this.sampleCount++;
+
+    const outL = this.delayL[this.writePos];
+    const outR = this.delayR[this.writePos];
+    this.delayL[this.writePos] = inL;
+    this.delayR[this.writePos] = inR;
+    this.writePos = (this.writePos + 1) % LIM_LOOKAHEAD;
+
+    const peak = this.dqVal[this.dqHead];
+    const target = peak > LIM_THRESH ? LIM_THRESH / peak : 1;
+    if (target < this.gain) {
+      this.gain = this.attackCoeff * this.gain + (1 - this.attackCoeff) * target;
+      if (this.gain < target) this.gain = target;
+      this.holdCount = this.holdSamples;
+    } else if (this.holdCount > 0) {
+      this.holdCount--;
+    } else {
+      this.gain = this.releaseCoeff * this.gain + (1 - this.releaseCoeff) * target;
+    }
+    if (target >= 1 && this.gain > 0.9999) this.gain = 1;
+
+    let l = outL * this.gain;
+    let r = outR * this.gain;
+    if (l > 1) l = 1; else if (l < -1) l = -1;
+    if (r > 1) r = 1; else if (r < -1) r = -1;
+    this.outL = l;
+    this.outR = r;
+  }
+}
 
 // Declick fade for chain edits (M6.4): ~6 ms each way. Long enough to be
 // inaudible as a transient, short enough that a reorder feels instant.
@@ -271,12 +344,11 @@ class ClipperProcessor extends AudioWorkletProcessor {
     }
   }
 
-  // Soft limiter: identity below ±LIM_THRESH, tanh knee to ±1.0 above it.
-  _softLimit(x) {
-    const t = LIM_THRESH;
-    if (x > t) return t + (1 - t) * Math.tanh((x - t) / (1 - t));
-    if (x < -t) return -t + (1 - t) * Math.tanh((x + t) / (1 - t));
-    return x;
+  // M6.6: final gain-riding limiter (see LookaheadLimiter above). Created
+  // lazily so the sampleRate global is valid.
+  _limiter() {
+    if (!this._lim) this._lim = new LookaheadLimiter(sampleRate);
+    return this._lim;
   }
 
   process(inputs, outputs) {
@@ -371,8 +443,10 @@ class ClipperProcessor extends AudioWorkletProcessor {
       }
       // Raised-cosine map of the linear ramp dg in [0,1] -> smooth gain.
       const env = this._declickPhase === 'idle' && dg >= 1 ? 1 : 0.5 - 0.5 * Math.cos(Math.PI * dg);
-      outCh[i] = this._softLimit(heap[outLBase + i] * env);
-      if (rCh) rCh[i] = this._softLimit(heap[outRBase + i] * env);
+      const lim = this._limiter();
+      lim.processSample(heap[outLBase + i] * env, heap[outRBase + i] * env);
+      outCh[i] = lim.outL;
+      if (rCh) rCh[i] = lim.outR;
     }
     this._declickGain = dg;
     // Any channels beyond stereo mirror the left (keeps the output valid).
