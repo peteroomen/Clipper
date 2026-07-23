@@ -347,6 +347,9 @@ export default function App() {
           <div className="topbar">
             <div className="eyebrow-row">
               <span className="eyebrow">Clipper · RAT pedal → Clean 120 amp + cab</span>
+              <span className="build-stamp" title="Build (git revision) — if this doesn't match the latest commit, the app is stale">
+                build {__BUILD_STAMP__}
+              </span>
             </div>
             <div className="theme-seg" role="group" aria-label="Theme">
               {(['system', 'light', 'dark'] as ThemeChoice[]).map((t) => (

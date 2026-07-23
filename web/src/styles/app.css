@@ -95,6 +95,8 @@ header.hero { position: relative; padding: 28px 0 8px; }
 /* theme toggle, top-right */
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .eyebrow-row { display: flex; align-items: center; gap: 12px; }
+.build-stamp { font-size: 10px; font-family: ui-monospace, Menlo, monospace;
+  letter-spacing: .08em; color: var(--ink-dim); opacity: .7; white-space: nowrap; }
 .theme-seg { display: inline-flex; gap: 4px; padding: 4px; border-radius: 999px;
   background: var(--well);
   box-shadow: inset 3px 3px 7px var(--sh-darker), inset -2px -2px 6px var(--sh-light); }
