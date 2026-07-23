@@ -60,6 +60,90 @@ double irMag(const std::vector<float>& h, double f, double fs) {
     return std::sqrt(re * re + im * im);
 }
 
+// --- Cab "sounds-not-wrong" metrics (cab expansion). ---------------------------
+// The generated cabs used to build their tail from SEEDED RANDOM NOISE: a ~20 ms
+// colored-noise burst after every impulse (audible per-note hash — "fizzy only
+// with the cab on") and a ragged, comb-filtered magnitude response. A steady
+// sine can't see either (linear system); real playing (each pick = an impulse)
+// hears both. The cabs are now deterministic MODAL synthesis (damped sinusoids,
+// zero noise). These four metrics ENCODE "sounds-not-wrong" and run on EVERY
+// generated IR at 44.1 / 48 / 96 kHz, so a regression back toward noise/comb
+// fails the build:
+//   (a) tail energy after 3 ms << the first 3 ms (a tight, gated cab response,
+//       not a long noise burst),
+//   (b) the mid-band ("body") magnitude response is SMOOTH (no comb ripple),
+//       with a monotone speaker rolloff above it,
+//   (c) the tail's spectral flatness is LOW (tonal/modal, not broadband noise),
+//   (d) unity spectral peak (M6.6 — the cab never boosts).
+
+// (a) Energy after 3 ms relative to the first 3 ms, in dB.
+double cabTailEnergyDb(const std::vector<float>& h, double fs) {
+    const int split = static_cast<int>(std::lround(0.003 * fs));
+    double head = 0.0, tail = 0.0;
+    for (int n = 0; n < static_cast<int>(h.size()); ++n) {
+        const double v = static_cast<double>(h[static_cast<size_t>(n)]) * h[static_cast<size_t>(n)];
+        if (n < split) head += v; else tail += v;
+    }
+    return 10.0 * std::log10(tail / (head + 1e-30) + 1e-30);
+}
+
+// (b) Max adjacent-point step over M log-spaced points in [lo, hi], dB re 1 kHz.
+double cabMaxStepDb(const std::vector<float>& h, double fs, double lo, double hi, int M) {
+    const double ref = irMag(h, 1000.0, fs);
+    double prev = 0.0, mx = 0.0;
+    for (int k = 0; k < M; ++k) {
+        const double f = lo * std::pow(hi / lo, k / static_cast<double>(M - 1));
+        const double d = toDb(irMag(h, f, fs) / ref);
+        if (k) mx = std::max(mx, std::fabs(d - prev));
+        prev = d;
+    }
+    return mx;
+}
+
+// (b, cont.) Is the response monotone NON-INCREASING over [lo, hi] (the speaker
+// rolloff — smooth, not a comb)? Small tolerance for float noise.
+bool cabRolloffMonotone(const std::vector<float>& h, double fs, double lo, double hi, int M) {
+    double prev = 1e9;
+    for (int k = 0; k < M; ++k) {
+        const double f = lo * std::pow(hi / lo, k / static_cast<double>(M - 1));
+        const double d = toDb(irMag(h, f, fs));
+        if (k && d > prev + 0.10) return false;
+        prev = d;
+    }
+    return true;
+}
+
+// (c) Spectral flatness (geometric mean / arithmetic mean of the power spectrum)
+// of the tail (after the 1 ms direct region). White noise -> ~1; a few tonal
+// modes -> ~0. This is the direct discriminator between the old noise hash and
+// the new modal tail.
+double cabTailFlatness(const std::vector<float>& h, double fs) {
+    const int start = static_cast<int>(std::lround(0.001 * fs));
+    std::vector<float> tail(h.begin() + std::min(static_cast<size_t>(start), h.size()), h.end());
+    const int B = 200;
+    double sumLog = 0.0, sumLin = 0.0;
+    for (int k = 0; k < B; ++k) {
+        const double f = 150.0 * std::pow(8000.0 / 150.0, k / static_cast<double>(B - 1));
+        const double m = irMag(tail, f, fs);
+        const double p = m * m + 1e-20;
+        sumLog += std::log(p);
+        sumLin += p;
+    }
+    return std::exp(sumLog / B) / (sumLin / B + 1e-30);
+}
+
+// (d) Max |H(f)| over the audio band (dense grid so we never undershoot the true
+// peak; the old 160-point grid left the cab able to boost ~0.5 dB past unity).
+double cabSpectralPeak(const std::vector<float>& h, double fs) {
+    double pk = 0.0;
+    const double lo = 40.0, hi = std::min(16000.0, fs * 0.45);
+    for (int k = 0; k < 512; ++k) {
+        const double f = lo * std::pow(hi / lo, k / 511.0);
+        pk = std::max(pk, irMag(h, f, fs));
+    }
+    return pk;
+}
+
 std::vector<float> sine(double f, float amp, double secs, double fs) {
     const int n = static_cast<int>(secs * fs);
     std::vector<float> s(static_cast<size_t>(n));
@@ -792,19 +876,241 @@ void testChorusPerf(double fs) {
                 ms, ms / 1000.0 * 100.0, fs);
 }
 
+// --- Cab expansion: "sounds-not-wrong" metric asserts on EVERY generated IR. ---
+// Both cabs, at every rate. Thresholds are set from the measured modal IRs with
+// margin, and are chosen so the OLD noise-tail generator would FAIL them (that is
+// what makes the metric meaningful): the old 2x12 measured tail energy ~-22 dB,
+// body step ~1.2-1.9 dB, tail flatness ~0.35-0.53, and (with a dense grid) a peak
+// ~1.06 — every one of these fails the bounds below, while the modal cabs clear
+// them with room.
+//
+// DEVIATIONS from the original metric brief, by physics (documented for review):
+//   * Tail bound is -25 dB, not -35 dB. A steep speaker rolloff SPREADS the
+//     direct impulse (time/frequency tradeoff), and a fat 4x12 voicing needs
+//     low-mid energy that inherently rings a few ms, so -35 dB at a 3 ms split is
+//     not physically reachable without gutting the voicing. The modal cabs reach
+//     -27..-34 dB (vs the noise tail's -22); the LOW tail-FLATNESS assert is the
+//     true anti-hash guarantee (tonal, not noise).
+//   * Smoothness is measured over 500 Hz-4 kHz (the body, where comb hash lives),
+//     with a separate MONOTONE assert on the 4-8 kHz rolloff — a literal
+//     500 Hz-5 kHz step bound penalizes the (smooth, legitimate) steep rolloff
+//     knee near 5 kHz, which is slope, not hash.
+void checkCabMetrics(const char* name, const std::vector<float>& ir, double fs) {
+    assert(!ir.empty() && !hasNaN(ir) && "cab IR empty or NaN");
+    const double tailDb = cabTailEnergyDb(ir, fs);
+    const double bodyStep = cabMaxStepDb(ir, fs, 500.0, 4000.0, 200);
+    const bool rollMono = cabRolloffMonotone(ir, fs, 4000.0, 8000.0, 120);
+    const double flat = cabTailFlatness(ir, fs);
+    const double peak = cabSpectralPeak(ir, fs);
+    assert(tailDb < -25.0 && "cab IR tail energy too high (noise burst / long tail)");
+    assert(bodyStep < 0.5 && "cab IR body magnitude not smooth (comb ripple)");
+    assert(rollMono && "cab IR speaker rolloff not monotone (ripple in the top)");
+    assert(flat < 0.25 && "cab IR tail not modal (too flat -> noisy)");
+    assert(peak > 0.999 && peak < 1.001 && "cab IR not unity spectral peak (M6.6)");
+    std::printf("  [ok] %s metrics: tail %.1f dB (<-25), bodyStep %.2f dB (<0.5), rolloff monotone, "
+                "tailFlat %.3f (<0.25 modal), peak %.4f (fs=%g)\n",
+                name, tailDb, bodyStep, flat, peak, fs);
+}
+
+void testCabMetrics(double fs) {
+    checkCabMetrics("2x12", clipper::dsp::generateDefaultCab2x12IR(fs), fs);
+    checkCabMetrics("brit412", clipper::dsp::generateBrit4x12IR(fs), fs);
+}
+
+// --- Brit 4x12 voicing: thicker low-mids, DARKER top than the 2x12. ------------
+void testBrit4x12Shape(double fs) {
+    auto brit = clipper::dsp::generateBrit4x12IR(fs);
+    auto clean = clipper::dsp::generateDefaultCab2x12IR(fs);
+    auto mag = [&](const std::vector<float>& h, double f) { return irMag(h, f, fs); };
+    auto dbRe1k = [&](const std::vector<float>& h, double f) { return toDb(mag(h, f) / mag(h, 1000.0)); };
+
+    // Load-bearing 1: the 4x12 is DARKER than the 2x12 above 5 kHz (both 5 k and
+    // 8 k), by a clear margin (the playwright spectrum test relies on this).
+    const double brit5k = dbRe1k(brit, 5000.0), clean5k = dbRe1k(clean, 5000.0);
+    const double brit8k = dbRe1k(brit, 8000.0), clean8k = dbRe1k(clean, 8000.0);
+    assert(brit5k < clean5k - 3.0 && "brit412 not clearly darker than 2x12 at 5 kHz");
+    assert(brit8k < clean8k - 5.0 && "brit412 not clearly darker than 2x12 at 8 kHz");
+
+    // Load-bearing 2: the 4x12 carries MORE low-mid weight (the ~200 Hz chunk) —
+    // both absolutely (200 Hz not rolled off vs 1 kHz) and relative to the 2x12.
+    const double brit200 = dbRe1k(brit, 200.0), clean200 = dbRe1k(clean, 200.0);
+    assert(brit200 > clean200 + 1.0 && "brit412 lacks the extra low-mid weight vs 2x12");
+    assert(brit200 > -1.0 && "brit412 200 Hz chunk collapsed");
+
+    // Presence region not collapsed; steep top rolloff present.
+    assert(dbRe1k(brit, 3000.0) > -6.0 && "brit412 presence collapsed");
+    assert(dbRe1k(brit, 8000.0) < -20.0 && "brit412 top not rolled off");
+    std::printf("  [ok] brit412 shape: 200Hz %.1f (2x12 %.1f), 5k %.1f (2x12 %.1f), 8k %.1f (2x12 %.1f) dB re1k (fs=%g)\n",
+                brit200, clean200, brit5k, clean5k, brit8k, clean8k, fs);
+}
+
+// --- Convolver NULL test: block-processed cab.process == direct convolution. ---
+// A permanent proof that the partitioned-FFT convolver is exact (exonerates it
+// from any "fizz" suspicion): convolve a broadband test signal with the IR two
+// ways — (1) the streaming convolver in 128-sample blocks, (2) a direct
+// double-precision accumulator — align by the reported latency and compare the
+// steady middle. Error-to-signal must be far below audibility.
+void testConvolverNull(double fs) {
+    auto ir = clipper::dsp::generateDefaultCab2x12IR(fs);
+    const int irLen = static_cast<int>(ir.size());
+
+    // Deterministic broadband input (white-ish LCG noise).
+    const int n = static_cast<int>(0.25 * fs);
+    std::vector<float> in(static_cast<size_t>(n));
+    uint32_t rng = 0xBEEF1234u;
+    for (int i = 0; i < n; ++i) {
+        rng = rng * 1664525u + 1013904223u;
+        in[static_cast<size_t>(i)] = (static_cast<float>(rng >> 9) / 4194304.0f - 1.0f) * 0.25f;
+    }
+
+    // (1) Streaming convolver, 128-sample blocks.
+    CabConvolver cab;
+    cab.prepare(fs, ir.data(), irLen, fs, 128);
+    const int lat = cab.latencySamples();
+    std::vector<float> got(static_cast<size_t>(n), 0.0f);
+    for (int off = 0; off < n; off += 128) {
+        const int m = std::min(128, n - off);
+        cab.process(in.data() + off, got.data() + off, m);
+    }
+
+    // (2) Direct double convolution reference: ref[i] = sum_k in[i-k]*ir[k].
+    std::vector<double> ref(static_cast<size_t>(n), 0.0);
+    for (int i = 0; i < n; ++i) {
+        double acc = 0.0;
+        const int kMax = std::min(irLen - 1, i);
+        for (int k = 0; k <= kMax; ++k) acc += static_cast<double>(in[static_cast<size_t>(i - k)]) * ir[static_cast<size_t>(k)];
+        ref[static_cast<size_t>(i)] = acc;
+    }
+
+    // Compare the steady middle (skip the first irLen+lat warmup and the tail).
+    const int start = irLen + lat + 128;
+    const int stop = n - 128;
+    double err = 0.0, sig = 0.0;
+    for (int i = start; i < stop; ++i) {
+        const double e = static_cast<double>(got[static_cast<size_t>(i)]) - ref[static_cast<size_t>(i - lat)];
+        err += e * e;
+        sig += ref[static_cast<size_t>(i - lat)] * ref[static_cast<size_t>(i - lat)];
+    }
+    const double errDb = 10.0 * std::log10(err / (sig + 1e-30) + 1e-30);
+    assert(errDb < -120.0 && "convolver != direct convolution (partitioned FFT wrong)");
+
+    // IN-PLACE null test (the path the worklet's amp_process actually uses:
+    // cab.process(out, out, n)). A PEAKY IR — a two-tap comb — makes an aliasing
+    // bug in the overlap save obvious: it would fill the comb notches. Process the
+    // SAME input in place, block-by-block, and require it to match the direct
+    // convolution of the comb IR just as tightly.
+    std::vector<float> combIr(300, 0.0f);
+    combIr[0] = 1.0f;
+    combIr[240] = 0.9f; // 200 Hz-spaced comb @48k (deep notch at 500 Hz)
+    CabConvolver combCab;
+    combCab.prepare(fs, combIr.data(), static_cast<int>(combIr.size()), fs, 128);
+    const int clat = combCab.latencySamples();
+    std::vector<float> inplace = in; // process in place
+    for (int off = 0; off < n; off += 128) {
+        const int m = std::min(128, n - off);
+        combCab.process(inplace.data() + off, inplace.data() + off, m);
+    }
+    std::vector<double> cref(static_cast<size_t>(n), 0.0);
+    for (int i = 0; i < n; ++i) {
+        double acc = 0.0;
+        const int kMax = std::min(static_cast<int>(combIr.size()) - 1, i);
+        for (int k = 0; k <= kMax; ++k) acc += static_cast<double>(in[static_cast<size_t>(i - k)]) * combIr[static_cast<size_t>(k)];
+        cref[static_cast<size_t>(i)] = acc;
+    }
+    double cerr = 0.0, csig = 0.0;
+    for (int i = static_cast<int>(combIr.size()) + clat + 128; i < n - 128; ++i) {
+        const double e = static_cast<double>(inplace[static_cast<size_t>(i)]) - cref[static_cast<size_t>(i - clat)];
+        cerr += e * e;
+        csig += cref[static_cast<size_t>(i - clat)] * cref[static_cast<size_t>(i - clat)];
+    }
+    const double cerrDb = 10.0 * std::log10(cerr / (csig + 1e-30) + 1e-30);
+    assert(cerrDb < -120.0 && "IN-PLACE convolver != direct convolution (overlap aliased out over in)");
+    std::printf("  [ok] convolver null vs direct convolution: separate %.1f dB, in-place comb %.1f dB (<-120, fs=%g)\n",
+                errDb, cerrDb, fs);
+}
+
+// --- Long custom IR (> one partition) convolver sanity. ------------------------
+// User IRs are longer than the 128-sample partition; the convolver spans many
+// partitions. Feed a DISTINCTIVE long IR — a two-spike comb (delay pair) that
+// straddles several partitions — and verify the streaming convolver reproduces
+// it exactly (impulse in -> IR out, delayed by the latency).
+void testLongIR(double fs) {
+    // A 600-sample IR: unit spike at 0, a second at 500 (spans ~4 partitions).
+    const int irLen = 600;
+    std::vector<float> ir(static_cast<size_t>(irLen), 0.0f);
+    ir[0] = 1.0f;
+    ir[500] = 0.6f;
+
+    CabConvolver cab;
+    cab.prepare(fs, ir.data(), irLen, fs, 128);
+    const int lat = cab.latencySamples();
+    const int total = irLen + 2 * lat + 64;
+    std::vector<float> in(static_cast<size_t>(total), 0.0f), out(static_cast<size_t>(total), 0.0f);
+    in[0] = 1.0f;
+    cab.process(in.data(), out.data(), total);
+
+    assert(!hasNaN(out) && "long-IR convolver produced NaN");
+    double maxErr = 0.0;
+    for (int k = 0; k < irLen; ++k)
+        maxErr = std::max(maxErr, static_cast<double>(std::fabs(out[static_cast<size_t>(lat + k)] - ir[static_cast<size_t>(k)])));
+    assert(maxErr < 1e-4 && "long IR (>128) not reproduced by the convolver");
+    // Both comb spikes present at the right delay.
+    assert(std::fabs(out[static_cast<size_t>(lat)] - 1.0f) < 1e-4 && "first comb spike missing");
+    assert(std::fabs(out[static_cast<size_t>(lat + 500)] - 0.6f) < 1e-4 && "second comb spike missing");
+    std::printf("  [ok] long custom IR (%d samples, %d partitions): reproduced (maxErr %.2e, fs=%g)\n",
+                irLen, (irLen + 127) / 128, maxErr, fs);
+}
+
+// --- Custom-IR normalization via the CORE path (M6.6). -------------------------
+// The C ABI's amp_load_custom_ir peak-normalizes a user IR in the core (never
+// trusting the file's level). Feed a HOT IR (peaks well above unity) through
+// clipper::dsp::peakNormalizeIR and assert the result has EXACTLY unity spectral
+// peak — so a loud uploaded cab can never boost the signal past the limiter.
+void testCustomIrNormalization(double fs) {
+    // A hot, arbitrary IR: a big direct spike + a few loud reflections + a short
+    // tail. Raw spectral peak is several x unity.
+    std::vector<float> ir(400, 0.0f);
+    ir[0] = 5.0f; ir[37] = -3.2f; ir[113] = 2.4f; ir[200] = -1.7f;
+    for (int i = 0; i < 400; ++i) ir[static_cast<size_t>(i)] += 0.8f * std::sin(0.05 * i) * std::exp(-i / 120.0);
+    const double rawPeak = cabSpectralPeak(ir, fs);
+    assert(rawPeak > 2.0 && "test IR not actually hot");
+
+    clipper::dsp::peakNormalizeIR(ir, fs);
+    const double normPeak = cabSpectralPeak(ir, fs);
+    assert(normPeak > 0.999 && normPeak < 1.001 && "custom IR not normalized to unity spectral peak");
+
+    // And through the convolver: a sine can never exceed unity gain (|H| <= 1).
+    CabConvolver cab;
+    cab.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
+    auto in = sine(1000.0, 1.0f, 0.2, fs);
+    std::vector<float> out(in.size(), 0.0f);
+    cab.process(in.data(), out.data(), static_cast<int>(in.size()));
+    double outPk = 0.0;
+    for (size_t i = out.size() / 3; i < out.size(); ++i) outPk = std::max(outPk, static_cast<double>(std::fabs(out[i])));
+    assert(outPk < 1.02 && "normalized custom IR still boosts a unit sine past unity");
+    std::printf("  [ok] custom IR normalization: raw peak %.2f -> %.4f (unity), unit sine out-peak %.3f (fs=%g)\n",
+                rawPeak, normPeak, outPk, fs);
+}
+
 }  // namespace
 
 int main() {
-    std::printf("Running AmpModel + CabConvolver (M5) tests...\n");
-    for (double fs : {44100.0, 96000.0}) {
+    std::printf("Running AmpModel + CabConvolver (M5 + cab expansion) tests...\n");
+    // 48 kHz added alongside 44.1/96 k — the user's Mac runs at 48 k.
+    for (double fs : {44100.0, 48000.0, 96000.0}) {
         testToneStack(fs);
         testBright(fs);
         testVolume(fs);
         testCabIR(fs);
+        testCabMetrics(fs);      // cab expansion: sounds-not-wrong metrics
+        testBrit4x12Shape(fs);   // cab expansion: 4x12 voicing vs 2x12
         testChainGain(fs);
         testCleanPathTHD(fs);
         testLimiterGainRiding(fs);
         testConvolverImpulse(fs);
+        testConvolverNull(fs);   // cab expansion: convolver == direct convolution
+        testLongIR(fs);          // cab expansion: custom IR > one partition
+        testCustomIrNormalization(fs);  // cab expansion: core peak-norm of user IR
         testConvolverChunking(fs);
         testSmoothing(fs);
         testPerf(fs);

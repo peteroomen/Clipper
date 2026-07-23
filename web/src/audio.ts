@@ -14,7 +14,9 @@ import {
   trimKnobToGain,
 } from './params';
 import { PitchDetector } from 'pitchy';
-import type { SourceKind, AmpParams, PedalInstance } from './rig';
+import type { SourceKind, AmpParams, PedalInstance, CabChoice } from './rig';
+import { CAB_BUILTIN_INDEX } from './rig';
+import { resampleMono } from './cab';
 import { TUNER_FRAME_SIZE, analyzePitch, type TunerReading } from './tuner';
 
 export type { SourceKind };
@@ -52,6 +54,11 @@ export interface StartOptions {
   pedals: PedalInstance[]; // the ordered pedal chain (may be empty)
   amp: AmpParams; // amp knob positions (0..1)
   ampEngaged: boolean; // false = amp+cab bypassed
+  cabModel: CabChoice; // which cab IR (built-in or 'custom')
+  // Mono custom-cab samples + the rate they're stored at, when cabModel is
+  // 'custom' and the IR is available (resampled to the engine rate on start).
+  // Absent means fall back to the built-in Clean 2x12.
+  customIr?: { samples: Float32Array; sampleRate: number } | null;
   oversampling: number; // 1 | 2 | 4 | 8
   // Called whenever the model reports a new latency (e.g. after a chain edit,
   // oversampling, or cab-toggle change). samples are base-rate samples.
@@ -81,6 +88,11 @@ export interface Engine {
   setInputTrim(knob: number): void; // 0..1 knob -> linear gain, applied pre-pedal
   setOversampling(factor: number): void;
   setAmpBypass(on: boolean): void; // amp power off = bypass
+  // Cab expansion: swap the BUILT-IN cab IR (click-free in the worklet).
+  setCabBuiltin(which: 'clean212' | 'brit412'): void;
+  // Cab expansion: load a user IR (engine-rate mono samples). The buffer is
+  // TRANSFERRED to the worklet; the core peak-normalizes it.
+  loadCustomIr(samples: Float32Array): void;
   stop(): Promise<void>;
 }
 
@@ -161,6 +173,13 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
     setAmpBypass(on) {
       node.port.postMessage({ type: 'bypass', unit: 'amp', on });
     },
+    setCabBuiltin(which) {
+      node.port.postMessage({ type: 'cab', builtin: CAB_BUILTIN_INDEX[which] });
+    },
+    loadCustomIr(samples) {
+      // Transfer the buffer (zero-copy) to the worklet; the core peak-normalizes.
+      node.port.postMessage({ type: 'cab', custom: samples }, [samples.buffer]);
+    },
     stop: async () => {}, // replaced below once the source is wired
   };
 
@@ -204,6 +223,22 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   engine.setAmpParam(AMP_PARAM_CHORUS_DEPTH, opts.amp.depth);
   engine.setAmpParam(AMP_PARAM_CHORUS_MODE, opts.amp.chorusMode);
   engine.setAmpBypass(!opts.ampEngaged);
+
+  // Cab: the worklet's amp_create loads the Clean 2x12 by default. Apply the
+  // rig's choice: brit412 -> built-in swap; custom -> load the IR if present,
+  // else leave the default clean212 (App has already noted the fallback).
+  if (opts.cabModel === 'brit412') {
+    engine.setCabBuiltin('brit412');
+  } else if (opts.cabModel === 'custom' && opts.customIr && opts.customIr.samples.length) {
+    // Resample the stored IR to THIS session's engine rate, then load a copy (the
+    // transfer detaches the buffer, so never hand out the persisted samples).
+    const atRate = await resampleMono(
+      opts.customIr.samples,
+      opts.customIr.sampleRate,
+      context.sampleRate
+    );
+    engine.loadCustomIr(atRate.slice());
+  }
 
   // Build the source and connect the graph.
   let stream: MediaStream | null = null;

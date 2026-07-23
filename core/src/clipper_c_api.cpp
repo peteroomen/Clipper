@@ -167,7 +167,21 @@ struct AmpChain {
     // as the mono cab for the legacy amp_process() path.
     clipper::dsp::CabConvolver cabL, cabR;
     bool cabOn = true;
+    // Cab expansion: the engine rate is remembered so the cab can be regenerated
+    // (built-in swap) or a user IR reloaded at the right rate on demand.
+    double sr = 48000.0;
 };
+
+// Built-in cab selector for amp_set_cab_builtin. Kept as small ints so the ABI
+// stays language-neutral (the worklet passes 0/1).
+enum CabBuiltin { kCabClean212 = 0, kCabBrit412 = 1 };
+
+// Load an IR into BOTH per-side convolvers at the chain's engine rate (same IR,
+// same 128-sample partition — latency/CPU unchanged from the single built-in).
+void loadIrBothSides(AmpChain* c, const std::vector<float>& ir) {
+    c->cabL.prepare(c->sr, ir.data(), static_cast<int>(ir.size()), c->sr, 128);
+    c->cabR.prepare(c->sr, ir.data(), static_cast<int>(ir.size()), c->sr, 128);
+}
 }  // namespace
 
 // Create the amp+cab chain prepared for the given sample rate. 128 == the
@@ -178,11 +192,39 @@ EMSCRIPTEN_KEEPALIVE
 void* amp_create(float sample_rate) {
     const double sr = static_cast<double>(sample_rate);
     auto* c = new AmpChain();
+    c->sr = sr;
     c->amp.prepare(sr, 128);
     const std::vector<float> ir = clipper::dsp::generateDefaultCab2x12IR(sr);
-    c->cabL.prepare(sr, ir.data(), static_cast<int>(ir.size()), sr, 128);
-    c->cabR.prepare(sr, ir.data(), static_cast<int>(ir.size()), sr, 128);
+    loadIrBothSides(c, ir);
     return c;
+}
+
+// Cab expansion: swap the BUILT-IN cab IR (0 = Clean 2x12, 1 = Brit 4x12) on both
+// per-side convolvers, regenerated at the engine rate. The worklet calls this at
+// the declick fade-out zero (never inside process()), so the topology swap is
+// click-free. Latency/CPU are unchanged (same partition, same convolver).
+EMSCRIPTEN_KEEPALIVE
+void amp_set_cab_builtin(void* handle, int which) {
+    if (!handle) return;
+    auto* c = static_cast<AmpChain*>(handle);
+    const std::vector<float> ir = which == kCabBrit412
+        ? clipper::dsp::generateBrit4x12IR(c->sr)
+        : clipper::dsp::generateDefaultCab2x12IR(c->sr);
+    loadIrBothSides(c, ir);
+}
+
+// Cab expansion: load a USER IR (mono float samples already at/near the engine
+// rate; the convolver resamples if irSampleRate differs, but the worklet hands us
+// engine-rate samples). The core PEAK-NORMALIZES it (M6.6 — never trust the
+// file's level: a cab must not boost) before preparing both per-side convolvers.
+// Declick-bracketed by the worklet exactly like the built-in swap.
+EMSCRIPTEN_KEEPALIVE
+void amp_load_custom_ir(void* handle, const float* ir_ptr, int ir_len) {
+    if (!handle || !ir_ptr || ir_len <= 0) return;
+    auto* c = static_cast<AmpChain*>(handle);
+    std::vector<float> ir(ir_ptr, ir_ptr + ir_len);
+    clipper::dsp::peakNormalizeIR(ir, c->sr);  // NEVER trust the file's level
+    loadIrBothSides(c, ir);
 }
 
 EMSCRIPTEN_KEEPALIVE

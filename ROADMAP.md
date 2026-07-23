@@ -229,7 +229,11 @@ is one of the most canonical pairings in rock.
 - **BD-2 Blues Driver** (third dirt flavor), **DD-3 delay** (new DSP family:
   delay lines — easy after the above).
 - **Presets & sharing** — the M4 rig-state JSON is already the format.
-- **User cab IR upload** + a Marshall 4×12-style IR to pair with M9.
+- ~~**User cab IR upload** + a Marshall 4×12-style IR to pair with M9.~~ ✅
+  *(shipped — see docs §15: a modal-synthesis rebuild of both cabs that root-caused
+  the "fizzy with the cab on" noise-tail hash, a `brit412` Marshall-style 4×12, and
+  `.wav` IR upload with in-core peak-normalization. Also fixed a latent in-place
+  convolver overlap bug.)*
 - **Native path — phase 1 SHIPPED** (plugin + standalone). A JUCE (CMake,
   FetchContent-pinned to JUCE 8.0.4) wrap of the **identical** core in `native/`:
   Standalone + VST3 + AU (AU mac-only), mirroring the web rig's signal chain

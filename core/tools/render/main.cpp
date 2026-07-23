@@ -56,6 +56,7 @@ struct Args {
     bool aliasReport = false;     // print the alias metric table and exit
     bool idealOpAmp = false;      // M6.5: bypass the LM308 op-amp model (A/B)
     std::string chain = "rat";    // "rat" (pedal) or "clean" (amp+cab+limiter)
+    std::string cab = "clean212"; // clean chain cab: "clean212" or "brit412"
     std::string pedal = "rat";    // M8: "rat" or "sd1" (SD-1 overdrive)
     float limThresh = 0.97f;      // M6.5: output soft-limiter threshold (clean chain)
     bool triode = false;          // M9.1: run a single 12AX7 TriodeStage (stage alone)
@@ -93,6 +94,7 @@ float softLimit(float x, float t) {
         "M8:       --pedal rat|sd1 (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
         "          for sd1 the knob flags map positionally: --distortion=DRIVE, --filter=TONE),\n"
         "          --chain rat|clean (clean = amp+cab+limiter, pedal-bypassed path),\n"
+        "          --cab clean212|brit412 (clean-chain cab; brit412 = the darker 4x12),\n"
         "          --limiter-thresh T (clean-chain output soft-limiter threshold, default 0.97).\n"
         "M9.1:     --triode (render a single 12AX7 common-cathode stage alone),\n"
         "          --triode-drive D (input-gain multiplier into the grid, default 3.0),\n"
@@ -255,6 +257,7 @@ int main(int argc, char** argv) {
         else if (s == "--pedal") a.pedal = need("--pedal");
         else if (s == "--chain") a.chain = need("--chain");
         else if (s == "--limiter-thresh") a.limThresh = std::atof(need("--limiter-thresh"));
+        else if (s == "--cab") a.cab = need("--cab");
         else if (s == "--triode") a.triode = true;
         else if (s == "--triode-drive") a.triodeDrive = std::atof(need("--triode-drive"));
         else if (s == "--triode-cathode") a.triodeCathodeUf = std::atof(need("--triode-cathode"));
@@ -411,7 +414,8 @@ int main(int argc, char** argv) {
         amp.setParameter(clipper::dsp::AmpModel::PARAM_BRIGHT, 0.0f);
         if (!input.empty())
             amp.process(input.data(), out.data(), static_cast<int>(input.size()));
-        auto ir = clipper::dsp::generateDefaultCab2x12IR(fs);
+        auto ir = a.cab == "brit412" ? clipper::dsp::generateBrit4x12IR(fs)
+                                     : clipper::dsp::generateDefaultCab2x12IR(fs);
         clipper::dsp::CabConvolver cab;
         cab.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
         if (!out.empty())
@@ -487,10 +491,19 @@ int main(int argc, char** argv) {
             out.size(), fs, a.outFile.c_str(), a.triodeDrive, a.triodeCathodeUf, a.os,
             triodePeakVolts, rms);
     } else if (a.chain == "clean") {
+        // Post-attack residual: RMS over the LAST 25% of the render, well after a
+        // pluck has decayed. A noise-tail cab re-fires a colored-noise burst per
+        // pick that lingers here; the modal cab decays to near silence. This is
+        // the demonstrable "no post-attack noise burst" the fizz fix delivers.
+        double tailRms = 0.0;
+        const size_t ts = out.size() - out.size() / 4;
+        for (size_t i = ts; i < out.size(); ++i) tailRms += static_cast<double>(out[i]) * out[i];
+        tailRms = out.size() > ts ? std::sqrt(tailRms / (out.size() - ts)) : 0.0;
+        const double tailDb = 20.0 * std::log10(tailRms / (rms + 1e-30) + 1e-30);
         std::printf(
-            "Rendered %zu frames @ %.0f Hz -> %s  (chain=clean amp:vol0.4/treble0.6+cab, "
-            "limiter-thresh=%.2f)\n  peak=%.4f  rms=%.4f\n",
-            out.size(), fs, a.outFile.c_str(), a.limThresh, peak, rms);
+            "Rendered %zu frames @ %.0f Hz -> %s  (chain=clean amp:vol0.4/treble0.6+cab=%s, "
+            "limiter-thresh=%.2f)\n  peak=%.4f  rms=%.4f  post-attack residual=%.6f (%.1f dB re rms)\n",
+            out.size(), fs, a.outFile.c_str(), a.cab.c_str(), a.limThresh, peak, rms, tailRms, tailDb);
     } else if (a.pedal == "sd1") {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (pedal=sd1 drive=%.2f tone=%.2f level=%.2f "

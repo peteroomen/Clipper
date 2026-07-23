@@ -172,11 +172,16 @@ void CabConvolver::processBlock(const float* in, float* out) {
     // 3. Inverse FFT, scale by 1/N; output = last P samples (overlap-save valid).
     fft_.transform(accRe_.data(), accIm_.data(), /*inverse=*/true);
     const double inv = 1.0 / N;
+
+    // Save THIS block's input as next block's overlap FIRST, THEN write output.
+    // Order matters: callers process IN-PLACE (in == out, e.g. amp_process), so
+    // once we write out[i] the aliased in[i] is gone — capturing the overlap from
+    // `in` afterward would save the OUTPUT and corrupt the next block's window.
+    // (Latent since M5: harmless-looking on the smooth default IR, but it filled
+    // notches / added per-block error on any peaky IR — a user cab or a comb.)
+    for (int i = 0; i < P; ++i) overlap_[static_cast<size_t>(i)] = in[i];
     for (int i = 0; i < P; ++i)
         out[i] = static_cast<float>(accRe_[static_cast<size_t>(P + i)] * inv);
-
-    // Advance: this block's input becomes next block's overlap; advance the ring.
-    for (int i = 0; i < P; ++i) overlap_[static_cast<size_t>(i)] = in[i];
     fdlHead_ = (fdlHead_ + 1) % fdlDepth_;
 }
 

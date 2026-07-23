@@ -889,6 +889,10 @@ test('rig state: JSON round-trips exactly and restores from localStorage', async
       amp: {
         type: 'clean120',
         engaged: false,
+        // Cab expansion: cabModel sits between engaged and params in the
+        // normalized shape; customCabLabel is omitted when unset (custom key
+        // present only for 'custom' rigs), so a built-in rig round-trips exactly.
+        cabModel: 'brit412',
         params: {
           volume: 0.33,
           bass: 0.6,
@@ -1022,6 +1026,8 @@ test('rig migration: an M4 rig without an amp gets amp defaults', async ({ page 
   const rig = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig());
   expect(rig.amp.params.volume).toBe(0.4);
   expect(rig.amp.engaged).toBe(true);
+  // Cab expansion: a rig with no cabModel migrates to the Clean 2×12.
+  expect(rig.amp.cabModel).toBe('clean212');
 });
 
 // M6.4: the board renders neumorphic SVG cables between the units, and the gear

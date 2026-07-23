@@ -13,7 +13,15 @@ import {
   type AmpParamName,
   type SourceKind,
   type PedalType,
+  type CabChoice,
 } from './rig';
+import {
+  processIrFile,
+  saveCustomIr,
+  loadCustomIr,
+  customIrAtRate,
+  type StoredCustomIr,
+} from './cab';
 import { loadGuitar, saveGuitar, type GuitarProfile } from './guitar';
 import type { RigController } from './assistant/tools';
 import { Board } from './components/Board';
@@ -80,6 +88,14 @@ export default function App() {
   // The guitar profile (M6): injected into the assistant's context. Separate
   // localStorage key from the rig; editable anytime from the chat panel.
   const [guitar, setGuitar] = useState<GuitarProfile>(() => loadGuitar());
+
+  // Cab expansion: the user's custom IR (samples live in their own localStorage
+  // key, never in the rig JSON). `cabNote` is a short transient UI message for
+  // upload results and the missing-custom-IR fallback.
+  const [customIr, setCustomIr] = useState<StoredCustomIr | null>(() => loadCustomIr());
+  const customIrRef = useRef(customIr);
+  customIrRef.current = customIr;
+  const [cabNote, setCabNote] = useState<string | null>(null);
 
   // Persist the rig on every change.
   useEffect(() => {
@@ -257,6 +273,73 @@ export default function App() {
     setAmpEngaged(!rigRef.current.amp.engaged);
   }
 
+  // ---- cab selection + custom IR upload (cab expansion) ----
+
+  // Missing-custom-IR fallback: a restored rig may say cabModel:'custom' while the
+  // IR data (separate key) is absent (e.g. loaded in a different browser, or
+  // cleared). Fall back to the Clean 2x12 with a note, once, on mount.
+  useEffect(() => {
+    if (rigRef.current.amp.cabModel === 'custom' && !customIrRef.current) {
+      setRig((r) => ({ ...r, amp: { ...r.amp, cabModel: 'clean212', customCabLabel: undefined } }));
+      setCabNote('Custom IR not found — using the Clean 2×12.');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Push a custom IR into the running engine, resampled to the engine rate.
+  async function loadCustomIntoEngine(ir: StoredCustomIr) {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const atRate = await customIrAtRate(ir, engine.context.sampleRate);
+    engine.loadCustomIr(atRate.slice()); // slice: the transfer detaches the buffer
+  }
+
+  // Select a cab (built-in or the already-loaded custom). Updates the rig and, if
+  // running, the engine (click-free in the worklet).
+  function setCabModel(cab: CabChoice) {
+    if (cab === 'custom' && !customIrRef.current) {
+      setCabNote('No custom IR loaded yet — use Upload IR…');
+      return;
+    }
+    setCabNote(null);
+    setRig((r) => ({ ...r, amp: { ...r.amp, cabModel: cab } }));
+    if (cab === 'brit412' || cab === 'clean212') {
+      engineRef.current?.setCabBuiltin(cab);
+    } else if (cab === 'custom' && customIrRef.current) {
+      void loadCustomIntoEngine(customIrRef.current);
+    }
+  }
+
+  // Upload + process a user IR (.wav): decode/mono/resample/cap on the main
+  // thread, persist it (separate key), select it, and load it into the engine.
+  async function uploadIr(file: File) {
+    setCabNote('Loading IR…');
+    try {
+      const engineRate = engineRef.current?.context.sampleRate ?? 48000;
+      const processed = await processIrFile(file, engineRate);
+      const stored: StoredCustomIr = {
+        label: processed.label,
+        sampleRate: processed.sampleRate,
+        originalLength: processed.originalLength,
+        samples: processed.samples,
+      };
+      saveCustomIr(stored);
+      setCustomIr(stored);
+      customIrRef.current = stored;
+      setRig((r) => ({
+        ...r,
+        amp: { ...r.amp, cabModel: 'custom', customCabLabel: processed.label },
+      }));
+      await loadCustomIntoEngine(stored);
+      const lenNote = processed.truncated
+        ? ` (${processed.originalLength} samples → capped to ${processed.samples.length})`
+        : ` (${processed.samples.length} samples)`;
+      setCabNote(`Loaded “${processed.label}”${lenNote}.`);
+    } catch (err) {
+      setCabNote('Could not load that IR: ' + (err as Error).message);
+    }
+  }
+
   // The assistant's rig-control seam (M6): the tool executor mutates the rig ONLY
   // through here, reusing the same setters the knobs/switches use so the AI's
   // changes visibly move knobs, reach the worklet, and persist. Built once —
@@ -294,6 +377,11 @@ export default function App() {
         else if (name === 'vibrato') setChorusMode(on ? 2 : 0);
         else setAmpParam(name as AmpParamName, on ? 1 : 0);
       },
+      // Cab expansion: the coach may switch between the BUILT-IN cabs only
+      // (never 'custom' — that requires a user file upload).
+      setCab: (cab) => {
+        if (cab === 'clean212' || cab === 'brit412') setCabModel(cab);
+      },
       addPedal: (type, position) => addPedal((type as PedalType) ?? 'rat', position),
       removePedal: (index) => {
         const id = pedalIdAt(index);
@@ -329,6 +417,11 @@ export default function App() {
         pedals: r.pedals,
         amp: r.amp.params,
         ampEngaged: r.amp.engaged,
+        cabModel: r.amp.cabModel,
+        customIr:
+          r.amp.cabModel === 'custom' && customIrRef.current
+            ? { samples: customIrRef.current.samples, sampleRate: customIrRef.current.sampleRate }
+            : null,
         oversampling: r.oversampling,
         onLatencySamples: setLatencySamples,
         onPeak: setInputPeak,
@@ -393,9 +486,10 @@ export default function App() {
           <div className="hero-head">
             <h1>Clipper</h1>
             <p>
-              A RAT-style diode-clipper pedal into a JC-120-inspired clean amp and 2×12 cab —
-              modeled and played live in the browser. Drag the knobs, stomp the switch, power the
-              amp; the whole rig is one serializable state, restored on reload.
+              A RAT-style diode-clipper pedal into a JC-120-inspired clean amp and a selectable
+              speaker cab (Clean 2×12, Brit 4×12, or your own IR) — modeled and played live in the
+              browser. Drag the knobs, stomp the switch, power the amp; the whole rig is one
+              serializable state, restored on reload.
             </p>
             <div className="hint">
               <span className="dot" />
@@ -426,7 +520,15 @@ export default function App() {
             onAmpToggle={toggleAmp}
             onAmpPower={toggleAmpPower}
             onChorusMode={setChorusMode}
+            onCabSelect={setCabModel}
+            onUploadIr={uploadIr}
           />
+          {cabNote && (
+            <div className="notice" data-testid="cab-note">
+              <span className="dot" />
+              {cabNote}
+            </div>
+          )}
 
           <div className="rig desk-row">
             <section className="desk raised" aria-label="Control desk">

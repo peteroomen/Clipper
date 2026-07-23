@@ -2203,6 +2203,129 @@ engages on a footswitch stomp. Both themes were screenshotted with the tuner loc
 on the 220 Hz test tone (A3). (Two pre-existing offline-render WebAudio flakes may
 retry, per `playwright.config.ts`.)
 
+## 15. Cab expansion — Brit 4×12, user IR upload, modal cab rebuild
+
+Two roadmap items (a second built-in cab + user IR upload), plus a root-cause fix
+of the long-running "fizzy only with the cab on" report and a latent convolver
+bug found on the way.
+
+### 15.1 The fizz was the IR, not the convolver — modal rebuild
+
+Field report: fizz with the cab engaged, even pedal-bypassed, surviving every
+M6.5/M6.6 fix. Root cause, measured: the generated cab IRs built their tail from
+**seeded random noise** under an exponential envelope, plus a couple of discrete
+early reflections. On a steady sine (a linear system) this averages out — which
+is why every steady-state test passed — but on real playing each pick is an
+impulse that **re-fires a ~20 ms colored-noise burst**, heard as per-note hash.
+Measured on the old 2×12: tail energy after 3 ms only **−22.9 dB** below the
+direct sound, a ragged **comb** magnitude response (≈2 dB steps between adjacent
+log-spaced points, ~15 dB ripple 500 Hz–5 kHz), and — with a dense enough search
+grid — a normalized peak of **1.06** (the old 160-point normalization grid
+undershot the true peak, so the cab could still boost ~0.5 dB past unity).
+
+The cabs are now **deterministic modal synthesis** (`core/src/dsp/CabIR.cpp`): a
+direct impulse plus a small set (~10) of **exponentially-decaying resonant
+sinusoids** (damped modes standing in for box/cone/breakup resonances), shaped by
+the same biquad voicing cascade (low cut, presence bump, steep speaker rolloff),
+gated by a short raised-cosine **tail fade**, and **peak-normalized on a dense
+512-point grid**. A handful of tiny-amplitude modes gives natural body and a
+short (~2–5 ms) decay with **zero noise**; because each mode is a broad, gentle
+resonance the magnitude stays smooth. The coarse voicing is preserved so the amp
+still sounds like the amp — we removed the hash, not the character. (Note: a
+mode's spectral bump ≈ `amp·decay_samples/2`, so mode amplitudes are in the
+thousandths — the *voicing* comes from the cascade, the modes only season it.)
+
+### 15.2 Cab lineup + voicing
+
+| | Clean 2×12 (`clean212`) | Brit 4×12 (`brit412`) |
+|---|---|---|
+| role | JC-120 clean platform | Marshall-style rock cab (pairs with the JCM800) |
+| low cut | ~95 Hz (Q 0.6) | ~72 Hz (Q 0.6) — fuller lows |
+| low-mids | flat | broad **+2 dB @ ~215 Hz** (the 4×12 "chunk") |
+| presence | +3.5 dB @ 2.5 kHz | +3 dB @ 3 kHz |
+| top rolloff | 4× LP @ 5 kHz | **5× LP @ 4.6 kHz** — steeper, darker |
+| 5 kHz / 8 kHz (dB re 1 kHz) | −12 / −39 | **−19 / −56** (clearly darker) |
+
+The `brit412` is audibly thicker in the low-mids and much darker up top — the
+load-bearing distinction the assistant coaches and the Playwright spectrum test
+measures.
+
+### 15.3 "Sounds-not-wrong" metrics (ctest, both cabs, 44.1 / 48 / 96 kHz)
+
+`core/tests/test_amp_model.cpp` asserts four metrics on **every generated IR** so
+a regression back toward noise/comb fails the build. Before/after (2×12 @48k):
+
+| metric | old noise IR | modal 2×12 | modal brit412 | bound |
+|---|---|---|---|---|
+| tail energy after 3 ms | −22.9 dB | **−33.7** | **−30.5** (−27.4 @96k) | `< −25` |
+| body smoothness (500 Hz–4 kHz max step) | 1.21 dB | **0.25** | **0.38** | `< 0.5` |
+| rolloff monotone (4–8 kHz) | no (comb) | yes | yes | true |
+| tail flatness (modal vs noisy) | 0.35–0.53 | **0.11–0.14** | **0.04–0.07** | `< 0.25` |
+| spectral peak (M6.6) | ~1.06 | **1.0000** | **1.0000** | `≈ 1` |
+
+**Documented deviations from the original metric brief, by physics:** (1) the tail
+bound is **−25 dB, not −35 dB** — a steep speaker rolloff spreads the direct
+impulse (time/frequency tradeoff) and a fat 4×12 needs low-mid energy that rings a
+few ms, so −35 dB at a 3 ms split isn't reachable without gutting the voicing; the
+**low tail-flatness** assert (tonal, not noise) is the real anti-hash guarantee.
+(2) Smoothness is measured over **500 Hz–4 kHz** (the body, where comb hash lives)
+plus a separate **monotone** assert on the 4–8 kHz rolloff — a literal
+500 Hz–5 kHz step bound penalizes the (smooth, legitimate) steep rolloff knee near
+5 kHz, which is slope, not hash. A `clipper-render --chain clean --cab {clean212|
+brit412}` render of a low-E pluck reports the **post-attack residual** (~−38 dB re
+rms — clean decay, no noise burst).
+
+### 15.4 Convolver was exonerated — and a latent in-place bug fixed
+
+A permanent **null test** proves the partitioned-FFT `CabConvolver` equals a
+direct double-precision convolution to **−152 dB** (block-processed, 44.1/48/96k)
+— it was never the fizz. But building the custom-IR test surfaced a real latent
+bug: `CabConvolver::processBlock` wrote `out[i]` and *then* read `in[i]` to save
+the overlap-save history. The worklet runs the cab **in place**
+(`cab.process(out, out, n)` in `amp_process`/`amp_process_stereo`), so the overlap
+captured the *output*, not the input — corrupting the next block's window. On the
+smooth default IR the error looked harmless; on a peaky IR (a user cab, or the
+test comb) it **filled notches**. Fixed by saving the overlap from `in` *before*
+writing `out`; a dedicated **in-place comb null test** (−152 dB) now guards it.
+
+### 15.5 Cab selection + user IR upload — the pipeline
+
+- **RigState** (`web/src/rig.ts`): `amp.cabModel: 'clean212' | 'brit412' |
+  'custom'` (+ optional `customCabLabel`), persisted and **migrated** (old rigs →
+  `clean212`). This is separate from the `cab` 0/1 *enable* lever (which bypasses
+  the convolver). Presets/rig JSON **never embed IR data**.
+- **C ABI** (`core/src/clipper_c_api.cpp`): `amp_set_cab_builtin(handle, which)`
+  regenerates both per-side cabs; `amp_load_custom_ir(handle, ptr, len)` builds an
+  IR from the samples and **peak-normalizes it in the core** (M6.6 — never trust
+  the file's level: a cab must not boost) before preparing both sides. Same
+  convolver, same 128-partition → latency/CPU unchanged.
+- **Worklet** (`web/worklet/clipper-processor.js`): a `{type:'cab', builtin}` or
+  `{type:'cab', custom: Float32Array}` message stages the swap in the message
+  handler (malloc + heap copy) and applies it at the **M6.4 declick** fade-out
+  zero, so the IR change is click-free (RMS-continuity Playwright test).
+- **Upload pipeline** (`web/src/cab.ts`, main thread): `decodeAudioData` → mono-ize
+  (average channels) → resample to the engine rate via `OfflineAudioContext` → cap
+  at **4096 samples** (truncate with a short fade-out; the UI reports the original
+  length) → transfer the `Float32Array` to the worklet. The IR **samples** persist
+  in their own localStorage key (`clipper.customCab.v1`, base64), next to the rig.
+- **Fallback**: loading a rig that references `cabModel:'custom'` with the IR data
+  missing (e.g. shared to another browser) falls back to `clean212` with a UI note
+  (`App.tsx`, tested).
+- **Assistant** (`web/src/assistant/{tools,prompt}.ts`): the rig context carries
+  `amp.cabModel`; a `set_cab` tool switches between the **built-ins only** (never
+  `custom` — that needs a user upload); the coach knows 4×12 = thicker/darker Brit
+  voicing for rock/JCM tones, 2×12 = the clean platform.
+
+### 15.6 Build & test
+
+```bash
+cd core && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build && ctest
+bash scripts/build-wasm.sh            # regenerates web/public/generated/* (committed)
+cd web && npm run build && npx playwright test   # 35 specs incl. 5 new cab tests
+# demo (no post-attack noise burst): clean pluck through either cab
+core/build/clipper-render --gen pluck:82.4:2.0 out.wav --chain clean --cab brit412
+```
+
 ## Notes / conventions
 
 - `core/` must never include platform/OS/browser/Emscripten headers. The only

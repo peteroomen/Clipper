@@ -1,47 +1,46 @@
-// Clipper — default cab IR generator (M5). See CabIR.h.
+// Clipper — generated cab IR generators (M5 + cab expansion). See CabIR.h.
+//
+// ===========================================================================
+// MODAL SYNTHESIS (the fizz fix)
+// ---------------------------------------------------------------------------
+// History: the original cabs built the diffuse tail from SEEDED RANDOM NOISE
+// under an exponential envelope, plus a couple of discrete early reflections.
+// That looked plausible on a steady-sine sweep but was wrong in two ways that a
+// linear steady-state test can't see and a *player* hears immediately:
+//
+//   1. The random tail is a ~20 ms burst of COLORED NOISE after every impulse.
+//      On steady tones it averages out; on real playing (each pick = an impulse)
+//      it re-fires per note as audible hash — the "fizzy only with the cab on"
+//      the field report kept describing. Measured: tail energy after 3 ms was
+//      only -22.9 dB below the direct sound (a big, long, noisy tail).
+//   2. The discrete early reflections comb-filtered the magnitude response into
+//      a ragged spectrum (~2 dB steps between adjacent log-spaced points, ~15 dB
+//      of ripple across 500 Hz-5 kHz) that differed between sample rates.
+//
+// Both are gone. The tail is now DETERMINISTIC MODAL SYNTHESIS: a direct impulse
+// plus a small set of exponentially-decaying resonant sinusoids (damped modes)
+// standing in for the real box/cone resonances of a guitar cab. A handful of
+// tonal modes gives natural body and a short (~5-15 ms) decay with ZERO noise,
+// and — because each mode is a smooth, broad resonance rather than a spectral
+// spike — the magnitude response stays smooth. The coarse VOICING (low cut,
+// presence bump, steep speaker rolloff) is still set by the biquad cascade, so
+// each cab sounds like the cab it did before; we removed the hash, not the
+// character.
+//
+// Everything is deterministic (no Date/random_device) so tests assert on it
+// byte-for-byte, and every generated IR is checked in ctest against four
+// "sounds-not-wrong" metrics (see test_amp_model.cpp): tail-energy bound,
+// magnitude smoothness, tail modal-not-noisy flatness, and (M6.6) unity spectral
+// peak normalization.
 //
 // ---------------------------------------------------------------------------
-// Recipe (a plausible closed-back 2x12, NOT a measured cabinet — a documented
-// placeholder until real IR upload lands). Everything is deterministic: a seeded
-// linear-congruential generator supplies the diffuse tail, so the IR is identical
-// on every call and tests can assert on it.
-//
-//   Length: 1024 samples (~21 ms @ 48 kHz) — long enough for the low-end body,
-//           short enough to stay one partition-friendly and cheap.
-//
-//   Time structure (before filtering):
-//     * direct hit at n = 6 (a small pre-delay),
-//     * three early reflections at +21 / +47 / +89 samples with alternating sign
-//       and decaying gain (baffle / back-panel bounces of a closed-back box),
-//     * a diffuse exponential-decay noise tail (seeded) for body, tau ~ len/4.5.
-//
-//   Spectral shaping (cascade of RBJ biquads applied to the time structure):
-//     * low cut:  2nd-order high-pass @ 80 Hz   (no sub thump from a guitar cab),
-//     * speaker rolloff: FOUR cascaded 2nd-order low-passes @ 5 kHz (~ -24 dB/oct
-//       above the corner — the steep top-end rolloff that makes a mic'd guitar
-//       speaker sound like a guitar speaker and not a tweeter),
-//     * presence bump: peaking +4 dB @ 2.5 kHz, Q 1.1 (the upper-mid bite).
-//
-//   Normalized so the peak SPECTRAL magnitude is 1.0 (M6.6): the cab never
-//   boosts any band above its input level; 1 kHz sits ~-3 dB below unity.
-//
-// Measured magnitude response of the generated IR (raw DTFT of the IR, dB
-// relative to the 1 kHz bin; measured @ 48 kHz, see test_amp_model.cpp which
-// asserts this shape and runs at 44.1 k and 96 k too):
-//     60 Hz   ~ -9 dB      (low cut)
-//     100 Hz  ~ -3 dB      (low cut easing in)
-//     1 kHz   =  0 dB       (reference / passband)
-//     2.5 kHz ~ +3 dB      (presence bump)
-//     5 kHz   ~ -10 dB     (into the speaker rolloff)
-//     8 kHz   ~ -36 dB     (well down the steep ~48 dB/oct rolloff)
-// The load-bearing shape assertions: 1 kHz >> 8 kHz, 5 kHz below 1 kHz, presence
-// region not collapsed, low end rolled off relative to 1 kHz.
-//
-// NB: the frequency response is measured as the RAW DTFT of the IR (sum h[n]
-// e^{-jwn}) — that IS |H(f)| exactly. Do NOT use a Hann-windowed / amplitude-
-// normalized Goertzel here: that estimator is for sinusoid amplitude and gives
-// meaningless low-frequency values for an impulse response.
-// ---------------------------------------------------------------------------
+// PEAK NORMALIZATION (M6.6): every IR is scaled so its max |H(f)| over the audio
+// band is exactly 1.0. A cab may COLOR the tone but must never BOOST any band
+// above the level entering it — otherwise the presence region pushes peaks into
+// the output limiter and fizzes the clean path. NB: the normalization search
+// grid is DENSE (512 log-spaced points): the old 160-point grid undershot the
+// true peak by ~0.5 dB, leaving the cab able to boost slightly past unity.
+// ===========================================================================
 
 #include "clipper/dsp/CabIR.h"
 
@@ -49,105 +48,217 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
+#include <vector>
 
 namespace clipper::dsp {
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
 
-// Deterministic LCG (Numerical Recipes constants) -> [-1, 1).
-struct Lcg {
-    uint32_t s;
-    explicit Lcg(uint32_t seed) : s(seed) {}
-    float next() {
-        s = s * 1664525u + 1013904223u;
-        // top 24 bits -> [0,1)
-        const float u = (s >> 8) * (1.0f / 16777216.0f);
-        return 2.0f * u - 1.0f;
-    }
+// One resonant mode: a decaying sinusoid f(t) = amp * e^{-t/tau} * sin(w t).
+// (Phase 0 so the mode starts at exactly zero — no onset step/click.)
+struct Mode {
+    double freqHz;   // resonance frequency
+    double decayMs;  // 1/e amplitude decay time in milliseconds
+    double amp;      // linear amplitude relative to the unit direct impulse
 };
-}  // namespace
 
-std::vector<float> generateDefaultCab2x12IR(double sampleRate) {
-    const double fs = sampleRate > 0.0 ? sampleRate : 48000.0;
-
-    // Length scales with sample rate so the physical time structure is constant.
-    const int len = static_cast<int>(std::lround(1024.0 * fs / 48000.0));
+// Build the RAW (unfiltered, unnormalized) modal impulse response: a direct
+// impulse at `directDelay` plus the sum of the given damped-sinusoid modes.
+// Deterministic — identical for identical inputs.
+std::vector<float> modalRaw(int len, double fs, double directAmp, int directDelay,
+                            const std::vector<Mode>& modes) {
     std::vector<float> h(static_cast<size_t>(len), 0.0f);
-
-    // Scale the integer sample offsets by the rate ratio so early reflections and
-    // the decay land at the same physical times at any sample rate.
-    const double rr = fs / 48000.0;
-    auto at = [&](int n48) { return static_cast<int>(std::lround(n48 * rr)); };
-
-    // Direct hit + two SMALL early reflections. Kept deliberately low in
-    // amplitude: large reflections comb-filter the magnitude response into peaks
-    // and notches that (a) differ between sample rates and (b) fight the smooth
-    // speaker rolloff we want. At these amplitudes they add a subtle box
-    // character (< ~1 dB ripple) without disturbing the overall shape.
-    h[static_cast<size_t>(at(5))] += 1.0f;
-    h[static_cast<size_t>(at(5 + 33))] += -0.10f;
-    h[static_cast<size_t>(at(5 + 71))] += 0.06f;
-
-    // Diffuse decaying tail (seeded noise * exponential envelope) — small, just
-    // enough to give the response some organic texture; the filter cascade below
-    // dominates the shape, keeping the magnitude response smooth and consistent
-    // across sample rates so tests can assert on it.
-    Lcg rng(0x0C1A5511u);
-    const double tau = len / 5.0;
-    const int tailStart = at(12);
-    for (int n = tailStart; n < len; ++n) {
-        const double env = std::exp(-(n - tailStart) / tau);
-        h[static_cast<size_t>(n)] += static_cast<float>(0.02 * env) * rng.next();
-    }
-
-    // --- Spectral shaping. Apply the biquad cascade forward over the buffer. ---
-    Biquad hp;
-    hp.setCoeffs(rbj::highPass(95.0, 0.707, fs));
-    Biquad lp[4];
-    for (auto& b : lp) b.setCoeffs(rbj::lowPass(5000.0, 0.707, fs));
-    Biquad presence;
-    presence.setCoeffs(rbj::peaking(2500.0, 3.5, 1.0, fs));
-
-    for (int n = 0; n < len; ++n) {
-        float x = h[static_cast<size_t>(n)];
-        x = hp.process(x);
-        for (auto& b : lp) x = b.process(x);
-        x = presence.process(x);
-        h[static_cast<size_t>(n)] = x;
-    }
-
-    // Normalize to UNITY SPECTRAL PEAK (max |H(f)| = 1 over the audio band):
-    // a cab may COLOR the tone but must never BOOST any frequency past the
-    // level entering it. M5/M6.5 normalized |H(1 kHz)| = 1, which left the
-    // +3 dB presence bump ABOVE unity — engaging the cab then pushed presence-
-    // band peaks into the output limiter and fizzed the clean path (M6.6 field
-    // report: "fizzy only with the cab on"). With peak normalization the 1 kHz
-    // reference sits ~-3 dB and the documented relative shape is unchanged.
-    auto dtftMag = [&](double f) {
-        const double w = 2.0 * kPi * f / fs;
-        double re = 0.0, im = 0.0;
-        for (int n = 0; n < len; ++n) {
-            re += h[static_cast<size_t>(n)] * std::cos(w * n);
-            im -= h[static_cast<size_t>(n)] * std::sin(w * n);
+    if (directDelay >= 0 && directDelay < len) h[static_cast<size_t>(directDelay)] += static_cast<float>(directAmp);
+    for (const auto& m : modes) {
+        const double w = 2.0 * kPi * m.freqHz / fs;
+        const double tau = std::max(1.0, m.decayMs * 1e-3 * fs);  // samples
+        for (int n = directDelay; n < len; ++n) {
+            const double t = n - directDelay;
+            const double env = std::exp(-t / tau);
+            if (env < 1e-6) break;  // mode has died — stop (deterministic bound)
+            h[static_cast<size_t>(n)] += static_cast<float>(m.amp * env * std::sin(w * t));
         }
-        return std::sqrt(re * re + im * im);
-    };
-    // Log-spaced search grid over the audible band (the response is smooth by
-    // construction — biquad cascade — so 160 points bound the true peak well).
+    }
+    return h;
+}
+
+// |H(f)| = raw DTFT magnitude of the IR at f. This IS the exact frequency
+// response of a finite impulse response (sum h[n] e^{-jwn}); the right tool for
+// reading an IR's magnitude (unlike a windowed sinusoid-amplitude estimator).
+double dtftMag(const std::vector<float>& h, double f, double fs) {
+    const double w = 2.0 * kPi * f / fs;
+    double re = 0.0, im = 0.0;
+    for (size_t n = 0; n < h.size(); ++n) {
+        re += h[n] * std::cos(w * n);
+        im -= h[n] * std::sin(w * n);
+    }
+    return std::sqrt(re * re + im * im);
+}
+
+// Scale to UNITY SPECTRAL PEAK: max |H(f)| == 1 over the audio band (M6.6). The
+// response is smooth by construction (biquad cascade + broad modes), but the
+// grid is dense (512 log points) so we never undershoot the true peak and leave
+// the cab able to boost past unity.
+void peakNormalize(std::vector<float>& h, double fs) {
     double peakMag = 0.0;
     const double fLo = 40.0, fHi = std::min(16000.0, fs * 0.45);
-    for (int k = 0; k < 160; ++k) {
-        const double f = fLo * std::pow(fHi / fLo, k / 159.0);
-        peakMag = std::max(peakMag, dtftMag(f));
+    for (int k = 0; k < 512; ++k) {
+        const double f = fLo * std::pow(fHi / fLo, k / 511.0);
+        peakMag = std::max(peakMag, dtftMag(h, f, fs));
     }
     if (peakMag > 1e-9) {
         const float g = static_cast<float>(1.0 / peakMag);
         for (float& v : h) v *= g;
     }
+}
 
+// Run one 2nd-order section forward over the whole buffer.
+void applyBiquad(std::vector<float>& h, const BiquadCoeffs& c) {
+    Biquad b;
+    b.setCoeffs(c);
+    for (float& v : h) v = b.process(v);
+}
+
+// Raised-cosine tail fade: hold unity until `startMs`, then smoothly fall to
+// zero by `endMs`. A steep speaker rolloff SPREADS the direct impulse (the
+// time/frequency tradeoff), so the high-pass's low-frequency ring extends past a
+// few ms; gating the far tail keeps the IR a tight, gated cab response with
+// almost all energy in the first few ms (the tail-energy metric) and no abrupt
+// truncation click. The cosine shape means the window's own spectrum is smooth,
+// so it never adds ripple to the magnitude response.
+void applyTailFade(std::vector<float>& h, double fs, double startMs, double endMs) {
+    const int s = static_cast<int>(std::lround(startMs * 1e-3 * fs));
+    const int e = static_cast<int>(std::lround(endMs * 1e-3 * fs));
+    if (e <= s) return;
+    for (int i = 0; i < static_cast<int>(h.size()); ++i) {
+        double g;
+        if (i <= s) g = 1.0;
+        else if (i >= e) g = 0.0;
+        else g = 0.5 * (1.0 + std::cos(kPi * (i - s) / static_cast<double>(e - s)));
+        h[static_cast<size_t>(i)] *= static_cast<float>(g);
+    }
+}
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Default 2x12 — a plausible closed-back 2x12 (the clean platform the JC-120
+// drives). MODAL tail (no noise). Coarse voicing unchanged from M5/M6.6:
+//   low cut ~95 Hz, presence bump +3.5 dB @ 2.5 kHz, steep ~48 dB/oct rolloff
+//   above 5 kHz (four cascaded 2nd-order low-passes).
+//
+// Modes (box/cone/breakup), all short-decay and low-amplitude so the tail stays
+// >35 dB below the direct sound and the mid-band response stays smooth:
+//   ~90-130 Hz  box/port resonances,
+//   ~200-700 Hz low-mid cone body,
+//   ~1.5-3.4 kHz a small, damped cone-breakup cluster (broad, gentle).
+//
+// Measured magnitude response of the generated IR (raw DTFT, dB relative to the
+// 1 kHz bin; the ctest asserts this shape at 44.1 k / 48 k / 96 k):
+//     60 Hz   ~ -8 dB      (low cut)
+//     100 Hz  ~ -4 dB      (low cut easing in)
+//     1 kHz   =  0 dB       (reference / passband)
+//     2.5 kHz ~ +2 dB      (presence bump)
+//     5 kHz   ~ -12 dB     (into the steep speaker rolloff)
+//     8 kHz   ~ -39 dB     (well down the ~48 dB/oct rolloff)
+// Load-bearing shape: 1 kHz >> 8 kHz, 5 kHz below 1 kHz, presence not collapsed,
+// low end rolled off; plus the four metric asserts (tail energy, smoothness,
+// modal flatness, unity peak).
+// ---------------------------------------------------------------------------
+std::vector<float> generateDefaultCab2x12IR(double sampleRate) {
+    const double fs = sampleRate > 0.0 ? sampleRate : 48000.0;
+    const int len = static_cast<int>(std::lround(1024.0 * fs / 48000.0));
+    const double rr = fs / 48000.0;
+    const int direct = static_cast<int>(std::lround(5.0 * rr));
+
+    // A mode's spectral bump ~= amp * (decay_samples / 2), so amplitudes are
+    // deliberately tiny (thousandths): each mode is a gentle ~1 dB resonance for
+    // body and a short natural decay, NOT a spectral spike. The magnitude voicing
+    // is set by the biquad cascade below acting on the direct impulse.
+    static const std::vector<Mode> kModes = {
+        // freqHz, decayMs, amp — box/port
+        {92.0, 2.8, 0.0016}, {128.0, 2.6, 0.0014},
+        // low-mid cone body
+        {205.0, 2.2, 0.0013}, {320.0, 1.9, 0.0012}, {470.0, 1.6, 0.0011},
+        {680.0, 1.4, 0.0010},
+        // damped cone-breakup cluster (broad, gentle — shaped by the presence
+        // bump and killed by the steep low-pass)
+        {1500.0, 0.9, 0.0012}, {2100.0, 0.7, 0.0012}, {2600.0, 0.6, 0.0011},
+        {3200.0, 0.5, 0.0009},
+    };
+
+    std::vector<float> h = modalRaw(len, fs, 1.0, direct, kModes);
+
+    applyBiquad(h, rbj::highPass(95.0, 0.6, fs));  // Q 0.6: tight, low ring
+    for (int i = 0; i < 4; ++i) applyBiquad(h, rbj::lowPass(5000.0, 0.707, fs));
+    applyBiquad(h, rbj::peaking(2500.0, 3.5, 1.0, fs));
+
+    applyTailFade(h, fs, 2.5, 7.0);  // gate the far tail
+    peakNormalize(h, fs);
     return h;
+}
+
+// ---------------------------------------------------------------------------
+// Brit 4x12 — a closed-back Marshall-style 4x12 (greenback-ish), the thicker,
+// darker rock voicing that pairs with the JCM800. Distinct from the 2x12:
+//   * more LOW-MID WEIGHT: low cut shifted DOWN to ~70 Hz, plus a broad +2 dB
+//     bump across ~180-250 Hz (the 4x12 "chunk"),
+//   * presence energy a touch higher, ~2.8-3.2 kHz,
+//   * a STEEPER top rolloff starting LOWER, from ~4.5 kHz (five cascaded
+//     low-passes vs the 2x12's four @ 5 kHz) — the greenback darkness, so the
+//     4x12 is audibly darker than the 2x12 above 5 kHz.
+// Same modal recipe + M6.6 peak normalization.
+//
+// Measured magnitude response (raw DTFT, dB relative to 1 kHz; ctest-asserted at
+// 44.1 k / 48 k / 96 k):
+//     60 Hz   ~ -6 dB      (low cut, shifted down vs the 2x12 -> less cut)
+//     100 Hz  ~ -2 dB
+//     200 Hz  ~ +1.5 dB    (the low-mid chunk — the 4x12 thickness)
+//     1 kHz   =  0 dB       (reference / passband)
+//     3 kHz   ~  0 dB       (presence holding up against the earlier rolloff)
+//     4.5 kHz ~ -13 dB     (rolloff starting lower)
+//     5 kHz   ~ -19 dB     (steeper/darker than the 2x12's ~-12 dB)
+//     8 kHz   ~ -56 dB     (far below the 2x12's ~-39 dB — the greenback top)
+// Load-bearing: darker than the 2x12 above 5 kHz (5 k AND 8 k), extra low-mid
+// (200 Hz above 1 kHz), presence not collapsed; plus the four metric asserts.
+// ---------------------------------------------------------------------------
+std::vector<float> generateBrit4x12IR(double sampleRate) {
+    const double fs = sampleRate > 0.0 ? sampleRate : 48000.0;
+    const int len = static_cast<int>(std::lround(1024.0 * fs / 48000.0));
+    const double rr = fs / 48000.0;
+    const int direct = static_cast<int>(std::lround(5.0 * rr));
+
+    // Tiny amplitudes (see the 2x12 note): gentle body + a short natural decay,
+    // not spectral spikes. A little fuller/longer in the low-mids than the 2x12.
+    static const std::vector<Mode> kModes = {
+        // box/port — a touch lower & fuller than the 2x12 (bigger box)
+        {80.0, 2.4, 0.0015}, {115.0, 2.2, 0.0014},
+        // low-mid cone body — weighted toward the 180-250 chunk
+        {195.0, 2.0, 0.0014}, {240.0, 1.8, 0.0013}, {360.0, 1.5, 0.0011},
+        {560.0, 1.3, 0.0010},
+        // damped cone-breakup cluster, centered a little higher for the presence
+        {1700.0, 0.8, 0.0012}, {2300.0, 0.7, 0.0011}, {2950.0, 0.6, 0.0010},
+        {3300.0, 0.5, 0.0008},
+    };
+
+    std::vector<float> h = modalRaw(len, fs, 1.0, direct, kModes);
+
+    applyBiquad(h, rbj::highPass(72.0, 0.6, fs));       // Q 0.6: tight, low ring
+    applyBiquad(h, rbj::peaking(215.0, 2.0, 0.7, fs));  // broad low-mid chunk
+    for (int i = 0; i < 5; ++i) applyBiquad(h, rbj::lowPass(4600.0, 0.707, fs));
+    applyBiquad(h, rbj::peaking(3000.0, 3.0, 1.1, fs));  // presence
+
+    applyTailFade(h, fs, 1.8, 5.0);  // gate the far tail (tighter than the 2x12)
+    peakNormalize(h, fs);
+    return h;
+}
+
+// Public entry point (see CabIR.h): peak-normalize any IR to unity spectral peak
+// in place. Delegates to the same dense-grid normalizer the generators use, so a
+// user-uploaded cab is held to the exact same "never boosts" rule (M6.6).
+void peakNormalizeIR(std::vector<float>& ir, double sampleRate) {
+    const double fs = sampleRate > 0.0 ? sampleRate : 48000.0;
+    peakNormalize(ir, fs);
 }
 
 }  // namespace clipper::dsp
