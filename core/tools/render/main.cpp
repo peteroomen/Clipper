@@ -21,6 +21,7 @@
 #include "dr_wav.h"
 
 #include "clipper/dsp/RatModel.h"
+#include "clipper/dsp/TriodeStage.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
@@ -54,6 +55,9 @@ struct Args {
     bool idealOpAmp = false;      // M6.5: bypass the LM308 op-amp model (A/B)
     std::string chain = "rat";    // "rat" (pedal) or "clean" (amp+cab+limiter)
     float limThresh = 0.97f;      // M6.5: output soft-limiter threshold (clean chain)
+    bool triode = false;          // M9.1: run a single 12AX7 TriodeStage (stage alone)
+    float triodeDrive = 3.0f;     // input-gain multiplier into the grid (volts)
+    float triodeCathodeUf = 0.68f;  // cathode bypass cap (uF); 0 = unbypassed
 };
 
 // Output soft limiter, parameterized by threshold so the clean-path A/B can
@@ -79,7 +83,11 @@ float softLimit(float x, float t) {
         "          --alias-report (print the aliasing metric table for os=1/2/4/8 and exit).\n"
         "M6.5:     --ideal-opamp (bypass the LM308 op-amp model: ideal op-amp A/B),\n"
         "          --chain rat|clean (clean = amp+cab+limiter, pedal-bypassed path),\n"
-        "          --limiter-thresh T (clean-chain output soft-limiter threshold, default 0.97).\n",
+        "          --limiter-thresh T (clean-chain output soft-limiter threshold, default 0.97).\n"
+        "M9.1:     --triode (render a single 12AX7 common-cathode stage alone),\n"
+        "          --triode-drive D (input-gain multiplier into the grid, default 3.0),\n"
+        "          --triode-cathode UF (cathode bypass cap in uF: 0.68 default, 0 unbypassed, 22 full),\n"
+        "          --os 1|2|4|8 also selects the triode oversampling (default 4).\n",
         argv0, argv0, argv0, argv0);
     std::exit(2);
 }
@@ -231,6 +239,9 @@ int main(int argc, char** argv) {
         else if (s == "--ideal-opamp") a.idealOpAmp = true;
         else if (s == "--chain") a.chain = need("--chain");
         else if (s == "--limiter-thresh") a.limThresh = std::atof(need("--limiter-thresh"));
+        else if (s == "--triode") a.triode = true;
+        else if (s == "--triode-drive") a.triodeDrive = std::atof(need("--triode-drive"));
+        else if (s == "--triode-cathode") a.triodeCathodeUf = std::atof(need("--triode-cathode"));
         else if (s == "--alias-report") a.aliasReport = true;
         else if (s == "-h" || s == "--help") usage(argv[0]);
         else if (!s.empty() && s[0] == '-') {
@@ -317,8 +328,31 @@ int main(int argc, char** argv) {
     }
 
     std::vector<float> out(input.size(), 0.0f);
+    double triodePeakVolts = 0.0;  // reported for the --triode chain
 
-    if (a.chain == "clean") {
+    if (a.triode) {
+        // M9.1: a single 12AX7 common-cathode stage, alone, for listening. The
+        // grid drive is the input scaled by --triode-drive (a bare 0.3 V DI barely
+        // moves a 12AX7; ~1-3 V grid is where it distorts). Output is the plate AC
+        // (next-grid) voltage in the tens of volts, peak-normalized to 0.9 for the
+        // WAV (raw plate peak reported below).
+        clipper::dsp::TriodeStage stage;
+        clipper::dsp::TriodeStage::Config cfg;
+        cfg.Ck = a.triodeCathodeUf > 0.0f
+                     ? static_cast<double>(a.triodeCathodeUf) * 1e-6
+                     : 0.0;
+        stage.configure(cfg);
+        stage.prepare(fs, 128);
+        stage.setOversampling(a.os);
+        std::vector<float> grid(input.size());
+        for (size_t i = 0; i < input.size(); ++i) grid[i] = input[i] * a.triodeDrive;
+        if (!grid.empty())
+            stage.process(grid.data(), out.data(), static_cast<int>(grid.size()));
+        for (float v : out) triodePeakVolts = std::max(triodePeakVolts,
+                                                       static_cast<double>(std::fabs(v)));
+        const double norm = triodePeakVolts > 1e-9 ? 0.9 / triodePeakVolts : 1.0;
+        for (float& v : out) v = static_cast<float>(v * norm);
+    } else if (a.chain == "clean") {
         // Clean (pedal-bypassed) chain: input -> amp (default rig: vol 0.4, tone
         // flat, treble 0.6, bright off) -> default cab -> output soft limiter.
         // This is the fizz-suspect path from the M6.5 clean-path fix; the limiter
@@ -381,7 +415,14 @@ int main(int argc, char** argv) {
         rms += static_cast<double>(v) * v;
     }
     rms = out.empty() ? 0.0 : std::sqrt(rms / out.size());
-    if (a.chain == "clean") {
+    if (a.triode) {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (chain=triode 12AX7, drive=%.2f, "
+            "cathode=%.2f uF, os=%dx)\n  raw plate peak=%.1f V (normalized to 0.9)  "
+            "out rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.triodeDrive, a.triodeCathodeUf, a.os,
+            triodePeakVolts, rms);
+    } else if (a.chain == "clean") {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (chain=clean amp:vol0.4/treble0.6+cab, "
             "limiter-thresh=%.2f)\n  peak=%.4f  rms=%.4f\n",

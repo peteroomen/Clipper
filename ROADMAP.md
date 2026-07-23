@@ -180,10 +180,15 @@ triode stage — repeated, so we build a single validated triode model and get
 future amps mostly for free; it's exhaustively documented; and SD-1 → JCM800
 is one of the most canonical pairings in rock.
 
-1. **Triode stage module** — grid conductance + blocking distortion included
-   (Koren-style model or WDF triode), validated standalone against published
-   curves with the M2 measurement discipline. This module is 80% of every
-   future amp.
+1. **Triode stage module** ✅ *(phase 1 done — see docs §12, M9.1)* — a 12AX7
+   common-cathode Koren-model stage with grid conductance + blocking distortion,
+   per-sample nodal-Newton solve, validated standalone with the M2 measurement
+   discipline (`clipper_triode_tests`): DC op point Va≈186 V / Iq≈1.34 mA vs the
+   analytic load line; small-signal gain −64× bypassed / −41× unbypassed vs the
+   `−gm·(RL‖rp)` formula; 2nd-harmonic-dominant asymmetric clip; blocking
+   recovery ≈22 ms (Rgl·Cc); no NaN on ±10 V slam (≤8 Newton iters); cathode
+   bypass shelf vs analytic; aliasing −140 dB at the shipped 4×. Rendered alone
+   via `clipper-render --triode`. This module is 80 % of every future amp.
 2. **Preamp** — cascaded stages with interstage attenuation, cathode follower
    driving the classic Marshall TMB tone stack (passive — existing machinery).
 3. **Power section — where "responsive" lives**: push-pull EL34 approximation,
