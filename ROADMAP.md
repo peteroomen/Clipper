@@ -137,6 +137,16 @@ Field feedback from real playing, prioritized ahead of new pedals:
   the RAT is already handle-based, so multiple instances stack safely.
   Architecture for everything M7+ plugs into.
 
+- **M6.7 — Reverb** *(queued)* — the JC-120's missing spring. Note: M5 shipped
+  NO reverb (docs §M5 confirm); the panel has no knob because the block does
+  not exist. M6.7 adds an algorithmic spring-flavored reverb in the authentic
+  position (preamp → reverb → chorus split → per-side cabs, so the tail blooms
+  in stereo) with a single REVERB knob, decay/tone validated offline.
+- **M6.7-2 — True dispersive spring** — replace M6.7's core with the
+  Parker-style dispersive-waveguide spring (allpass-cascade chirped echoes,
+  dual detuned springs, transducer band-limit): the "boing" and the drip,
+  measured via chirp-train spectrogram assertions. Same knob, better physics.
+
 ### M7 — Tuner *(S)* — **SHIPPED**
 
 Not a modeling problem — pitch detection + mute. Chromatic needle tuner
