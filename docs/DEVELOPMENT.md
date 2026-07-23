@@ -2515,7 +2515,16 @@ Default target is Apple Silicon (arm64) for the host machine. Artefacts land und
 Getting the AU into Logic:
 1. Copy (or symlink) `Clipper.component` to
    `~/Library/Audio/Plug-Ins/Components/`.
-2. Validate: `auval -v aufx Clp1 Clpr` (the codes are `PLUGIN_CODE=Clp1`,
+2. Validate: `auval -v aufx Clp1 Clpr
+
+**No sound / no input on the Mac Standalone?** Two first checks:
+1. macOS mic permission — the app asks on first launch (fixed after phase 1;
+   rebuild if your binary predates the MICROPHONE_PERMISSION_ENABLED flag). If
+   you denied it once: System Settings → Privacy & Security → Microphone →
+   enable Clipper.
+2. In the Standalone: Options → Audio/MIDI Settings → set the INPUT device to
+   your interface and enable the input channel (JUCE standalones sometimes
+   default input to none).` (the codes are `PLUGIN_CODE=Clp1`,
    `PLUGIN_MANUFACTURER_CODE=Clpr` from `native/CMakeLists.txt`). A clean
    `auval` pass is what Logic's plugin manager gates on.
 3. Launch Logic; it rescans AUs on start. If it does not appear, reset the AU

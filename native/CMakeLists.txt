@@ -66,6 +66,12 @@ juce_add_plugin(Clipper
     PLUGIN_CODE Clp1
     FORMATS ${CLIPPER_FORMATS}
     IS_SYNTH FALSE
+    # Without this the macOS Standalone gets NO input at all — the OS silently
+    # denies the device (any input, muted or not) because the app never asks
+    # for mic permission. Injects NSMicrophoneUsageDescription + the runtime
+    # permission request. (Field bug: "audio doesn't work at all" on Mac.)
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "Clipper needs your audio interface to hear the guitar."
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT FALSE
