@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# A/B evidence for the M6.1 RAT re-voice + gain change.
+# A/B evidence for the M6.1 RAT re-voice + gain change, and (appended below) the
+# M6.5 fizz fixes: the LM308 op-amp model (ideal vs modelled) and the clean-path
+# gain re-staging (OLD +6 dB / 0.9 limiter vs NEW unity / 0.97 limiter).
 #
 # Renders the SAME signals through the OLD pedal model (the committed HEAD:
 # single 320 Hz / -10.5 dB pre-clip shelf, +54 dB max gain) and the NEW model
@@ -39,6 +41,12 @@ git -C "$REPO_ROOT" archive HEAD core | tar -x -C "$OLDTREE"   # HEAD's core tre
 # (so the OLD binary also has the `pluck` generator) — the RatModel already IS the
 # HEAD version inside the archive, which is exactly the OLD behavior we want.
 cp "$CORE/tools/render/main.cpp" "$OLDTREE/core/tools/render/main.cpp"
+# The HEAD RatModel predates the M6.5 setIdealOpAmp() API; the OLD binary is
+# inherently "ideal op-amp" (no LM308 model), and it is only used for the RAT
+# M6.1 A/B and the clean-chain (--chain clean, AmpModel) A/B — never with
+# --ideal-opamp. Drop those two calls so the copied main.cpp builds against the
+# HEAD RatModel.
+sed -i '/setIdealOpAmp/d' "$OLDTREE/core/tools/render/main.cpp"
 if [ ! -d "$CHOW" ]; then
   echo "ERROR: chowdsp_wdf not found at $CHOW — run 'cmake -B build' in core/ first." >&2
   exit 1
@@ -70,5 +78,49 @@ for SIG in "pluck:82.4:2.0" "sine:82.4:2.0" "sweep:20:20000:4.0"; do
   "$NEW" --gen "$SIG" "$OUT/${TAG}_NEW_trim.wav" --amp "$AMP_TRIM" \
          --distortion "$DIST" --filter "$FILT" --level "$LEVEL" | sed 's/^/    /'
 done
+
+# ---------------------------------------------------------------------------
+# M6.5 fizz A/B — same NEW binary, LM308 op-amp model OFF (ideal, fizzy) vs ON.
+# High-dist RAT on a high-E pluck and a high-E sine (the classic fizz probes):
+# the ideal op-amp passes razor edges to the clipper; the LM308 (closed-loop BW
+# collapse + slew) rounds them. Listen: ideal = fizzy/harsh, LM308 = thicker.
+# ---------------------------------------------------------------------------
+echo
+echo "== M6.5 fizz A/B: LM308 op-amp OFF (ideal) vs ON -> $OUT =="
+for SIG in "pluck:329.6:2.0" "sine:329.6:2.0"; do
+  TAG="fizz_$(echo "$SIG" | tr ':.' '__')"
+  echo "--- $SIG dist=1.0 filter=0.15 (bright) level=0.9, amp $AMP_TRIM ---"
+  echo "[ideal op-amp (LM308 OFF) — fizzy]"
+  "$NEW" --gen "$SIG" "$OUT/${TAG}_idealopamp.wav" --amp "$AMP_TRIM" \
+         --distortion 1.0 --filter 0.15 --level 0.9 --ideal-opamp \
+         --spectrum "$OUT/${TAG}_idealopamp.csv" | sed 's/^/    /'
+  echo "[LM308 op-amp ON — thick]"
+  "$NEW" --gen "$SIG" "$OUT/${TAG}_lm308.wav" --amp "$AMP_TRIM" \
+         --distortion 1.0 --filter 0.15 --level 0.9 \
+         --spectrum "$OUT/${TAG}_lm308.csv" | sed 's/^/    /'
+done
+
+# ---------------------------------------------------------------------------
+# M6.5 clean-path A/B — pedal BYPASSED chain (amp default + cab + output limiter).
+# OLD binary (M6.1 staging: +6 dB volume ceiling, 0.9 limiter) soft-clips every
+# cycle at a hot -3 dBFS input = "fizzy". NEW binary (M6.5: unity ceiling, 0.97
+# limiter) keeps the limiter dormant = clean. Input amp ~0.7 => ~-3 dBFS peak.
+# (Both binaries share the current main.cpp, so both have --chain/--limiter-thresh;
+# the amp volume taper difference comes from OLD vs NEW AmpModel.)
+# ---------------------------------------------------------------------------
+echo
+echo "== M6.5 clean-path A/B: pedal-bypassed chain, OLD(0.9/+6dB) vs NEW(0.97/unity) =="
+CLEAN_AMP=0.7
+for SIG in "pluck:82.4:2.0" "sine:220.0:2.0"; do
+  TAG="clean_$(echo "$SIG" | tr ':.' '__')"
+  echo "--- $SIG  (amp $CLEAN_AMP ~ -3 dBFS input peak) ---"
+  echo "[OLD staging: +6 dB ceiling, limiter 0.9 — soft-clips = fizzy]"
+  "$OLD" --gen "$SIG" "$OUT/${TAG}_OLD.wav" --amp "$CLEAN_AMP" \
+         --chain clean --limiter-thresh 0.9 | sed 's/^/    /'
+  echo "[NEW staging: unity ceiling, limiter 0.97 — dormant = clean]"
+  "$NEW" --gen "$SIG" "$OUT/${TAG}_NEW.wav" --amp "$CLEAN_AMP" \
+         --chain clean --limiter-thresh 0.97 | sed 's/^/    /'
+done
+
 echo
 echo "Done. WAVs + spectra in: $OUT  (untracked; delete freely)"

@@ -35,9 +35,15 @@ const RENDER_QUANTUM = 128;
 // PEAK_REPORT_BLOCKS render quanta (~23 ms at 128/44.1k), carrying the window max.
 const PEAK_REPORT_BLOCKS = 8;
 
-// Output soft limiter (M6.1). Transparent below ±LIM_THRESH, then a tanh knee
-// asymptoting to ±1.0 so the louder staging can never emit raw overs.
-const LIM_THRESH = 0.9;
+// Output soft limiter — a TRUE SAFETY catch, not a tone stage. Transparent below
+// ±LIM_THRESH, then a narrow tanh knee asymptoting to ±1.0 so the output can
+// never emit raw overs. M6.5: raised 0.9 -> 0.97 and the amp gain staging pulled
+// down (volume tops out at unity, see AmpModel.cpp) so the CLEAN pedal-bypassed
+// chain stays below the knee at realistic levels instead of soft-clipping every
+// cycle ("fizz"). MIRRORS clipper::dsp::OutputLimiter::kThreshold and its tanh
+// formula (core/include/clipper/dsp/OutputLimiter.h) — keep the two in sync; the
+// native tests exercise that C++ implementation.
+const LIM_THRESH = 0.97;
 
 // Declick fade for chain edits (M6.4): ~6 ms each way. Long enough to be
 // inaudible as a transient, short enough that a reorder feels instant.

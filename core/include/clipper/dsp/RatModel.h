@@ -80,6 +80,15 @@ public:
     void setStage2Mode(int mode);
     int stage2Mode() const;
 
+    // M6.5 measurement hook (NOT a user knob — the LM308 is the pedal's fixed
+    // identity, like setStage2Mode is a measurement path). When true, the LM308
+    // op-amp model (gain-tracking closed-loop bandwidth + slew limiting) is
+    // BYPASSED, giving an ideal op-amp — used by the A/B render + aliasing
+    // measurements to show the fizz the LM308 model removes. Default false
+    // (LM308 modelled).
+    void setIdealOpAmp(bool ideal);
+    bool idealOpAmp() const;
+
     // Set a normalized parameter (id in ParamId, value in [0, 1]). Out-of-range
     // values are clamped. Applied with one-pole smoothing inside process().
     void setParameter(int paramId, float value);

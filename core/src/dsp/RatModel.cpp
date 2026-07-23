@@ -12,22 +12,17 @@
 //
 // STAGE 1 — gain / shaping (LM308 non-inverting amp; ProCo RAT).
 //   * DISTORTION knob -> pre-gain, linear-in-dB over [kDistMinDb, kDistMaxDb]
-//     = [0, +54] dB. The real RAT non-inverting gain is 1 + P1/Rg with P1 the
-//     100 k DISTORTION pot and Rg ~ 47 Ohm at midband, i.e. unity up to ~+66 dB;
-//     we cap at +54 dB so the offline model stays well-behaved without the
-//     LM308's slew limiting (slew limiting = deliberate future refinement, M2+).
-//   * Pre-clip frequency shaping: the RAT feedback network (P1 = 100 k in the
-//     feedback, and a 47 Ohm + 2.2 uF series leg to ground, with a small ~100 pF
-//     cap across the feedback) makes the stage gain RISE toward the mids/highs
-//     with corners very roughly in the 100-800 Hz region — this is what makes
-//     the RAT tight/aggressive rather than woolly. We model it as a first-order
-//     high-shelf: unity above the corner, bass shelved down to kShelfBassGain.
-//     Corner kShelfCornerHz = 320 Hz, bass gain 0.30 (~ -10.5 dB) are chosen to
-//     sit in that documented band. (Approximation: we do NOT reproduce the exact
-//     two-pole feedback transfer function; a single shelf captures the audible
-//     "cut the lows before clipping" character. Exact component-accurate EQ is a
-//     future refinement.) NOTE: op-amp slew limiting is intentionally NOT
-//     modelled here (future refinement).
+//     = [0, +66 dB] (M6.1: the real RAT non-inverting HF plateau 1 + P1/(R1||R2);
+//     was +54 dB). See the kDistMaxDb constant below.
+//   * Pre-clip frequency shaping (M6.1 two-corner RAT feedback voicing): the
+//     stage gain RISES with frequency through the feedback network's two series-RC
+//     legs (~60.5 Hz and ~1539 Hz corners) and falls toward unity at DC — NOT the
+//     old single 320 Hz shelf. Implemented as x - g1*LP60 - g2*LP1539 (see the
+//     kShape* constants below).
+//   * M6.5: the LM308's op-amp limitations (gain-tracking closed-loop bandwidth
+//     and slew-rate limiting) ARE now modelled — at the op-amp output, inside
+//     oversampling, before the diode clamp (see the M6.5 note above and
+//     LM308Stage.h). They were the missing "thick, not fizzy" behaviour.
 //
 // STAGE 2 — clipper (WDF, chowdsp_wdf). Antiparallel silicon diode pair to
 //   ground (1N914-ish). Built exactly like the library's RC diode-clipper
@@ -59,10 +54,23 @@
 // experimental first-order ADAA memoryless clipper is selectable as an alternate
 // stage 2 for measurement (see DiodeClipperADAA.h); the production default is
 // WDF + oversampling.
+//
+// M6.5 — LM308 op-amp model (fizz fix). The M1..M6.1 gain stage used an IDEAL
+// op-amp: infinite bandwidth and slew rate passed razor edges straight to the
+// diode clamp, which aliases/fizzes — a cranked digital RAT sounded fizzy where
+// a real one is thick. The real ProCo RAT's LM308 has TWO limits the model now
+// reproduces (see LM308Stage.h), placed at the op-amp OUTPUT node — after the
+// frequency-dependent gain, before the shunt-diode clamp, INSIDE oversampling:
+//   (a) gain-tracking closed-loop bandwidth  f_c = GBW / A_noise  (a one-pole LP
+//       whose corner collapses toward a few hundred Hz as DISTORTION rises), and
+//   (b) slew-rate limiting (~0.3 V/us) rounding the steep edges.
+// It is the pedal's fixed identity (no user knob); setIdealOpAmp(true) bypasses
+// it for A/B / aliasing measurement only.
 
 #include "clipper/dsp/RatModel.h"
 
 #include "clipper/dsp/DiodeClipperADAA.h"
+#include "clipper/dsp/LM308Stage.h"
 #include "clipper/dsp/Oversampler.h"
 
 #include <chowdsp_wdf/chowdsp_wdf.h>
@@ -111,6 +119,24 @@ constexpr double kShapeLeg2Hz = 1539.2161;  // 1/(2*pi*R2*C2)
 constexpr float kShapeG1 = 0.0773964f;      // (Rf/R1)/Ainf  (560-Ohm leg)
 constexpr float kShapeG2 = 0.9221702f;      // (Rf/R2)/Ainf  (47-Ohm leg)
 
+// --- LM308 op-amp model (M6.5) ---
+// GBW: the LM308 with its ~30 pF dominant-pole compensation has a documented
+// unity-gain bandwidth of ~1 MHz (National LM308 datasheet; the "0.5-1 MHz"
+// range). We take GBW = 1.0 MHz. The closed-loop corner is GBW / A_noise, so at
+// the +66 dB plateau (A ~ 1995) it collapses to ~500 Hz — the "thick, not fizzy"
+// cranked-RAT behaviour — and at unity gain it sits at 1 MHz (far above audio;
+// clamped to Nyquist in LM308Stage, i.e. transparent). A_noise is taken as the
+// (frequency-independent) plateau gain = the smoothed pre-gain, refreshed per
+// chunk; the real network's frequency-dependent noise gain is a documented
+// simplification (same spirit as the fixed-Rf shaping).
+constexpr double kOpAmpGbwHz = 1.0e6;
+// Slew rate: the LM308 is a slow op-amp, ~0.3 V/us with standard compensation
+// (datasheet typical). Referred to our 1.0f == 1.0 V convention that is
+// 0.3e6 V/s. Steep gain-stage edges are rate-limited before the diode clamp,
+// softening the transitions that alias/fizz. (0.15-0.3 V/us is the cited band;
+// 0.3 keeps note attack alive while still killing the razor edges — measured.)
+constexpr double kOpAmpSlewVoltsPerSec = 0.3e6;
+
 // --- Stage 2 constants ---
 constexpr double kRs = 1.0e3;    // series/source resistance (Ohm)
 constexpr double kCp = 10.0e-9;  // shunt capacitance (F)
@@ -138,6 +164,7 @@ struct RatModel::Impl {
     int maxBlockSize = 128;
     int osFactor = 4;            // M2 default oversampling
     int stage2Mode = RatModel::STAGE2_WDF;
+    bool idealOpAmp = false;     // M6.5: true bypasses the LM308 model (measurement)
 
     // Knob smoothers (mapped physical values, not raw knob positions).
     OnePoleSmoother preGain;    // linear pre-clip gain
@@ -160,6 +187,10 @@ struct RatModel::Impl {
     DiodeClipperADAA adaa;
     std::vector<float> stage1Buf;  // base-rate stage-1 output (sized in prepare)
 
+    // M6.5: LM308 op-amp model (gain-tracking closed-loop LP + slew limiter),
+    // run at the oversampled rate on the op-amp output before the diode clamp.
+    LM308Stage opAmp;
+
     // Stage 2: WDF diode-clipper tree (double precision for stability).
     // Declaration order matters: children before the adaptors that reference
     // them, root last.
@@ -177,6 +208,10 @@ struct RatModel::Impl {
         Vs.setVoltage(0.0);
         adaa.setKnee(DiodeClipperADAA::kDefaultVk);
         adaa.reset();
+        // LM308 op-amp model runs at the oversampled rate too (it sits between
+        // the gain stage and the diode clamp). Corner is refreshed per chunk from
+        // the smoothed pre-gain in processChunk().
+        opAmp.prepare(osRate, kOpAmpGbwHz, kOpAmpSlewVoltsPerSec);
     }
 
     // Map a FILTER knob position (0 = bright .. 1 = dark) to a cutoff in Hz,
@@ -236,6 +271,13 @@ void RatModel::setStage2Mode(int mode) {
 
 int RatModel::stage2Mode() const { return impl_->stage2Mode; }
 
+void RatModel::setIdealOpAmp(bool ideal) {
+    impl_->idealOpAmp = ideal;
+    impl_->opAmp.reset();
+}
+
+bool RatModel::idealOpAmp() const { return impl_->idealOpAmp; }
+
 void RatModel::setParameter(int paramId, float value) {
     Impl& d = *impl_;
     const float knob = clamp01(value);
@@ -287,10 +329,21 @@ void RatModel::processChunk(const float* in, float* out, int numFrames) {
         d.stage1Buf[static_cast<size_t>(i)] = shaped * d.preGain.next();
     }
 
-    // --- Stage 2 (oversampled, nonlinear): upsample -> clip -> downsample. ---
+    // --- Stage 2 (oversampled, nonlinear): upsample -> LM308 -> clip -> down. ---
     d.os.upsample(d.stage1Buf.data(), numFrames);
     float* w = d.os.buffer();
     const int osN = d.os.bufferLength();
+
+    // M6.5: LM308 op-amp model (gain-tracking closed-loop bandwidth + slew limit)
+    // at the op-amp output, before the diode clamp. The closed-loop corner tracks
+    // the current smoothed pre-gain (noise gain), refreshed once per chunk — the
+    // 5 ms pre-gain smoothing already provides the glide, so a per-chunk corner
+    // update is click-free (control-rate, like AmpModel's 32-sample coeffs).
+    if (!d.idealOpAmp) {
+        d.opAmp.setNoiseGain(d.preGain.value());
+        for (int i = 0; i < osN; ++i) w[i] = d.opAmp.processSample(w[i]);
+    }
+
     if (d.stage2Mode == STAGE2_ADAA) {
         for (int i = 0; i < osN; ++i)
             w[i] = d.adaa.processSampleADAA(w[i]);

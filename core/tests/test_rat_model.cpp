@@ -6,6 +6,7 @@
 #include "clipper/dsp/RatModel.h"
 
 #include "clipper/dsp/DiodeClipperADAA.h"
+#include "clipper/dsp/LM308Stage.h"
 #include "measure/AliasMetric.h"
 
 #include <cassert>
@@ -181,12 +182,107 @@ void testPreClipVoicing(double fs) {
         assert(err < 1.5 && "pre-clip voicing deviates >1.5 dB from the RAT analytical target");
     }
     // The two documented corners bracket the rise; HF plateau ~0 dB (rel 3 kHz).
+    // NB (M6.5): this measures at DISTORTION=0, where the LM308 closed-loop corner
+    // is ~GBW/1 = 1 MHz (far above these <=5 kHz probes — transparent), so the
+    // two-corner voicing is measured cleanly in the high-bandwidth regime. The
+    // COMPLEMENTARY property — the corner COLLAPSING as gain rises — is asserted
+    // by testClosedLoopBandwidth below. Together they pin both halves of the M6.5
+    // gain stage.
     assert(std::fabs(shapeDbRel3k(5000.0)) < 1.0 && "HF plateau not ~unity (rel 3 kHz)");
     assert(shapeDbRel3k(82.4) < -12.0 && "low E not shelved (voicing missing?)");
     std::printf(
-        "  [ok] pre-clip voicing @ %.0f Hz: worst dev %.2f dB (82Hz=%.1f 320Hz=%.1f "
-        "1539Hz=%.1f dB rel 3k)\n",
+        "  [ok] pre-clip voicing @ %.0f Hz (BW high): worst dev %.2f dB (82Hz=%.1f "
+        "320Hz=%.1f 1539Hz=%.1f dB rel 3k)\n",
         fs, worst, shapeDbRel3k(82.4), shapeDbRel3k(320.0), shapeDbRel3k(1539.0));
+}
+
+// --- Test 1c: LM308 closed-loop bandwidth tracks the noise gain (M6.5). --------
+// The op-amp's closed-loop -3 dB corner is f_c = GBW / A_noise: it COLLAPSES as
+// DISTORTION (the noise gain) rises. GBW = 1.0 MHz (see RatModel.cpp).
+//
+// Measurement: the LM308 low-pass sits BEFORE the diode clamp, so ratio the
+// small-signal response at a high-gain setting against DISTORTION=0 (corner ~1
+// MHz, LP inactive). Everything gain-independent — the two-corner shaping, the
+// WDF shunt-cap corner, the FILTER stage, the linear diode slope — CANCELS in the
+// ratio, leaving exactly the one-pole LP. Extract f_c from the rolloff and
+// compare to the analytic GBW/A at two DISTORTION settings.
+void testClosedLoopBandwidth(double fs) {
+    const double GBW = 1.0e6;
+    const float amp = 1e-5f;  // deeply linear through the diode at ALL gains here
+    // Small-signal output level (dB) at frequency f for a DISTORTION setting.
+    // render() uses the default 4x oversampling with the LM308 modelled (on).
+    auto respDb = [&](float dist, double f) {
+        auto out = render(sine(f, amp, 0.5, fs), {dist, 0.0f, 1.0f}, fs);
+        const size_t n = out.size(), win = std::min(n, static_cast<size_t>(0.3 * fs));
+        return toDb(goertzelAmp(out, n - win, win, f, fs));
+    };
+    // LP attenuation (dB) at f, isolated by ratioing vs dist=0 and normalizing to
+    // a low reference frequency well below the corner.
+    auto extractFc = [&](float dist, double f, double fRef) {
+        const double L = (respDb(dist, f) - respDb(0.0f, f)) -
+                         (respDb(dist, fRef) - respDb(0.0f, fRef));
+        const double r = std::pow(10.0, -L / 10.0) - 1.0;  // (f/fc)^2
+        return f / std::sqrt(r > 1e-9 ? r : 1e-9);
+    };
+    // dist 1.0 => A ~ 1995 => fc ~ 501 Hz;  dist 0.7 => A ~ 204 => fc ~ 4898 Hz.
+    const double A_hi = std::pow(10.0, 66.0 * 1.0 / 20.0);
+    const double A_md = std::pow(10.0, 66.0 * 0.7 / 20.0);
+    const double fcHiAnalytic = GBW / A_hi;
+    const double fcMdAnalytic = GBW / A_md;
+    // Average a couple of probes bracketing each corner for robustness.
+    const double fcHi = 0.5 * (extractFc(1.0f, 1200.0, 100.0) + extractFc(1.0f, 1800.0, 100.0));
+    const double fcMd = 0.5 * (extractFc(0.7f, 4000.0, 500.0) + extractFc(0.7f, 6000.0, 500.0));
+
+    // Corner within 20% of analytic GBW/A at both gains (measured ~2%).
+    assert(std::fabs(fcHi / fcHiAnalytic - 1.0) < 0.20 &&
+           "closed-loop corner at +66 dB is not ~ GBW/A (~500 Hz)");
+    assert(std::fabs(fcMd / fcMdAnalytic - 1.0) < 0.20 &&
+           "closed-loop corner at dist 0.7 is not ~ GBW/A (~4.9 kHz)");
+    // Tracking: the corner scales inversely with gain — higher gain => lower fc.
+    assert(fcHi < fcMd * 0.3 &&
+           "closed-loop corner did not COLLAPSE as gain rose (BW not gain-tracking)");
+    std::printf(
+        "  [ok] closed-loop BW @ %.0f Hz: fc(+66dB)=%.0f Hz (GBW/A=%.0f), "
+        "fc(dist0.7)=%.0f Hz (GBW/A=%.0f)\n",
+        fs, fcHi, fcHiAnalytic, fcMd, fcMdAnalytic);
+}
+
+// --- Test 1d: LM308 slew-rate limiter clamps dV/dt to ~0.3 V/us (M6.5). --------
+// Unit-test the LM308Stage in isolation: a big step / square must produce a max
+// |dV/dt| equal to the configured slew rate (0.3 V/us), rate-independently. (The
+// slew limiter lives inside oversampling before the diode clamp; testing the
+// stage directly avoids the diode+FILTER masking the op-amp node, and confirms
+// the clamp math at both 44.1k and 96k.)
+void testSlewRate(double fs) {
+    const double GBW = 1.0e6, SR = 0.3e6;  // V/s
+    clipper::dsp::LM308Stage s;
+    s.prepare(fs, GBW, SR);
+    s.setNoiseGain(1.0f);  // corner near Nyquist; isolate the slew clamp
+    auto maxSlopeVpUs = [&](const std::vector<float>& in) {
+        s.reset();
+        double mx = 0.0;
+        float prev = 0.0f;
+        for (size_t i = 0; i < in.size(); ++i) {
+            const float y = s.processSample(in[i]);
+            if (i) mx = std::max(mx, std::fabs(static_cast<double>(y) - prev) * fs);
+            prev = y;
+        }
+        return mx / 1e6;
+    };
+    // A big step (100 V op-amp scale) guarantees the clamp engages at any rate.
+    std::vector<float> step(static_cast<size_t>(0.01 * fs), 100.0f);
+    step[0] = 0.0f;
+    const double srStep = maxSlopeVpUs(step);
+    // A large 1 kHz square (both edges slew-limited).
+    std::vector<float> sq(static_cast<size_t>(0.02 * fs));
+    for (size_t i = 0; i < sq.size(); ++i)
+        sq[i] = (std::sin(kTwoPi * 1000.0 * i / fs) >= 0.0 ? 100.0f : -100.0f);
+    const double srSq = maxSlopeVpUs(sq);
+
+    assert(std::fabs(srStep / 0.3 - 1.0) < 0.02 && "step slew-rate not ~0.3 V/us");
+    assert(std::fabs(srSq / 0.3 - 1.0) < 0.02 && "square slew-rate not ~0.3 V/us");
+    std::printf("  [ok] slew @ %.0f Hz: step %.4f V/us, square %.4f V/us (target 0.300)\n",
+                fs, srStep, srSq);
 }
 
 // --- Test 2: clipping ceiling. ----------------------------------------------
@@ -300,11 +396,13 @@ using clipper::measure::measureAliasing;
 
 // Render through a fresh model with a chosen oversampling factor / stage-2 mode.
 std::vector<float> renderOS(const std::vector<float>& in, Params p, double fs,
-                            int os, int stage2 = RatModel::STAGE2_WDF) {
+                            int os, int stage2 = RatModel::STAGE2_WDF,
+                            bool idealOpAmp = false) {
     RatModel m;
     m.prepare(fs, 128);
     m.setOversampling(os);
     m.setStage2Mode(stage2);
+    m.setIdealOpAmp(idealOpAmp);
     m.setParameter(RatModel::PARAM_DISTORTION, p.distortion);
     m.setParameter(RatModel::PARAM_FILTER, p.filter);
     m.setParameter(RatModel::PARAM_LEVEL, p.level);
@@ -320,13 +418,24 @@ std::vector<float> renderOS(const std::vector<float>& in, Params p, double fs,
 // clipper generates lots of high harmonics. At 44.1 kHz base the full 1x->8x
 // chain must improve strictly; at 96 kHz the higher OS factors bottom out at the
 // numerical floor, so only the weaker guarantees are asserted there.
+// NOTE (M6.5): measured with the op-amp IDEALIZED (setIdealOpAmp). This test is
+// the M2 regression for the *oversampled diode clipper* — that oversampling
+// reduces the clipper's aliasing monotonically. The M6.5 LM308 slew limiter is a
+// SEPARATE nonlinearity that itself aliases at LOW oversampling (measured: at 2x
+// it can be a few dB WORSE than 1x), so a strict 1x->2x->4x->8x chain does not
+// hold for the full LM308 path — an expected, documented tradeoff. Crucially the
+// SHIPPED factor is 4x, where the real (LM308-on) path is EXCELLENT (worst-alias
+// ~ -89 dB at dist 0.9, ~ -88 dB at the +66 dB max) — asserted separately by
+// testAliasingAtMaxGain. Idealizing the op-amp here keeps this a faithful,
+// meaningful M2 oversampler regression (identical numbers to pre-M6.5).
 void testAliasingMonotonic(double fs, bool strict) {
     const double f0 = 4186.0;
     auto in = sine(f0, 0.3f, 1.0, fs);
     double worst[4];
     int idx = 0;
     for (int os : {1, 2, 4, 8}) {
-        auto out = renderOS(in, {0.9f, 0.0f, 0.9f}, fs, os);
+        auto out = renderOS(in, {0.9f, 0.0f, 0.9f}, fs, os, RatModel::STAGE2_WDF,
+                            /*idealOpAmp=*/true);
         worst[idx++] = measureAliasing(out, fs, f0).worstAliasDb;
     }
     const double w1 = worst[0], w2 = worst[1], w4 = worst[2], w8 = worst[3];
@@ -349,6 +458,25 @@ void testAliasingMonotonic(double fs, bool strict) {
     std::printf(
         "  [ok] aliasing @ %.0f Hz base: worst-alias 1x=%.1f 2x=%.1f 4x=%.1f 8x=%.1f dB\n",
         fs, w1, w2, w4, w8);
+}
+
+// --- Test M6.5: aliasing at the +66 dB max gain, SHIPPED (LM308-on) path. -----
+// M2 measured the aliasing bar at dist 0.9; M6.1 raised the max pre-clip gain to
+// +66 dB (dist 1.0), pushing ~12 dB more HF into the clipper. Re-assert the M2
+// audibility bar (worst-alias >= 60 dB below the fundamental) at the SHIPPED 4x,
+// with the full LM308 path engaged (the BW/slew help — the clipper input is
+// band-limited). Measured comfortably past the bar (~ -88 dB @ 44.1k).
+void testAliasingAtMaxGain(double fs) {
+    const double f0 = 4186.0;
+    auto in = sine(f0, 0.3f, 1.0, fs);
+    const double w4 = measureAliasing(renderOS(in, {1.0f, 0.0f, 0.9f}, fs, 4), fs, f0)
+                          .worstAliasDb;
+    assert(w4 < -60.0 &&
+           "4x worst-alias at +66 dB (dist 1.0) not >=60 dB below fundamental");
+    std::printf(
+        "  [ok] aliasing @ +66 dB (dist 1.0), %.0f Hz base: 4x worst-alias %.1f dB "
+        "(bar -60)\n",
+        fs, w4);
 }
 
 // --- Test M2-2: passband integrity — OS removes aliases, not tone. -----------
@@ -390,9 +518,9 @@ void testPassbandIntegrity() {
 // --- Test M2-3: factor-1 regression — os=1 reproduces the M1 path. -----------
 // Golden samples captured from the RatModel os=1 path rendering a 987 Hz sine
 // (amp 0.25) at dist 0.8 / filter 0.35 / level 0.9. os=1 is a pure pass-through
-// around the WDF stage, so it must match bit-closely. Regenerated for the M6.1
-// re-voice (two-corner pre-clip shaping + +66 dB max gain) — the guard now pins
-// the current single-rate path against accidental future drift.
+// around the WDF stage, so it must match bit-closely. Regenerated for M6.5 (the
+// LM308 op-amp model now sits in the signal path at every factor) — the guard
+// pins the current single-rate path (shaping + LM308 + clip) against future drift.
 void testFactorOneRegression() {
     const double fs = 44100.0, f0 = 987.0;
     const int N = 4096;
@@ -402,9 +530,9 @@ void testFactorOneRegression() {
     auto out = renderOS(in, {0.8f, 0.35f, 0.9f}, fs, 1);
     struct G { int i; float v; };
     const G golden[] = {
-        {128, -9.958429635e-02f}, {256, -2.417384386e-01f}, {512, -2.893901765e-01f},
-        {1024, 2.693854570e-01f}, {2048, -3.387029767e-01f}, {3000, 3.498205841e-01f},
-        {4095, -3.494887948e-01f},
+        {128, -1.448836029e-01f}, {256, -2.423077524e-01f}, {512, -2.132538408e-01f},
+        {1024, -1.587393880e-01f}, {2048, -3.484802246e-01f}, {3000, 3.611189127e-01f},
+        {4095, -3.536947966e-01f},
     };
     double maxDiff = 0.0;
     for (const auto& g : golden)
@@ -475,6 +603,10 @@ int main() {
     testHarmonics(96000.0);   // Test 6: SR robustness for test 1
     testPreClipVoicing(44100.0);
     testPreClipVoicing(96000.0);
+    testClosedLoopBandwidth(44100.0);
+    testClosedLoopBandwidth(96000.0);
+    testSlewRate(44100.0);
+    testSlewRate(96000.0);
     testClippingCeiling();
     testFilter(44100.0);
     testFilter(96000.0);      // Test 6: SR robustness for test 3
@@ -483,6 +615,8 @@ int main() {
     std::printf("Running M2 (antialiasing) tests...\n");
     testAliasingMonotonic(44100.0, /*strict=*/true);
     testAliasingMonotonic(96000.0, /*strict=*/false);
+    testAliasingAtMaxGain(44100.0);
+    testAliasingAtMaxGain(96000.0);
     testPassbandIntegrity();
     testFactorOneRegression();
     testAdaaEffectiveness();

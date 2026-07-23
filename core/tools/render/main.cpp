@@ -21,6 +21,9 @@
 #include "dr_wav.h"
 
 #include "clipper/dsp/RatModel.h"
+#include "clipper/dsp/AmpModel.h"
+#include "clipper/dsp/CabConvolver.h"
+#include "clipper/dsp/CabIR.h"
 #include "measure/AliasMetric.h"
 
 #include <cmath>
@@ -47,7 +50,21 @@ struct Args {
     int os = 4;                   // oversampling factor (1/2/4/8), M2 default 4
     std::string stage2 = "wdf";   // nonlinear stage: "wdf" or "adaa"
     bool aliasReport = false;     // print the alias metric table and exit
+    bool idealOpAmp = false;      // M6.5: bypass the LM308 op-amp model (A/B)
+    std::string chain = "rat";    // "rat" (pedal) or "clean" (amp+cab+limiter)
+    float limThresh = 0.97f;      // M6.5: output soft-limiter threshold (clean chain)
 };
+
+// Output soft limiter, parameterized by threshold so the clean-path A/B can
+// contrast the OLD (0.9) and NEW (0.97) staging. Mirrors the tanh knee in
+// clipper::dsp::OutputLimiter / the worklet. (Inlined here — kept independent of
+// OutputLimiter.h so the A/B script can build an OLD tree that predates it.)
+float softLimit(float x, float t) {
+    const float k = 1.0f - t;
+    if (x > t) return t + k * std::tanh((x - t) / k);
+    if (x < -t) return -t + k * std::tanh((x + t) / k);
+    return x;
+}
 
 [[noreturn]] void usage(const char* argv0) {
     std::fprintf(stderr,
@@ -58,7 +75,10 @@ struct Args {
         "  %s --alias-report [--sr SR] [--distortion D] [--stage2 wdf|adaa]\n"
         "Params are knob positions in [0,1] (defaults: distortion 0.7, filter 0.4, level 0.8).\n"
         "M2 flags: --os 1|2|4|8 (oversampling, default 4), --stage2 wdf|adaa (default wdf),\n"
-        "          --alias-report (print the aliasing metric table for os=1/2/4/8 and exit).\n",
+        "          --alias-report (print the aliasing metric table for os=1/2/4/8 and exit).\n"
+        "M6.5:     --ideal-opamp (bypass the LM308 op-amp model: ideal op-amp A/B),\n"
+        "          --chain rat|clean (clean = amp+cab+limiter, pedal-bypassed path),\n"
+        "          --limiter-thresh T (clean-chain output soft-limiter threshold, default 0.97).\n",
         argv0, argv0, argv0, argv0);
     std::exit(2);
 }
@@ -207,6 +227,9 @@ int main(int argc, char** argv) {
         else if (s == "--amp") a.amplitude = std::atof(need("--amp"));
         else if (s == "--os") a.os = std::atoi(need("--os"));
         else if (s == "--stage2") a.stage2 = need("--stage2");
+        else if (s == "--ideal-opamp") a.idealOpAmp = true;
+        else if (s == "--chain") a.chain = need("--chain");
+        else if (s == "--limiter-thresh") a.limThresh = std::atof(need("--limiter-thresh"));
         else if (s == "--alias-report") a.aliasReport = true;
         else if (s == "-h" || s == "--help") usage(argv[0]);
         else if (!s.empty() && s[0] == '-') {
@@ -239,6 +262,7 @@ int main(int argc, char** argv) {
             m.prepare(fs, 128);
             m.setOversampling(os);
             m.setStage2Mode(stage2Mode);
+            m.setIdealOpAmp(a.idealOpAmp);
             m.setParameter(clipper::dsp::RatModel::PARAM_DISTORTION, a.distortion);
             m.setParameter(clipper::dsp::RatModel::PARAM_FILTER, 0.0f);
             m.setParameter(clipper::dsp::RatModel::PARAM_LEVEL, 0.9f);
@@ -291,18 +315,41 @@ int main(int argc, char** argv) {
         drwav_free(raw, nullptr);
     }
 
-    // Process through the model.
-    clipper::dsp::RatModel model;
-    model.prepare(fs, 128);
-    model.setOversampling(a.os);
-    model.setStage2Mode(stage2Mode);
-    model.setParameter(clipper::dsp::RatModel::PARAM_DISTORTION, a.distortion);
-    model.setParameter(clipper::dsp::RatModel::PARAM_FILTER, a.filter);
-    model.setParameter(clipper::dsp::RatModel::PARAM_LEVEL, a.level);
-
     std::vector<float> out(input.size(), 0.0f);
-    if (!input.empty())
-        model.process(input.data(), out.data(), static_cast<int>(input.size()));
+
+    if (a.chain == "clean") {
+        // Clean (pedal-bypassed) chain: input -> amp (default rig: vol 0.4, tone
+        // flat, treble 0.6, bright off) -> default cab -> output soft limiter.
+        // This is the fizz-suspect path from the M6.5 clean-path fix; the limiter
+        // threshold (--limiter-thresh) contrasts OLD 0.9 vs NEW 0.97 staging.
+        clipper::dsp::AmpModel amp;
+        amp.prepare(fs, 128);
+        amp.setParameter(clipper::dsp::AmpModel::PARAM_VOLUME, 0.4f);
+        amp.setParameter(clipper::dsp::AmpModel::PARAM_BASS, 0.5f);
+        amp.setParameter(clipper::dsp::AmpModel::PARAM_MIDDLE, 0.5f);
+        amp.setParameter(clipper::dsp::AmpModel::PARAM_TREBLE, 0.6f);
+        amp.setParameter(clipper::dsp::AmpModel::PARAM_BRIGHT, 0.0f);
+        if (!input.empty())
+            amp.process(input.data(), out.data(), static_cast<int>(input.size()));
+        auto ir = clipper::dsp::generateDefaultCab2x12IR(fs);
+        clipper::dsp::CabConvolver cab;
+        cab.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
+        if (!out.empty())
+            cab.process(out.data(), out.data(), static_cast<int>(out.size()));
+        for (float& v : out) v = softLimit(v, a.limThresh);
+    } else {
+        // Process through the RAT pedal model.
+        clipper::dsp::RatModel model;
+        model.prepare(fs, 128);
+        model.setOversampling(a.os);
+        model.setStage2Mode(stage2Mode);
+        model.setIdealOpAmp(a.idealOpAmp);
+        model.setParameter(clipper::dsp::RatModel::PARAM_DISTORTION, a.distortion);
+        model.setParameter(clipper::dsp::RatModel::PARAM_FILTER, a.filter);
+        model.setParameter(clipper::dsp::RatModel::PARAM_LEVEL, a.level);
+        if (!input.empty())
+            model.process(input.data(), out.data(), static_cast<int>(input.size()));
+    }
 
     // Write 32-bit float mono WAV.
     drwav_data_format fmt;
@@ -326,12 +373,19 @@ int main(int argc, char** argv) {
         rms += static_cast<double>(v) * v;
     }
     rms = out.empty() ? 0.0 : std::sqrt(rms / out.size());
-    std::printf(
-        "Rendered %zu frames @ %.0f Hz -> %s  (dist=%.2f filter=%.2f level=%.2f "
-        "os=%dx stage2=%s)\n"
-        "  peak=%.4f  rms=%.4f  latency=%d smp\n",
-        out.size(), fs, a.outFile.c_str(), a.distortion, a.filter, a.level,
-        model.oversampling(), a.stage2.c_str(), peak, rms, model.latencySamples());
+    if (a.chain == "clean") {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (chain=clean amp:vol0.4/treble0.6+cab, "
+            "limiter-thresh=%.2f)\n  peak=%.4f  rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.limThresh, peak, rms);
+    } else {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (dist=%.2f filter=%.2f level=%.2f "
+            "os=%dx stage2=%s ideal-opamp=%d)\n"
+            "  peak=%.4f  rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.distortion, a.filter, a.level, a.os,
+            a.stage2.c_str(), a.idealOpAmp ? 1 : 0, peak, rms);
+    }
 
     if (!a.spectrum.empty() && !out.empty()) writeSpectrum(a.spectrum, out, fs);
     return 0;

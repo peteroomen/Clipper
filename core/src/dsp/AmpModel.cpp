@@ -67,17 +67,26 @@ constexpr double kTrebleShelfS = 0.8;
 constexpr double kBrightHz = 3000.0;
 constexpr double kBrightDb = 5.0;  // when engaged
 
-// --- Volume (M6.1 re-voice: an audio-taper MASTER, loud-biased) ---
-// The M5 mapping (linear-in-dB -40..+6) put the design's default knob (0.4) at
-// -21.6 dB — the whole rig came out ~20 dB too quiet. This is a loud-biased
-// audio taper instead: db(knob) = kVolMaxDb - kVolTaperDb*(1-knob)^4, so the
-// DEFAULT 0.4 sits at UNITY (~0 dB net through the near-unity cab), the top adds
-// a little headroom (+6 dB, caught by the worklet's soft limiter), and the
-// bottom third stays a usable quiet range that fades to true silence at 0. The
-// quartic keeps high knob positions loud while letting the bottom plunge — real
-// master-volume feel.
-constexpr float kVolMaxDb = 6.0f;      // knob 1.0
-constexpr float kVolTaperDb = 46.0f;   // taper depth: db at knob 0 = +6 - 46 = -40
+// --- Volume (M6.5 re-stage: an audio-taper MASTER, unity-ceilinged) ---
+// History: M5 (linear-in-dB -40..+6) put the default knob (0.4) at -21.6 dB —
+// the whole rig came out ~20 dB too quiet. M6.1 fixed that with a loud-biased
+// quartic taper whose top was +6 dB (0.4 == unity) — but that pushed the CLEAN
+// (pedal-bypassed) chain output well past full scale at realistic input levels,
+// so the worklet's soft limiter clipped every cycle: a clean amp that fizzes.
+//
+// M6.5: the amp is a CLEAN platform, so its ceiling is UNITY (clean full scale),
+// not +6 dB. Same quartic SHAPE (span/feel unchanged), ceiling pulled to 0 dB:
+//   db(knob) = kVolMaxDb - kVolTaperDb*(1-knob)^4,  kVolMaxDb = 0.
+// The DEFAULT 0.4 now sits at ~-6 dB (real headroom below the 0.97 limiter), and
+// the top of the knob is clean full scale (unity) — the amp never soft-clips of
+// its own accord; "louder than clean full scale" is the system/master's job. The
+// bottom third stays a usable quiet range that fades to true silence at 0. This
+// keeps the M6.1 loudness win (still ~+16 dB vs M5 at default, and the knob still
+// spans ~+6 dB of clean boost above the default) while making the clean path
+// measurably clean (testCleanPathTHD). The taper SPAN is identical, so the tone/
+// volume-sweep tests (which assert on span, not absolute level) are unchanged.
+constexpr float kVolMaxDb = 0.0f;      // knob 1.0 = unity = clean full scale
+constexpr float kVolTaperDb = 46.0f;   // taper depth: db at knob 0 = 0 - 46 = -46
 constexpr float kVolFadeKnob = 0.03f;  // below this knob value, fade to true silence
 
 // --- Smoothing / control rate ---

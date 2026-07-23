@@ -262,8 +262,9 @@ as the real LM308 stage does.
    measured within **±1.5 dB** — worst 0.67 dB at 44.1 k): 82 Hz **−18.2 dB**,
    320 Hz **−11.5 dB**, 1539 Hz **−1.8 dB**, 5 kHz **≈ 0 dB** (analytical targets
    −18.9 / −11.8 / −2.1 / −0.4 dB). *Assumption:* the shape is fixed at Rf = 100 k
-   (the real pot-dependent shape flattens at low DISTORTION); op-amp slew limiting
-   is still not modeled — future refinements.
+   (the real pot-dependent shape flattens at low DISTORTION). The op-amp's
+   bandwidth + slew limits (the LM308) are modeled as of **§11.4 M6.5** — placed
+   at the op-amp output inside oversampling, before the diode clamp.
 2. **Clipper (WDF, `chowdsp_wdf`).** Antiparallel silicon diode pair to ground
    (1N914-ish: Is = 2.52 nA, Vt = 25.85 mV, one diode/side → ±0.6 V knee), built
    exactly like the library's RC diode-clipper example: a resistive voltage
@@ -1427,6 +1428,172 @@ migrates to a one-element chain; the multi-pedal rig round-trips through JSON; a
 the assistant can address a pedal **instance by index** (`set_param` `pedal:1`
 moves the second pedal only). Both themes were screenshotted at the 2-pedal state
 (board with cables, gear tray, amp swap) for the visual eyeball.
+
+## 11.4 M6.5 — Fizz fixes: LM308 op-amp model + clean-path re-staging
+
+Two independent fixes for a user report that the rig sounds **fizzy** — "the audio
+model is updated but it's fizzy," and, critically, "it's fizzy with it [the RAT]
+off too." The second clause pointed at the **clean, pedal-bypassed** path, which
+turned out to be the *dominant* fizz source. Both are reported below with numbers.
+
+### Fix A (dominant): the clean path was soft-clipping every cycle
+
+**What was missing / wrong.** With the RAT bypassed the chain is `input(trim) →
+amp (linear) → cab (linear) → output soft-limiter`. The only nonlinearity is the
+M6.1 output limiter (transparent below ±0.9, tanh knee to ±1.0). M6.1 also made
+the amp **loud**: a quartic volume taper with a **+6 dB ceiling** whose default
+knob (0.4) sat at **unity**. At realistic input levels (the trim's −12…−3 dBFS
+target zone) the amp+cab output ran **past full scale** — so the limiter
+soft-clipped **on every cycle**. Soft-clipping a clean amp = fizz.
+
+Measured *before* (default rig, pedal bypassed, 44.1 k, sine at a −3 dBFS input
+peak, tail THD):
+
+| f0 | amp+cab out-peak (no limiter) | THD with 0.9 limiter |
+|---|---|---|
+| 220 Hz | 1.67 | **−35.7 dB** (audibly fizzy) |
+| 2.5 kHz | 1.77 | **−33.3 dB** |
+
+**Fix — one coherent level plan.** The amp is a **clean platform**, so its
+ceiling is **unity (clean full scale)**, not +6 dB, and the safety limiter is
+raised and given real headroom:
+
+```
+guitar/DI ──▶ input trim ──▶ [pedal chain] ──▶ amp volume taper ──▶ cab ──▶ output limiter ──▶ out
+             target post-trim   (RAT, bypassable)   quartic, UNITY ceiling   ~unity      SAFETY only,
+             peak −12…−3 dBFS                        default knob 0.4≈−6 dB   passband    transparent <0.97
+```
+
+- **Volume taper** (`AmpModel.cpp`): `db(knob) = kVolMaxDb − 46·(1−knob)⁴` with
+  **`kVolMaxDb = 0`** (was +6). Same *shape/feel* (span unchanged, so the tone/
+  volume-sweep tests, which assert on spans, are untouched); the ceiling is pulled
+  to unity. Default 0.4 now sits at **−6 dB** — deliberate headroom, still ~+16 dB
+  louder than the original M5 default (−21.6 dB), so the M6.1 "more volume" win is
+  kept and the knob still offers ~+6 dB of clean boost above the default.
+- **Output limiter** (`OutputLimiter.h`, mirrored in the worklet as `LIM_THRESH`):
+  threshold **0.9 → 0.97**, a narrow tanh safety knee. It now only catches genuine
+  transient overs.
+
+Measured *after* (default rig, pedal bypassed): the amp+cab output peaks at a
+−3 dBFS input are **0.72 (220 Hz) / 0.48 (1 kHz) / 0.84 (96 k 220 Hz) / 0.63
+(low-E pluck)** — all **below 0.97**, so the limiter is **bit-transparent** (never
+engages) → the clean path adds **zero** distortion. A/B render (pedal-bypassed
+`--chain clean`, 220 Hz sine at a −3 dBFS input): **OLD staging peaks 1.000**
+(constant limiting) → **NEW staging peaks 0.856** (dormant).
+
+`testCleanPathTHD` (both sample rates, sines + a low-E pluck) asserts the exact
+fix: amp+cab out-peak **< 0.97** and the limiter **bit-transparent**. We do *not*
+assert an absolute THD bar because the M5 cab convolver has pre-existing
+discrete-bin float-FFT artifacts (present with or without the limiter, at both
+rates for some frequencies) that would confound it; the limiter-dormancy pair is
+exact, SR-independent, and *is* the fix. `testChainGain` was updated for the new
+staging (amp 0.4 ≈ −6 dB, amp+cab in a headroom band below unity).
+
+### Fix B: the LM308 op-amp — the classic digital-RAT fizz
+
+**What was missing.** M1..M6.1 used an **ideal** op-amp in the RAT gain stage:
+infinite bandwidth and slew rate passed razor edges straight to the diode clamp.
+The real ProCo RAT's **LM308** has two limits the model now reproduces
+(`LM308Stage.h`), placed at the **op-amp output node** — after the
+frequency-dependent gain, before the shunt-diode clamp, **inside** oversampling:
+
+1. **Gain-tracking closed-loop bandwidth.** One-pole low-pass with corner
+   `f_c = GBW / A_noise`, where `A_noise` is the DISTORTION-knob plateau (noise)
+   gain, refreshed per chunk from the smoothed pre-gain (so it glides click-free).
+   **`GBW = 1.0 MHz`** — the LM308's documented unity-gain bandwidth with its
+   ~30 pF compensation (the "0.5–1 MHz" range). At the +66 dB plateau (A ≈ 1995)
+   the corner **collapses to ~500 Hz** (thick, not fizzy); at unity gain it is
+   1 MHz (clamped to the oversampled Nyquist — transparent).
+2. **Slew-rate limiter.** A hard per-sample dV clamp at **`SR = 0.3 V/µs`**
+   (LM308 datasheet-typical with standard compensation; referred to our
+   `1.0f == 1 V`, i.e. 0.3e6 V/s). Rounds the steep edges. It is a genuine
+   nonlinearity — hence inside oversampling; ADAA is not trivially applicable to a
+   slew clamp, so **measurement decides** (below).
+
+It is the pedal's fixed identity (no user knob). `setIdealOpAmp(true)` bypasses it
+for measurement only (like `setStage2Mode`); the render tool exposes it as
+`--ideal-opamp`.
+
+**Closed-loop corner tracks GBW / A** (`testClosedLoopBandwidth`, measured by
+ratioing the small-signal response at high gain against DISTORTION=0 so the
+shaping / shunt-cap / FILTER / diode-slope all cancel):
+
+| DISTORTION | plateau gain A | analytic f_c = GBW/A | measured f_c (44.1 k / 96 k) |
+|---|---|---|---|
+| 0.0 | ×1 | 1.00 MHz | (clamped to Nyquist — transparent) |
+| 0.5 | ×44.7 | 22.4 kHz | (above audio) |
+| 0.7 | ×204 | **4898 Hz** | **4975 / 4956 Hz** |
+| 0.85 | ×638 | 1567 Hz | — |
+| 1.0 (+66 dB) | ×1995 | **501 Hz** | **512 / 512 Hz** |
+
+**Slew limiter** (`testSlewRate`, LM308Stage unit-tested with a big step + a 1 kHz
+square): measured max |dV/dt| = **0.3000 V/µs** at both 44.1 k and 96 k (exact —
+the clamp caps every per-sample delta at SR·dt). Verified it does not itself alias
+badly at the shipped 4× (below); at **2×** the slew nonlinearity *is* a few dB
+worse than 1× (documented tradeoff — 2× is not the shipped factor).
+
+**Aliasing re-measured at dist = 1.0 (+66 dB)** — 12 dB hotter into the clipper
+than M2's dist-0.9 bar (`testAliasingAtMaxGain`, f0 = 4186 Hz, worst-alias rel.
+fundamental, shipped 4×, LM308 on):
+
+| base rate | 4× worst-alias (LM308 on) | M2 audibility bar | margin |
+|---|---|---|---|
+| 44.1 kHz | **−88.5 dB** | −60 dB | 28.5 dB |
+| 96 kHz | **−104.4 dB** | −60 dB | 44.4 dB |
+
+So 4× **passes the M2 bar with wide margin at +66 dB** — no OS increase needed;
+the BW/slew band-limiting actually *helps* at 4× (−88.5 vs −80.9 dB ideal-op-amp).
+Because the slew nonlinearity aliases at low OS, the M2 monotonic regression
+(`testAliasingMonotonic`) now measures the **oversampled clipper in isolation**
+(`setIdealOpAmp(true)`), reproducing the exact pre-M6.5 numbers (1×=−18.6 →
+8×=−90.5 at 44.1 k); the shipped LM308 path's max-gain aliasing is the table
+above. The factor-1 golden regression was regenerated (the LM308 is in the path at
+every factor).
+
+**Perceptual (HF-energy) note — an honest, modest result.** For a low-E+high-E
+dyad at dist 1.0 / filter 0.3, the LM308 drops the output **spectral centroid
+1082 → 950 Hz** (darker — "thick not fizzy"), but the absolute >5 kHz output
+energy barely moves (~0.5–0.9 dB): in *this* model the post-clip **Filter** knob
+and the hard diode clamp already govern output brightness, so the LM308's LP
+(which sits *before* the clamp) mainly shapes what the clipper *sees* — its larger
+quantified wins are the aliasing headroom above and the edge/transient rounding.
+The user's *dominant* fizz was Fix A (the clean path). Listen via the A/B renders.
+
+### A/B renders + verification (M6.5)
+
+`bash core/scripts/ab_render.sh` now also emits (untracked `core/.ab-scratch/`):
+
+- **Fizz A/B (RAT):** high-E pluck + high-E sine, dist 1.0, `--ideal-opamp` (LM308
+  **off** = fizzy) vs on (thick), with spectra.
+- **Clean-path A/B:** pedal-bypassed `--chain clean`, **OLD** binary
+  (`--limiter-thresh 0.9`, HEAD +6 dB taper) vs **NEW** (`0.97`, unity taper), at a
+  −3 dBFS input — OLD peaks 1.000 (limiting), NEW ~0.86 (dormant).
+
+New render-tool flags: `--ideal-opamp`, `--chain rat|clean`, `--limiter-thresh T`.
+
+```bash
+# Core (all suites green, 44.1k + 96k): M0 + RAT(+LM308 corner/slew/max-gain) + amp(+clean-path)
+cd core && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build && ctest --test-dir build   # 3/3
+# WASM (LM308 in RatModel; worklet LIM_THRESH 0.97) — COMMITTED artifacts update:
+cd .. && bash scripts/build-wasm.sh
+# Web (no UI change — the LM308 is not a knob) + full suite:
+cd web && npm run build && npm test        # 25 Playwright
+cd .. && npm run test:history              # 10
+node --test server/handler.test.mjs        # 11
+# A/B evidence:
+bash core/scripts/ab_render.sh
+```
+
+**Files changed (M6.5).** Core: `include/clipper/dsp/LM308Stage.h` (new),
+`include/clipper/dsp/OutputLimiter.h` (new), `src/dsp/RatModel.{h,cpp}` (LM308 +
+`setIdealOpAmp`), `src/dsp/AmpModel.cpp` (unity volume ceiling),
+`tools/render/main.cpp` (`--ideal-opamp` / `--chain` / `--limiter-thresh`, clean
+chain), `tests/test_rat_model.cpp` (closed-loop BW + slew + max-gain aliasing tests,
+monotonic isolates the clipper, regenerated golden), `tests/test_amp_model.cpp`
+(clean-path THD test, updated chain-gain), `scripts/ab_render.sh` (fizz + clean
+A/B). Web: `worklet/clipper-processor.js` (`LIM_THRESH` 0.97),
+`public/generated/clipper.js` + `clipper-processor.js` (rebuilt, committed). No UI
+changes (no new knobs — the LM308 is the pedal's identity, not user-adjustable).
 
 ## Built DSP artifacts are committed
 

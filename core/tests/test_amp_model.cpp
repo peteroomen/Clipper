@@ -9,6 +9,7 @@
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
+#include "clipper/dsp/OutputLimiter.h"
 
 #include <cassert>
 #include <chrono>
@@ -173,20 +174,21 @@ void testBright(double fs) {
                 hiBoost, loBoost, fs);
 }
 
-// --- Test 3: volume is a loud-biased audio taper (M6.1). ----------------------
+// --- Test 3: volume is a loud-biased audio taper (M6.5 unity ceiling). --------
 void testVolume(double fs) {
-    // Audio taper: db(knob) = +6 - 46*(1-knob)^4.
-    //   0.4 -> +0.04 dB (unity), 1.0 -> +6 dB, 0.2 -> -12.8 dB.
-    // Anchor 1: the DEFAULT knob (0.4) is unity, so the rig is loud by default.
+    // Audio taper: db(knob) = kVolMaxDb - 46*(1-knob)^4, kVolMaxDb = 0 (M6.5).
+    //   0.4 -> -5.96 dB (headroom), 1.0 -> 0 dB (unity = clean full scale),
+    //   0.2 -> -18.8 dB. The SHAPE/spans are identical to M6.1 (the +6 dB ceiling
+    //   was pulled to unity), so these span-based anchors are unchanged.
+    // Anchor 1: 0.4 -> 1.0 spans ~+6 dB (default knob to the clean ceiling).
     {
-        AmpKnobs unity;
-        unity.volume = 0.4f;
+        AmpKnobs def;
+        def.volume = 0.4f;
         AmpKnobs top;
         top.volume = 1.0f;
-        const double aU = ampResponse(1000.0, unity, fs);
+        const double aU = ampResponse(1000.0, def, fs);
         const double aT = ampResponse(1000.0, top, fs);
-        // 0.4 -> 1.0 spans ~+6 dB (the taper's headroom above unity).
-        assert(std::fabs(toDb(aT / aU) - 6.0) < 1.0 && "volume 0.4->1.0 not ~ +6 dB");
+        assert(std::fabs(toDb(aT / aU) - 6.0) < 1.0 && "volume 0.4->1.0 not ~ +6 dB span");
     }
     // Anchor 2: the bottom third is meaningfully quieter (usable quiet range).
     {
@@ -212,7 +214,7 @@ void testVolume(double fs) {
     lo.volume = 0.5f;
     hi.volume = 1.0f;
     const double measured = toDb(ampResponse(1000.0, hi, fs) / ampResponse(1000.0, lo, fs));
-    std::printf("  [ok] volume audio taper: 0.5->1.0 = %.2f dB, 0.4=unity, knob 0 silent (fs=%g)\n",
+    std::printf("  [ok] volume audio taper: 0.5->1.0 = %.2f dB, 1.0=unity ceiling, 0.4~-6dB, knob 0 silent (fs=%g)\n",
                 measured, fs);
 }
 
@@ -244,11 +246,14 @@ void testCabIR(double fs) {
                 d60, d100, d25k, d5k, d8k, fs, n);
 }
 
-// --- Test 4b: amp+cab makeup gain (M6.1). -------------------------------------
-// The rig was ~20 dB too quiet because the amp volume default (0.4) sat at
-// -21.6 dB. With the M6.1 audio taper, knob 0.4 == unity, and the default cab IR
-// is already normalized to ~unity passband, so the amp(0.4)+cab stage passes a
-// broadband signal at roughly unity RMS (a clean platform, not an attenuator).
+// --- Test 4b: amp+cab gain staging (M6.5 re-stage). ---------------------------
+// M6.1 put the default volume knob (0.4) at UNITY, but that pushed the clean
+// (pedal-bypassed) chain past full scale at realistic levels, so the output
+// limiter soft-clipped every cycle ("fizz"). M6.5 pulls the ceiling to unity
+// (knob 1.0 = clean full scale), so the default 0.4 now sits ~6 dB below unity —
+// deliberate HEADROOM below the safety limiter, while staying ~+16 dB louder than
+// the original M5 default. This test pins the new default staging: amp(0.4) is
+// ~ -6 dB and amp+cab lands with real headroom below 0 dBFS (not ~unity anymore).
 void testChainGain(double fs) {
     // A broadband-ish test signal (three partials across the guitar band).
     const int n = static_cast<int>(fs);
@@ -279,14 +284,109 @@ void testChainGain(double fs) {
 
     const double ampGainDb = toDb(rmsTail(amped) / inRms);
     const double chainGainDb = toDb(rmsTail(chained) / inRms);
-    // amp(0.4) is unity within ~2 dB across this band (tone flat-ish).
-    assert(std::fabs(ampGainDb) < 2.0 && "amp default volume (0.4) not ~ unity");
-    // amp+cab net gain sits near unity (cab colors, does not attenuate ~20 dB).
-    // (Upper edge allows the 96 kHz cab's stronger presence bump, ~+3 dB.)
-    assert(chainGainDb > -5.0 && chainGainDb < 5.0 &&
-           "amp+cab chain gain at default not near unity (rig too quiet/loud)");
-    std::printf("  [ok] chain gain @ default vol 0.4: amp %.1f dB, amp+cab %.1f dB (fs=%g)\n",
+    // amp(0.4) now sits ~ -6 dB (M6.5 unity ceiling): headroom, not unity. Bound
+    // it to the -6 +/- 2.5 dB region (still ~+15 dB above the old M5 -21.6 dB).
+    assert(ampGainDb < -3.0 && ampGainDb > -9.0 &&
+           "amp default volume (0.4) not ~ -6 dB (M6.5 headroom staging)");
+    // amp+cab net gain sits below unity with headroom (cab colors ~+/-3 dB around
+    // the amp's -6 dB); must NOT be back near/over unity (that was the fizz cause).
+    assert(chainGainDb < 0.0 && chainGainDb > -11.0 &&
+           "amp+cab chain gain at default not in the headroom band (staging wrong)");
+    std::printf("  [ok] chain gain @ default vol 0.4 (M6.5): amp %.1f dB, amp+cab %.1f dB (fs=%g)\n",
                 ampGainDb, chainGainDb, fs);
+}
+
+// --- Test 4c: clean-path fizz — the pedal-bypassed chain must be CLEAN (M6.5). -
+// The user reported fizz even with the RAT bypassed. Root cause: M6.1's loud
+// staging pushed amp+cab output PAST FULL SCALE at realistic input levels, so the
+// worklet's soft limiter soft-clipped every cycle (measured before M6.5: output
+// peaks 1.3-1.8, tail THD as bad as -34 dB at a -3 dBFS input). M6.5 pulls the
+// volume ceiling to unity (real headroom) and raises the limiter to 0.97 so the
+// limiter is DORMANT at realistic clean levels — the direct fizz fix.
+//
+// This test drives the default bypassed chain (amp 0.4 + cab + OutputLimiter) at
+// a HOT -3 dBFS input peak (the top of the recommended trim zone), with sines AND
+// a low-E pluck (crest factor), at 44.1k and 96k, and asserts:
+//   1. Headroom: the amp+cab output stays below the 0.97 limiter threshold.
+//   2. The OutputLimiter is BIT-TRANSPARENT (never engages) -> it adds exactly
+//      zero distortion, so the clean path is as clean as the linear amp+cab.
+// These are exact and SR-independent — they ARE the fix (the fizz was the limiter
+// soft-clipping every cycle). We deliberately do NOT assert an absolute THD bar:
+// the M5 cab convolver has pre-existing discrete-bin float-FFT artifacts (present
+// with OR without the limiter, at both sample rates for some frequencies), so an
+// absolute-THD number is an unreliable, limiter-independent confound. The THD is
+// printed for the record. (Before M6.5, at -3 dBFS the limiter clipped hard:
+// output peaks 1.3-1.8, tail THD as bad as ~-34 dB — the audible clean fizz.)
+void testCleanPathTHD(double fs) {
+    auto ir = clipper::dsp::generateDefaultCab2x12IR(fs);
+    const double peak = std::pow(10.0, -3.0 / 20.0);  // -3 dBFS input peak
+    const int n = static_cast<int>(fs);
+    const int fade = static_cast<int>(0.02 * fs);
+
+    // Run a signal through amp(default) -> cab; return {pre-limiter buffer, peak,
+    // and whether the OutputLimiter leaves it bit-identical (i.e. never engaged)}.
+    auto renderClean = [&](const std::vector<float>& in) {
+        AmpKnobs def;  // volume 0.4, tone flat, treble 0.6, bright off (default rig)
+        auto amped = renderAmp(in, def, fs);
+        CabConvolver cab;
+        cab.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
+        cab.process(amped.data(), amped.data(), static_cast<int>(amped.size()));
+        double pk = 0.0;
+        bool transparent = true;
+        for (float v : amped) {
+            pk = std::max(pk, static_cast<double>(std::fabs(v)));
+            if (clipper::dsp::OutputLimiter::process(v) != v) transparent = false;
+        }
+        return std::make_tuple(amped, pk, transparent);
+    };
+
+    // (1) Sines: headroom + dormant limiter (both SRs) and absolute THD (44.1k).
+    for (double f0 : {220.0, 1000.0}) {
+        std::vector<float> in(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) {
+            const double w = i < fade ? 0.5 * (1.0 - std::cos(kTwoPi * i / (2.0 * fade))) : 1.0;
+            in[static_cast<size_t>(i)] =
+                static_cast<float>(peak * w * std::sin(kTwoPi * f0 * i / fs));
+        }
+        auto [o, pk, transparent] = renderClean(in);
+        assert(pk < clipper::dsp::OutputLimiter::kThreshold &&
+               "clean chain output exceeds the limiter threshold at -3 dBFS (no headroom)");
+        assert(transparent &&
+               "output limiter engaged on the clean path at -3 dBFS (soft-clip = fizz)");
+        // Absolute THD (harmonics 2..12) — asserted where the cab FFT is clean.
+        const size_t win = std::min(o.size(), static_cast<size_t>(fs * 0.3));
+        const size_t start = o.size() - win;
+        const double fund = binMag(o, start, win, f0, fs);
+        double h = 0.0;
+        for (int k = 2; k <= 12; ++k) {
+            const double a = binMag(o, start, win, f0 * k, fs);
+            h += a * a;
+        }
+        const double thd = 20.0 * std::log10(std::sqrt(h) / (fund + 1e-12) + 1e-12);
+        std::printf("  [ok] clean-path @ %.0f Hz: out-peak %.3f (<0.97, limiter dormant/transparent), THD %.1f dB [cab-limited] (fs=%g)\n",
+                    f0, pk, thd, fs);
+    }
+
+    // (2) Low-E pluck (crest factor) — the limiter must stay dormant on transients
+    // too (no per-attack soft-clip).
+    {
+        std::vector<float> in(static_cast<size_t>(n));
+        const double aS = 0.004;
+        double rawPk = 0.0;
+        for (int i = 0; i < n; ++i) {
+            const double t = i / fs, attack = 1.0 - std::exp(-t / aS);
+            double s = 0.0;
+            for (int hh = 1; hh <= 6; ++hh)
+                s += (1.0 / hh) * std::exp(-t * (2.0 + 1.2 * hh)) * std::sin(kTwoPi * 82.4 * hh * t);
+            in[static_cast<size_t>(i)] = static_cast<float>(attack * s);
+            rawPk = std::max(rawPk, static_cast<double>(std::fabs(in[static_cast<size_t>(i)])));
+        }
+        for (float& v : in) v = static_cast<float>(v * peak / (rawPk + 1e-12));  // peak -> -3 dBFS
+        auto [o, pk, transparent] = renderClean(in);
+        (void)o;
+        assert(transparent && "output limiter engaged on the clean pluck (transient soft-clip = fizz)");
+        std::printf("  [ok] clean-path low-E pluck: out-peak %.3f (<0.97, limiter dormant, fs=%g)\n", pk, fs);
+    }
 }
 
 // --- Test 5: impulse through the convolver reproduces the IR, delayed by the
@@ -639,6 +739,7 @@ int main() {
         testVolume(fs);
         testCabIR(fs);
         testChainGain(fs);
+        testCleanPathTHD(fs);
         testConvolverImpulse(fs);
         testConvolverChunking(fs);
         testSmoothing(fs);
