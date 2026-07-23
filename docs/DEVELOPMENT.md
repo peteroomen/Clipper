@@ -1872,7 +1872,7 @@ above.
   dialog, and producing the signed/unsigned `.dmg` — all require running the real
   Electron binary on macOS.
 
-## 12. M7 — Tuner (chromatic needle tuner)
+## 13. M7 — Tuner (chromatic needle tuner)
 
 A chromatic needle tuner as a chain pedal (`type: 'tuner'`), Polytune-mini in role
 but **chromatic only** (polyphonic multi-pitch is explicitly out of scope). It is
