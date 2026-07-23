@@ -104,6 +104,27 @@ The differentiator. Only started once audio is real, per the handoff.
 
 The MVP (M0–M6) shipped. Next arc: grow the board, then go valve.
 
+### v1.0.x point releases (in flight)
+
+Field feedback from real playing, prioritized ahead of new pedals:
+
+- **M6.1 — RAT re-voice + gain staging** — true two-corner pre-clip response
+  (≈60 Hz / ≈1.5 kHz, replacing the over-aggressive 320 Hz shelf), max gain to
+  the real pedal's ≈+66 dB, rig-level input trim + peak meter (calibrate the
+  interface to the model's 1 V reference), output-level pass with cab-IR
+  makeup gain and a final safety limiter.
+- **M6.2 — Mac app (Electron)** — desktop shell; the zero-dep proxy runs
+  in-process serving the built web app, key via env or in-app prompt,
+  unsigned local `.dmg` build.
+- **M6.3 — JC-120 chorus & vibrato** — the amp's soul: speed + depth knobs,
+  chorus/vibrato mode switch (chorus = dry + modulated wet; vibrato = wet
+  only, true pitch wobble), and the JC's signature stereo bloom (dry L / wet
+  R) — the worklet goes stereo at the amp stage. Modulated delay in core,
+  offline-validated.
+- **M6.4 — Pedalboard visual pass** — stackable, drag-reorderable pedals
+  joined by neumorphic cables, add/remove/swap from a gear tray, amp slot at
+  the end with amp swapping. Architecture for everything M7+ plugs into.
+
 ### M7 — Tuner *(S)*
 
 Not a modeling problem — pitch detection + mute. Chromatic needle tuner
@@ -154,8 +175,7 @@ is one of the most canonical pairings in rock.
 ### Parked (unordered)
 
 - **BD-2 Blues Driver** (third dirt flavor), **DD-3 delay** (new DSP family:
-  delay lines — easy after the above), **JC-120 chorus** (modulated delay,
-  high charm).
+  delay lines — easy after the above).
 - **Presets & sharing** — the M4 rig-state JSON is already the format.
 - **User cab IR upload** + a Marshall 4×12-style IR to pair with M9.
 - **Native path** — only when latency or Logic integration actually bites:

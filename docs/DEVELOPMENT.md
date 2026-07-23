@@ -1073,6 +1073,89 @@ cannot cover is the live-key path** — a real end-to-end request to Anthropic
 requires a valid `ANTHROPIC_API_KEY` and must be verified by hand. The keyless
 `MOCK=1` path is verified against the real local server (curl / manual).
 
+## Mac app (Electron)
+
+`electron/` wraps the exact same runtime as `npm run server` in a native macOS
+window. **Electron on purpose:** it ships the same Chromium the whole Playwright
+suite runs on, so the desktop app renders and behaves identically to the browser
+build — no second engine to reason about.
+
+### How it works (architecture)
+
+- **No new server.** On `ready`, `electron/main.mjs` starts the proxy
+  **in-process** via `electron/serve.mjs`, which **reuses `server/handler.mjs`
+  verbatim** (request shaping, upstream call, `[mock]` SSE — all imported, not
+  re-implemented). The only thing `serve.mjs` adds over `server/index.mjs` is
+  static serving of `web/dist` and an **ephemeral** localhost port (`port 0`), so
+  the window loads `http://localhost:<port>/` and the app's relative `/api/*`
+  fetches "just work". Behaviorally identical to `npm run server` fronted by a
+  static host — no `file://` hacks. (`server/index.mjs` isn't imported because it
+  self-`listen`s on a fixed port and serves no statics; the ~40 lines of http
+  glue that `serve.mjs` and it share are the only duplication.)
+- **API key resolution** (`electron/config.mjs`), first hit wins: (1)
+  `ANTHROPIC_API_KEY` env, (2) `config.json` in the app's `userData` dir, (3)
+  neither → a minimal in-app prompt to paste a key, saved to that `config.json`.
+  **`MOCK=1` runs keyless** (canned `[mock]` responses, no key, no spend).
+- **Key storage — v1 tradeoff:** the key is saved as **plain text** in
+  `~/Library/Application Support/Clipper/config.json` (mode `0600`), **not** the
+  macOS Keychain. Documented here as a known v1 limitation.
+- **Mic permission:** on startup the app calls
+  `systemPreferences.askForMediaAccess('microphone')`; the built app declares
+  `NSMicrophoneUsageDescription` (guitar input) in its Info.plist.
+- **Paths are `app.isPackaged`-aware:** in dev, `web/dist` and `server/` sit next
+  to the repo; when packaged, electron-builder copies them into the `.app`'s
+  `Resources/` (`web-dist/` and `server/`) and `main.mjs` resolves them via
+  `process.resourcesPath`.
+
+### Dev loop (any OS with Electron)
+
+```bash
+cd web && npm run build        # the shell serves web/dist — build it first
+cd ../electron && npm install  # downloads Electron for your platform
+MOCK=1 npm run dev             # keyless demo window (or set ANTHROPIC_API_KEY)
+```
+
+`npm test` (in `electron/`) runs the main-process unit suites with plain Node —
+no Electron needed: `serve.test.mjs` (ephemeral port, statics, SPA fallback,
+`/api` wired to the real handler, keyless-mock + no-key-500, path-traversal
+guard — 10 tests) and `config.test.mjs` (key resolution order — 6 tests).
+
+### Build a `.dmg` (on your Mac)
+
+macOS only — a `.dmg` cannot be produced on Linux/Windows.
+
+```bash
+cd web && npm run build                 # 1. build the web app
+cd ../electron && npm install           # 2. install shell deps (downloads Electron)
+npm run make-icon                        # 3. (optional) regenerate the placeholder icon
+npm run dist:mac                          # 4. builds dmg + zip for arm64 and x64
+#    -> electron/dist-app/Clipper-<ver>-arm64.dmg (and x64)
+```
+
+`predist:mac` re-runs the web build for you, so step 4 alone is enough if the web
+tree is current. Output lands in `electron/dist-app/`. `appId` is
+`com.clipper.app`; targets are `dmg` + `zip` for `arm64` and `x64`.
+
+**Unsigned build — first-launch note.** The app is built **unsigned** (no Apple
+Developer ID; `hardenedRuntime: false`, `identity: null`). macOS Gatekeeper will
+refuse a double-click on first open. To run it: **right-click (or Control-click)
+the app → Open → Open**, once. After that it launches normally. (Signing +
+notarization is a later step; for local/personal use, unsigned is fine.)
+
+**Mic prompt.** On first launch macOS asks for microphone access — required for
+live guitar input. The reason string shown is the `NSMicrophoneUsageDescription`
+above.
+
+### What is verified vs. deferred to a Mac
+
+- **Verified in CI/container:** both Node unit suites (16 tests) pass, and
+  `electron-builder --dir` parses the `build` config and reaches the packaging
+  step (it only stops when it cannot download the Electron binary from GitHub —
+  an egress-policy restriction, not a config problem).
+- **Deferred to the user's Mac:** the actual GUI launch, the mic-permission
+  dialog, and producing the signed/unsigned `.dmg` — all require running the real
+  Electron binary on macOS.
+
 ## Notes / conventions
 
 - `core/` must never include platform/OS/browser/Emscripten headers. The only

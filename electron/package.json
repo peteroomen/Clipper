@@ -1,0 +1,66 @@
+{
+  "name": "clipper-desktop",
+  "productName": "Clipper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Clipper desktop shell (Electron) — the browser guitar rig as a native macOS app.",
+  "type": "module",
+  "main": "main.mjs",
+  "author": "Clipper",
+  "scripts": {
+    "make-icon": "node scripts/make-icon.mjs",
+    "dev": "electron .",
+    "test": "node --test 'serve.test.mjs' 'config.test.mjs'",
+    "prebuild-web": "echo 'Reminder: build the web app first -> cd ../web && npm run build'",
+    "build-web": "npm --prefix ../web run build",
+    "predist:mac": "npm run build-web",
+    "dist:mac": "electron-builder --mac",
+    "dist:dir": "electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.clipper.app",
+    "productName": "Clipper",
+    "directories": {
+      "output": "dist-app",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.mjs",
+      "serve.mjs",
+      "config.mjs",
+      "key-prompt.html",
+      "key-prompt-preload.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../web/dist",
+        "to": "web-dist"
+      },
+      {
+        "from": "../server",
+        "to": "server",
+        "filter": ["**/*.mjs", "!**/*.test.mjs"]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.music",
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] },
+        { "target": "zip", "arch": ["arm64", "x64"] }
+      ],
+      "hardenedRuntime": false,
+      "identity": null,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Clipper uses your microphone to capture guitar (or other instrument) input for real-time tone processing."
+      }
+    },
+    "linux": {
+      "target": ["dir"]
+    }
+  }
+}
