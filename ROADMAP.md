@@ -100,14 +100,68 @@ The differentiator. Only started once audio is real, per the handoff.
 
 ---
 
-## Post-MVP directions (unordered, decide later)
+## Post-MVP roadmap (v1.x — ordered)
 
-- **Nonlinear amp model** — a modeled drive channel / tube amp; the "real" amp experience. Biggest DSP lift; benefits from everything learned in M1–M2.
-- **More pedals from the real board** — SD-1 and BD-2 (both diode clippers, heavy reuse of M1–M2 machinery), then DD-3 delay (different DSP family: delay lines, easier).
-- **JC-120 chorus** — the amp's iconic feature; a modulated delay line, cheap digitally, high charm.
+The MVP (M0–M6) shipped. Next arc: grow the board, then go valve.
+
+### M7 — Tuner *(S)*
+
+Not a modeling problem — pitch detection + mute. Chromatic needle tuner
+(Polytune-style *polyphonic* mode is a much harder multi-pitch problem;
+deliberately out of scope).
+
+- Detection in the web layer via the McLeod pitch method (`pitchy`, the same
+  tiny MIT library Riff uses) on an analyser tap of the live input — zero
+  core-DSP changes.
+- Pedal-format UI in the design language: note + cents needle, green-lock LED,
+  footswitch = mute (the one DSP touch: a mute flag in the worklet chain).
+- Forces the rig into a proper multi-pedal chain (tuner → dirt → amp) —
+  RigState grows `pedals[]`, the seam M4 left ready.
+- Assistant learns `tune` awareness ("you're a quarter-tone flat on the G").
+
+### M8 — SD-1 Super Overdrive *(M)*
+
+The essential second dirt box, and the perfect topology contrast with the RAT:
+
+- **Soft, asymmetric clipping in the op-amp feedback loop** (2 vs 1 diode —
+  even-harmonic warmth) vs the RAT's hard shunt-to-ground clipping. New WDF
+  arrangement; all M1/M2 machinery (oversampling, ADAA infra, alias
+  measurement, render CLI) reuses directly.
+- The signature mid-hump input shaping, tone control, level. Three knobs.
+- Ground truth on the real board for A/B.
+- Sets up the canonical M9 pairing: SD-1 boosting a cranked Marshall.
+
+### M9 — First valve amp: Marshall JCM800 2204 *(L, phased)*
+
+Chosen over alternatives (tweed Deluxe 5E3 = technically simplest; AC30 =
+hardest) because: the preamp is one building block — a 12AX7 common-cathode
+triode stage — repeated, so we build a single validated triode model and get
+future amps mostly for free; it's exhaustively documented; and SD-1 → JCM800
+is one of the most canonical pairings in rock.
+
+1. **Triode stage module** — grid conductance + blocking distortion included
+   (Koren-style model or WDF triode), validated standalone against published
+   curves with the M2 measurement discipline. This module is 80% of every
+   future amp.
+2. **Preamp** — cascaded stages with interstage attenuation, cathode follower
+   driving the classic Marshall TMB tone stack (passive — existing machinery).
+3. **Power section — where "responsive" lives**: push-pull EL34 approximation,
+   negative feedback + presence control, and **sag** (supply droop under pick
+   attack) modeled explicitly and measured, not vibed.
+4. Amp-panel UI (preamp/master volume era-correct), oversampling per stage
+   budgeted like M2, A/B render harness.
+
+### Parked (unordered)
+
+- **BD-2 Blues Driver** (third dirt flavor), **DD-3 delay** (new DSP family:
+  delay lines — easy after the above), **JC-120 chorus** (modulated delay,
+  high charm).
 - **Presets & sharing** — the M4 rig-state JSON is already the format.
-- **User cab IR upload.**
-- **Native path** — only when latency or Logic integration actually bites: JUCE wrap of the identical core → VST3/AU/CLAP. A re-wrap, not a rewrite.
+- **User cab IR upload** + a Marshall 4×12-style IR to pair with M9.
+- **Native path** — only when latency or Logic integration actually bites:
+  JUCE wrap of the identical core → VST3/AU/CLAP. A re-wrap, not a rewrite.
+- **Riff integration** — Clipper's rig as Riff's practice-tone engine; the
+  assistant patterns already converge (both grew an "applied chip" chat UI).
 
 ## Known risks
 
