@@ -1291,6 +1291,15 @@ cd .. && bash scripts/build-wasm.sh   # now compiles ChorusModel, exports amp_pr
 cd web && npm run build && npm test   # 19 Playwright (17 + stereo chorus + assistant chorus)
 ```
 
+## Built DSP artifacts are committed
+
+`web/public/generated/` (the Emscripten-built WASM engine + the worklet copy)
+is **checked into git** so that `git pull` alone updates the audio engine —
+no local Emscripten needed to build the web or Mac app. If you change
+`core/` or `web/worklet/`, run `bash scripts/build-wasm.sh` and commit the
+regenerated artifacts alongside the source change (a stale artifact means
+new UI bound to an old engine — trim knobs that do nothing, etc.).
+
 ## Mac app (Electron)
 
 `electron/` wraps the exact same runtime as `npm run server` in a native macOS

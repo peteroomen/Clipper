@@ -4,7 +4,6 @@ web/dist/
 web/node_modules/
 
 # Generated WASM artifact (produced by scripts/build-wasm.sh)
-web/public/generated/
 
 # Playwright
 web/test-results/
