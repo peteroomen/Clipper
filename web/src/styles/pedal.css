@@ -4,6 +4,9 @@
   border-radius: 30px;
   position: relative; z-index: 1;
 }
+/* M8: the SD-1 overdrive swaps the red LED/arc accent for amber (defined in
+   tokens.css for both themes) so it reads distinct from the RAT on the board. */
+.pedal[data-pedal-type="sd1"] { --led: var(--led-sd); --led-glow: var(--led-sd-glow); }
 .pedal-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .pedal-model { font-size: 10px; letter-spacing: .28em; color: var(--ink-faint); text-transform: uppercase;
   font-family: ui-monospace, Menlo, monospace; }

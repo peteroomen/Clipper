@@ -10,6 +10,7 @@
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/RatModel.h"
+#include "clipper/dsp/SdModel.h"
 
 #include <vector>
 
@@ -97,6 +98,50 @@ void rat_process(void* handle, const float* in_ptr, float* out_ptr,
     if (!handle) return;
     static_cast<clipper::dsp::RatModel*>(handle)->process(in_ptr, out_ptr,
                                                           num_frames);
+}
+
+// --- M8: SD-1 Super Overdrive model exports ----------------------------------
+//
+// Additive alongside rat_* (M3), byte-for-byte the same opaque-handle ABI so the
+// worklet drives an SD-1 exactly like a RAT (param ids 0=DRIVE, 1=TONE, 2=LEVEL;
+// oversampling + latency shared). A chain can mix rat_* and sd_* instances.
+
+EMSCRIPTEN_KEEPALIVE
+void* sd_create(float sample_rate) {
+    auto* m = new clipper::dsp::SdModel();
+    m->prepare(static_cast<double>(sample_rate), 128);
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void sd_destroy(void* handle) {
+    delete static_cast<clipper::dsp::SdModel*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void sd_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    static_cast<clipper::dsp::SdModel*>(handle)->setParameter(param_id, value);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void sd_set_oversampling(void* handle, int factor) {
+    if (!handle) return;
+    static_cast<clipper::dsp::SdModel*>(handle)->setOversampling(factor);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int sd_latency_samples(void* handle) {
+    if (!handle) return 0;
+    return static_cast<clipper::dsp::SdModel*>(handle)->latencySamples();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void sd_process(void* handle, const float* in_ptr, float* out_ptr,
+                int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::SdModel*>(handle)->process(in_ptr, out_ptr,
+                                                         num_frames);
 }
 
 // --- M5: clean amp + cab exports ---------------------------------------------

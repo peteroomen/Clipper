@@ -228,27 +228,60 @@ class ClipperProcessor extends AudioWorkletProcessor {
       });
   }
 
-  // Create a pedal DSP instance for the chain. `params` (optional) is
-  // {distortion, filter, level} in 0..1; the global oversampling factor is
-  // applied. Returns a chain node. A tuner (M7) has NO audio DSP — it's a
-  // handle-less mute/tap node — so no WASM instance is created for it.
+  // Create a pedal DSP instance for the chain. `type` selects the WASM model
+  // ('sd1' = Boss SD-1 overdrive, M8; 'tuner' = M7's handle-less mute/tap node,
+  // no WASM instance; anything else = RAT, M3). The dirt pedals share the same
+  // handle ABI (create / set_param id 0/1/2 / set_oversampling / latency /
+  // process), so the node carries its `type` and every call routes through the
+  // matching sd_*/rat_* export. `params` (optional) is {distortion, filter,
+  // level} in 0..1 (for an SD-1 these slots ARE drive/tone/level). Returns a
+  // chain node.
   _createPedal(id, type, params, engaged) {
     if (type === 'tuner') {
       return { id, type: 'tuner', handle: 0, engaged: !!engaged };
     }
     const mod = this._module;
-    const handle = mod._rat_create(this._sr);
-    mod._rat_set_oversampling(handle, this._oversampling | 0);
+    const isSd = type === 'sd1';
+    const handle = isSd ? mod._sd_create(this._sr) : mod._rat_create(this._sr);
+    const setOs = isSd ? mod._sd_set_oversampling : mod._rat_set_oversampling;
+    const setParam = isSd ? mod._sd_set_param : mod._rat_set_param;
+    setOs(handle, this._oversampling | 0);
     if (params) {
-      mod._rat_set_param(handle, 0, +params.distortion);
-      mod._rat_set_param(handle, 1, +params.filter);
-      mod._rat_set_param(handle, 2, +params.level);
+      setParam(handle, 0, +params.distortion);
+      setParam(handle, 1, +params.filter);
+      setParam(handle, 2, +params.level);
     }
-    return { id, type: 'rat', handle, engaged: !!engaged };
+    return { id, type: isSd ? 'sd1' : 'rat', handle, engaged: !!engaged };
   }
 
   _destroyPedal(node) {
-    if (node && node.handle) this._module._rat_destroy(node.handle);
+    if (!node || !node.handle) return;
+    if (node.type === 'sd1') this._module._sd_destroy(node.handle);
+    else this._module._rat_destroy(node.handle);
+  }
+
+  // Per-node ABI routing (sd_* for an SD-1, rat_* otherwise). Keeps the chain
+  // dispatch type-agnostic everywhere below.
+  _pedalSetParam(node, id, value) {
+    const mod = this._module;
+    if (node.type === 'sd1') mod._sd_set_param(node.handle, id, value);
+    else mod._rat_set_param(node.handle, id, value);
+  }
+  _pedalSetOversampling(node, factor) {
+    const mod = this._module;
+    if (node.type === 'sd1') mod._sd_set_oversampling(node.handle, factor);
+    else mod._rat_set_oversampling(node.handle, factor);
+  }
+  _pedalLatency(node) {
+    const mod = this._module;
+    return node.type === 'sd1'
+      ? mod._sd_latency_samples(node.handle)
+      : mod._rat_latency_samples(node.handle);
+  }
+  _pedalProcess(node, inPtr, outPtr, n) {
+    const mod = this._module;
+    if (node.type === 'sd1') mod._sd_process(node.handle, inPtr, outPtr, n);
+    else mod._rat_process(node.handle, inPtr, outPtr, n);
   }
 
   // Recompute the tuner mute state from the current chain: muted iff any tuner
@@ -266,7 +299,9 @@ class ClipperProcessor extends AudioWorkletProcessor {
     const mod = this._module;
     let n = 0;
     for (const node of this._chain) {
-      if (node.engaged && node.handle) n += mod._rat_latency_samples(node.handle);
+      // Tuner nodes are handle-less (zero latency); dirt pedals report via
+      // their model's latency export (routed by type in _pedalLatency).
+      if (node.engaged && node.handle) n += this._pedalLatency(node);
     }
     if (!this._bypassAmp) n += mod._amp_latency_samples(this._amp);
     return n;
@@ -328,12 +363,12 @@ class ClipperProcessor extends AudioWorkletProcessor {
       const existing = oldById.get(p.id);
       if (existing) {
         existing.engaged = !!p.engaged;
-        // Refresh params on reused handles (cheap; core smooths them).
+        // Refresh params on reused handles (cheap; core smooths them). A reused
+        // id keeps its original type (a swap mints a NEW id), so route by it.
         if (p.params) {
-          const mod = this._module;
-          mod._rat_set_param(existing.handle, 0, +p.params.distortion);
-          mod._rat_set_param(existing.handle, 1, +p.params.filter);
-          mod._rat_set_param(existing.handle, 2, +p.params.level);
+          this._pedalSetParam(existing, 0, +p.params.distortion);
+          this._pedalSetParam(existing, 1, +p.params.filter);
+          this._pedalSetParam(existing, 2, +p.params.level);
         }
         nodes.push(existing);
         keep.add(p.id);
@@ -365,11 +400,11 @@ class ClipperProcessor extends AudioWorkletProcessor {
         if ((data.id | 0) === AMP_PARAM_CAB) this._postLatency();
       } else {
         const node = this._pedalById(data.pedalId);
-        if (node) mod._rat_set_param(node.handle, data.id | 0, +data.value);
+        if (node) this._pedalSetParam(node, data.id | 0, +data.value);
       }
     } else if (data.type === 'oversampling') {
       this._oversampling = data.factor | 0;
-      for (const node of this._chain) mod._rat_set_oversampling(node.handle, this._oversampling);
+      for (const node of this._chain) this._pedalSetOversampling(node, this._oversampling);
       this._postLatency();
     } else if (data.type === 'chain') {
       // A new topology. If an edit is still fading, commit it first so the diff
@@ -467,7 +502,7 @@ class ClipperProcessor extends AudioWorkletProcessor {
       // Skip bypassed pedals AND tuners (a tuner is a handle-less pass-through:
       // its only effect is the output mute, applied at the end of the block).
       if (!node.engaged || !node.handle) continue;
-      mod._rat_process(node.handle, cur, other, n);
+      this._pedalProcess(node, cur, other, n);
       const t = cur;
       cur = other;
       other = t;

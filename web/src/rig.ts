@@ -14,14 +14,17 @@
 import { OVERSAMPLING_FACTORS, INPUT_TRIM_UNITY_KNOB } from './params';
 
 export type SourceKind = 'test' | 'live';
-// M7 appends 'tuner' (a chromatic needle tuner: no audio DSP, engaged = mutes the
-// chain). Kept additive so the parallel SD-1 work merges cleanly.
-export type PedalType = 'rat' | 'tuner';
+// M7 adds 'tuner' (chromatic needle tuner: no audio DSP, engaged = mutes the
+// chain). M8 adds 'sd1' (Boss SD-1 Super Overdrive). Both dirt pedals share the
+// SAME three-knob param shape (PedalParams below) and the same numeric worklet
+// ABI (id 0/1/2); for an SD-1 those three knobs READ as Drive / Tone / Level
+// (the Pedal component relabels them), so distortion==Drive and filter==Tone.
+// One param shape keeps the chain/worklet/serializer pedal-agnostic.
+export type PedalType = 'rat' | 'sd1' | 'tuner';
 export type AmpType = 'clean120';
 
-// The pedal types that can be added from the gear tray (M6.4). M7 adds the tuner;
-// M8's SD-1 will append here too (each with its own params).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'tuner'];
+// The pedal types that can be added from the gear tray (M6.4).
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4). Currently just the
 // Clean 120; M9's JCM800 appends here.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = ['clean120'];
@@ -112,6 +115,22 @@ export const KNOB_DEFAULTS: PedalParams = {
   level: 0.8,
 };
 
+// SD-1 (M8) opening state. Same param slots (distortion==Drive, filter==Tone,
+// level==Level): a moderate Drive, Tone at noon (transparent), healthy Level.
+export const SD1_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.5,
+  filter: 0.5,
+  level: 0.7,
+};
+
+// Per-type opening knob positions (gear tray "add" / swap use this).
+export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
+  rat: KNOB_DEFAULTS,
+  sd1: SD1_KNOB_DEFAULTS,
+  // The tuner has no knobs; params are unused but keep the shared shape.
+  tuner: KNOB_DEFAULTS,
+};
+
 // Amp defaults mirror the approved design's opening state: Vol 40, Bass/Mid 50
 // (flat), Treble 60, bright off, cab on. Tone controls are flat at 0.5. Chorus
 // ships OFF (mode 0) with a musical speed/depth ready for when it is engaged.
@@ -141,7 +160,7 @@ export function makePedal(type: PedalType = 'rat'): PedalInstance {
     id: newPedalId(type),
     type,
     engaged: type !== 'tuner',
-    params: { ...KNOB_DEFAULTS },
+    params: { ...(PEDAL_KNOB_DEFAULTS[type] ?? KNOB_DEFAULTS) },
   };
 }
 
@@ -197,7 +216,8 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
   const dp = DEFAULT_RIG.pedals[0];
   const id = typeof p.id === 'string' && p.id.length > 0 ? p.id : fallbackId;
   // Known types round-trip; anything else coerces to the RAT.
-  const type: PedalType = p.type === 'tuner' ? 'tuner' : 'rat';
+  const type: PedalType =
+    p.type === 'tuner' ? 'tuner' : p.type === 'sd1' ? 'sd1' : 'rat';
   return {
     id,
     type,

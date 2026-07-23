@@ -1628,6 +1628,101 @@ delayed-bit-identity through the real stateful limiter.
 Render-tool contrast: `--limiter-thresh` now sets the gain-rider ceiling; the
 legacy tanh `softLimit()` remains in the tool ONLY for OLD-tree A/B builds.
 
+## 11.6 M8 — Boss SD-1 Super Overdrive: the soft, asymmetric contrast to the RAT
+
+The second dirt box, and a deliberate topology contrast. Where the RAT clamps
+hard and symmetrically to ground (odd harmonics, aggressive), the SD-1 clips
+**softly and asymmetrically inside the op-amp feedback loop** — a clean signal
+component always passes, the knee is gradual, and 2-vs-1 diodes add even-harmonic
+warmth. Files: `core/include/clipper/dsp/{SdModel.h,AsymSoftClipper.h}`,
+`core/src/dsp/SdModel.cpp`, `core/tests/test_sd_model.cpp`; C ABI `sd_*` in
+`clipper_c_api.cpp`; `--pedal sd1` in the render CLI; worklet `sd1` dispatch;
+`rig.ts` / Pedal / gear-tray / assistant wiring.
+
+### The circuit → the model (analytic targets, all derived from the values)
+
+- **Non-inverting gain with feedback clip.** `V_out = V_in + f(K·HP720(V_in))`,
+  where `f` is the asymmetric soft clipper. Feedback `Zf` = 1 MΩ DRIVE pot;
+  to-ground leg `Zg` = 4.7 kΩ + 0.047 µF. The non-inverting gain
+  `A(s) = 1 + Zf/Zg = 1 + K·HP(s)` is a **mid-hump**: unity at DC, rising through
+  the corner `f_mid = 1/(2π·4.7k·0.047µF) = 720.5 Hz` to the HF plateau `1+K`.
+  `K = Zf/R_g`; at max DRIVE `K = 1e6/4.7e3 = 212.8` → plateau **+46.6 dB**. The
+  clean `+V_in` pedestal is the Tube-Screamer trait: bass below ~720 Hz stays
+  comparatively clean while mids/highs are slammed.
+- **DRIVE** maps linear-in-dB over plateau `[+12, +46.6] dB` (K = 4 .. 214). Min
+  is NOT unity — a hot input still clears the ~0.5 V knee, so there is no fully
+  clean setting (measured light clip, THD ≈ 1 % at 0.30 V, DRIVE 0).
+- **Asymmetric soft clip** (`AsymSoftClipper`, ADAA): `f(u) = Vc·tanh(u/Vc)` with
+  `Vc = Vp = 0.95 V` (2 diodes) for `u ≥ 0`, `Vn = 0.50 V` (1 diode) for `u < 0`.
+  Continuous C1 antiderivative → first-order ADAA applies across the sign
+  boundary. **Why ADAA not WDF:** chowdsp_wdf ships a *symmetric* diode pair only;
+  the SD-1's soft feedback limiter is well-captured by the tanh closed form and
+  ADAA antialiases it cleanly, so ADAA is the SD-1's PRODUCTION nonlinearity
+  (RAT stays WDF). A naive path is kept for the aliasing A/B.
+- **4558 op-amp** (`LM308Stage` reused, 4558 values GBW = 3 MHz, slew = 1.7 V/µs
+  — much faster than the RAT's LM308). Closed-loop corner `GBW/A_noise`; at the
+  +46.6 dB max (A = 214) it sits at **14.0 kHz** — high enough that the mid-hump
+  voicing is unaffected in-band, only a gentle top-octave softening at max drive.
+  *Approximation (as M6.5):* the band-limit/slew act on the amplified feedback
+  drive `u`, not the unity-gain clean pedestal (whose own corner is GBW/1 = 3 MHz).
+- **Tone control** — a first-order treble TILT about a ~1 kHz pivot, ±12 dB as
+  TONE sweeps 0..1, **transparent at noon** (0.5). This matches the published
+  SD-1 tone response SHAPE (progressive treble cut/boost, bass ~fixed) without
+  modelling the exact 10k-pot/0.018µF/0.027µF network — a documented
+  approximation. A ~12 Hz output DC-blocker (the coupling cap) removes the DC the
+  asymmetric clip produces. LEVEL is a clean linear gain (identity, as the RAT).
+- **M2 reused directly:** only the feedback clip runs oversampled (default 4×);
+  the op-amp model and ADAA both live at the oversampled rate; the pedestal is
+  upsampled alongside so it stays sample-aligned (no separate delay line).
+
+### Validation (ctest `clipper_sd_tests`, 44.1 k + 96 k, assert-backed)
+
+- **Mid-hump corner ≈ 720 Hz:** small-signal shelf matches the analytic
+  `1 + K·HP720` within **0.04 dB worst** (44.1 k) / 0.07 dB (96 k), well inside
+  the ±1.5 dB bar; 720 Hz measures **−2.87 dB** below the plateau (the −3 dB
+  corner), 82 Hz **−18.5 dB** (bass shelved unity-ward).
+- **Asymmetry → even harmonics:** 220 Hz at moderate drive → 2nd harmonic
+  **−20.9 dBc** (asymmetric) vs **−152.6 dBc** with the diodes forced symmetric —
+  a **131.7 dB** contrast (the even harmonic is entirely asymmetry-driven).
+- **Soft knee vs the RAT's hard clamp:** compression-knee width (input ratio over
+  which the fundamental compresses −0.9 → −6 dB) = **3.95×** for the SD-1 vs
+  **2.47×** for the RAT — **1.60× softer**; THD rises gradually
+  4.3 % → 16.9 % → 24.5 % across input 0.05/0.15/0.30.
+- **4558 op-amp corner:** extracted (real vs ideal-op-amp ratio) at max DRIVE =
+  **14 308 Hz** (44.1 k) / 14 096 Hz (96 k) vs analytic GBW/A = **14 032 Hz**
+  (≈2 %).
+- **Aliasing (M2 bar):** shipped 4× ADAA at max DRIVE worst-alias
+  **−116.5 dB** (44.1 k) / −126.1 dB (96 k), far below the −60 dB bar; ADAA beats
+  naive by ~8 dB at 1×.
+
+### A/B render commands
+
+```
+# SD-1 (soft, asymmetric) vs RAT (hard, symmetric), same knobs, plucked low A:
+clipper-render --gen pluck:110:2.0 sd1.wav --pedal sd1 --distortion 0.6 --filter 0.5 --level 0.8 --sr 48000
+clipper-render --gen pluck:110:2.0 rat.wav --pedal rat --distortion 0.6 --filter 0.5 --level 0.8 --sr 48000
+#   -> SD-1 peak 1.22 / rms 0.20 (clean pedestal + soft clip keeps rising);
+#      RAT  peak 0.30 / rms 0.14 (hard shunt clamp pins the output near the knee).
+# Even-harmonic (asymmetry) A/B on a 220 Hz sine, with spectra:
+clipper-render --gen sine:220:1.0 sd1_220.wav --pedal sd1 --distortion 0.6 --sr 48000 --spectrum sd1_220.csv
+# Op-amp / ideal A/B at max drive (14 kHz top-octave softening):
+clipper-render --gen sweep:20:20000:4.0 sd1_real.wav  --pedal sd1 --distortion 1.0 --sr 96000
+clipper-render --gen sweep:20:20000:4.0 sd1_ideal.wav --pedal sd1 --distortion 1.0 --sr 96000 --ideal-opamp
+```
+
+### Integration notes
+
+- **Shared param shape.** Both dirt pedals keep `PedalParams {distortion, filter,
+  level}` (the chain/worklet/serializer ABI, ids 0/1/2). For an SD-1 those slots
+  READ as **Drive / Tone / Level** — the Pedal component relabels, tokens add an
+  amber LED/arc accent (`--led-sd`, both themes), and the assistant accepts
+  `drive`/`tone` aliases (→ distortion/filter). One shape keeps everything pedal-
+  agnostic and the change to shared files additive. The worklet dispatches
+  `sd_*`/`rat_*` per node `type`.
+- Core suites all green (M0 + RAT + **SD-1** + amp, 44.1 k + 96 k); web tsc +
+  vite build; Playwright 27 (25 + `SD-1 worklet: adds harmonics…` and
+  `assistant: set_param drive dials an SD-1 instance`); server 11; history 10.
+
 ## 12. M9.1 — 12AX7 triode stage (the amp building block)
 
 M9 (JCM800 2204) is built bottom-up: its preamp is one 12AX7 common-cathode gain

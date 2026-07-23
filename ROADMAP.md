@@ -160,16 +160,23 @@ docs/DEVELOPMENT.md §12.
   context reports the live note + cents so the coach can say "you're a few
   cents flat on the G."
 
-### M8 — SD-1 Super Overdrive *(M)*
+### M8 — SD-1 Super Overdrive *(M)* — ✅ shipped
 
-The essential second dirt box, and the perfect topology contrast with the RAT:
+The essential second dirt box, and the perfect topology contrast with the RAT.
+Details + validation numbers in `docs/DEVELOPMENT.md` §11.6.
 
 - **Soft, asymmetric clipping in the op-amp feedback loop** (2 vs 1 diode —
-  even-harmonic warmth) vs the RAT's hard shunt-to-ground clipping. New WDF
-  arrangement; all M1/M2 machinery (oversampling, ADAA infra, alias
-  measurement, render CLI) reuses directly.
-- The signature mid-hump input shaping, tone control, level. Three knobs.
-- Ground truth on the real board for A/B.
+  even-harmonic warmth) vs the RAT's hard shunt-to-ground clipping. Realised with
+  an **asymmetric ADAA soft-clipper** (`AsymSoftClipper`) rather than WDF — the
+  chowdsp diode pair is symmetric-only, and the SD-1's soft feedback limiter is
+  captured cleanly by the tanh closed form + ADAA. All M1/M2 machinery
+  (oversampling, ADAA infra, alias measurement, render CLI `--pedal sd1`) reuses
+  directly; the 4558 op-amp reuses the M6.5 `LM308Stage` with 4558 values.
+- The signature mid-hump input shaping (≈720 Hz, +46.6 dB plateau), first-order
+  tone tilt, level. Three knobs (Drive / Tone / Level).
+- Measured: mid-hump corner within 0.04 dB of analytic; 2nd harmonic −20.9 dBc
+  (vs −152 dBc symmetric); knee 1.6× softer than the RAT; op-amp corner 14.0 kHz;
+  4× alias margin −116 dB. Ground truth on the real board for A/B.
 - Sets up the canonical M9 pairing: SD-1 boosting a cranked Marshall.
 
 ### M9 — First valve amp: Marshall JCM800 2204 *(L, phased)*

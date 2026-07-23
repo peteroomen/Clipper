@@ -64,6 +64,7 @@ FetchContent_MakeAvailable(chowdsp_wdf)
 #   - TriodeStage.cpp  : M9.1 12AX7 common-cathode gain stage (Koren + nodal Newton)
 add_library(clipper_dsp STATIC
     src/dsp/RatModel.cpp
+    src/dsp/SdModel.cpp
     src/dsp/AmpModel.cpp
     src/dsp/ChorusModel.cpp
     src/dsp/CabConvolver.cpp
@@ -99,6 +100,16 @@ if(NOT EMSCRIPTEN)
         target_compile_options(clipper_rat_tests PRIVATE -Wall -Wextra -UNDEBUG)
     endif()
     add_test(NAME clipper_rat_tests COMMAND clipper_rat_tests)
+
+    # --- M8: SD-1 model tests -------------------------------------------------
+    add_executable(clipper_sd_tests tests/test_sd_model.cpp)
+    target_link_libraries(clipper_sd_tests PRIVATE clipper_dsp)
+    # Shares the tools/measure aliasing metric with the RAT tests.
+    target_include_directories(clipper_sd_tests PRIVATE tools)
+    if(NOT MSVC)
+        target_compile_options(clipper_sd_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_sd_tests COMMAND clipper_sd_tests)
 
     # --- M5: amp + cab tests --------------------------------------------------
     add_executable(clipper_amp_tests tests/test_amp_model.cpp)
