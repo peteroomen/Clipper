@@ -22,6 +22,7 @@
 
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/TriodeStage.h"
+#include "clipper/dsp/Jcm800Preamp.h"
 #include "clipper/dsp/SdModel.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
@@ -60,6 +61,11 @@ struct Args {
     bool triode = false;          // M9.1: run a single 12AX7 TriodeStage (stage alone)
     float triodeDrive = 3.0f;     // input-gain multiplier into the grid (volts)
     float triodeCathodeUf = 0.68f;  // cathode bypass cap (uF); 0 = unbypassed
+    bool jcmPre = false;          // M9.2: run the JCM800 2204 preamp (4x triode + TMB)
+    float jcmDrive = 1.0f;        // input-gain multiplier into V1A's grid (volts)
+    float jcmGain = 0.5f;         // GAIN knob (preamp volume, audio taper)
+    float jcmMaster = 0.5f;       // MASTER volume knob (audio taper)
+    float jcmBass = 0.5f, jcmMid = 0.5f, jcmTreble = 0.5f;  // TMB tone knobs
 };
 
 // Output soft limiter, parameterized by threshold so the clean-path A/B can
@@ -91,7 +97,12 @@ float softLimit(float x, float t) {
         "M9.1:     --triode (render a single 12AX7 common-cathode stage alone),\n"
         "          --triode-drive D (input-gain multiplier into the grid, default 3.0),\n"
         "          --triode-cathode UF (cathode bypass cap in uF: 0.68 default, 0 unbypassed, 22 full),\n"
-        "          --os 1|2|4|8 also selects the triode oversampling (default 4).\n",
+        "          --os 1|2|4|8 also selects the triode oversampling (default 4).\n"
+        "M9.2:     --jcm-pre (render the JCM800 2204 preamp: 4x 12AX7 + cathode follower + TMB),\n"
+        "          --jcm-drive D (input-gain into V1A's grid, default 1.0),\n"
+        "          --jcm-gain G / --jcm-master M (0..1 audio-taper knobs),\n"
+        "          --jcm-bass B / --jcm-mid MI / --jcm-treble T (0..1 tone stack),\n"
+        "          --os 1|2|4|8 selects the per-stage oversampling (default 4).\n",
         argv0, argv0, argv0, argv0);
     std::exit(2);
 }
@@ -247,6 +258,13 @@ int main(int argc, char** argv) {
         else if (s == "--triode") a.triode = true;
         else if (s == "--triode-drive") a.triodeDrive = std::atof(need("--triode-drive"));
         else if (s == "--triode-cathode") a.triodeCathodeUf = std::atof(need("--triode-cathode"));
+        else if (s == "--jcm-pre") a.jcmPre = true;
+        else if (s == "--jcm-drive") a.jcmDrive = std::atof(need("--jcm-drive"));
+        else if (s == "--jcm-gain") a.jcmGain = std::atof(need("--jcm-gain"));
+        else if (s == "--jcm-master") a.jcmMaster = std::atof(need("--jcm-master"));
+        else if (s == "--jcm-bass") a.jcmBass = std::atof(need("--jcm-bass"));
+        else if (s == "--jcm-mid") a.jcmMid = std::atof(need("--jcm-mid"));
+        else if (s == "--jcm-treble") a.jcmTreble = std::atof(need("--jcm-treble"));
         else if (s == "--alias-report") a.aliasReport = true;
         else if (s == "-h" || s == "--help") usage(argv[0]);
         else if (!s.empty() && s[0] == '-') {
@@ -334,8 +352,30 @@ int main(int argc, char** argv) {
 
     std::vector<float> out(input.size(), 0.0f);
     double triodePeakVolts = 0.0;  // reported for the --triode chain
+    double jcmPeakVolts = 0.0;     // reported for the --jcm-pre chain
 
-    if (a.triode) {
+    if (a.jcmPre) {
+        // M9.2: the full JCM800 2204 preamp (4x 12AX7 + cathode follower + TMB tone
+        // stack + master). The grid drive is the input scaled by --jcm-drive (a
+        // bare DI barely moves V1A). Output is the preamp voltage (tens of volts at
+        // high gain), peak-normalized to 0.9 for the WAV (raw peak reported below).
+        clipper::dsp::Jcm800Preamp pre;
+        pre.prepare(fs, 128);
+        pre.setOversampling(a.os);
+        pre.setParameter(clipper::dsp::Jcm800Preamp::PARAM_GAIN, a.jcmGain);
+        pre.setParameter(clipper::dsp::Jcm800Preamp::PARAM_MASTER, a.jcmMaster);
+        pre.setParameter(clipper::dsp::Jcm800Preamp::PARAM_BASS, a.jcmBass);
+        pre.setParameter(clipper::dsp::Jcm800Preamp::PARAM_MID, a.jcmMid);
+        pre.setParameter(clipper::dsp::Jcm800Preamp::PARAM_TREBLE, a.jcmTreble);
+        std::vector<float> grid(input.size());
+        for (size_t i = 0; i < input.size(); ++i) grid[i] = input[i] * a.jcmDrive;
+        if (!grid.empty())
+            pre.process(grid.data(), out.data(), static_cast<int>(grid.size()));
+        for (float v : out)
+            jcmPeakVolts = std::max(jcmPeakVolts, static_cast<double>(std::fabs(v)));
+        const double norm = jcmPeakVolts > 1e-9 ? 0.9 / jcmPeakVolts : 1.0;
+        for (float& v : out) v = static_cast<float>(v * norm);
+    } else if (a.triode) {
         // M9.1: a single 12AX7 common-cathode stage, alone, for listening. The
         // grid drive is the input scaled by --triode-drive (a bare 0.3 V DI barely
         // moves a 12AX7; ~1-3 V grid is where it distorts). Output is the plate AC
@@ -432,7 +472,14 @@ int main(int argc, char** argv) {
         rms += static_cast<double>(v) * v;
     }
     rms = out.empty() ? 0.0 : std::sqrt(rms / out.size());
-    if (a.triode) {
+    if (a.jcmPre) {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (chain=JCM800 preamp, drive=%.2f, "
+            "gain=%.2f master=%.2f bass=%.2f mid=%.2f treble=%.2f, os=%dx)\n"
+            "  raw preamp peak=%.1f V (normalized to 0.9)  out rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.jcmDrive, a.jcmGain, a.jcmMaster,
+            a.jcmBass, a.jcmMid, a.jcmTreble, a.os, jcmPeakVolts, rms);
+    } else if (a.triode) {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (chain=triode 12AX7, drive=%.2f, "
             "cathode=%.2f uF, os=%dx)\n  raw plate peak=%.1f V (normalized to 0.9)  "

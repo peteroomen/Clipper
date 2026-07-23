@@ -62,6 +62,7 @@ FetchContent_MakeAvailable(chowdsp_wdf)
 #   - CabConvolver.cpp : M5 partitioned FFT cab convolver
 #   - CabIR.cpp        : M5 procedural default 2x12 cab impulse response
 #   - TriodeStage.cpp  : M9.1 12AX7 common-cathode gain stage (Koren + nodal Newton)
+#   - Jcm800Preamp.cpp : M9.2 JCM800 2204 preamp (4x TriodeStage + TMB tone stack)
 add_library(clipper_dsp STATIC
     src/dsp/RatModel.cpp
     src/dsp/SdModel.cpp
@@ -70,6 +71,7 @@ add_library(clipper_dsp STATIC
     src/dsp/CabConvolver.cpp
     src/dsp/CabIR.cpp
     src/dsp/TriodeStage.cpp
+    src/dsp/Jcm800Preamp.cpp
 )
 target_include_directories(clipper_dsp PUBLIC include)
 target_link_libraries(clipper_dsp PUBLIC chowdsp_wdf)
@@ -130,6 +132,17 @@ if(NOT EMSCRIPTEN)
         target_compile_options(clipper_triode_tests PRIVATE -Wall -Wextra -UNDEBUG)
     endif()
     add_test(NAME clipper_triode_tests COMMAND clipper_triode_tests)
+
+    # --- M9.2: JCM800 2204 preamp tests ---------------------------------------
+    add_executable(clipper_jcm800_tests tests/test_jcm800_preamp.cpp)
+    target_link_libraries(clipper_jcm800_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (aliasing metric) under tools/measure.
+    target_include_directories(clipper_jcm800_tests PRIVATE tools)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_jcm800_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_jcm800_tests COMMAND clipper_jcm800_tests)
 
     # --- CLI render harness (native only, NOT part of the WASM build) ---------
     add_executable(clipper-render tools/render/main.cpp)

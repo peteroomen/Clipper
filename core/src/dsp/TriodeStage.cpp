@@ -133,6 +133,13 @@ void TriodeStage::prepare(double sampleRate, int maxBlockSize) {
     maxBlockSize_ = maxBlockSize > 0 ? maxBlockSize : 128;
     os_.prepare(maxBlockSize_);
     reprepareReactive();
+    if (cfg_.topology == Topology::CathodeFollower) {
+        // Follower is algebraic (no coupling / bypass caps): the DC solve IS the
+        // parked state; no discrete settling needed. See processSampleFollowerOS.
+        solveFollowerOperatingPoint();
+        lastMaxIters_ = 0;
+        return;
+    }
     solveOperatingPoint();
     // Park live node + companion states at the DC operating point.
     va_ = vaQuiescent_;
@@ -165,6 +172,11 @@ void TriodeStage::settleDC() {
 void TriodeStage::setOversampling(int factor) {
     os_.setFactor(factor);
     reprepareReactive();
+    if (cfg_.topology == Topology::CathodeFollower) {
+        solveFollowerOperatingPoint();  // re-park (algebraic; no settle)
+        lastMaxIters_ = 0;
+        return;
+    }
     // Reset live states to the operating point after an OS change (clean restart).
     va_ = vaQuiescent_;
     vk_ = vkQuiescent_;
@@ -220,7 +232,82 @@ void TriodeStage::solveOperatingPoint() {
     iqQuiescent_ = korenPlateCurrent(Va, -Vk, cfg_.tube);
 }
 
+// --- M9.2 cathode follower --------------------------------------------------
+// Direct-coupled cathode follower (JCM800 V2B). The plate is tied to B+, so the
+// plate-cathode voltage is Va = B+ - Vk. The grid is DC-coupled to the driving
+// stage's plate via cfg_.gridBias (+ the AC input riding on it), fed through the
+// grid stopper Rg. The cathode drives the load Rk (100 k, unbypassed). Two
+// unknowns (Vg, Vk); no reactive companions (algebraic per sample). KCL:
+//   r_g = (Vsrc - Vg)/Rg - Igk           (grid node; Vsrc = gridBias + input)
+//   r_k = Ip(B+-Vk, Vgk) + Igk - Vk/Rk   (cathode node)
+void TriodeStage::solveFollowerOperatingPoint() {
+    double Vg = cfg_.gridBias, Vk = cfg_.gridBias;  // cathode follows the grid
+    const double Vsrc = cfg_.gridBias;
+    const double gRg = 1.0 / cfg_.Rg, gRk = 1.0 / cfg_.Rk;
+    for (int it = 0; it < 200; ++it) {
+        const double Vgk = Vg - Vk;
+        const double Va = cfg_.bPlus - Vk;
+        const KorenEval k = korenEval(Va, Vgk, cfg_.tube);
+        const GridEval g = gridEval(Vgk, cfg_);
+        const double r_g = (Vsrc - Vg) * gRg - g.Ig;
+        const double r_k = k.Ip + g.Ig - Vk * gRk;
+        // dIp/dVg = k.dVgk ; dIp/dVk = -(k.dVa + k.dVgk)  (Va = B+ - Vk).
+        const double J00 = -gRg - g.dVgk;                    // dr_g/dVg
+        const double J01 = g.dVgk;                           // dr_g/dVk
+        const double J10 = k.dVgk + g.dVgk;                  // dr_k/dVg
+        const double J11 = -(k.dVa + k.dVgk) - g.dVgk - gRk; // dr_k/dVk
+        const double det = J00 * J11 - J01 * J10;
+        if (std::fabs(det) < 1e-30) break;
+        const double dVg = -(r_g * J11 - r_k * J01) / det;
+        const double dVk = -(J00 * r_k - J10 * r_g) / det;
+        Vg += std::clamp(dVg, -30.0, 30.0);
+        Vk += std::clamp(dVk, -30.0, 30.0);
+        if (std::fabs(dVg) < 1e-9 && std::fabs(dVk) < 1e-9) break;
+    }
+    vg_ = Vg;
+    vk_ = Vk;
+    va_ = cfg_.bPlus - Vk;
+    vkQuiescent_ = Vk;
+    vaQuiescent_ = cfg_.bPlus - Vk;  // plate-cathode voltage at idle
+    iqQuiescent_ = korenPlateCurrent(cfg_.bPlus - Vk, Vg - Vk, cfg_.tube);
+}
+
+inline float TriodeStage::processSampleFollowerOS(float xf) {
+    const double Vsrc = cfg_.gridBias + static_cast<double>(xf);
+    const double gRg = 1.0 / cfg_.Rg, gRk = 1.0 / cfg_.Rk;
+    double Vg = vg_, Vk = vk_;  // warm start
+    int it = 0;
+    for (; it < kMaxNewtonIter; ++it) {
+        const double Vgk = Vg - Vk;
+        const double Va = cfg_.bPlus - Vk;
+        const KorenEval k = korenEval(Va, Vgk, cfg_.tube);
+        const GridEval g = gridEval(Vgk, cfg_);
+        const double r_g = (Vsrc - Vg) * gRg - g.Ig;
+        const double r_k = k.Ip + g.Ig - Vk * gRk;
+        const double J00 = -gRg - g.dVgk;
+        const double J01 = g.dVgk;
+        const double J10 = k.dVgk + g.dVgk;
+        const double J11 = -(k.dVa + k.dVgk) - g.dVgk - gRk;
+        const double det = J00 * J11 - J01 * J10;
+        if (std::fabs(det) < 1e-30) break;
+        double dVg = -(r_g * J11 - r_k * J01) / det;
+        double dVk = -(J00 * r_k - J10 * r_g) / det;
+        dVg = std::clamp(dVg, -30.0, 30.0);
+        dVk = std::clamp(dVk, -30.0, 30.0);
+        Vg += dVg;
+        Vk += dVk;
+        if (std::fabs(dVg) < 1e-7 && std::fabs(dVk) < 1e-7) break;
+    }
+    lastMaxIters_ = std::max(lastMaxIters_, it + 1);
+    vg_ = Vg;
+    vk_ = Vk;
+    va_ = cfg_.bPlus - Vk;
+    return static_cast<float>(Vk - vkQuiescent_);  // cathode AC (low-Z output)
+}
+
 inline float TriodeStage::processSampleOS(float xf) {
+    if (cfg_.topology == Topology::CathodeFollower)
+        return processSampleFollowerOS(xf);
     const double x = static_cast<double>(xf);
 
     // Input coupling-network Thevenin into the grid node (see file header).

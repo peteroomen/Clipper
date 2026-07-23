@@ -1869,6 +1869,140 @@ Grid drive is the input × `--triode-drive` (a bare 0.3 V DI barely moves a 12AX
 the tens of volts, peak-normalized to 0.9 for the WAV (raw plate peak reported).
 `--triode-cathode` sets the bypass µF (0 = unbypassed), `--os` the factor.
 
+## 14. M9.2 — JCM800 2204 preamp (the cascade + tone stack)
+
+M9 phase 2 composes the validated M9.1 TriodeStage into the **full 2204 preamp**:
+four 12AX7 triodes (three common-cathode gain stages + a direct-coupled cathode
+follower) driving the passive Marshall TMB tone stack, with GAIN and MASTER pots.
+Still no user-facing feature — **module fidelity is the milestone**; the power amp
++ sag (phase 3) and the UI/integration (phase 4) come later.
+
+New source (portable, platform-free C++17; zero web/server/electron touch):
+
+```
+core/include/clipper/dsp/Jcm800Preamp.h   4x TriodeStage + MarshallToneStack, knobs
+core/src/dsp/Jcm800Preamp.cpp             composition, follower bias, tone-stack MNA
+core/tests/test_jcm800_preamp.cpp         measurement suite (clipper_jcm800_tests)
+```
+
+TriodeStage gained ONE additive feature: a **`CathodeFollower` topology** (+ a
+`gridBias` field) for V2B — plate tied to B+, output at the cathode, grid DC-coupled
+to the driving stage's plate. The M9.1 `CommonCathode` path is byte-for-byte
+unchanged and `clipper_triode_tests` passes untouched.
+
+### Topology (canonical 2204 values, B+ ≈ 320 V throughout)
+
+```
+guitar → V1A → 0.022µF + 470k/1M GAIN pot → V1B → 0.022µF → V2A → V2B → TMB → MASTER
+```
+
+| stage | role | Ra | Rk | Ck | grid-leak Rgl |
+|---|---|---|---|---|---|
+| **V1A** | bright input CC | 100 k | 820 Ω | 0.68 µF (bypassed) | 1.47 M (= 470 k + 1 M GAIN pot) |
+| **V1B** | **cold** 2nd stage | 82 k | 10 k | — (UNBYPASSED) | 470 k |
+| **V2A** | bright CC → follower | 100 k | 820 Ω | 0.68 µF | 1 M |
+| **V2B** | cathode follower | — (plate = B+) | 100 k | — | direct-coupled |
+
+- **GAIN** (the drive knob) is the 1 M preamp-volume pot after the 470 k series
+  resistor: interstage scale = `0.68 · taper(gain)`, where `0.68 = 1M/(1M+470k)`
+  is the series divider and `taper(·)` the pot's audio law (below).
+- **V1B is the crunch source**: a 10 k *unbypassed* cathode biases it cold
+  (Vgk ≈ −3.1 V, Iq ≈ 0.31 mA) and degenerates its gain to ~5.6× — so it's the
+  first stage to run out of linear grid window as GAIN comes up (white-box test 4).
+- **V2A → V2B is DIRECT-COUPLED** (no cap): the follower's grid DC bias is *solved*
+  to V2A's quiescent plate voltage (185.7 V) at `prepare()`; the AC rides on it.
+  V2A's `Rgl = 1 M` is the honest compromise for TriodeStage's single shared Rgl
+  (its own input grid-leak, so blocking recovery τ = Rgl·Cc = 22 ms; the follower
+  grid is high-Z so 1 M barely loads the plate).
+- **Why the follower**: the passive TMB is lossy and impedance-sensitive; the
+  follower's low output impedance (**≈ 1/gm ‖ Rk = 372 Ω**, measured) drives the
+  stack so its response matches the (high-Z-source) analytic transfer.
+
+### Audio taper law (GAIN, MASTER)
+
+`taper(x) = (e^{4·x} − 1)/(e^4 − 1)` — a musical log/audio pot (~12 % at noon,
+0 at 0, 1 at 1). Documented and reproduced in the tests.
+
+### Marshall TMB tone stack (FMV) — passive, nodal MNA
+
+`MarshallToneStack` implements the FMV network by **modified nodal analysis**:
+trapezoidal (bilinear) capacitor companions, a 5×5 node system whose inverse is
+cached per knob change (per-sample cost = one 5×5 mat-vec). Netlist (nodes
+IN/N2/N3/N4/OUT): treble cap `Ct` IN–N2, slope `R1` IN–N3, treble pot
+`RT` split N2–OUT–N3 (wiper = output), bass pot `RB` (rheostat) + bass cap `Cb`
+N3–N4, mid pot `RM` (rheostat) + mid cap `Cm` N4–GND.
+
+Component values: slope **33 k**, treble pot **250 k**, bass **1 M**, mid **25 k**;
+caps **Ct = 470 pF, Cb = 22 nF, Cm = 22 nF**. *The spec's "0.47" treble cap is
+0.47 **nF** = 470 pF; a 0.47 µF treble cap would put the treble corner at ~1 Hz
+(unphysical) and destroy the mid notch — so it is read as nanofarads.* The test
+derives the analytic `H(jω)` from the **same** netlist via a complex nodal solve
+(caps = jωC) — independent of the runtime discretization.
+
+### Oversampling requirement — MEASURED (M2 sweep, 4186 Hz, max gain)
+
+Each TriodeStage antialiases itself (shared M2 `Oversampler`); the tone stack and
+interstage networks are linear (base rate). The **cascade** is the nonlinearity —
+measured worst folded-alias vs the fundamental at MAX gain:
+
+| base | 1× | 2× | 4× | 8× |
+|---|---|---|---|---|
+| 44.1 kHz | −21.9 dB | −31.8 dB | **−73.3 dB** | −73.8 dB |
+| 96 kHz   | −26.2 dB | −68.3 dB | **−68.3 dB** | −68.2 dB |
+
+**Required OS factor: 4×.** 4× reaches the cascade's compound alias **floor** (8×
+buys ~0 dB — the residual is inter-stage band-limiting, not per-stage aliasing) and
+clears the **M2 audibility bar (−60 dB)** with margin even at max gain. Ships at 4×
+(the M2 pedal budget), same as M9.1.
+
+### Validation — `clipper_jcm800_tests` (deterministic, 44.1 k & 96 k)
+
+Every number is asserted against an analytic target **derived in the test** (load-
+line bisection per stage, the follower's 1-D cathode solve, central-difference
+small-signal params, the complex cathode-bypass transfer, and the complex nodal
+tone-stack `H(jω)`).
+
+1. **Per-stage DC operating points** vs the load line (±5 %): **V1A/V2A**
+   Va = 185.7 V, Iq = 1.34 mA, Vk = 1.10 V; **V1B (cold)** Va = 294.6 V,
+   Iq = 0.309 mA, Vk = 3.09 V; **V2B follower** gridBias = 185.7 V (= V2A plate),
+   Vk_out = 185.9 V (analytic 186.0), Iq = 1.86 mA, Rout = 372 Ω. All within 0.1 %.
+2. **Small-signal chain gain** at low GAIN (0.03, linear region) vs the product
+   `A_V1A · gainScale · A_V1B · A_V2A · A_fol · |H_TMB(1 kHz)| · master`:
+   **measured 19.5 dB vs analytic 19.7 dB** (tol ±2 dB) [V1A 61.8×, V1B 5.6×,
+   V2A 61.1×, follower 0.996, gainScale 0.0016, H_TMB −11.0 dB].
+3. **Tone stack** vs analytic `H(s)` at 100/650/3000 Hz, scooped (1,0,1) and flat
+   (.5,.5,.5): **within 0.04 dB** (tol ±1.5 dB); the classic **Marshall mid notch
+   at 545 Hz, −16 dB** (asserted in the 300–800 Hz band).
+4. **Gain character**: THD **monotonic** 2.1 → 9.3 → 54.1 → 90.7 % across GAIN
+   0.1/0.3/0.6/1.0; **asymmetric clip** 53 % at max (crunch); and (white-box) V1B's
+   grid drive **4.27 V exceeds its 3.09 V cold-bias window** at high gain while
+   staying inside it at low gain.
+5. **Blocking / stability**: a 1.5 V / 180 Hz burst with ±10 V slams then silence —
+   all finite, bounded (peak ~19 V), and the coupling RCs recover (a decaying
+   low-frequency blocking wobble settles from rms 10.9 to 0.003) at 44.1 k/96 k,
+   4×/8×.
+6. **Aliasing**: the table above; shipped 4× clears the −60 dB M2 bar at max gain.
+7. The **five existing ctest suites still pass**, incl. `clipper_triode_tests`
+   **unchanged**.
+
+### Render harness (`clipper-render --jcm-pre`)
+
+```bash
+# Clean edge (low GAIN, sparkle):
+./build/clipper-render --gen pluck:110:2.0 --amp 0.2 --jcm-pre --jcm-drive 1.0 \
+    --jcm-gain 0.25 --jcm-master 0.6 --jcm-bass 0.5 --jcm-mid 0.6 --jcm-treble 0.6 clean.wav
+# Crunch (mid GAIN, scooped-ish):
+./build/clipper-render --gen pluck:110:2.0 --amp 0.3 --jcm-pre --jcm-drive 2.0 \
+    --jcm-gain 0.6 --jcm-master 0.5 --jcm-bass 0.6 --jcm-mid 0.4 --jcm-treble 0.7 crunch.wav
+# Full send (GAIN maxed, low E):
+./build/clipper-render --gen pluck:82:2.0 --amp 0.3 --jcm-pre --jcm-drive 3.0 \
+    --jcm-gain 1.0 --jcm-master 0.5 --jcm-bass 0.7 --jcm-mid 0.5 --jcm-treble 0.8 fullsend.wav
+```
+
+Grid drive = input × `--jcm-drive`; `--jcm-gain/-master/-bass/-mid/-treble` are the
+0..1 knobs; `--os` sets the per-stage oversampling (default 4). Output is the preamp
+voltage (tens of volts at high gain), peak-normalized to 0.9 for the WAV.
+
 ## Built DSP artifacts are committed
 
 `web/public/generated/` (the Emscripten-built WASM engine + the worklet copy)

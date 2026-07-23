@@ -94,6 +94,14 @@ public:
         double kvb = 300.0;
     };
 
+    // Stage topology. CommonCathode is the M9.1 default (plate load Ra, self-bias
+    // Rk, input+output interstage couplings). CathodeFollower (M9.2) models the
+    // JCM800 V2B direct-coupled cathode follower: plate tied to B+ (no Ra drop),
+    // output taken at the cathode across a large Rk load, grid DC-coupled to an
+    // external bias (the previous stage's plate) via `gridBias`. Purely additive:
+    // the CommonCathode path is byte-for-byte unchanged.
+    enum class Topology { CommonCathode, CathodeFollower };
+
     // Circuit values (default = JCM800 first-stage-style). All parameterizable so
     // the same module serves every stage of the preamp and future amps.
     struct Config {
@@ -111,6 +119,12 @@ public:
         double gridVgn = 0.1;     // conduction knee width (V); sharp enough that
                                   // idle (Vgk~-1.1 V) grid current is negligible
         KorenParams tube{};
+
+        // --- M9.2 additive fields (ignored by the CommonCathode path) ----------
+        Topology topology = Topology::CommonCathode;
+        double gridBias = 0.0;    // CathodeFollower only: DC grid voltage set by the
+                                  // direct-coupled driving stage's plate (V). The
+                                  // audio input rides on it (DC-coupled, no cap).
     };
 
     TriodeStage();
@@ -156,6 +170,10 @@ private:
     // One oversampled-rate sample: nodal Newton, updates node + companion state,
     // returns plate AC voltage (Va - Vq).
     inline float processSampleOS(float x);
+
+    // --- M9.2 cathode-follower path (additive; separate from the CC path) ------
+    void solveFollowerOperatingPoint();  // 2x2 DC solve at gridBias, Va = B+ - Vk
+    inline float processSampleFollowerOS(float x);  // returns cathode AC (Vk - Vk_q)
 
     Config cfg_{};
     double sampleRate_ = 44100.0;

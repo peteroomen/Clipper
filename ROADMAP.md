@@ -196,8 +196,18 @@ is one of the most canonical pairings in rock.
    recovery ≈22 ms (Rgl·Cc); no NaN on ±10 V slam (≤8 Newton iters); cathode
    bypass shelf vs analytic; aliasing −140 dB at the shipped 4×. Rendered alone
    via `clipper-render --triode`. This module is 80 % of every future amp.
-2. **Preamp** — cascaded stages with interstage attenuation, cathode follower
-   driving the classic Marshall TMB tone stack (passive — existing machinery).
+2. **Preamp** ✅ *(phase 2 done — see docs §14, M9.2)* — the full 2204 preamp:
+   four 12AX7s (V1A/V1B/V2A common-cathode + a direct-coupled cathode follower V2B)
+   into the passive Marshall TMB tone stack, GAIN + MASTER audio-taper pots. Built
+   by composing the M9.1 TriodeStage (one additive `CathodeFollower` topology; the
+   common-cathode path unchanged). Validated (`clipper_jcm800_tests`): per-stage DC
+   op points vs load lines (V1B cold at 0.31 mA, follower bias solved to V2A's plate
+   185.7 V, Rout 372 Ω); small-signal chain gain 19.5 dB vs the analytic product;
+   the TMB vs analytic `H(jω)` within 0.04 dB with the classic 545 Hz mid notch;
+   THD monotonic + asymmetric crunch with V1B driven past its cold-bias window;
+   blocking recovery + ±10 V slam stability; **measured OS requirement 4×**
+   (−73/−68 dB alias floor, clears the −60 dB M2 bar at max gain). Rendered via
+   `clipper-render --jcm-pre`.
 3. **Power section — where "responsive" lives**: push-pull EL34 approximation,
    negative feedback + presence control, and **sag** (supply droop under pick
    attack) modeled explicitly and measured, not vibed.
