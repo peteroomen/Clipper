@@ -554,6 +554,112 @@ npm run dev   # http://localhost:5173
   runner where the fake device misbehaves, since the offline tests already cover
   the DSP.
 
+## 9. M4 — Pedal UI
+
+M4 replaces the placeholder sliders with the approved visual design
+("Design Direction 01 — soft-touch neumorphism + liquid glass") and makes the
+whole rig a single serializable structure. **No audio-path changes**: the worklet
+(`web/worklet/clipper-processor.js`), the C ABI, and `scripts/build-wasm.sh` are
+untouched. The UI still talks to the engine through the same message path
+(`param` / `oversampling` / `bypass`) from M3.
+
+### Design system (`web/src/styles/`, plain CSS custom properties)
+
+The tokens and neumorphic recipes are ported **verbatim** from the approved
+artifact — no framework, no preprocessor.
+
+```
+web/src/styles/
+  tokens.css   @font-face (Anton, base64 woff2 — copied as-is) + all design
+               tokens. Base :root = light "porcelain"; @media
+               (prefers-color-scheme: dark) = "graphite"; both forced via
+               :root[data-theme="light"|"dark"] (the theme toggle stamps
+               data-theme on <html>, which wins over the media query).
+  base.css     reset, body, typography helpers (.display = Anton, .mono, .wrap)
+               and the two neu recipes used this milestone: .raised / .well.
+  pedal.css    the pedal face, knob anatomy (.k-arc/.k-body/.k-knurl/.k-cap/
+               .k-ptr), LED, and footswitch — verbatim from the artifact.
+  app.css      page chrome + the restyled secondary M3 controls (selects in
+               carved wells, raised transport buttons, status readout, theme
+               toggle). Written for this app; uses the same tokens/recipes.
+```
+
+**Token map to the artifact.** `tokens.css` is a direct extract of the artifact's
+`:root` blocks; `pedal.css` is its `.pedal`/`.knob`/`.fsw` rules (the one
+`.amp:not(.on)` selector was dropped — no amp until M5). Knob anatomy: red value
+arc is a `conic-gradient` from `225deg` spanning `270deg`, driven by a `--deg`
+custom property (`value * 270`) set on `.k-stack` and inherited by the arc and
+pointer; the arc dims to `opacity: .3` under `.pedal:not(.on)`. The LED lights
+via `.pedal.on .led`. **Glass is intentionally unused this milestone** — it is
+reserved for the M6 AI assistant (its tokens still ship in `tokens.css`).
+
+### Components (`web/src/components/`, plain React + CSS)
+
+- **`Knob.tsx`** — controlled 0..1 value with a label and 0..100 readout, exposed
+  as an accessible `role="slider"` (`aria-valuemin/max/now`, `aria-label`) so it
+  is both screen-reader- and test-addressable. Interactions ported from the
+  artifact: vertical **drag** with pointer capture, **wheel**, **double-click**
+  reset to a per-knob default (`KNOB_DEFAULTS`), **ArrowUp/Down/Left/Right**. A
+  very quiet **tick** plays as the value crosses a detent.
+- **`Pedal.tsx`** — the CLIPPER face: model line `DIRT Nº1 · RAT-TYPE`, Anton
+  logo, LED, three knobs (Dist/Filter/Level), and a footswitch (`role="switch"`,
+  `aria-checked` = engaged) that toggles bypass with a low **thunk**.
+
+The tick/thunk sounds (`web/src/ui-sound.ts`, ported from the artifact) run on
+their **own** lazily-created `AudioContext`, created on first interaction (a user
+gesture). This context is **completely separate** from the processing graph in
+`audio.ts` and must never be injected into the pedal signal path.
+
+### Rig state (`web/src/rig.ts`) — the AI tool-call surface
+
+The whole rig is one typed, serializable structure. It is the single source of
+truth in `App` state; the knobs, footswitch, and selects all read/write it, and
+every change both propagates to the worklet and persists to `localStorage`
+(restored on load, defaults on any parse failure). **This JSON is the surface the
+M6 assistant reads and mutates**, and the future preset format.
+
+```jsonc
+{
+  "pedal": {
+    "type": "rat",
+    "engaged": true,           // false = bypassed (LED dark, arcs dimmed)
+    "params": {                // all normalized knob positions, 0..1
+      "distortion": 0.7,
+      "filter": 0.4,
+      "level": 0.8
+    }
+  },
+  "oversampling": 4,           // 1 | 2 | 4 | 8
+  "source": "test"            // "test" | "live"
+}
+```
+
+`serializeRig()` / `deserializeRig()` round-trip a valid rig exactly;
+`deserializeRig` runs `normalizeRig`, which coerces unknown/partial input back to
+a valid rig (per-field fallback to `DEFAULT_RIG`), so widening the schema later
+(e.g. `pedal` → a `pedals[]` chain for the M5 amp/cab) stays backward-compatible.
+`engaged` is the inverse of the worklet's `bypass` flag (`bypass = !engaged`).
+
+`App` mirrors the live rig (and the last worklet param/bypass message) onto
+`window.__CLIPPER_TEST__` — a small, stable hook used by the Playwright tests and,
+later, a convenient read seam for the assistant.
+
+### Test coverage (`web/tests/audio.spec.ts`)
+
+The two offline-render DSP proofs from M3 are unchanged (they post messages to
+the worklet directly) and now run **first**, before any test creates a live
+`AudioContext` — many live contexts in one browser process can starve later
+`OfflineAudioContext` renders. New UI/state tests: knobs are found by
+`role="slider"` (name = param); a **knob interaction** test drives Distortion by
+keyboard and asserts both the readout and the worklet param message; a
+**footswitch** test asserts the engaged/LED state flip and the bypass message; a
+**rig round-trip** test checks exact JSON serialize→deserialize equality and
+`localStorage` restore across a reload. Both themes were screenshotted via
+Playwright (forcing `data-theme`) to `web/test-results/pedal-{light,dark}.png`
+(+ `-bypassed` variants) — molded surfaces, NW light, and red value arcs are
+visible and correct in light and dark; bypassed shows the dark LED and dimmed
+arcs.
+
 ## Notes / conventions
 
 - `core/` must never include platform/OS/browser/Emscripten headers. The only

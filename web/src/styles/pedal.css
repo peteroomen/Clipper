@@ -1,0 +1,76 @@
+/* pedal */
+.pedal {
+  width: 320px; padding: 26px 24px 30px; flex-shrink: 0;
+  border-radius: 30px;
+  position: relative; z-index: 1;
+}
+.pedal-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.pedal-model { font-size: 10px; letter-spacing: .28em; color: var(--ink-faint); text-transform: uppercase;
+  font-family: ui-monospace, Menlo, monospace; }
+.led { width: 14px; height: 14px; border-radius: 50%;
+  background: color-mix(in srgb, var(--led) 22%, var(--well));
+  box-shadow: inset 2px 2px 4px var(--sh-darker), inset -1px -1px 3px var(--sh-light);
+  transition: box-shadow .18s, background .18s; }
+.pedal.on .led { background: var(--led);
+  box-shadow: 0 0 14px var(--led-glow), 0 0 4px var(--led-glow), inset 0 -2px 4px rgba(0,0,0,.25); }
+.pedal-logo {
+  font-family: Anton, "Arial Narrow", sans-serif;
+  font-size: 58px; line-height: 1; text-transform: uppercase; letter-spacing: .015em;
+  margin: 4px 0 22px;
+  color: var(--ink);
+  text-shadow: 1px 1px 0 var(--sh-light);
+}
+.knob-row { display: flex; justify-content: space-between; gap: 8px; }
+
+/* knob */
+.knob { display: flex; flex-direction: column; align-items: center; gap: 9px; user-select: none;
+  touch-action: none; cursor: grab; }
+.knob:active { cursor: grabbing; }
+.k-stack { position: relative; width: var(--kd, 74px); height: var(--kd, 74px); }
+.k-arc { position: absolute; inset: -9px; border-radius: 50%;
+  background: conic-gradient(from 225deg,
+    var(--led) calc(var(--deg, 180) * 1deg),
+    var(--arc-track) calc(var(--deg, 180) * 1deg) 270deg,
+    transparent 270deg);
+  -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 4.5px), #000 calc(100% - 3.5px));
+  mask: radial-gradient(closest-side, transparent calc(100% - 4.5px), #000 calc(100% - 3.5px));
+  transition: opacity .25s; }
+.pedal:not(.on) .k-arc { opacity: .3; }
+.k-body { position: absolute; inset: 0; border-radius: 50%;
+  background: var(--cap-edge);
+  box-shadow: 6px 6px 14px var(--sh-dark), -5px -5px 12px var(--sh-light); }
+.k-knurl { position: absolute; inset: 3px; border-radius: 50%;
+  background: repeating-conic-gradient(var(--sh-dark) 0deg 2.5deg, transparent 2.5deg 9deg);
+  opacity: .35; }
+.k-cap { position: absolute; inset: 9px; border-radius: 50%;
+  background: var(--cap);
+  box-shadow: inset 1px 1px 2px var(--sh-light), inset -2px -2px 5px var(--sh-darker),
+    2px 3px 6px var(--sh-darker); }
+.k-ptr { position: absolute; inset: 9px; border-radius: 50%;
+  transform: rotate(calc((var(--deg, 180) - 135) * 1deg)); }
+.k-ptr::after { content: ""; position: absolute; left: 50%; top: 9%;
+  width: 3.5px; height: 30%; margin-left: -1.75px; border-radius: 3px;
+  background: var(--ink); opacity: .85; }
+.k-name { font-size: 10px; letter-spacing: .24em; color: var(--ink-dim); text-transform: uppercase;
+  font-family: ui-monospace, Menlo, monospace; }
+.k-val { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--ink-faint);
+  min-width: 3ch; text-align: center; }
+
+/* footswitch */
+.fsw-zone { margin-top: 30px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.fsw { width: 88px; height: 88px; border-radius: 50%; border: none; cursor: pointer;
+  background: var(--cap-edge);
+  box-shadow: 8px 8px 18px var(--sh-dark), -7px -7px 16px var(--sh-light);
+  position: relative; transition: box-shadow .12s ease, transform .12s ease; }
+.fsw::before { content: ""; position: absolute; inset: 10px; border-radius: 50%;
+  background: var(--cap);
+  box-shadow: inset 1px 1px 2px var(--sh-light), inset -3px -3px 7px var(--sh-darker); }
+.fsw::after { content: ""; position: absolute; inset: 30px; border-radius: 50%;
+  background: repeating-conic-gradient(var(--sh-darker) 0 12deg, transparent 12deg 24deg);
+  opacity: .3; }
+.fsw:active, .fsw.stomped { transform: translateY(2px);
+  box-shadow: 3px 3px 8px var(--sh-dark), -3px -3px 7px var(--sh-light),
+    inset 2px 2px 6px var(--sh-darker); }
+.fsw:focus-visible { outline: 2px solid var(--ai); outline-offset: 4px; }
+.fsw-label { font-size: 10px; letter-spacing: .3em; color: var(--ink-faint);
+  font-family: ui-monospace, Menlo, monospace; text-transform: uppercase; }

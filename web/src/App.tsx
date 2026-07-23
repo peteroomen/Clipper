@@ -1,19 +1,39 @@
 import { useEffect, useRef, useState } from 'react';
+import { startEngine, listInputDevices, type Engine } from './audio';
+import { PARAM_ID, OVERSAMPLING_FACTORS } from './params';
 import {
-  startEngine,
-  listInputDevices,
-  type Engine,
+  loadRig,
+  saveRig,
+  serializeRig,
+  deserializeRig,
+  type RigState,
+  type ParamName,
   type SourceKind,
-} from './audio';
-import {
-  PARAM_DISTORTION,
-  PARAM_FILTER,
-  PARAM_LEVEL,
-  OVERSAMPLING_FACTORS,
-} from './params';
+} from './rig';
+import { Pedal } from './components/Pedal';
+
+import './styles/tokens.css';
+import './styles/base.css';
+import './styles/pedal.css';
+import './styles/app.css';
+
+type ThemeChoice = 'system' | 'light' | 'dark';
+
+function applyTheme(choice: ThemeChoice) {
+  const root = document.documentElement;
+  if (choice === 'system') root.removeAttribute('data-theme');
+  else root.setAttribute('data-theme', choice);
+}
 
 export default function App() {
   const engineRef = useRef<Engine | null>(null);
+
+  // The single source of truth for the whole rig. Knobs, footswitch, and the
+  // selects all read/write this; changes propagate to the worklet and persist.
+  const [rig, setRig] = useState<RigState>(() => loadRig());
+  const rigRef = useRef(rig);
+  rigRef.current = rig;
+
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState('idle');
   const [sampleRate, setSampleRate] = useState<number | null>(null);
@@ -21,20 +41,32 @@ export default function App() {
   const [baseLatency, setBaseLatency] = useState<number | null>(null);
   const [outputLatency, setOutputLatency] = useState<number | null>(null);
 
-  // Source + device.
-  const [source, setSource] = useState<SourceKind>('test');
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState<string>('');
+  const [theme, setTheme] = useState<ThemeChoice>('system');
 
-  // Knobs (0..1 internally; displayed 0..100).
-  const [distortion, setDistortion] = useState(0.7);
-  const [filter, setFilter] = useState(0.4);
-  const [level, setLevel] = useState(0.8);
-  const [bypass, setBypass] = useState(false);
-  const [oversampling, setOversampling] = useState(4);
+  // Persist the rig on every change.
+  useEffect(() => {
+    saveRig(rig);
+  }, [rig]);
 
-  // Populate the input-device list. Labels only appear after permission has
-  // been granted once, so we refresh again right after a live start.
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
+
+  // A small, stable test/AI hook: read live rig state + the last worklet param
+  // message, and exercise the pure (de)serializers. This is also the seam the
+  // M6 assistant reads rig state through.
+  useEffect(() => {
+    const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
+    w.__CLIPPER_TEST__ = {
+      ...(w.__CLIPPER_TEST__ ?? {}),
+      getRig: () => rigRef.current,
+      serializeRig,
+      deserializeRig,
+    };
+  }, []);
+
   async function refreshDevices() {
     try {
       setDevices(await listInputDevices());
@@ -46,31 +78,60 @@ export default function App() {
     void refreshDevices();
   }, []);
 
+  // ---- rig mutations (single source of truth -> worklet) ----
+
+  function setParam(name: ParamName, value: number) {
+    setRig((r) => ({ ...r, pedal: { ...r.pedal, params: { ...r.pedal.params, [name]: value } } }));
+    const id = PARAM_ID[name];
+    engineRef.current?.setParam(id, value);
+    const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
+    if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastParam = { id, value };
+  }
+
+  function toggleEngaged() {
+    const engaged = !rigRef.current.pedal.engaged;
+    engineRef.current?.setBypass(!engaged); // bypass = not engaged
+    setRig((r) => ({ ...r, pedal: { ...r.pedal, engaged } }));
+    const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
+    if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastBypass = !engaged;
+  }
+
+  function setOversampling(factor: number) {
+    setRig((r) => ({ ...r, oversampling: factor }));
+    engineRef.current?.setOversampling(factor);
+  }
+
+  function setSource(source: SourceKind) {
+    setRig((r) => ({ ...r, source }));
+  }
+
+  // ---- transport ----
+
   async function handleStart() {
     if (running) return;
     setStatus('starting…');
+    const r = rigRef.current;
     try {
       const engine = await startEngine({
-        source,
-        deviceId: source === 'live' && deviceId ? deviceId : undefined,
-        distortion,
-        filter,
-        level,
-        oversampling,
-        bypass,
+        source: r.source,
+        deviceId: r.source === 'live' && deviceId ? deviceId : undefined,
+        distortion: r.pedal.params.distortion,
+        filter: r.pedal.params.filter,
+        level: r.pedal.params.level,
+        oversampling: r.oversampling,
+        bypass: !r.pedal.engaged,
         onLatencySamples: setLatencySamples,
       });
       engineRef.current = engine;
       setSampleRate(engine.context.sampleRate);
       setBaseLatency(engine.context.baseLatency ?? null);
-      // outputLatency is not in the TS lib DOM types everywhere yet.
       setOutputLatency(
         (engine.context as unknown as { outputLatency?: number }).outputLatency ?? null
       );
       setLatencySamples(engine.latencySamples);
       setStatus(engine.context.state);
       setRunning(true);
-      if (source === 'live') void refreshDevices();
+      if (r.source === 'live') void refreshDevices();
     } catch (err) {
       setStatus('error: ' + (err as Error).message);
     }
@@ -85,165 +146,147 @@ export default function App() {
     setStatus('stopped');
   }
 
-  function handleKnob(
-    setter: (v: number) => void,
-    id: number,
-    value: number
-  ) {
-    setter(value);
-    engineRef.current?.setParam(id, value);
-  }
-
-  function handleBypass(on: boolean) {
-    setBypass(on);
-    engineRef.current?.setBypass(on);
-  }
-
-  function handleOversampling(factor: number) {
-    setOversampling(factor);
-    engineRef.current?.setOversampling(factor);
-  }
-
-  const modelLatencyMs =
-    sampleRate ? (latencySamples / sampleRate) * 1000 : 0;
-  const ioLatencyMs =
-    ((baseLatency ?? 0) + (outputLatency ?? 0)) * 1000;
+  const modelLatencyMs = sampleRate ? (latencySamples / sampleRate) * 1000 : 0;
+  const ioLatencyMs = ((baseLatency ?? 0) + (outputLatency ?? 0)) * 1000;
   const totalLatencyMs = modelLatencyMs + ioLatencyMs;
 
-  const pct = (v: number) => Math.round(v * 100);
-
   return (
-    <main style={{ fontFamily: 'system-ui, sans-serif', maxWidth: 520, margin: '2rem auto', padding: '0 1rem' }}>
-      <h1>Clipper — M3</h1>
-      <p style={{ color: '#666' }}>
-        The RAT-style diode-clipper pedal, live in the browser. Pick a source,
-        press Start, and dial in the three knobs. Runs the M2 oversampled model
-        in an AudioWorklet.
-      </p>
+    <div className="app">
+      <div className="wrap">
+        <header className="hero">
+          <div className="topbar">
+            <div className="eyebrow-row">
+              <span className="eyebrow">Clipper · RAT-type distortion</span>
+            </div>
+            <div className="theme-seg" role="group" aria-label="Theme">
+              {(['system', 'light', 'dark'] as ThemeChoice[]).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  aria-pressed={theme === t}
+                  onClick={() => setTheme(t)}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
 
-      <div style={{ display: 'flex', gap: '0.75rem', margin: '1rem 0' }}>
-        <button onClick={handleStart} disabled={running}>Start audio</button>
-        <button onClick={handleStop} disabled={!running}>Stop</button>
+          <div className="hero-head">
+            <h1>Clipper</h1>
+            <p>
+              A RAT-style diode-clipper pedal, modeled and played live in the browser. Drag the knobs,
+              stomp the switch — the whole rig is one serializable state, restored on reload.
+            </p>
+            <div className="hint">
+              <span className="dot" />
+              drag the knobs · stomp to bypass · flip the theme
+            </div>
+          </div>
+        </header>
+
+        <div className="stage">
+          <div className="rig">
+            <Pedal pedal={rig.pedal} onParam={setParam} onToggleEngaged={toggleEngaged} />
+
+            <section className="desk raised" aria-label="Control desk">
+              <h2>Signal &amp; transport</h2>
+              <p className="sub">Source, oversampling, and the audio engine.</p>
+
+              <div className="transport">
+                <button
+                  type="button"
+                  className="btn primary"
+                  onClick={handleStart}
+                  disabled={running}
+                >
+                  Start audio
+                </button>
+                <button type="button" className="btn" onClick={handleStop} disabled={!running}>
+                  Stop
+                </button>
+              </div>
+
+              <div className="field">
+                <label htmlFor="source">Source</label>
+                <select
+                  id="source"
+                  className="select"
+                  aria-label="Source"
+                  value={rig.source}
+                  onChange={(e) => setSource(e.target.value as SourceKind)}
+                  disabled={running}
+                >
+                  <option value="test">Test tone (220 Hz)</option>
+                  <option value="live">Live input (guitar / interface)</option>
+                </select>
+              </div>
+
+              {rig.source === 'live' && devices.length > 1 && (
+                <div className="field">
+                  <label htmlFor="device">Input device</label>
+                  <select
+                    id="device"
+                    className="select"
+                    aria-label="Input device"
+                    value={deviceId}
+                    onChange={(e) => setDeviceId(e.target.value)}
+                    disabled={running}
+                  >
+                    <option value="">Default</option>
+                    {devices.map((d) => (
+                      <option key={d.deviceId} value={d.deviceId}>
+                        {d.label || `Input ${d.deviceId.slice(0, 6)}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {rig.source === 'live' && (
+                <div className="notice" data-testid="feedback-hint">
+                  <span className="dot" />
+                  Live input through speakers can feed back. Use headphones.
+                </div>
+              )}
+
+              <div className="field">
+                <label htmlFor="oversampling">Oversampling</label>
+                <select
+                  id="oversampling"
+                  className="select"
+                  aria-label="Oversampling"
+                  value={rig.oversampling}
+                  onChange={(e) => setOversampling(parseInt(e.target.value, 10))}
+                >
+                  {OVERSAMPLING_FACTORS.map((f) => (
+                    <option key={f} value={f}>
+                      {f}×
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="status">
+                <dl>
+                  <dt>State</dt>
+                  <dd data-testid="status">{status}</dd>
+                  <dt>Sample rate</dt>
+                  <dd>{sampleRate ? `${sampleRate} Hz` : '—'}</dd>
+                  <dt>Latency · model</dt>
+                  <dd>
+                    {running ? `${modelLatencyMs.toFixed(1)} ms (${latencySamples} smp)` : '—'}
+                  </dd>
+                  <dt>Latency · I/O</dt>
+                  <dd>{running ? `${ioLatencyMs.toFixed(1)} ms` : '—'}</dd>
+                  <dt>Latency · total</dt>
+                  <dd>{running ? `${totalLatencyMs.toFixed(1)} ms` : '—'}</dd>
+                </dl>
+              </div>
+            </section>
+          </div>
+        </div>
       </div>
-
-      <label style={{ display: 'block', margin: '1rem 0' }}>
-        Source:{' '}
-        <select
-          aria-label="Source"
-          value={source}
-          onChange={(e) => setSource(e.target.value as SourceKind)}
-          disabled={running}
-        >
-          <option value="test">Test tone (220 Hz)</option>
-          <option value="live">Live input (guitar / interface)</option>
-        </select>
-      </label>
-
-      {source === 'live' && devices.length > 1 && (
-        <label style={{ display: 'block', margin: '1rem 0' }}>
-          Input device:{' '}
-          <select
-            aria-label="Input device"
-            value={deviceId}
-            onChange={(e) => setDeviceId(e.target.value)}
-            disabled={running}
-          >
-            <option value="">Default</option>
-            {devices.map((d) => (
-              <option key={d.deviceId} value={d.deviceId}>
-                {d.label || `Input ${d.deviceId.slice(0, 6)}`}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-
-      {source === 'live' && (
-        <p
-          data-testid="feedback-hint"
-          style={{ background: '#fff6e5', border: '1px solid #f0c36d', borderRadius: 6, padding: '0.5rem 0.75rem', fontSize: 13, color: '#7a5b00' }}
-        >
-          ⚠ Live input through speakers can feed back. Use headphones.
-        </p>
-      )}
-
-      <Slider label="Distortion" value={distortion} display={pct(distortion)}
-        onChange={(v) => handleKnob(setDistortion, PARAM_DISTORTION, v)} />
-      <Slider label="Filter" value={filter} display={pct(filter)}
-        onChange={(v) => handleKnob(setFilter, PARAM_FILTER, v)} />
-      <Slider label="Level" value={level} display={pct(level)}
-        onChange={(v) => handleKnob(setLevel, PARAM_LEVEL, v)} />
-
-      <label style={{ display: 'block', margin: '1rem 0' }}>
-        <input
-          type="checkbox"
-          checked={bypass}
-          onChange={(e) => handleBypass(e.target.checked)}
-        />{' '}
-        Bypass (pass input through untouched)
-      </label>
-
-      <label style={{ display: 'block', margin: '1rem 0' }}>
-        Oversampling:{' '}
-        <select
-          aria-label="Oversampling"
-          value={oversampling}
-          onChange={(e) => handleOversampling(parseInt(e.target.value, 10))}
-        >
-          {OVERSAMPLING_FACTORS.map((f) => (
-            <option key={f} value={f}>{f}×</option>
-          ))}
-        </select>
-      </label>
-
-      <dl style={{ color: '#444', fontSize: 14 }}>
-        <Row label="Context state" value={status} testid="status" />
-        <Row label="Sample rate" value={sampleRate ? `${sampleRate} Hz` : '—'} />
-        <Row
-          label="Latency (model)"
-          value={running ? `${modelLatencyMs.toFixed(1)} ms (${latencySamples} smp)` : '—'}
-        />
-        <Row
-          label="Latency (I/O)"
-          value={running ? `${ioLatencyMs.toFixed(1)} ms` : '—'}
-        />
-        <Row
-          label="Latency (total est.)"
-          value={running ? `${totalLatencyMs.toFixed(1)} ms` : '—'}
-        />
-      </dl>
-    </main>
-  );
-}
-
-function Slider(props: {
-  label: string;
-  value: number;
-  display: number;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <label style={{ display: 'block', margin: '1rem 0' }}>
-      {props.label}: {props.display}
-      <input
-        type="range"
-        aria-label={props.label}
-        min={0}
-        max={100}
-        step={1}
-        value={Math.round(props.value * 100)}
-        onChange={(e) => props.onChange(parseInt(e.target.value, 10) / 100)}
-        style={{ width: '100%' }}
-      />
-    </label>
-  );
-}
-
-function Row(props: { label: string; value: string; testid?: string }) {
-  return (
-    <div>
-      <dt style={{ display: 'inline', fontWeight: 600 }}>{props.label}: </dt>
-      <dd style={{ display: 'inline' }} data-testid={props.testid}>{props.value}</dd>
     </div>
   );
 }

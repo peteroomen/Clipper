@@ -6,8 +6,9 @@ import {
   PARAM_LEVEL,
   WORKLET_URL,
 } from './params';
+import type { SourceKind } from './rig';
 
-export type SourceKind = 'test' | 'live';
+export type { SourceKind };
 
 export interface StartOptions {
   source: SourceKind;

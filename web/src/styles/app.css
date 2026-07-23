@@ -1,0 +1,111 @@
+/* ---------- app layout (M4) ----------
+   Page-level chrome that hosts the pedal (the hero). All surfaces reuse the
+   neumorphic recipes from base.css (.raised / .well); the pedal itself and the
+   knob/footswitch anatomy live in pedal.css. Glass is deliberately unused this
+   milestone — it is reserved for the M6 AI assistant. */
+
+.app { padding: 40px 0 90px; }
+
+/* hero header */
+header.hero { position: relative; padding: 28px 0 8px; }
+.hero-head { position: relative; z-index: 2; max-width: 640px; }
+.hero-head h1 {
+  font-family: Anton, "Arial Narrow", sans-serif; font-weight: 400;
+  font-size: clamp(40px, 6vw, 64px);
+  line-height: 1.0; margin: 12px 0 14px; text-transform: uppercase;
+  text-wrap: balance;
+}
+.hero-head p { max-width: 58ch; color: var(--ink-dim); margin: 0; }
+.hint { display: inline-flex; align-items: center; gap: 8px; margin-top: 16px; padding: 8px 16px;
+  border-radius: 999px;
+  font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; letter-spacing: .08em;
+  color: var(--ink-dim);
+  background: var(--well);
+  box-shadow: inset 3px 3px 7px var(--sh-darker), inset -2px -2px 6px var(--sh-light); }
+.hint .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--led);
+  box-shadow: 0 0 8px var(--led-glow); }
+
+/* rig stage: pedal beside the control desk */
+.stage { position: relative; z-index: 1; margin-top: 36px; }
+.rig { display: flex; flex-wrap: wrap; gap: 44px; align-items: flex-start; }
+
+/* control desk — the secondary, restyled M3 controls (source/device/OS,
+   transport, status). Molded panel, secondary to the pedal. */
+.desk { flex: 1; min-width: 320px; padding: 24px 26px 26px; border-radius: 26px; }
+.desk h2 { font-family: Anton, "Arial Narrow", sans-serif; font-weight: 400; font-size: 22px;
+  text-transform: uppercase; letter-spacing: .03em; margin: 0 0 4px; }
+.desk .sub { color: var(--ink-dim); font-size: 13px; margin: 0 0 20px; }
+
+.field { display: flex; flex-direction: column; gap: 7px; margin: 0 0 16px; }
+.field > label { font-size: 10px; letter-spacing: .22em; text-transform: uppercase;
+  font-family: ui-monospace, Menlo, monospace; color: var(--ink-dim); }
+
+/* selects live in a carved well */
+.select {
+  appearance: none; -webkit-appearance: none;
+  font: inherit; font-size: 14px; color: var(--ink);
+  background: var(--well);
+  border: none; border-radius: 12px; padding: 11px 38px 11px 15px; width: 100%;
+  box-shadow: inset 3px 3px 8px var(--sh-darker), inset -2px -2px 6px var(--sh-light);
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-dim) 50%),
+                    linear-gradient(135deg, var(--ink-dim) 50%, transparent 50%);
+  background-position: calc(100% - 20px) 50%, calc(100% - 15px) 50%;
+  background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+}
+.select:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
+.select:disabled { opacity: .55; cursor: not-allowed; }
+
+/* raised push-buttons (transport) */
+.transport { display: flex; gap: 14px; margin-bottom: 18px; }
+.btn {
+  font: inherit; font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
+  font-family: ui-monospace, Menlo, monospace; font-weight: 600; color: var(--ink);
+  background: var(--cap-edge);
+  border: none; border-radius: 14px; padding: 13px 22px; cursor: pointer;
+  box-shadow: 6px 6px 14px var(--sh-dark), -5px -5px 12px var(--sh-light);
+  transition: box-shadow .12s, transform .12s;
+}
+.btn:hover:not(:disabled) { transform: translateY(-1px); }
+.btn:active:not(:disabled) { transform: translateY(1px);
+  box-shadow: inset 4px 4px 9px var(--sh-darker), inset -3px -3px 7px var(--sh-light); }
+.btn:focus-visible { outline: 2px solid var(--ai); outline-offset: 3px; }
+.btn.primary { color: var(--led); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* feedback / headphone hint */
+.notice { display: flex; align-items: center; gap: 9px; margin: 0 0 16px; padding: 11px 15px;
+  border-radius: 12px; font-size: 12.5px; color: var(--ink-dim);
+  background: var(--well);
+  box-shadow: inset 3px 3px 8px var(--sh-darker), inset -2px -2px 6px var(--sh-light); }
+.notice .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  background: var(--led); box-shadow: 0 0 8px var(--led-glow); }
+
+/* status readout in a well */
+.status { margin-top: 4px; padding: 16px 18px; border-radius: 16px;
+  background: var(--well);
+  box-shadow: inset 5px 5px 12px var(--sh-darker), inset -4px -4px 10px var(--sh-light); }
+.status dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 18px; }
+.status dt { font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+  font-family: ui-monospace, Menlo, monospace; color: var(--ink-dim); align-self: center; }
+.status dd { margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px;
+  color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* theme toggle, top-right */
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.eyebrow-row { display: flex; align-items: center; gap: 12px; }
+.theme-seg { display: inline-flex; gap: 4px; padding: 4px; border-radius: 999px;
+  background: var(--well);
+  box-shadow: inset 3px 3px 7px var(--sh-darker), inset -2px -2px 6px var(--sh-light); }
+.theme-seg button { font: inherit; font-size: 11px; font-family: ui-monospace, Menlo, monospace;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--ink-dim);
+  background: transparent; border: none; border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+.theme-seg button[aria-pressed="true"] { color: var(--ink);
+  background: var(--cap-edge);
+  box-shadow: 3px 3px 8px var(--sh-dark), -3px -3px 7px var(--sh-light); }
+.theme-seg button:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
+
+@media (max-width: 760px) {
+  .pedal { width: 100%; max-width: 340px; }
+  .rig { gap: 30px; }
+}
