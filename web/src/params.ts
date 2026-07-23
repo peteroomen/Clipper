@@ -13,6 +13,17 @@ export const AMP_PARAM_MIDDLE = 2;
 export const AMP_PARAM_TREBLE = 3;
 export const AMP_PARAM_BRIGHT = 4;
 export const AMP_PARAM_CAB = 5;
+// M6.3 chorus/vibrato ids (6/7/8), placed ABOVE the cab id so cab stays 5.
+// speed/depth are 0..1 knobs; mode is an integer 0=off / 1=chorus / 2=vibrato.
+export const AMP_PARAM_CHORUS_SPEED = 6;
+export const AMP_PARAM_CHORUS_DEPTH = 7;
+export const AMP_PARAM_CHORUS_MODE = 8;
+
+// Chorus mode enum (mirrors ChorusModel::Mode). Kept as plain numbers so it flows
+// through the numeric param ABI untouched.
+export const CHORUS_OFF = 0;
+export const CHORUS_CHORUS = 1;
+export const CHORUS_VIBRATO = 2;
 
 // Map a rig pedal param name to its worklet/core id. Keeps the RigState shape
 // (named params) decoupled from the numeric ABI the worklet speaks.
@@ -30,6 +41,9 @@ export const AMP_PARAM_ID = {
   treble: AMP_PARAM_TREBLE,
   bright: AMP_PARAM_BRIGHT,
   cab: AMP_PARAM_CAB,
+  speed: AMP_PARAM_CHORUS_SPEED,
+  depth: AMP_PARAM_CHORUS_DEPTH,
+  chorusMode: AMP_PARAM_CHORUS_MODE,
 } as const;
 
 // Valid oversampling factors for the nonlinear stage (default 4x). Other values

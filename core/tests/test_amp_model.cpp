@@ -13,6 +13,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <vector>
 
@@ -21,6 +22,10 @@ namespace {
 constexpr double kTwoPi = 6.283185307179586;
 using clipper::dsp::AmpModel;
 using clipper::dsp::CabConvolver;
+
+// Mirror of ChorusModel::Mode (kept local so the test reads clearly); the values
+// are the ABI contract 0=off / 1=chorus / 2=vibrato.
+enum ChorusMode { Off = 0, Chorus = 1, Vibrato = 2 };
 
 // Single-bin magnitude of a real signal at frequency f (Hann-windowed).
 double binMag(const std::vector<float>& x, size_t start, size_t n, double f, double fs) {
@@ -429,6 +434,201 @@ void testPerf(double fs) {
     std::printf("  [ok] perf: amp+cab 1 s in %.1f ms (<< real time, fs=%g)\n", ms, fs);
 }
 
+// --- M6.3 chorus/vibrato helpers ---------------------------------------------
+
+// Render the amp's STEREO path for a mono input at a given chorus config. Tone
+// flat, volume unity (0.4) so the mono voice ~= the input (the chorus is what we
+// are measuring). mode: 0 off / 1 chorus / 2 vibrato.
+void renderAmpStereo(const std::vector<float>& in, int mode, float speed, float depth,
+                     double fs, std::vector<float>& outL, std::vector<float>& outR) {
+    AmpModel a;
+    a.prepare(fs, 128);
+    a.setParameter(AmpModel::PARAM_VOLUME, 0.4f);  // unity
+    a.setParameter(AmpModel::PARAM_CHORUS_SPEED, speed);
+    a.setParameter(AmpModel::PARAM_CHORUS_DEPTH, depth);
+    a.setParameter(AmpModel::PARAM_CHORUS_MODE, static_cast<float>(mode));
+    outL.assign(in.size(), 0.0f);
+    outR.assign(in.size(), 0.0f);
+    if (!in.empty())
+        a.processStereo(in.data(), outL.data(), outR.data(), static_cast<int>(in.size()));
+}
+
+// --- Test 9: OFF mode is bit-exact L == R and equals the mono voice. ----------
+void testChorusOff(double fs) {
+    auto in = sine(440.0, 0.3f, 0.3, fs);
+    std::vector<float> L, R;
+    renderAmpStereo(in, ChorusMode::Off, 0.5f, 0.5f, fs, L, R);
+
+    // L == R bit-exact.
+    for (size_t i = 0; i < L.size(); ++i)
+        assert(L[i] == R[i] && "chorus OFF: L != R (not bit-exact)");
+
+    // And equals the mono process() voice exactly (chorus is truly bypassed).
+    auto mono = renderAmp(in, AmpKnobs{}, fs);  // volume 0.4, tone flat
+    assert(mono.size() == L.size());
+    double maxErr = 0.0;
+    for (size_t i = 0; i < L.size(); ++i)
+        maxErr = std::max(maxErr, static_cast<double>(std::fabs(L[i] - mono[i])));
+    assert(maxErr == 0.0 && "chorus OFF: stereo L != mono voice (bit-exact expected)");
+    std::printf("  [ok] chorus OFF: L==R bit-exact and == mono voice (fs=%g)\n", fs);
+}
+
+// --- Test 10: CHORUS mode = dry L / decorrelated wet R. -----------------------
+void testChorusChorus(double fs) {
+    // Broadband (deterministic white-ish noise) probe: a pure sine's
+    // autocorrelation is periodic and cannot pin down a delay, so use noise whose
+    // cross-correlation has one sharp peak at the true delay. Low depth isolates
+    // the ~5 ms BASE delay (the stereo-bloom offset) from the modulation smear.
+    const size_t nlen = static_cast<size_t>(0.5 * fs);
+    std::vector<float> in(nlen);
+    uint32_t rng = 0x1234567u;
+    for (size_t i = 0; i < nlen; ++i) {
+        rng = rng * 1664525u + 1013904223u;
+        in[i] = (static_cast<float>(rng >> 9) / 4194304.0f - 1.0f) * 0.3f;  // ~[-0.3,0.3), zero-mean
+    }
+    // Depth 0 => a pure, constant ~5 ms base delay on R (no sweep smear), so the
+    // noise cross-correlation gives one sharp peak at the base lag. (Modulation is
+    // exercised separately by the vibrato test.)
+    std::vector<float> L, R;
+    renderAmpStereo(in, ChorusMode::Chorus, 0.3f, 0.0f, fs, L, R);
+
+    // L is the DRY voice (== mono process, bit-exact — the classic JC dry side).
+    auto mono = renderAmp(in, AmpKnobs{}, fs);
+    double maxErr = 0.0;
+    for (size_t i = 0; i < L.size(); ++i)
+        maxErr = std::max(maxErr, static_cast<double>(std::fabs(L[i] - mono[i])));
+    assert(maxErr == 0.0 && "chorus CHORUS: L is not the bit-exact dry voice");
+
+    // R is delayed/decorrelated: the normalized cross-correlation of L and R
+    // PEAKS at a lag near the ~5 ms base delay (not at zero lag). Search lags.
+    const int baseLag = static_cast<int>(std::round(0.005 * fs));
+    const size_t s = L.size() / 3;  // skip the fill-in transient
+    auto nccAt = [&](int lag) {
+        double num = 0.0, dL = 0.0, dR = 0.0;
+        for (size_t i = s; i + static_cast<size_t>(lag) < L.size(); ++i) {
+            const double a = L[i];
+            const double b = R[i + static_cast<size_t>(lag)];
+            num += a * b;
+            dL += a * a;
+            dR += b * b;
+        }
+        return num / (std::sqrt(dL * dR) + 1e-12);
+    };
+    // Find the best lag in a window bracketing the base delay.
+    int bestLag = 0;
+    double bestNcc = -2.0;
+    const int lo = std::max(1, baseLag - static_cast<int>(0.004 * fs));
+    const int hi = baseLag + static_cast<int>(0.004 * fs);
+    for (int lag = lo; lag <= hi; ++lag) {
+        const double v = nccAt(lag);
+        if (v > bestNcc) {
+            bestNcc = v;
+            bestLag = lag;
+        }
+    }
+    const double zeroNcc = nccAt(0);
+    // R lags L by ~the base delay: the peak correlation is at a nonzero lag near
+    // 5 ms, and the wet is decorrelated at zero lag (well below the peak).
+    assert(std::fabs(bestLag - baseLag) < 0.0025 * fs &&
+           "chorus CHORUS: R not delayed ~5 ms behind L");
+    assert(bestNcc > zeroNcc + 0.1 && "chorus CHORUS: R not decorrelated from L at zero lag");
+    std::printf("  [ok] chorus CHORUS: L dry (bit-exact), R delayed %.2f ms (ncc %.2f vs %.2f @0) (fs=%g)\n",
+                1000.0 * bestLag / fs, bestNcc, zeroNcc, fs);
+}
+
+// --- Test 11: VIBRATO mode = pitch wobble on BOTH sides; measured peak
+//     deviation matches the depth+rate prediction. --------------------------
+void testChorusVibrato(double fs) {
+    // A steady 1 kHz probe; measure instantaneous frequency from zero-crossing
+    // spacing. Slow LFO so many signal cycles sample each part of the sweep.
+    const double f0 = 1000.0;
+    const float depth = 0.7f;
+    // Pick a rate directly so we can predict deviation. speed knob -> Hz is a log
+    // map; invert it: we want ~3 Hz. speedToHz(k)=0.15*(8/0.15)^k => k for 3 Hz:
+    const double targetHz = 3.0;
+    const double kSpeed = std::log(targetHz / 0.15) / std::log(8.0 / 0.15);
+
+    auto in = sine(f0, 0.5f, 1.5, fs);
+    std::vector<float> L, R;
+    renderAmpStereo(in, ChorusMode::Vibrato, static_cast<float>(kSpeed), depth, fs, L, R);
+
+    // Both sides identical in vibrato (mono pitch wobble, no stereo width).
+    for (size_t i = 0; i < L.size(); ++i)
+        assert(L[i] == R[i] && "vibrato: L != R (should be identical wet on both sides)");
+
+    // Instantaneous frequency via linearly-interpolated positive-going zero
+    // crossings; peak |deviation| over the render tail.
+    const size_t start = L.size() / 4;  // skip depth-smoother settle + fill
+    double prevX = 0.0;
+    std::vector<double> crossings;  // sample indices (fractional)
+    for (size_t i = start + 1; i < L.size(); ++i) {
+        const double a = L[i - 1], b = L[i];
+        if (a <= 0.0 && b > 0.0) {
+            const double frac = a == b ? 0.0 : (-a / (b - a));
+            crossings.push_back(static_cast<double>(i - 1) + frac);
+        }
+        (void)prevX;
+    }
+    assert(crossings.size() > 20 && "vibrato: too few zero crossings to measure");
+    double maxDevCents = 0.0;
+    for (size_t i = 1; i < crossings.size(); ++i) {
+        const double period = crossings[i] - crossings[i - 1];  // samples per cycle
+        const double fInst = fs / period;
+        const double cents = 1200.0 * std::log2(fInst / f0);
+        maxDevCents = std::max(maxDevCents, std::fabs(cents));
+    }
+
+    // Predicted peak deviation: A = depth * 1.5 ms; peak = A * 2*pi*f (fractional),
+    // in cents = 1200/ln2 * that. (Matches ChorusModel.cpp's documented formula.)
+    const double A = depth * 0.0015;  // seconds
+    const double predFrac = A * kTwoPi * targetHz;
+    const double predCents = 1200.0 / std::log(2.0) * predFrac;
+    // Zero-crossing spacing averages the deviation over a signal period, so the
+    // MEASURED peak reads a little under the instantaneous peak; allow a broad
+    // band (half..1.5x) — this is a sanity band on the depth+rate mapping, not a
+    // precision meter.
+    assert(maxDevCents > 0.5 * predCents && maxDevCents < 1.5 * predCents &&
+           "vibrato: measured peak pitch deviation off the depth+rate prediction");
+    std::printf("  [ok] chorus VIBRATO: peak dev %.1f cents (predicted %.1f, depth %.2f @ %.2f Hz) (fs=%g)\n",
+                maxDevCents, predCents, static_cast<double>(depth), targetHz, fs);
+}
+
+// --- Test 12: two-cab stereo chain stays well under real time (CPU budget). ---
+// The M6.3 stereo path runs the cab convolver TWICE (per side). Verify the whole
+// amp+2xcab chain in chorus mode is still comfortably faster than real time.
+void testChorusPerf(double fs) {
+    auto ir = clipper::dsp::generateDefaultCab2x12IR(fs);
+    AmpModel amp;
+    amp.prepare(fs, 128);
+    amp.setParameter(AmpModel::PARAM_VOLUME, 0.5f);
+    amp.setParameter(AmpModel::PARAM_CHORUS_SPEED, 0.5f);
+    amp.setParameter(AmpModel::PARAM_CHORUS_DEPTH, 0.6f);
+    amp.setParameter(AmpModel::PARAM_CHORUS_MODE, static_cast<float>(ChorusMode::Chorus));
+    CabConvolver cabL, cabR;
+    cabL.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
+    cabR.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
+
+    const int n = static_cast<int>(fs);  // 1 second
+    std::vector<float> in(static_cast<size_t>(n), 0.0f);
+    std::vector<float> l(static_cast<size_t>(n), 0.0f), r(static_cast<size_t>(n), 0.0f);
+    for (int i = 0; i < n; ++i)
+        in[static_cast<size_t>(i)] = 0.2f * static_cast<float>(std::sin(kTwoPi * 220.0 * i / fs));
+
+    const auto t0 = std::chrono::high_resolution_clock::now();
+    for (int off = 0; off < n; off += 128) {
+        const int m = std::min(128, n - off);
+        amp.processStereo(in.data() + off, l.data() + off, r.data() + off, m);
+        cabL.process(l.data() + off, l.data() + off, m);
+        cabR.process(r.data() + off, r.data() + off, m);
+    }
+    const auto t1 = std::chrono::high_resolution_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    assert(!hasNaN(l) && !hasNaN(r) && "stereo chain produced NaN");
+    assert(ms < 300.0 && "amp+2xcab stereo chain slower than 0.3x real time");
+    std::printf("  [ok] perf: amp+2xcab (chorus) 1 s in %.1f ms (%.1f%% of one core, fs=%g)\n",
+                ms, ms / 1000.0 * 100.0, fs);
+}
+
 }  // namespace
 
 int main() {
@@ -443,6 +643,11 @@ int main() {
         testConvolverChunking(fs);
         testSmoothing(fs);
         testPerf(fs);
+        // M6.3 chorus/vibrato.
+        testChorusOff(fs);
+        testChorusChorus(fs);
+        testChorusVibrato(fs);
+        testChorusPerf(fs);
     }
     std::printf("All AmpModel + CabConvolver tests passed.\n");
     return 0;

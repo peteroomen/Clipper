@@ -170,6 +170,55 @@ test('assistant: set_param unit:"input" moves the trim knob and updates the rig'
   expect(trim).toBe(0.7);
 });
 
+// M6.3: the coach can turn on the JC chorus (set_switch name:'chorus') and shape
+// it (set_param param:'speed'). A first turn emits both tool calls; a follow-up
+// confirms. Verifies the rig state and the tool chips.
+const CHORUS_TURN = sse([
+  { type: 'message_start', message: { id: 'msg_c', type: 'message', role: 'assistant', content: [] } },
+  { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+  { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Adding the JC bloom.' } },
+  { type: 'content_block_stop', index: 0 },
+  { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_c1', name: 'set_switch', input: {} } },
+  { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"name":"chorus","on":true}' } },
+  { type: 'content_block_stop', index: 1 },
+  { type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 'toolu_c2', name: 'set_param', input: {} } },
+  { type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{"unit":"amp","param":"speed","value":0.35}' } },
+  { type: 'content_block_stop', index: 2 },
+  { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 14 } },
+  { type: 'message_stop' },
+]);
+
+test('assistant: set_switch chorus + set_param speed engage the JC chorus', async ({ page }) => {
+  let call = 0;
+  await page.route('**/api/health', mockHealthOk);
+  await page.route('**/api/chat', async (route) => {
+    call += 1;
+    if (call === 1) {
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: CHORUS_TURN });
+    } else {
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: FOLLOWUP });
+    }
+  });
+
+  await page.goto('/');
+  await expect(page.getByTestId('chat')).toBeVisible();
+
+  await page.getByTestId('chat-input').fill('give me that lush JC chorus, slowish');
+  await page.getByTestId('chat-send').click();
+
+  // Chips for both applied tool calls render.
+  await expect(page.getByTestId('tool-chips')).toContainText('Chorus on');
+  await expect(page.getByTestId('tool-chips')).toContainText('Speed');
+  // The mode 3-way switched to Chorus (mode 1) and speed reached the rig.
+  await expect(page.getByTestId('chorus-mode-chorus')).toHaveAttribute('aria-checked', 'true');
+  const state = await page.evaluate(() => {
+    const p = (window as any).__CLIPPER_TEST__.getRig().amp.params;
+    return { mode: p.chorusMode, speed: p.speed };
+  });
+  expect(state.mode).toBe(1);
+  expect(state.speed).toBe(0.35);
+});
+
 test('assistant: proxy-down shows a clear in-chat error notice', async ({ page }) => {
   await page.route('**/api/health', mockHealthOk);
   await page.route('**/api/chat', (route) => route.abort());

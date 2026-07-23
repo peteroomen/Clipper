@@ -19,10 +19,18 @@ export interface AmpProps {
   onParam: (name: AmpParamName, value: number) => void;
   onToggle: (name: 'bright' | 'cab') => void; // flip a 0/1 toggle
   onTogglePower: () => void; // amp engaged (power)
+  onChorusMode: (mode: number) => void; // 0 off | 1 chorus | 2 vibrato
 }
 
-export function Amp({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
+const CHORUS_MODES: Array<{ value: number; label: string }> = [
+  { value: 0, label: 'Off' },
+  { value: 1, label: 'Chorus' },
+  { value: 2, label: 'Vibrato' },
+];
+
+export function Amp({ amp, onParam, onToggle, onTogglePower, onChorusMode }: AmpProps) {
   const { engaged, params } = amp;
+  const mode = params.chorusMode ?? 0;
 
   return (
     <div className="amp-wing">
@@ -121,6 +129,55 @@ export function Amp({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
               <div className="rocker" />
               <span className="k-name">Power</span>
             </button>
+          </div>
+        </div>
+
+        {/* M6.3 — JC-120 chorus/vibrato: a second facia row with Speed + Depth
+            knobs and an Off/Chorus/Vibrato 3-way selector. */}
+        <div className="amp-chorus" data-testid="chorus">
+          <div className="amp-chorus-label display">Chorus</div>
+          <div className="amp-chorus-controls">
+            <Knob
+              name="Speed"
+              ariaLabel="Chorus speed"
+              value={params.speed}
+              defaultValue={AMP_KNOB_DEFAULTS.speed}
+              onChange={(v) => onParam('speed', v)}
+              testId="knob-speed"
+            />
+            <Knob
+              name="Depth"
+              ariaLabel="Chorus depth"
+              value={params.depth}
+              defaultValue={AMP_KNOB_DEFAULTS.depth}
+              onChange={(v) => onParam('depth', v)}
+              testId="knob-depth"
+            />
+
+            <div
+              className="mode-switch"
+              role="radiogroup"
+              aria-label="Chorus mode"
+              data-testid="chorus-mode"
+            >
+              {CHORUS_MODES.map((m) => (
+                <button
+                  key={m.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={mode === m.value}
+                  className={`mode-opt${mode === m.value ? ' on' : ''}`}
+                  data-testid={`chorus-mode-${m.label.toLowerCase()}`}
+                  onClick={() => {
+                    onChorusMode(m.value);
+                    thunk(false);
+                  }}
+                >
+                  {m.label}
+                </button>
+              ))}
+              <span className="k-name">Mode</span>
+            </div>
           </div>
         </div>
       </div>

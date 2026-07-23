@@ -40,6 +40,7 @@
 #include "clipper/dsp/AmpModel.h"
 
 #include "clipper/dsp/Biquad.h"
+#include "clipper/dsp/ChorusModel.h"
 #include "clipper/dsp/OnePoleSmoother.h"
 
 #include <algorithm>
@@ -108,6 +109,30 @@ struct AmpModel::Impl {
     Biquad bass, mid, treble, bright;
     int ctrlCounter = 0;
 
+    // M6.3: the chorus/vibrato stereo split, fed the amp's post-volume mono
+    // voice. AmpModel owns it and routes PARAM_CHORUS_* here.
+    ChorusModel chorus;
+
+    // Compute the mono voice (tone stack + volume) sample-by-sample into `out`.
+    // Shared by process() and processStereo(). in and out may alias.
+    void processMonoVoice(const float* in, float* out, int numFrames) {
+        for (int i = 0; i < numFrames; ++i) {
+            bassDb.next();
+            midDb.next();
+            trebleDb.next();
+            brightDb.next();
+            if (ctrlCounter == 0) recomputeCoeffs();
+            if (++ctrlCounter >= kCtrlBlock) ctrlCounter = 0;
+
+            float x = in[i];
+            x = bass.process(x);
+            x = mid.process(x);
+            x = treble.process(x);
+            x = bright.process(x);
+            out[i] = x * volume.next();
+        }
+    }
+
     void recomputeCoeffs() {
         bass.setCoeffs(rbj::lowShelf(kBassHz, bassDb.value(), kBassShelfS, sampleRate));
         mid.setCoeffs(rbj::peaking(kMidHz, midDb.value(), kMidQ, sampleRate));
@@ -142,10 +167,23 @@ void AmpModel::prepare(double sampleRate, int /*maxBlockSize*/) {
     d.bright.reset();
     d.ctrlCounter = 0;
     d.recomputeCoeffs();
+
+    // Chorus prepared to the same rate; defaults (mode off, mid speed, mid depth)
+    // are applied here so an engaged chorus opens on a sensible voice.
+    d.chorus.prepare(d.sampleRate);
+    d.chorus.setSpeed(0.3f);
+    d.chorus.setDepth(0.5f);
+    d.chorus.setMode(ChorusModel::MODE_OFF);
 }
 
 void AmpModel::setParameter(int paramId, float value) {
     Impl& d = *impl_;
+    // Chorus MODE carries an integer 0/1/2, so it must NOT be clamped to 0..1
+    // like the knobs; handle it before the clamp.
+    if (paramId == PARAM_CHORUS_MODE) {
+        d.chorus.setMode(static_cast<int>(std::lround(value)));
+        return;
+    }
     const float knob = clamp01(value);
     switch (paramId) {
         case PARAM_VOLUME:
@@ -163,30 +201,28 @@ void AmpModel::setParameter(int paramId, float value) {
         case PARAM_BRIGHT:
             d.brightDb.setTarget(knob >= 0.5f ? static_cast<float>(kBrightDb) : 0.0f);
             break;
+        case PARAM_CHORUS_SPEED:
+            d.chorus.setSpeed(knob);
+            break;
+        case PARAM_CHORUS_DEPTH:
+            d.chorus.setDepth(knob);
+            break;
         default:
             break;
     }
 }
 
 void AmpModel::process(const float* in, float* out, int numFrames) {
-    Impl& d = *impl_;
-    for (int i = 0; i < numFrames; ++i) {
-        // Advance the smoothers every sample; recompute coefficients at the
-        // control rate from the current smoothed dB values.
-        d.bassDb.next();
-        d.midDb.next();
-        d.trebleDb.next();
-        d.brightDb.next();
-        if (d.ctrlCounter == 0) d.recomputeCoeffs();
-        if (++d.ctrlCounter >= kCtrlBlock) d.ctrlCounter = 0;
+    impl_->processMonoVoice(in, out, numFrames);
+}
 
-        float x = in[i];
-        x = d.bass.process(x);
-        x = d.mid.process(x);
-        x = d.treble.process(x);
-        x = d.bright.process(x);
-        out[i] = x * d.volume.next();
-    }
+void AmpModel::processStereo(const float* in, float* outL, float* outR, int numFrames) {
+    Impl& d = *impl_;
+    // Tone stack + volume into outL as scratch, then split into the stereo pair.
+    // ChorusModel tolerates in==outL (it reads each sample before overwriting it),
+    // so no extra buffer is needed.
+    d.processMonoVoice(in, outL, numFrames);
+    d.chorus.processStereo(outL, outL, outR, numFrames);
 }
 
 }  // namespace clipper::dsp

@@ -10,6 +10,9 @@ import {
   AMP_PARAM_TREBLE,
   AMP_PARAM_BRIGHT,
   AMP_PARAM_CAB,
+  AMP_PARAM_CHORUS_SPEED,
+  AMP_PARAM_CHORUS_DEPTH,
+  AMP_PARAM_CHORUS_MODE,
   WORKLET_URL,
   trimKnobToGain,
 } from './params';
@@ -67,10 +70,12 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   await context.resume();
   await context.audioWorklet.addModule(WORKLET_URL);
 
+  // Output is STEREO from M6.3 on: the amp's chorus stage produces a dry/wet
+  // (or vibrato) pair. Off/chorus-off collapses to identical channels.
   const node = new AudioWorkletNode(context, 'clipper-processor', {
     numberOfInputs: 1,
     numberOfOutputs: 1,
-    outputChannelCount: [1],
+    outputChannelCount: [2],
   });
 
   // Wait for the processor to finish instantiating the WASM module, capturing
@@ -143,6 +148,9 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   engine.setAmpParam(AMP_PARAM_TREBLE, opts.amp.treble);
   engine.setAmpParam(AMP_PARAM_BRIGHT, opts.amp.bright);
   engine.setAmpParam(AMP_PARAM_CAB, opts.amp.cab);
+  engine.setAmpParam(AMP_PARAM_CHORUS_SPEED, opts.amp.speed);
+  engine.setAmpParam(AMP_PARAM_CHORUS_DEPTH, opts.amp.depth);
+  engine.setAmpParam(AMP_PARAM_CHORUS_MODE, opts.amp.chorusMode);
   engine.setAmpBypass(!opts.ampEngaged);
 
   // Build the source and connect the graph.

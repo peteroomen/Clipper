@@ -38,9 +38,15 @@ public:
         PARAM_MIDDLE = 2,   // mid peak,   +/- 9 dB around 0.5
         PARAM_TREBLE = 3,   // high-shelf, +/-12 dB around 0.5
         PARAM_BRIGHT = 4,   // 0/1: fixed +5 dB bright high-shelf
-        PARAM_COUNT
-        // NB: the cab on/off toggle (AMP_PARAM_CAB) is a CHAIN-level id handled by
-        // the C ABI wrapper (it enables/bypasses CabConvolver), not by AmpModel.
+        PARAM_COUNT = 5,    // number of contiguous tone params; ALSO the id the C
+                            // ABI reserves for the CHAIN-level cab toggle
+                            // (AMP_PARAM_CAB == 5), which is NOT handled here.
+        // --- M6.3 chorus/vibrato (routed to the owned ChorusModel) ------------
+        // Placed ABOVE the reserved cab id (5) so the cab id stays 5 forever and
+        // the ABI is purely additive. These ARE handled by AmpModel::setParameter.
+        PARAM_CHORUS_SPEED = 6,  // 0..1 knob, log map ~0.15..8 Hz
+        PARAM_CHORUS_DEPTH = 7,  // 0..1 knob, sweep amount (0..~1.5 ms peak)
+        PARAM_CHORUS_MODE = 8,   // 0=off, 1=chorus, 2=vibrato (NOT clamped to 0..1)
     };
 
     AmpModel();
@@ -55,8 +61,16 @@ public:
     // Set a normalized parameter (id in ParamId, value in [0, 1]). Clamped.
     void setParameter(int paramId, float value);
 
-    // Process numFrames of mono audio, in -> out. in and out may alias.
+    // Process numFrames of mono audio, in -> out. in and out may alias. This is
+    // the tone stack + volume ONLY (no chorus) — the mono voice of the amp, kept
+    // for the pre-M6.3 mono path and the offline tone/volume tests.
     void process(const float* in, float* out, int numFrames);
+
+    // M6.3 STEREO entry point: tone stack + volume, then the chorus/vibrato split
+    // into a stereo pair (outL/outR must be distinct buffers; in may alias
+    // neither). With the chorus mode OFF, outL == outR == the mono voice, so this
+    // degrades to two copies of process().
+    void processStereo(const float* in, float* outL, float* outR, int numFrames);
 
 private:
     struct Impl;

@@ -471,6 +471,81 @@ test('output level: default rig is healthily loud and never overs (limiter)', as
   expect(result.hotPeak).toBeLessThanOrEqual(1.0);
 });
 
+// M6.3: the worklet goes STEREO at the amp stage. With the chorus engaged the
+// two output channels differ (dry L / wet R bloom); with it off they are
+// identical. Renders a 2-channel OfflineAudioContext through the full worklet.
+test('chorus: engaged makes L/R differ; off leaves them identical (stereo)', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.5;
+
+    // Render the worklet into a STEREO buffer at a given chorus mode (0/1/2).
+    async function render(chorusMode: number): Promise<{ maxDiff: number; rmsR: number }> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(2, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [2],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') {
+            clearTimeout(t);
+            resolve();
+          } else if (e.data?.type === 'error') {
+            clearTimeout(t);
+            reject(new Error(e.data.message));
+          }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') resolve();
+        };
+        // Pedal bypassed so a clean tone reaches the amp; amp on, unity volume.
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.4 }); // volume
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 6, value: 0.6 }); // chorus speed
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 7, value: 0.7 }); // chorus depth
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 8, value: chorusMode }); // mode
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 }); // cab on -> latency echo
+      });
+
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      osc.connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      const L = buffer.getChannelData(0);
+      const R = buffer.getChannelData(1);
+      let maxDiff = 0;
+      let sumR = 0;
+      const start = Math.floor(L.length / 3); // skip fill-in transient
+      for (let i = start; i < L.length; i++) {
+        const d = Math.abs(L[i] - R[i]);
+        if (d > maxDiff) maxDiff = d;
+        sumR += R[i] * R[i];
+      }
+      return { maxDiff, rmsR: Math.sqrt(sumR / (L.length - start)) };
+    }
+
+    const off = await render(0);
+    const chorus = await render(1);
+    return { off, chorus };
+  });
+
+  // Off: the two channels are identical (chorus truly bypassed).
+  expect(result.off.maxDiff).toBeLessThan(1e-6);
+  // Chorus: the wet R side carries real signal and clearly differs from dry L.
+  expect(result.chorus.rmsR).toBeGreaterThan(0.05);
+  expect(result.chorus.maxDiff).toBeGreaterThan(0.05);
+});
+
 test('UI exposes M4 controls: pedal, three knobs, footswitch, source, oversampling', async ({
   page,
 }) => {
@@ -509,6 +584,26 @@ test('UI exposes M4 controls: pedal, three knobs, footswitch, source, oversampli
   await expect(page.getByRole('switch', { name: 'Bright' })).toBeVisible();
   await expect(page.getByRole('switch', { name: 'Cab' })).toBeVisible();
   await expect(page.getByRole('switch', { name: 'Power' })).toBeVisible();
+
+  // M6.3 chorus/vibrato: Speed + Depth knobs and an Off/Chorus/Vibrato 3-way.
+  await expect(page.getByRole('slider', { name: 'Chorus speed' })).toBeVisible();
+  await expect(page.getByRole('slider', { name: 'Chorus depth' })).toBeVisible();
+  const modeGroup = page.getByTestId('chorus-mode');
+  await expect(modeGroup).toBeVisible();
+  const off = page.getByTestId('chorus-mode-off');
+  const chorus = page.getByTestId('chorus-mode-chorus');
+  const vibrato = page.getByTestId('chorus-mode-vibrato');
+  // Default is Off (mode 0).
+  await expect(off).toHaveAttribute('aria-checked', 'true');
+  await expect(chorus).toHaveAttribute('aria-checked', 'false');
+  // Selecting Vibrato updates the group and the rig state.
+  await vibrato.click();
+  await expect(vibrato).toHaveAttribute('aria-checked', 'true');
+  await expect(off).toHaveAttribute('aria-checked', 'false');
+  const mode = await page.evaluate(
+    () => (window as any).__CLIPPER_TEST__.getRig().amp.params.chorusMode
+  );
+  expect(mode).toBe(2);
 });
 
 test('rig state: JSON round-trips exactly and restores from localStorage', async ({ page }) => {
@@ -524,7 +619,17 @@ test('rig state: JSON round-trips exactly and restores from localStorage', async
       amp: {
         type: 'clean120',
         engaged: false,
-        params: { volume: 0.33, bass: 0.6, middle: 0.4, treble: 0.7, bright: 1, cab: 0 },
+        params: {
+          volume: 0.33,
+          bass: 0.6,
+          middle: 0.4,
+          treble: 0.7,
+          bright: 1,
+          cab: 0,
+          speed: 0.6,
+          depth: 0.8,
+          chorusMode: 2,
+        },
       },
       oversampling: 8,
       source: 'live',

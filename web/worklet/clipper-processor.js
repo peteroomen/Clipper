@@ -12,10 +12,12 @@
 import createModule from './clipper.js';
 
 // Pedal (RAT) param ids are 0/1/2 (RatModel::ParamId); amp param ids are 0..4
-// (AmpModel::ParamId). Both arrive by numeric id in the message, so the worklet
-// only needs the ONE chain-level id it treats specially: the cab on/off toggle
+// plus the M6.3 chorus params 6/7/8 (AmpModel::ParamId). All arrive by numeric id
+// in the message and flow straight through to _amp_set_param, so the worklet only
+// needs the ONE chain-level id it treats specially: the cab on/off toggle
 // (AMP_PARAM_CAB == AmpModel::PARAM_COUNT == 5, handled by the C ABI wrapper),
-// because flipping it changes the amp's reported latency.
+// because flipping it changes the amp's reported latency. (Chorus params 6/7/8
+// need no special handling here — the C ABI routes them into the ChorusModel.)
 const AMP_PARAM_CAB = 5;
 
 const RENDER_QUANTUM = 128;
@@ -40,12 +42,14 @@ class ClipperProcessor extends AudioWorkletProcessor {
     this._ready = false;
     this._module = null;
 
-    // Two model handles + three heap scratch buffers (in -> mid -> out).
+    // Two model handles + heap scratch buffers. The amp stage is STEREO from the
+    // chorus split on (M6.3), so the output is a PAIR: in -> mid (mono) -> outL/outR.
     this._rat = 0;
     this._amp = 0;
     this._inPtr = 0;
     this._midPtr = 0;
-    this._outPtr = 0;
+    this._outLPtr = 0;
+    this._outRPtr = 0;
 
     // Per-unit bypass is worklet-local (pass audio through untouched), always
     // applicable even before WASM is ready. pedal bypass = skip the RAT; amp
@@ -75,7 +79,8 @@ class ClipperProcessor extends AudioWorkletProcessor {
         this._amp = mod._amp_create(sr);
         this._inPtr = mod._malloc(RENDER_QUANTUM * 4);
         this._midPtr = mod._malloc(RENDER_QUANTUM * 4);
-        this._outPtr = mod._malloc(RENDER_QUANTUM * 4);
+        this._outLPtr = mod._malloc(RENDER_QUANTUM * 4);
+        this._outRPtr = mod._malloc(RENDER_QUANTUM * 4);
         this._ready = true;
 
         for (const msg of this._pending) this._apply(msg);
@@ -203,22 +208,32 @@ class ClipperProcessor extends AudioWorkletProcessor {
       mod._rat_process(this._rat, this._inPtr, this._midPtr, n);
     }
 
-    // 3. Amp stage: amp+cab into _outPtr, or bypass (copy mid -> out).
+    // 3. Amp stage: amp -> chorus split -> per-side cab, into _outLPtr/_outRPtr.
+    // With chorus OFF the two sides are identical. Amp bypass ("power off") copies
+    // the mono pedal signal to BOTH sides (a true stereo passthrough).
     if (this._bypass.amp) {
       heap = mod.HEAPF32;
-      heap.copyWithin(this._outPtr >> 2, this._midPtr >> 2, (this._midPtr >> 2) + n);
+      const midWords = this._midPtr >> 2;
+      heap.copyWithin(this._outLPtr >> 2, midWords, midWords + n);
+      heap.copyWithin(this._outRPtr >> 2, midWords, midWords + n);
     } else {
-      mod._amp_process(this._amp, this._midPtr, this._outPtr, n);
+      mod._amp_process_stereo(this._amp, this._midPtr, this._outLPtr, this._outRPtr, n);
     }
 
-    // 4. Read _outPtr to the output (re-fetch heap in case of growth), through
-    // the soft limiter so louder staging can never emit raw overs past ±1.0.
+    // 4. Read the stereo pair to the output (re-fetch heap in case of growth),
+    // each channel through the soft limiter so louder staging can never emit raw
+    // overs past ±1.0. A 1-channel output (e.g. an OfflineAudioContext configured
+    // mono) takes the LEFT side only.
     heap = mod.HEAPF32;
-    const outBase = this._outPtr >> 2;
-    for (let i = 0; i < n; i++) outCh[i] = this._softLimit(heap[outBase + i]);
-
-    // Mirror to any additional output channels (mono source).
-    for (let c = 1; c < output.length; c++) output[c].set(outCh);
+    const outLBase = this._outLPtr >> 2;
+    const outRBase = this._outRPtr >> 2;
+    const rCh = output[1];
+    for (let i = 0; i < n; i++) {
+      outCh[i] = this._softLimit(heap[outLBase + i]);
+      if (rCh) rCh[i] = this._softLimit(heap[outRBase + i]);
+    }
+    // Any channels beyond stereo mirror the left (unusual; keeps output valid).
+    for (let c = 2; c < output.length; c++) output[c].set(outCh);
 
     return true;
   }

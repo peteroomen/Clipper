@@ -116,11 +116,14 @@ Field feedback from real playing, prioritized ahead of new pedals:
 - **M6.2 — Mac app (Electron)** — desktop shell; the zero-dep proxy runs
   in-process serving the built web app, key via env or in-app prompt,
   unsigned local `.dmg` build.
-- **M6.3 — JC-120 chorus & vibrato** — the amp's soul: speed + depth knobs,
-  chorus/vibrato mode switch (chorus = dry + modulated wet; vibrato = wet
-  only, true pitch wobble), and the JC's signature stereo bloom (dry L / wet
-  R) — the worklet goes stereo at the amp stage. Modulated delay in core,
-  offline-validated.
+- **M6.3 — JC-120 chorus & vibrato — SHIPPED.** The amp's soul: speed + depth
+  knobs and an off/chorus/vibrato 3-way (chorus = dry L / modulated wet R stereo
+  bloom; vibrato = modulated to both sides, true pitch wobble). The worklet goes
+  **stereo at the amp stage**, with the cab IR running **per side**. Modulated
+  delay in core (`ChorusModel`: 5 ms base, sine LFO ~0.15–8 Hz, up to 1.5 ms sweep,
+  cubic-Lagrange fractional delay), offline-validated — vibrato pitch deviation
+  measured against the depth×rate prediction, chorus dry-L/wet-R decorrelation,
+  bit-exact off. Stereo chain runs at ~0.6 % of a core (44.1 k).
 - **M6.4 — Pedalboard visual pass** — stackable, drag-reorderable pedals
   joined by neumorphic cables, add/remove/swap from a gear tray, amp slot at
   the end with amp swapping. Architecture for everything M7+ plugs into.

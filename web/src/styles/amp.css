@@ -34,6 +34,33 @@
 .toggle:focus-visible { outline: 2px solid var(--ai); outline-offset: 4px; border-radius: 6px; }
 .toggle .k-name { color: var(--ink-dim); }
 
+/* M6.3 chorus/vibrato — a second facia row carved off the panel by a top rule */
+.amp-chorus { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--sh-darker);
+  display: flex; align-items: flex-start; gap: 20px; flex-wrap: wrap; }
+.amp-chorus-label { font-family: Anton, "Arial Narrow", sans-serif; font-size: 14px;
+  text-transform: uppercase; letter-spacing: .22em; color: var(--ink-faint);
+  writing-mode: vertical-rl; transform: rotate(180deg); align-self: stretch;
+  padding: 2px 0; }
+.amp-chorus-controls { display: flex; align-items: flex-start; gap: 20px; flex-wrap: wrap; }
+
+/* 3-way mode selector — three carved segments stacked in a well, the active one
+   lit like the bright/cab levers */
+.mode-switch { display: flex; flex-direction: column; align-items: center; gap: 9px;
+  --seg-w: 78px; }
+.mode-opt { width: var(--seg-w); padding: 8px 10px; border: none; cursor: pointer;
+  font: inherit; font-size: 12px; letter-spacing: .04em; color: var(--ink-dim);
+  background: var(--well); box-shadow: inset 3px 3px 7px var(--sh-darker),
+  inset -3px -3px 6px var(--sh-light); }
+.mode-opt + .mode-opt { margin-top: -1px; }
+.mode-switch .mode-opt:nth-of-type(1) { border-radius: 12px 12px 0 0; }
+.mode-switch .mode-opt:nth-of-type(3) { border-radius: 0 0 12px 12px; }
+.mode-opt.on { color: var(--ink); background: linear-gradient(145deg,
+  color-mix(in srgb, var(--led) 55%, var(--ground)),
+  color-mix(in srgb, var(--led) 82%, #000));
+  box-shadow: 2px 3px 6px var(--sh-dark), inset 0 1px 1px var(--sh-light); }
+.mode-opt:focus-visible { outline: 2px solid var(--ai); outline-offset: 3px; }
+.amp:not(.on) .mode-opt.on { filter: saturate(.4) brightness(.9); }
+
 /* rocker power + jewel */
 .power { display: flex; flex-direction: column; align-items: center; gap: 9px; cursor: pointer;
   background: none; border: none; padding: 0; font: inherit; }

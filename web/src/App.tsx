@@ -145,6 +145,11 @@ export default function App() {
     setAmpParam(name, next);
   }
 
+  // Set the 3-way chorus mode (0 off / 1 chorus / 2 vibrato). M6.3.
+  function setChorusMode(mode: number) {
+    setAmpParam('chorusMode', mode);
+  }
+
   // Set the amp power (engaged) state explicitly (used by the Power rocker and
   // the assistant's set_engaged tool). engaged=false -> amp+cab bypassed.
   function setAmpEngaged(engaged: boolean) {
@@ -182,7 +187,13 @@ export default function App() {
         if (unit === 'pedal') setPedalEngaged(engaged);
         else setAmpEngaged(engaged);
       },
-      setSwitch: (name, on) => setAmpParam(name as AmpParamName, on ? 1 : 0),
+      setSwitch: (name, on) => {
+        // bright/cab are 0/1 toggles; chorus/vibrato select the 3-way chorus mode
+        // (turning one on selects it; turning it off returns to mode 0 = off).
+        if (name === 'chorus') setChorusMode(on ? 1 : 0);
+        else if (name === 'vibrato') setChorusMode(on ? 2 : 0);
+        else setAmpParam(name as AmpParamName, on ? 1 : 0);
+      },
     }),
     // The referenced setters are behaviorally stable (functional setState + refs).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -299,6 +310,7 @@ export default function App() {
               onParam={setAmpParam}
               onToggle={toggleAmp}
               onTogglePower={toggleAmpPower}
+              onChorusMode={setChorusMode}
             />
           </div>
 

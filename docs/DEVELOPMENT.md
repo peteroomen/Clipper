@@ -1159,6 +1159,137 @@ Web: `worklet/clipper-processor.js` (input trim + peak + limiter),
 `src/assistant/{tools,prompt}.ts`, `src/components/Chat.tsx`, and the two test
 specs (+ `playwright.config.ts` retries for the known WebAudio flake).
 
+## 11.2 M6.3 — JC-120 chorus & vibrato (the amp goes stereo)
+
+The Roland JC-120's soul is its stereo chorus/vibrato. This milestone models it
+and takes the rig **stereo from the amp stage on**.
+
+### Circuit rationale (what the real amp does)
+
+After the preamp and spring reverb, the JC-120's signal **forks into two
+independent power-amp + speaker paths**: one **dry**, one through a
+**bucket-brigade (BBD) delay** whose clock is swept by an LFO. The knobs are
+**Speed** and **Depth**; a 3-way selects the character:
+
+- **Chorus** — dry to the LEFT speaker, modulated-wet to the RIGHT. The famous
+  "chorus" is not a wet/dry electrical mix — it is the **acoustic sum of the two
+  speakers in the room** (or the listener's two ears): a ~5 ms delay difference
+  plus movement, heard as width and shimmer with comb-filter motion.
+- **Vibrato** — the modulated signal to **both** speakers (no dry reference), so
+  you hear true **pitch wobble** rather than chorus.
+
+We model the fork faithfully, not the room: **preamp/tone → chorus split →
+per-side cab**. There is no reverb block in Clipper yet, so the split sits right
+after the tone stack + volume.
+
+### DSP (`core/src/dsp/ChorusModel.{h,cpp}`)
+
+A single modulated delay line that splits mono → stereo, owned by `AmpModel`
+(which routes its `PARAM_CHORUS_*` here).
+
+- **Interpolation — 4-point Lagrange (cubic), not all-pass.** The read tap sweeps
+  continuously and **reverses direction twice per LFO cycle**. All-pass
+  interpolation is recursive (stateful), so a fast reversal rings its internal
+  filter and smears transients; Lagrange is **stateless** — every sample is
+  interpolated from scratch with flat-ish group delay and no reversal artifact.
+  Cubic (vs linear) keeps the moving-tap HF loss inaudible.
+- **LFO — sine, not triangle.** The BBD clock sweeps triangle-ish, but a
+  **triangle delay sweep makes the pitch deviation a square wave** — it snaps
+  between +Δ and −Δ cents with an audible chirp at each reversal. A **sine** delay
+  sweep gives a smooth cosine pitch deviation: musical, and what the ear reads as
+  "the JC chorus." (Documented tradeoff — authenticity of the clock waveform vs.
+  the artifact-free result; we chose the result.)
+- **Numbers (tuned in `ChorusModel.cpp`):**
+  - base delay **5.0 ms** — decorrelates the wet side for the stereo bloom;
+    long enough to widen, short enough not to read as slapback.
+  - depth `0..1` → sine sweep **0 .. 1.5 ms peak** (linear). Full depth swings
+    the wet delay 5 ± 1.5 ms (3.5..6.5 ms) — always well inside the buffer and
+    far above the interpolator floor.
+  - speed `0..1` → LFO rate **~0.15 .. 8 Hz**, **log** mapped
+    (`rate = 0.15·(8/0.15)^speed`) so the musical 0.5–3 Hz range fills most of the
+    knob.
+- **Peak pitch deviation.** For `delay(t) = D0 + A·sin(ωt)` the instantaneous
+  fractional pitch shift is `−d(delay)/dt = −A·ω·cos(ωt)`, so the **peak** is
+  `A·2π·f`, i.e. in cents `≈ (1200/ln2)·A·2π·f ≈ 16.3 · depth · f_Hz`
+  (with `A = depth·1.5 ms`). Examples: **depth 1 @ 2 Hz ≈ 33 ¢**, depth 1 @ 5 Hz
+  ≈ 82 ¢, depth 0.5 @ 2 Hz ≈ 16 ¢. Deviation grows with **both** depth and rate
+  — the physical truth of a fixed-excursion swept delay; the 1.5 ms cap keeps a
+  full-depth mid-rate vibrato lush (~30–40 ¢) rather than seasick.
+- **OFF is bit-exact.** Mode 0 copies the input to both sides untouched
+  (`L == R`, and `== AmpModel::process()`'s mono voice, bit-for-bit).
+- Depth (as sweep-in-samples) and rate (Hz) are one-pole smoothed (~8 ms); the
+  LFO phase is continuous so a rate change never clicks. Mode is a **hard switch**
+  (a deliberate footswitch action, like the pedal/amp bypass elsewhere).
+
+### Stereo architecture & CPU
+
+`AmpModel::processStereo(in, outL, outR, n)` runs the tone stack + volume (the
+same mono voice as `process()`) into `outL` as scratch, then splits via the
+`ChorusModel`. The **cab IR runs per side** — two `CabConvolver` instances in the
+C ABI's `AmpChain` (`cabL`, `cabR`, same IR). This is required, not optional: in
+chorus mode L and R are genuinely different signals, so mono-summing before a
+single cab would collapse the bloom. The stereo entry points are additive:
+`amp_process_stereo` (C ABI) and the worklet's stereo output path; the old mono
+`amp_process` + single `cabL` stay for compatibility.
+
+**CPU (from `testChorusPerf`, amp + chorus + BOTH cabs, 1 s of audio):**
+
+| Sample rate | Time for 1 s | Fraction of one core |
+|---|---|---|
+| 44.1 kHz | ~6.3 ms | ~0.6 % |
+| 96 kHz | ~14.2 ms | ~1.4 % |
+
+The second convolution roughly doubles the cab cost (single cab was ~2.3 ms at
+44.1 k) but the whole stereo chain is still **>150× faster than real time** — the
+worklet can afford two proper per-side cabs comfortably, so we never compromise
+the chorus by summing to mono.
+
+### Test method — how the pitch deviation is measured
+
+`testChorusVibrato` (in `core/tests/test_amp_model.cpp`) renders a steady 1 kHz
+probe through vibrato at a **known** rate (the speed knob is inverted from the log
+map to hit exactly 3 Hz) and depth 0.7. It finds **positive-going zero crossings**
+with linear interpolation, converts each crossing-to-crossing period to an
+instantaneous frequency (`f = fs/period`), and takes the **peak** `|1200·log2(f/f0)|`
+over the tail. That measured peak is asserted within a broad band (½..1½×) of the
+`16.3·depth·f` prediction — deterministic, FFT-free, and it exercises the whole
+`AmpModel::processStereo` path. (Zero-crossing spacing averages over a signal
+period, so it reads slightly under the instantaneous peak; the band accounts for
+that.) Companion tests: `testChorusOff` (L==R bit-exact and == mono voice),
+`testChorusChorus` (L is the bit-exact dry voice; R's noise cross-correlation
+peaks at the ~5 ms base lag and is decorrelated at zero lag), `testChorusPerf`.
+
+### Web plumbing
+
+- **Worklet** (`web/worklet/clipper-processor.js`) allocates `outL`/`outR` heap
+  buffers and calls `amp_process_stereo`; the M6.1 soft limiter runs **per
+  channel**. Amp power-off copies the mono pedal signal to both sides. A
+  1-channel output (a mono `OfflineAudioContext`) takes the LEFT side only, so the
+  pre-M6.3 mono audio tests still read the same signal. The peak meter still taps
+  the **post-trim input** (mono, pre-pedal) — unchanged.
+- **Node** (`web/src/audio.ts`) is created with `outputChannelCount: [2]`.
+- **RigState** (`web/src/rig.ts`) `amp.params` gains `speed`, `depth`, and
+  `chorusMode` (0/1/2). `normalizeRig` fills them from defaults, so a pre-M6.3
+  saved rig loads with **chorus off** (migration tested).
+- **UI** (`web/src/components/Amp.tsx`, `styles/amp.css`) adds a second facia row:
+  **Speed** + **Depth** knobs (shared `Knob`) and an **Off / Chorus / Vibrato**
+  3-way selector (carved neu segments, active one lit like the bright/cab levers).
+- **Assistant** (`web/src/assistant/{tools,prompt}.ts`): `set_param` gains
+  `speed`/`depth` (unit `amp`); the 3-way mode reuses **`set_switch`** with the
+  name enum extended to `chorus`/`vibrato` (mutually exclusive — turning one on
+  selects it, off returns to mode 0), the minimal-diff option consistent with how
+  `bright`/`cab` already work. The per-turn rig context already carries the full
+  amp params, so the coach sees the chorus state for free.
+
+### Build and test (M6.3)
+
+```bash
+cd core && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+ctest --test-dir build          # 3/3 (clipper_amp_tests gains 4 chorus tests)
+cd .. && bash scripts/build-wasm.sh   # now compiles ChorusModel, exports amp_process_stereo
+cd web && npm run build && npm test   # 19 Playwright (17 + stereo chorus + assistant chorus)
+```
+
 ## Mac app (Electron)
 
 `electron/` wraps the exact same runtime as `npm run server` in a native macOS

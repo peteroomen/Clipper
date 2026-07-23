@@ -115,7 +115,12 @@ constexpr int kAmpParamCab = clipper::dsp::AmpModel::PARAM_COUNT;  // == 5
 
 struct AmpChain {
     clipper::dsp::AmpModel amp;
-    clipper::dsp::CabConvolver cab;
+    // M6.3: the amp goes STEREO from the chorus stage on, so the cab IR runs PER
+    // SIDE. Two independent CabConvolver instances (same IR) — the wet R side is
+    // genuinely a different signal from the dry L side in chorus mode, so a single
+    // mono cab AFTER a wet/dry sum would collapse the stereo bloom. cabL doubles
+    // as the mono cab for the legacy amp_process() path.
+    clipper::dsp::CabConvolver cabL, cabR;
     bool cabOn = true;
 };
 }  // namespace
@@ -123,14 +128,15 @@ struct AmpChain {
 // Create the amp+cab chain prepared for the given sample rate. 128 == the
 // AudioWorklet render quantum, used as both the amp max block and the cab
 // partition size. The default cab IR is generated at the engine rate (no
-// resampling needed).
+// resampling needed). Both per-side cabs load the SAME IR.
 EMSCRIPTEN_KEEPALIVE
 void* amp_create(float sample_rate) {
     const double sr = static_cast<double>(sample_rate);
     auto* c = new AmpChain();
     c->amp.prepare(sr, 128);
     const std::vector<float> ir = clipper::dsp::generateDefaultCab2x12IR(sr);
-    c->cab.prepare(sr, ir.data(), static_cast<int>(ir.size()), sr, 128);
+    c->cabL.prepare(sr, ir.data(), static_cast<int>(ir.size()), sr, 128);
+    c->cabR.prepare(sr, ir.data(), static_cast<int>(ir.size()), sr, 128);
     return c;
 }
 
@@ -151,21 +157,39 @@ void amp_set_param(void* handle, int param_id, float value) {
 }
 
 // Total latency of the amp instance in samples: the amp itself is linear (0),
-// the cab adds one partition (128) when engaged.
+// the cab adds one partition (128) when engaged. Both sides share the partition
+// size, so this is the same for the mono and stereo paths.
 EMSCRIPTEN_KEEPALIVE
 int amp_latency_samples(void* handle) {
     if (!handle) return 0;
     auto* c = static_cast<AmpChain*>(handle);
-    return c->cabOn ? c->cab.latencySamples() : 0;
+    return c->cabOn ? c->cabL.latencySamples() : 0;
 }
 
+// Mono path (pre-M6.3, retained for ABI compatibility): tone+volume -> single
+// cab. Chorus never runs here.
 EMSCRIPTEN_KEEPALIVE
 void amp_process(void* handle, const float* in_ptr, float* out_ptr,
                  int num_frames) {
     if (!handle) return;
     auto* c = static_cast<AmpChain*>(handle);
     c->amp.process(in_ptr, out_ptr, num_frames);
-    if (c->cabOn) c->cab.process(out_ptr, out_ptr, num_frames);  // in-place ok
+    if (c->cabOn) c->cabL.process(out_ptr, out_ptr, num_frames);  // in-place ok
+}
+
+// M6.3 STEREO path: tone+volume -> chorus split -> a per-side cab on each of
+// outL/outR. With the chorus mode off, outL == outR. in_ptr may not alias the
+// outputs; outL_ptr and outR_ptr must be distinct.
+EMSCRIPTEN_KEEPALIVE
+void amp_process_stereo(void* handle, const float* in_ptr, float* out_l_ptr,
+                        float* out_r_ptr, int num_frames) {
+    if (!handle) return;
+    auto* c = static_cast<AmpChain*>(handle);
+    c->amp.processStereo(in_ptr, out_l_ptr, out_r_ptr, num_frames);
+    if (c->cabOn) {
+        c->cabL.process(out_l_ptr, out_l_ptr, num_frames);  // in-place ok
+        c->cabR.process(out_r_ptr, out_r_ptr, num_frames);
+    }
 }
 
 }  // extern "C"

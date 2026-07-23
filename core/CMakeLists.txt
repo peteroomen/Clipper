@@ -64,6 +64,7 @@ FetchContent_MakeAvailable(chowdsp_wdf)
 add_library(clipper_dsp STATIC
     src/dsp/RatModel.cpp
     src/dsp/AmpModel.cpp
+    src/dsp/ChorusModel.cpp
     src/dsp/CabConvolver.cpp
     src/dsp/CabIR.cpp
 )

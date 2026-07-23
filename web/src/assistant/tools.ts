@@ -11,7 +11,7 @@
 import type { RigState } from '../rig';
 
 export type Unit = 'pedal' | 'amp' | 'input';
-export type SwitchName = 'bright' | 'cab';
+export type SwitchName = 'bright' | 'cab' | 'chorus' | 'vibrato';
 
 // The seam between the assistant and the live rig. App implements this over its
 // existing setters; the tool executor only ever touches the rig through here.
@@ -37,7 +37,10 @@ export const TOOLS = [
       "1=dark — the RAT filter is a post-clipping low-pass, so clockwise/higher " +
       "tames fizz without changing how hard it clips), 'level' (output volume). " +
       "Amp params: 'volume', 'bass', 'middle', 'treble' (tone controls are flat " +
-      "at 0.5). Input params: 'trim' — the rig-level INPUT gain BEFORE the pedal " +
+      "at 0.5), plus the chorus/vibrato modulation 'speed' (LFO rate ~0.15-8 Hz) " +
+      "and 'depth' (sweep amount / how deep the pitch wobble is) — these only do " +
+      "something when the chorus or vibrato mode is on (set that with set_switch). " +
+      "Input params: 'trim' — the rig-level INPUT gain BEFORE the pedal " +
       "(0..1 maps to -12..+24 dB, 1/3 = 0 dB). Raise it when the input peak is " +
       "weak (below ~-12 dBFS) so the guitar actually drives the diodes; lower it " +
       "if it's hot (near 0 dBFS). The knob moves visibly and the change is heard " +
@@ -48,7 +51,18 @@ export const TOOLS = [
         unit: { type: 'string', enum: ['pedal', 'amp', 'input'] },
         param: {
           type: 'string',
-          enum: ['dist', 'filter', 'level', 'volume', 'bass', 'middle', 'treble', 'trim'],
+          enum: [
+            'dist',
+            'filter',
+            'level',
+            'volume',
+            'bass',
+            'middle',
+            'treble',
+            'speed',
+            'depth',
+            'trim',
+          ],
         },
         value: { type: 'number', minimum: 0, maximum: 1 },
       },
@@ -77,11 +91,15 @@ export const TOOLS = [
     description:
       "Flip an amp switch. 'bright' adds a high-frequency shelf (extra sparkle/" +
       "presence). 'cab' toggles the 2x12 speaker cabinet simulation (off = raw, " +
-      'fizzier, no speaker rolloff).',
+      "fizzier, no speaker rolloff). 'chorus' and 'vibrato' select the JC-120's " +
+      "modulation: turning 'chorus' on gives the lush dry-left / wet-right stereo " +
+      "bloom, 'vibrato' on gives a true pitch wobble on both sides; these two are " +
+      "mutually exclusive (turning either off returns to no modulation). Use " +
+      "set_param 'speed'/'depth' to shape the movement once one is on.",
     input_schema: {
       type: 'object',
       properties: {
-        name: { type: 'string', enum: ['bright', 'cab'] },
+        name: { type: 'string', enum: ['bright', 'cab', 'chorus', 'vibrato'] },
         on: { type: 'boolean' },
       },
       required: ['name', 'on'],
@@ -102,6 +120,8 @@ const AMP_PARAM: Record<string, string> = {
   bass: 'bass',
   middle: 'middle',
   treble: 'treble',
+  speed: 'speed',
+  depth: 'depth',
 };
 const INPUT_PARAM: Record<string, string> = {
   trim: 'trim',
@@ -116,6 +136,8 @@ const PARAM_LABEL: Record<string, string> = {
   bass: 'Bass',
   middle: 'Mid',
   treble: 'Treble',
+  speed: 'Speed',
+  depth: 'Depth',
   trim: 'Trim',
 };
 
@@ -176,10 +198,11 @@ export function executeTool(
   }
 
   if (name === 'set_switch') {
-    const sw = input.name === 'cab' ? 'cab' : 'bright';
+    const valid: SwitchName[] = ['bright', 'cab', 'chorus', 'vibrato'];
+    const sw = (valid.includes(input.name as SwitchName) ? input.name : 'bright') as SwitchName;
     const on = Boolean(input.on);
     controller.setSwitch(sw, on);
-    const label = sw === 'cab' ? 'Cab' : 'Bright';
+    const label = sw.charAt(0).toUpperCase() + sw.slice(1);
     return {
       content: JSON.stringify({ applied: { name: sw, on } }),
       chip: `${label} ${on ? 'on' : 'off'}`,

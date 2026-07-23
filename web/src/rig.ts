@@ -16,7 +16,16 @@ export type PedalType = 'rat';
 export type AmpType = 'clean120';
 
 export type ParamName = 'distortion' | 'filter' | 'level';
-export type AmpParamName = 'volume' | 'bass' | 'middle' | 'treble' | 'bright' | 'cab';
+export type AmpParamName =
+  | 'volume'
+  | 'bass'
+  | 'middle'
+  | 'treble'
+  | 'bright'
+  | 'cab'
+  | 'speed'
+  | 'depth'
+  | 'chorusMode';
 
 export interface PedalParams {
   distortion: number; // 0..1 knob position
@@ -30,8 +39,10 @@ export interface PedalState {
   params: PedalParams;
 }
 
-// Amp params are all normalized 0..1. volume/bass/middle/treble are continuous
-// knobs (tone controls flat at 0.5); bright and cab are 0/1 toggles.
+// Amp params. volume/bass/middle/treble/speed/depth are continuous 0..1 knobs
+// (tone controls flat at 0.5); bright and cab are 0/1 toggles; chorusMode is a
+// 3-way integer switch (0=off, 1=chorus, 2=vibrato — the JC-120's stereo
+// chorus/vibrato, M6.3).
 export interface AmpParams {
   volume: number;
   bass: number;
@@ -39,6 +50,9 @@ export interface AmpParams {
   treble: number;
   bright: number; // 0/1 bright-switch toggle
   cab: number; // 0/1 cab-convolver enable (1 = cab on)
+  speed: number; // 0..1 chorus/vibrato LFO rate knob
+  depth: number; // 0..1 chorus/vibrato sweep-depth knob
+  chorusMode: number; // 0 off | 1 chorus | 2 vibrato
 }
 
 export interface AmpState {
@@ -71,7 +85,8 @@ export const KNOB_DEFAULTS: PedalParams = {
 };
 
 // Amp defaults mirror the approved design's opening state: Vol 40, Bass/Mid 50
-// (flat), Treble 60, bright off, cab on. Tone controls are flat at 0.5.
+// (flat), Treble 60, bright off, cab on. Tone controls are flat at 0.5. Chorus
+// ships OFF (mode 0) with a musical speed/depth ready for when it is engaged.
 export const AMP_KNOB_DEFAULTS: AmpParams = {
   volume: 0.4,
   bass: 0.5,
@@ -79,6 +94,9 @@ export const AMP_KNOB_DEFAULTS: AmpParams = {
   treble: 0.6,
   bright: 0,
   cab: 1,
+  speed: 0.3,
+  depth: 0.5,
+  chorusMode: 0,
 };
 
 // Default input trim: unity (0 dB).
@@ -111,6 +129,15 @@ function clamp01(n: unknown, fallback: number): number {
 // A 0/1 toggle field: coerce to exactly 0 or 1, falling back on invalid input.
 function toggle01(n: unknown, fallback: number): number {
   if (typeof n === 'number' && Number.isFinite(n)) return n >= 0.5 ? 1 : 0;
+  return fallback;
+}
+
+// The 3-way chorus mode: coerce to an integer in {0, 1, 2}, else the fallback.
+function mode012(n: unknown, fallback: number): number {
+  if (typeof n === 'number' && Number.isFinite(n)) {
+    const m = Math.round(n);
+    if (m === 0 || m === 1 || m === 2) return m;
+  }
   return fallback;
 }
 
@@ -159,6 +186,11 @@ export function normalizeRig(raw: unknown): RigState {
         treble: clamp01(ar.treble, d.amp.params.treble),
         bright: toggle01(ar.bright, d.amp.params.bright),
         cab: toggle01(ar.cab, d.amp.params.cab),
+        // Migration seam: a pre-M6.3 rig has no chorus fields — old saved rigs
+        // load with chorus OFF and the default speed/depth.
+        speed: clamp01(ar.speed, d.amp.params.speed),
+        depth: clamp01(ar.depth, d.amp.params.depth),
+        chorusMode: mode012(ar.chorusMode, d.amp.params.chorusMode),
       },
     },
     oversampling,
