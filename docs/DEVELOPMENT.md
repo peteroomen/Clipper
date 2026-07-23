@@ -1214,13 +1214,14 @@ macOS only — a `.dmg` cannot be produced on Linux/Windows.
 cd web && npm run build                 # 1. build the web app
 cd ../electron && npm install           # 2. install shell deps (downloads Electron)
 npm run make-icon                        # 3. (optional) regenerate the placeholder icon
-npm run dist:mac                          # 4. builds dmg + zip for arm64 and x64
-#    -> electron/dist-app/Clipper-<ver>-arm64.dmg (and x64)
+npm run dist:mac                          # 4. builds dmg + zip for Apple Silicon (arm64)
+#    -> electron/dist-app/Clipper-<ver>-arm64.dmg
+# Intel Macs: npm run dist:mac:intel (x64; runs under Rosetta on Apple Silicon - avoid)
 ```
 
 `predist:mac` re-runs the web build for you, so step 4 alone is enough if the web
 tree is current. Output lands in `electron/dist-app/`. `appId` is
-`com.clipper.app`; targets are `dmg` + `zip` for `arm64` and `x64`.
+`com.clipper.app`; targets are `dmg` + `zip` for `arm64` (Apple Silicon) by default; `dist:mac:intel` builds `x64`. On an Apple Silicon Mac make sure Node itself is arm64 (`node -p process.arch` should print `arm64`), otherwise `npm install` fetches the Intel Electron binary and the dev app runs under Rosetta with audio lag.
 
 **Unsigned build — first-launch note.** The app is built **unsigned** (no Apple
 Developer ID; `hardenedRuntime: false`, `identity: null`). macOS Gatekeeper will

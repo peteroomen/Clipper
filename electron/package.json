@@ -14,7 +14,8 @@
     "prebuild-web": "echo 'Reminder: build the web app first -> cd ../web && npm run build'",
     "build-web": "npm --prefix ../web run build",
     "predist:mac": "npm run build-web",
-    "dist:mac": "electron-builder --mac",
+    "dist:mac": "electron-builder --mac --arm64",
+    "dist:mac:intel": "electron-builder --mac --x64",
     "dist:dir": "electron-builder --dir"
   },
   "devDependencies": {
@@ -50,8 +51,8 @@
     "mac": {
       "category": "public.app-category.music",
       "target": [
-        { "target": "dmg", "arch": ["arm64", "x64"] },
-        { "target": "zip", "arch": ["arm64", "x64"] }
+        { "target": "dmg", "arch": ["arm64"] },
+        { "target": "zip", "arch": ["arm64"] }
       ],
       "hardenedRuntime": false,
       "identity": null,
