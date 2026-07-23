@@ -958,6 +958,7 @@ Model / env config (all read by `server/index.mjs`):
 | `MODEL` | `claude-opus-4-8` | Injected server-side; client can't override. |
 | `MAX_TOKENS` | `8192` | Injected server-side. |
 | `PORT` | `8787` | Proxy port (matches the Vite dev proxy target). |
+| `MOCK` | `0` | `MOCK=1` **and no key** → `/api/chat` streams a canned `[mock]` SSE (dev, no spend). Ignored when a key is present. |
 
 ### Security notes
 
@@ -979,14 +980,85 @@ functions) that import from `handler.mjs`, read `process.env.ANTHROPIC_API_KEY` 
 same-origin `/api/*` needs no CORS. `server/index.mjs` remains the local dev
 entry point.
 
-### Build and test (M6)
+### Post-M6 hardening: history trimming, error categories, mock mode
+
+Three patterns ported (in spirit) from the sibling project *Riff* and adapted to
+Clipper's hand-rolled, dependency-free client + proxy.
+
+**1. Conversation-history trimming (`web/src/assistant/history.ts`).** A pure
+function, `trimHistory(messages)`, applied to the outgoing copy before **every**
+`/api/chat` request (in `client.ts`; the local `messages` array is left intact,
+so the live tool-use loop still echoes full thinking + tool_results). What it
+does and why:
+
+- **Caps** the window to the most recent `MAX_MESSAGES` (default **20**) — an
+  unbounded history grows cost + latency every turn.
+- For **older (completed) turns only**, it replaces each `tool_result`'s payload
+  with a tiny marker (`TRIMMED_MARKER = "[trimmed]"`) — the model still sees a
+  tool *ran*, without re-processing stale bytes — and **drops `thinking` /
+  `redacted_thinking` blocks** (they're only needed while a turn is live).
+- The **current in-flight turn is never touched**: thinking blocks (with their
+  signatures) and full tool_results in the active loop are echoed back verbatim,
+  as the API requires. The protected region is `min(current-turn-start,
+  last-KEEP_FULL)` (default `KEEP_FULL = 5`).
+- **Correctness invariants** (unit-tested): never exceeds the cap; the window
+  always starts on a genuine **user** turn (never a leading assistant turn or an
+  orphaned `tool_result` whose `tool_use` was capped away); `tool_use`/
+  `tool_result` pairing is preserved (a surviving `tool_use` keeps its block and
+  its matching `tool_result` survives with at least the marker); pure (no input
+  mutation). Constants are exported for testing.
+
+**2. Error classification (`web/src/assistant/errors.ts`).** A failed
+`/api/chat` is classified by HTTP status (or a network failure) into a
+`ChatErrorCode` with distinct, actionable copy (`CHAT_ERROR_COPY`), wired into
+the chat notice via `client.ts`:
+
+| Category | Trigger | Copy gist |
+|---|---|---|
+| `proxy_unreachable` | `fetch` itself throws (server down) | run `npm run server` |
+| `missing_key` | proxy **500** (also 401/403) | the proxy's own body (exact `export` command) is shown |
+| `rate_limited` | upstream **429** | wait a few seconds and retry |
+| `overloaded` | upstream **5xx** (529/503/502) | Anthropic briefly down, retry |
+| `unknown` | anything else | check the server logs |
+
+`refusal` (stop_reason) is still handled in the tool-use loop, unchanged. The
+proxy already **passes upstream status codes through faithfully** (`index.mjs`
+echoes `upstream.status`); a server test asserts 429/529/503/401 are not
+swallowed.
+
+**3. Keyless dev MOCK mode (`server/handler.mjs` `buildMockSse`).** When the
+server runs **without** `ANTHROPIC_API_KEY` **and** `MOCK=1`, `/api/chat` streams
+a canned SSE response instead of the 500, so the whole chat UX (streamed text +
+the tool-use loop + applied chips + a knob actually moving) works with **no key
+and no spend**. It is deterministic and clearly labeled `[mock]` in the text:
+
+- First request → a short `[mock]` line **+ one `set_param` tool_use** (pedal
+  `dist` → 0.40), so the loop runs and a knob visibly moves.
+- Follow-up request (now carries a `tool_result`) → a text-only `[mock]`
+  wrap-up.
+- `/api/health` reports `mock: true` (only when there's no key), so the chat
+  shows a friendly `[mock]` notice instead of the "no key" error.
+
+The **default keyless behavior is unchanged**: with no key and no `MOCK`,
+`/api/chat` still returns the clear 500 with fix instructions.
 
 ```bash
-# Server unit tests (request shaping; no live API call — fetch is stubbed):
-npm run test:server            # 6 passed  (root package.json)
+# Run the chat with no Anthropic key (canned, deterministic):
+MOCK=1 npm run server          # http://localhost:8787  hasKey=false, mock on
+cd web && npm run dev          # message -> streamed [mock] text + a knob moves
+```
 
-# Web build + headless Playwright suite (14 tests = 10 existing + 4 new):
-cd web && npm run build && npm test   # 14 passed
+### Build and test (M6 + post-M6)
+
+```bash
+# Server unit tests (request shaping, status passthrough, mock SSE; fetch stubbed):
+npm run test:server            # 11 passed  (root package.json)
+
+# History-trimming unit tests (pure fn; Node 22 native TS type-stripping):
+npm run test:history           # 10 passed  (root package.json)
+
+# Web build + headless Playwright suite (15 tests = 10 audio/UI + 5 assistant):
+cd web && npm run build && npm test   # 15 passed
 ```
 
 M6 web test coverage (`web/tests/assistant.spec.ts`, proxy MOCKED via
@@ -994,10 +1066,12 @@ M6 web test coverage (`web/tests/assistant.spec.ts`, proxy MOCKED via
 chat; (b) a canned `set_param dist 0.55` tool_use visibly updates the knob
 readout + rig state and the follow-up request carries a `tool_result` block
 (asserted by inspecting the second request body); (c) proxy-down shows the error
-notice; (d) a 500 (no key) surfaces the server's error message. The existing 10
-audio/UI tests stay green. **The one thing the suite cannot cover is the live-key
-path** — a real end-to-end request to Anthropic requires a valid
-`ANTHROPIC_API_KEY` and must be verified by hand.
+notice; (d) a 500 (no key) surfaces the server's error message; (e) a 429
+surfaces the friendly rate-limit copy (and the raw upstream text does **not**
+leak). The existing 10 audio/UI tests stay green. **The one thing the suite
+cannot cover is the live-key path** — a real end-to-end request to Anthropic
+requires a valid `ANTHROPIC_API_KEY` and must be verified by hand. The keyless
+`MOCK=1` path is verified against the real local server (curl / manual).
 
 ## Notes / conventions
 

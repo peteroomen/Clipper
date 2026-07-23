@@ -55,15 +55,14 @@ export function Chat({ controller, guitar, onGuitarChange }: ChatProps) {
       if (!resp.ok) return;
       const j = await resp.json();
       if (j && j.hasKey === false) {
+        // Mock mode (MOCK=1, no key) is a supported dev state — show a friendly
+        // notice, not the "no key" error, since the coach still works (canned).
+        const text = j.mock
+          ? '[mock] Running in mock mode — no API key needed. Replies are canned for local dev.'
+          : 'The assistant server is running but has no API key. Export ANTHROPIC_API_KEY ' +
+            'and restart the server (npm run server) to enable the coach.';
         setItems((prev) => [
-          {
-            id: nextId(),
-            kind: 'notice',
-            variant: 'nokey',
-            text:
-              'The assistant server is running but has no API key. Export ANTHROPIC_API_KEY ' +
-              'and restart the server (npm run server) to enable the coach.',
-          },
+          { id: nextId(), kind: 'notice', variant: 'nokey', text },
           ...prev,
         ]);
       }

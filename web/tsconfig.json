@@ -18,5 +18,5 @@
     "types": ["vite/client"]
   },
   "include": ["src", "worklet"],
-  "exclude": ["tests", "node_modules", "src/generated"]
+  "exclude": ["tests", "node_modules", "src/generated", "src/**/*.test.ts"]
 }

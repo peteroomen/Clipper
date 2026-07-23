@@ -19,6 +19,7 @@ import { createServer } from 'node:http';
 import {
   proxyChat,
   healthPayload,
+  buildMockSse,
   DEFAULT_MODEL,
   DEFAULT_MAX_TOKENS,
 } from './handler.mjs';
@@ -26,6 +27,9 @@ import {
 const PORT = Number(process.env.PORT) || 8787;
 const MODEL = process.env.MODEL || DEFAULT_MODEL;
 const MAX_TOKENS = Number(process.env.MAX_TOKENS) || DEFAULT_MAX_TOKENS;
+// Keyless dev MOCK mode: only active when there is NO key AND MOCK=1. With a key
+// present it is ignored (real Anthropic always wins).
+const MOCK = process.env.MOCK === '1';
 
 // Same-origin (via the Vite dev proxy) needs no CORS. For direct cross-origin
 // calls from the dev app, allow the Vite dev/preview origins only. Keep simple.
@@ -77,14 +81,15 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
   if (req.method === 'GET' && url.pathname === '/api/health') {
-    sendJson(res, 200, healthPayload(process.env.ANTHROPIC_API_KEY));
+    sendJson(res, 200, healthPayload(process.env.ANTHROPIC_API_KEY, MOCK));
     return;
   }
 
   if (req.method === 'POST' && url.pathname === '/api/chat') {
     const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      // Clear, actionable 500 — no key configured. Never leak anything.
+    if (!apiKey && !MOCK) {
+      // Clear, actionable 500 — no key configured and mock disabled. This is the
+      // DEFAULT keyless behavior. Never leak anything.
       sendJson(res, 500, {
         error:
           'ANTHROPIC_API_KEY is not set on the server. Export it and restart: ' +
@@ -98,6 +103,19 @@ const server = createServer(async (req, res) => {
       clientBody = await readJsonBody(req);
     } catch {
       sendJson(res, 400, { error: 'Invalid JSON request body.' });
+      return;
+    }
+
+    // Keyless MOCK mode: stream a canned SSE response instead of calling
+    // Anthropic. Deterministic, clearly labeled "[mock]" in the text.
+    if (!apiKey) {
+      const body = Buffer.from(buildMockSse(clientBody));
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+      });
+      res.end(body);
       return;
     }
 

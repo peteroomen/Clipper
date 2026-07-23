@@ -156,3 +156,27 @@ test('assistant: a 500 (no key) surfaces the server error message', async ({ pag
 
   await expect(page.getByTestId('chat-notice')).toContainText('ANTHROPIC_API_KEY is not set');
 });
+
+test('assistant: a 429 surfaces the rate-limit copy (error classification)', async ({ page }) => {
+  await page.route('**/api/health', mockHealthOk);
+  // Upstream rate limit, passed through by the proxy as a 429. The raw upstream
+  // message is intentionally NOT shown — the client maps 429 to friendly copy.
+  await page.route('**/api/chat', (route) =>
+    route.fulfill({
+      status: 429,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'rate_limit_error: too many requests' }),
+    })
+  );
+
+  await page.goto('/');
+  await page.getByTestId('chat-input').fill('give me a lead tone');
+  await page.getByTestId('chat-send').click();
+
+  const notice = page.getByTestId('chat-notice');
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText('rate-limiting');
+  await expect(notice).toContainText('try again');
+  // The raw upstream error text must NOT leak into the UI.
+  await expect(notice).not.toContainText('rate_limit_error');
+});

@@ -8,6 +8,8 @@ import {
   buildUpstreamPayload,
   proxyChat,
   healthPayload,
+  buildMockSse,
+  MOCK_LABEL,
   DEFAULT_MODEL,
   DEFAULT_MAX_TOKENS,
   ANTHROPIC_URL,
@@ -86,9 +88,93 @@ test('proxyChat sends the x-api-key + version headers and injected model', async
 });
 
 test('healthPayload reports hasKey without leaking the key', () => {
-  assert.deepEqual(healthPayload('sk-ant-xyz'), { ok: true, hasKey: true });
-  assert.deepEqual(healthPayload(undefined), { ok: true, hasKey: false });
-  assert.deepEqual(healthPayload(''), { ok: true, hasKey: false });
+  assert.deepEqual(healthPayload('sk-ant-xyz'), { ok: true, hasKey: true, mock: false });
+  assert.deepEqual(healthPayload(undefined), { ok: true, hasKey: false, mock: false });
+  assert.deepEqual(healthPayload(''), { ok: true, hasKey: false, mock: false });
   // the key value must not appear anywhere in the payload
   assert.equal(JSON.stringify(healthPayload('sk-ant-xyz')).includes('xyz'), false);
+});
+
+test('healthPayload advertises mock ONLY when there is no key', () => {
+  // mock=true is only reported when a key is absent (real key always wins).
+  assert.deepEqual(healthPayload(undefined, true), { ok: true, hasKey: false, mock: true });
+  assert.deepEqual(healthPayload('', true), { ok: true, hasKey: false, mock: true });
+  assert.deepEqual(healthPayload('sk-ant-xyz', true), { ok: true, hasKey: true, mock: false });
+  assert.deepEqual(healthPayload(undefined, false), { ok: true, hasKey: false, mock: false });
+});
+
+test('proxyChat passes upstream error status codes through faithfully', async () => {
+  // The handler returns the upstream Response as-is; index.mjs echoes its status.
+  // Verify a 429 / 529 upstream is surfaced verbatim (not swallowed to 200/500).
+  for (const status of [429, 529, 503, 401]) {
+    const fetchStub = async () => ({ ok: false, status, text: async () => '{"error":{"message":"x"}}' });
+    const resp = await proxyChat({
+      clientBody: { messages: [] },
+      apiKey: 'sk-ant-x',
+      model: DEFAULT_MODEL,
+      maxTokens: DEFAULT_MAX_TOKENS,
+      fetchImpl: fetchStub,
+    });
+    assert.equal(resp.ok, false);
+    assert.equal(resp.status, status);
+  }
+});
+
+// ── MOCK mode ────────────────────────────────────────────────────────────────
+// Parse an SSE body into an ordered list of event objects (mirrors the client).
+function parseSse(body) {
+  const events = [];
+  for (const raw of body.split('\n\n')) {
+    for (const line of raw.split('\n')) {
+      if (line.startsWith('data:')) {
+        const payload = line.slice(5).trim();
+        if (payload && payload !== '[DONE]') events.push(JSON.parse(payload));
+      }
+    }
+  }
+  return events;
+}
+
+test('buildMockSse first leg: labeled text + one set_param tool_use, stop_reason tool_use', () => {
+  const body = buildMockSse({ messages: [{ role: 'user', content: [{ type: 'text', text: 'tighter' }] }] });
+  const events = parseSse(body);
+
+  const textDelta = events.find((e) => e.type === 'content_block_delta' && e.delta?.type === 'text_delta');
+  assert.ok(textDelta.delta.text.includes(MOCK_LABEL), 'text is labeled [mock]');
+
+  const toolStart = events.find(
+    (e) => e.type === 'content_block_start' && e.content_block?.type === 'tool_use'
+  );
+  assert.ok(toolStart, 'a tool_use block is emitted');
+  assert.equal(toolStart.content_block.name, 'set_param');
+
+  const jsonDelta = events.find((e) => e.type === 'content_block_delta' && e.delta?.type === 'input_json_delta');
+  const input = JSON.parse(jsonDelta.delta.partial_json);
+  assert.deepEqual(input, { unit: 'pedal', param: 'dist', value: 0.4 });
+
+  const msgDelta = events.find((e) => e.type === 'message_delta');
+  assert.equal(msgDelta.delta.stop_reason, 'tool_use');
+});
+
+test('buildMockSse second leg: text-only wrap-up when a tool_result is present', () => {
+  const body = buildMockSse({
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'tighter' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_mock_1', name: 'set_param', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_mock_1', content: '{}' }] },
+    ],
+  });
+  const events = parseSse(body);
+
+  // No tool_use this leg — pure end_turn text.
+  assert.ok(!events.some((e) => e.type === 'content_block_start' && e.content_block?.type === 'tool_use'));
+  const textDelta = events.find((e) => e.type === 'content_block_delta' && e.delta?.type === 'text_delta');
+  assert.ok(textDelta.delta.text.includes(MOCK_LABEL));
+  const msgDelta = events.find((e) => e.type === 'message_delta');
+  assert.equal(msgDelta.delta.stop_reason, 'end_turn');
+});
+
+test('buildMockSse is deterministic for the same request', () => {
+  const req = { messages: [{ role: 'user', content: [{ type: 'text', text: 'x' }] }] };
+  assert.equal(buildMockSse(req), buildMockSse(req));
 });

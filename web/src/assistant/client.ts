@@ -5,6 +5,8 @@
 // this file owns the conversation.
 
 import { executeTool, type RigController } from './tools';
+import { trimHistory } from './history';
+import { classifyStatus, CHAT_ERROR_COPY, type ChatErrorCode } from './errors';
 
 const MAX_ITERATIONS = 6;
 
@@ -22,8 +24,14 @@ export interface RunCallbacks {
 }
 
 // A user-facing error (proxy down, no key, upstream error). The chat surfaces
-// `.message` with fix instructions.
-export class AssistantError extends Error {}
+// `.message` with fix instructions; `.code` is the classified category.
+export class AssistantError extends Error {
+  code: ChatErrorCode;
+  constructor(code: ChatErrorCode, message?: string) {
+    super(message ?? CHAT_ERROR_COPY[code]);
+    this.code = code;
+  }
+}
 
 interface StreamedTurn {
   content: unknown[];
@@ -165,31 +173,38 @@ async function requestTurn(
   messages: ApiMessage[],
   onTextDelta: (delta: string) => void
 ): Promise<StreamedTurn> {
+  // Trim / cap the history for THIS request (see history.ts). The local
+  // `messages` array is left intact — the live tool-use loop still echoes full
+  // thinking blocks + tool_results; only the outgoing copy is trimmed.
+  const outgoing = trimHistory(messages as { role: 'user' | 'assistant'; content: unknown[] }[]);
+
   let resp: Response;
   try {
     resp = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ system, tools, messages }),
+      body: JSON.stringify({ system, tools, messages: outgoing }),
     });
   } catch {
-    throw new AssistantError(
-      "Couldn't reach the assistant server. Start it with `npm run server` " +
-        '(and make sure ANTHROPIC_API_KEY is exported).'
-    );
+    throw new AssistantError('proxy_unreachable');
   }
 
   if (!resp.ok) {
-    let detail = `The assistant server returned ${resp.status}.`;
-    try {
-      const j = await resp.json();
-      if (j?.error) detail = j.error;
-    } catch {
-      /* non-JSON error body */
+    const code = classifyStatus(resp.status);
+    let message = CHAT_ERROR_COPY[code];
+    // For a server-config error (missing / rejected key) the proxy's own body
+    // carries the exact fix command — prefer it over the generic copy.
+    if (code === 'missing_key') {
+      try {
+        const j = await resp.json();
+        if (j?.error) message = j.error;
+      } catch {
+        /* non-JSON error body — keep the classified copy */
+      }
     }
-    throw new AssistantError(detail);
+    throw new AssistantError(code, message);
   }
-  if (!resp.body) throw new AssistantError('The assistant response had no body.');
+  if (!resp.body) throw new AssistantError('unknown', 'The assistant response had no body.');
 
   return streamTurn(resp.body, onTextDelta);
 }
