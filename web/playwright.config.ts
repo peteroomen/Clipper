@@ -59,7 +59,11 @@ export default defineConfig({
     // Build already ran via `npm test`? No — run it here so `npm test` alone works.
     command: 'npm run build && npm run preview -- --port 4173 --strictPort',
     url: 'http://localhost:4173',
-    reuseExistingServer: !process.env.CI,
+    // NEVER reuse: with parallel git worktrees (agents) all binding 4173, reuse
+    // silently adopts a FOREIGN server and tests someone else's build (observed:
+    // main-tree run tested a worktree's dist -> phantom serializer failures).
+    // strictPort + no-reuse means a collision fails loudly instead.
+    reuseExistingServer: false,
     timeout: 120_000,
   },
 });
