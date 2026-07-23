@@ -13,9 +13,12 @@ import {
   WORKLET_URL,
   trimKnobToGain,
 } from './params';
+import { PitchDetector } from 'pitchy';
 import type { SourceKind, AmpParams, PedalInstance } from './rig';
+import { TUNER_FRAME_SIZE, analyzePitch, type TunerReading } from './tuner';
 
 export type { SourceKind };
+export type { TunerReading };
 
 export type Unit = 'pedal' | 'amp';
 
@@ -56,6 +59,10 @@ export interface StartOptions {
   // Called ~43x/s with the worklet's post-trim input block peak (linear 0..1+),
   // for the input meter.
   onPeak?: (peak: number) => void;
+  // Called with each new tuner reading (or null when the current frame is too
+  // quiet / unclear to read) while an engaged tuner is tapping the input. Fires
+  // only when a tuner is engaged; silent otherwise.
+  onTuner?: (reading: TunerReading | null) => void;
 }
 
 export interface Engine {
@@ -84,6 +91,15 @@ export async function listInputDevices(): Promise<MediaDeviceInfo[]> {
   if (!navigator.mediaDevices?.enumerateDevices) return [];
   const devices = await navigator.mediaDevices.enumerateDevices();
   return devices.filter((d) => d.kind === 'audioinput');
+}
+
+// One-shot pitch detection over a time-domain frame (the same McLeod path the
+// live tuner uses), returning a chromatic reading or null. Exposed for the test
+// harness to feed known-frequency frames; the live engine uses a reused detector.
+export function detectPitch(samples: Float32Array, sampleRate: number): TunerReading | null {
+  const det = PitchDetector.forFloat32Array(samples.length);
+  const [pitch, clarity] = det.findPitch(samples, sampleRate);
+  return analyzePitch(pitch, clarity);
 }
 
 export async function startEngine(opts: StartOptions): Promise<Engine> {
@@ -148,14 +164,27 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
     stop: async () => {}, // replaced below once the source is wired
   };
 
-  // After ready, keep listening for post-oversampling latency updates and the
-  // periodic input peak-meter reports.
+  // Tuner pitch detector (McLeod method), created lazily and reused. Sized to the
+  // worklet's tap frame so no reallocation happens per frame.
+  let pitchDetector: PitchDetector<Float32Array> | null = null;
+
+  // After ready, keep listening for post-oversampling latency updates, the
+  // periodic input peak-meter reports, and (M7) tuner frames to run detection on.
   node.port.onmessage = (e) => {
-    if (e.data?.type === 'latency') {
-      engine.latencySamples = e.data.latencySamples ?? engine.latencySamples;
+    const d = e.data;
+    if (d?.type === 'latency') {
+      engine.latencySamples = d.latencySamples ?? engine.latencySamples;
       opts.onLatencySamples?.(engine.latencySamples);
-    } else if (e.data?.type === 'peak') {
-      opts.onPeak?.(e.data.peak ?? 0);
+    } else if (d?.type === 'peak') {
+      opts.onPeak?.(d.peak ?? 0);
+    } else if (d?.type === 'tunerFrame' && opts.onTuner) {
+      const samples = d.samples as Float32Array;
+      const sr = (d.sampleRate as number) || context.sampleRate;
+      if (samples && samples.length === TUNER_FRAME_SIZE) {
+        if (!pitchDetector) pitchDetector = PitchDetector.forFloat32Array(TUNER_FRAME_SIZE);
+        const [pitch, clarity] = pitchDetector.findPitch(samples, sr);
+        opts.onTuner(analyzePitch(pitch, clarity));
+      }
     }
   };
 

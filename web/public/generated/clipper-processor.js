@@ -35,6 +35,16 @@ const RENDER_QUANTUM = 128;
 // PEAK_REPORT_BLOCKS render quanta (~23 ms at 128/44.1k), carrying the window max.
 const PEAK_REPORT_BLOCKS = 8;
 
+// Tuner tap (M7). When an ENGAGED tuner is in the chain, tap the post-trim,
+// pre-chain signal (the raw guitar) into a ring buffer and post the most recent
+// TUNER_FRAME_SIZE samples to the main thread every TUNER_HOP_BLOCKS quanta, where
+// `pitchy` (McLeod pitch method) runs the detection. Zero cost when no tuner is
+// engaged (the ring is never written and nothing is posted). MIRRORS the shared
+// constants in web/src/tuner.ts (TUNER_FRAME_SIZE / TUNER_HOP_BLOCKS) — keep in
+// sync. 4096 (~85 ms @48k) is chosen so a 7-string low B (~31 Hz) locks reliably.
+const TUNER_FRAME_SIZE = 4096;
+const TUNER_HOP_BLOCKS = 4;
+
 // Output limiter (M6.6) — a TRUE SAFETY catch, not a tone stage, and now a
 // LOOKAHEAD GAIN-RIDER, not a waveshaper: the tanh knee it replaces bent every
 // sample above threshold into harmonics, which is exactly the clean-path "fizz"
@@ -166,6 +176,19 @@ class ClipperProcessor extends AudioWorkletProcessor {
     this._declickStep = 0; // per-sample gain delta (set in prepare)
     this._pending = null; // { nodes, removed } waiting for the fade-out zero
 
+    // Tuner mute (M7). An engaged tuner mutes the whole chain output (true tuner-
+    // pedal behavior: stomp = mute). `_muteActive` is derived from the chain (any
+    // engaged tuner); `_muteGain` ramps toward it click-free reusing the declick
+    // step, so mute/unmute is a smooth raised-cosine fade with no pop.
+    this._muteActive = false;
+    this._muteGain = 1.0; // linear ramp position 0..1 (1 = pass, 0 = muted)
+
+    // Tuner tap ring (M7). Written only while _muteActive; posted every hop.
+    this._tapRing = new Float32Array(TUNER_FRAME_SIZE);
+    this._tapWrite = 0;
+    this._tapOut = new Float32Array(TUNER_FRAME_SIZE); // reused post scratch
+    this._tapBlockCount = 0;
+
     // Queue messages that arrive before WASM is ready.
     this._pending_msgs = [];
     this.port.onmessage = (e) => this._onMessage(e.data);
@@ -207,8 +230,12 @@ class ClipperProcessor extends AudioWorkletProcessor {
 
   // Create a pedal DSP instance for the chain. `params` (optional) is
   // {distortion, filter, level} in 0..1; the global oversampling factor is
-  // applied. Returns a chain node.
-  _createPedal(id, _type, params, engaged) {
+  // applied. Returns a chain node. A tuner (M7) has NO audio DSP — it's a
+  // handle-less mute/tap node — so no WASM instance is created for it.
+  _createPedal(id, type, params, engaged) {
+    if (type === 'tuner') {
+      return { id, type: 'tuner', handle: 0, engaged: !!engaged };
+    }
     const mod = this._module;
     const handle = mod._rat_create(this._sr);
     mod._rat_set_oversampling(handle, this._oversampling | 0);
@@ -217,11 +244,18 @@ class ClipperProcessor extends AudioWorkletProcessor {
       mod._rat_set_param(handle, 1, +params.filter);
       mod._rat_set_param(handle, 2, +params.level);
     }
-    return { id, handle, engaged: !!engaged };
+    return { id, type: 'rat', handle, engaged: !!engaged };
   }
 
   _destroyPedal(node) {
     if (node && node.handle) this._module._rat_destroy(node.handle);
+  }
+
+  // Recompute the tuner mute state from the current chain: muted iff any tuner
+  // node is engaged. Called after every chain commit and bypass toggle; the
+  // per-sample ramp (in process) does the click-free fade toward it.
+  _refreshMute() {
+    this._muteActive = this._chain.some((n) => n.type === 'tuner' && n.engaged);
   }
 
   // Total model latency in base-rate samples: every ENGAGED pedal's oversampling
@@ -232,7 +266,7 @@ class ClipperProcessor extends AudioWorkletProcessor {
     const mod = this._module;
     let n = 0;
     for (const node of this._chain) {
-      if (node.engaged) n += mod._rat_latency_samples(node.handle);
+      if (node.engaged && node.handle) n += mod._rat_latency_samples(node.handle);
     }
     if (!this._bypassAmp) n += mod._amp_latency_samples(this._amp);
     return n;
@@ -265,6 +299,7 @@ class ClipperProcessor extends AudioWorkletProcessor {
       } else {
         const node = this._pedalById(data.pedalId);
         if (node) node.engaged = !data.on; // bypass on => not engaged
+        this._refreshMute(); // a tuner toggle changes the mute state
         if (this._ready) this._postLatency();
       }
       return;
@@ -318,6 +353,7 @@ class ClipperProcessor extends AudioWorkletProcessor {
     for (const node of this._pending.removed) this._destroyPedal(node);
     this._chain = this._pending.nodes;
     this._pending = null;
+    this._refreshMute(); // the new topology may add/remove an engaged tuner
     this._postLatency();
   }
 
@@ -373,21 +409,52 @@ class ClipperProcessor extends AudioWorkletProcessor {
     const inBase = this._inPtr >> 2;
     const g = this._inputGain;
     let blockPeak = 0;
+    const tapping = this._muteActive; // an engaged tuner wants the raw guitar
+    let tw = this._tapWrite;
+    const ring = this._tapRing;
     if (inCh) {
       for (let i = 0; i < n; i++) {
         const s = inCh[i] * g;
         heap[inBase + i] = s;
         const a = s < 0 ? -s : s;
         if (a > blockPeak) blockPeak = a;
+        if (tapping) {
+          ring[tw] = s;
+          tw = tw + 1 === TUNER_FRAME_SIZE ? 0 : tw + 1;
+        }
       }
     } else {
-      for (let i = 0; i < n; i++) heap[inBase + i] = 0;
+      for (let i = 0; i < n; i++) {
+        heap[inBase + i] = 0;
+        if (tapping) {
+          ring[tw] = 0;
+          tw = tw + 1 === TUNER_FRAME_SIZE ? 0 : tw + 1;
+        }
+      }
     }
+    this._tapWrite = tw;
     if (blockPeak > this._peakAccum) this._peakAccum = blockPeak;
     if (++this._blockCount >= PEAK_REPORT_BLOCKS) {
       this.port.postMessage({ type: 'peak', peak: this._peakAccum });
       this._peakAccum = 0;
       this._blockCount = 0;
+    }
+
+    // Tuner frame post: every TUNER_HOP_BLOCKS quanta while tapping, linearize the
+    // ring (oldest -> newest) into a reused scratch and post a COPY (no transfer,
+    // so the scratch is reused next hop — no per-block allocation on the audio
+    // thread). The main thread runs the McLeod pitch detection on it.
+    if (tapping) {
+      if (++this._tapBlockCount >= TUNER_HOP_BLOCKS) {
+        this._tapBlockCount = 0;
+        const out = this._tapOut;
+        const head = tw; // oldest sample is at the write cursor
+        out.set(ring.subarray(head), 0);
+        out.set(ring.subarray(0, head), TUNER_FRAME_SIZE - head);
+        this.port.postMessage({ type: 'tunerFrame', samples: out, sampleRate: this._sr });
+      }
+    } else {
+      this._tapBlockCount = 0;
     }
 
     // 2. Pedal chain: ping-pong the mono signal through each ENGAGED pedal in
@@ -397,7 +464,9 @@ class ClipperProcessor extends AudioWorkletProcessor {
     let other = this._pbufB;
     heap.copyWithin(cur >> 2, inBase, inBase + n); // trimmed input -> cur
     for (const node of this._chain) {
-      if (!node.engaged) continue;
+      // Skip bypassed pedals AND tuners (a tuner is a handle-less pass-through:
+      // its only effect is the output mute, applied at the end of the block).
+      if (!node.engaged || !node.handle) continue;
       mod._rat_process(node.handle, cur, other, n);
       const t = cur;
       cur = other;
@@ -425,6 +494,8 @@ class ClipperProcessor extends AudioWorkletProcessor {
     const rCh = output[1];
     let dg = this._declickGain;
     const step = this._declickStep;
+    let mg = this._muteGain;
+    const mTarget = this._muteActive ? 0 : 1; // engaged tuner -> mute
     for (let i = 0; i < n; i++) {
       // Advance the declick envelope (raised-cosine shaped for C1 smoothness).
       if (this._declickPhase === 'out') {
@@ -441,14 +512,21 @@ class ClipperProcessor extends AudioWorkletProcessor {
           this._declickPhase = 'idle';
         }
       }
-      // Raised-cosine map of the linear ramp dg in [0,1] -> smooth gain.
+      // Advance the tuner-mute ramp toward its target (same 6 ms step), so a
+      // stomp mutes/unmutes click-free.
+      if (mg < mTarget) mg = Math.min(mTarget, mg + step);
+      else if (mg > mTarget) mg = Math.max(mTarget, mg - step);
+      // Raised-cosine map of the linear ramps in [0,1] -> smooth gains.
       const env = this._declickPhase === 'idle' && dg >= 1 ? 1 : 0.5 - 0.5 * Math.cos(Math.PI * dg);
+      const menv = mg >= 1 ? 1 : mg <= 0 ? 0 : 0.5 - 0.5 * Math.cos(Math.PI * mg);
+      const gOut = env * menv;
       const lim = this._limiter();
-      lim.processSample(heap[outLBase + i] * env, heap[outRBase + i] * env);
+      lim.processSample(heap[outLBase + i] * gOut, heap[outRBase + i] * gOut);
       outCh[i] = lim.outL;
       if (rCh) rCh[i] = lim.outR;
     }
     this._declickGain = dg;
+    this._muteGain = mg;
     // Any channels beyond stereo mirror the left (keeps the output valid).
     for (let c = 2; c < output.length; c++) output[c].set(outCh);
 

@@ -19,7 +19,9 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Pedal } from './Pedal';
+import { Tuner } from './Tuner';
 import { Amp } from './Amp';
+import type { TunerReading } from '../tuner';
 import {
   AVAILABLE_PEDAL_TYPES,
   AVAILABLE_AMP_TYPES,
@@ -33,6 +35,8 @@ import {
 export interface BoardProps {
   pedals: PedalInstance[];
   amp: AmpState;
+  // Latest tuner reading (M7), rendered by any tuner instance on the board.
+  tunerReading: TunerReading | null;
   onPedalParam: (id: string, name: ParamName, value: number) => void;
   onPedalToggle: (id: string) => void;
   onAddPedal: (type?: PedalType, position?: number) => void;
@@ -48,6 +52,7 @@ export interface BoardProps {
 // A friendly display name per pedal type (for the gear tray + swap menu).
 const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   rat: 'RAT-type distortion',
+  tuner: 'Chromatic tuner',
 };
 const AMP_TYPE_LABEL: Record<string, string> = {
   clean120: 'Clean 120 (JC-120 style)',
@@ -64,6 +69,7 @@ interface Segment {
 export function Board({
   pedals,
   amp,
+  tunerReading,
   onPedalParam,
   onPedalToggle,
   onAddPedal,
@@ -294,7 +300,7 @@ export function Board({
                         {t === p.type ? ' ✓' : ''}
                       </button>
                     ))}
-                    <div className="unit-menu-note">More pedals coming (SD-1, tuner…)</div>
+                    <div className="unit-menu-note">More pedals coming (SD-1…)</div>
                   </div>
                 )}
               </div>
@@ -309,11 +315,19 @@ export function Board({
               </button>
             </div>
 
-            <Pedal
-              pedal={p}
-              onParam={(name, value) => onPedalParam(p.id, name, value)}
-              onToggleEngaged={() => onPedalToggle(p.id)}
-            />
+            {p.type === 'tuner' ? (
+              <Tuner
+                reading={tunerReading}
+                engaged={p.engaged}
+                onToggleEngaged={() => onPedalToggle(p.id)}
+              />
+            ) : (
+              <Pedal
+                pedal={p}
+                onParam={(name, value) => onPedalParam(p.id, name, value)}
+                onToggleEngaged={() => onPedalToggle(p.id)}
+              />
+            )}
           </div>
         ))}
 
@@ -350,7 +364,7 @@ export function Board({
                   {PEDAL_TYPE_LABEL[t]}
                 </button>
               ))}
-              <div className="unit-menu-note">More coming: SD-1 overdrive, tuner…</div>
+              <div className="unit-menu-note">More coming: SD-1 overdrive…</div>
             </div>
           )}
           {pedals.length === 0 && (

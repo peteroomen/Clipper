@@ -9,6 +9,7 @@
 //   set_switch  {name: bright|cab, on: bool}
 
 import type { RigState } from '../rig';
+import type { TunerReading } from '../tuner';
 
 export type Unit = 'pedal' | 'amp' | 'input';
 export type SwitchName = 'bright' | 'cab' | 'chorus' | 'vibrato';
@@ -22,6 +23,9 @@ export interface RigController {
   // Current post-trim input peak in dBFS (null when not running), for the coach
   // to help calibrate the input trim.
   getPeakDbFs?: () => number | null;
+  // Latest tuner reading (M7), null when no tuner is engaged / no clear pitch, so
+  // the coach can say "you're a few cents flat on the G".
+  getTunerReading?: () => TunerReading | null;
   // Apply a normalized param; returns the clamped value actually applied.
   // pedalIndex targets a specific pedal instance (default 0) when unit==='pedal'.
   setParam: (unit: Unit, param: string, value: number, pedalIndex?: number) => number;
@@ -131,12 +135,14 @@ export const TOOLS = [
     description:
       'Add a pedal to the chain. Signal runs guitar -> pedals in order -> amp, so ' +
       'ORDER matters: a distortion earlier vs later in the chain hits the amp ' +
-      'differently. Only the RAT-type distortion exists today. Omit `position` to ' +
+      "differently. Types: 'rat' (RAT-type distortion) and 'tuner' (a chromatic " +
+      'tuner — no tone, but when stomped ON it MUTES the rig so the player can tune ' +
+      'in silence; put it first in the chain by convention). Omit `position` to ' +
       'append at the end (just before the amp), or give a 0-based slot to insert.',
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat'] },
+        type: { type: 'string', enum: ['rat', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -289,14 +295,15 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type = 'rat'; // only RAT today
+    const type = input.type === 'tuner' ? 'tuner' : 'rat';
     const rawPos = input.position;
     const position =
       typeof rawPos === 'number' && Number.isFinite(rawPos) ? Math.max(0, rawPos | 0) : undefined;
     const index = controller.addPedal(type, position);
+    const label = type === 'tuner' ? 'Tuner' : 'RAT';
     return {
       content: JSON.stringify({ applied: { added: type, index } }),
-      chip: `+ RAT #${index + 1}`,
+      chip: `+ ${label} #${index + 1}`,
     };
   }
 

@@ -1726,6 +1726,108 @@ above.
   dialog, and producing the signed/unsigned `.dmg` — all require running the real
   Electron binary on macOS.
 
+## 12. M7 — Tuner (chromatic needle tuner)
+
+A chromatic needle tuner as a chain pedal (`type: 'tuner'`), Polytune-mini in role
+but **chromatic only** (polyphonic multi-pitch is explicitly out of scope). It is
+**not a modeling problem** — pitch detection + mute — so there is **no core/DSP/
+C-ABI change**: detection runs in the WEB layer and the only worklet touch is a
+per-chain mute flag + a tap point. All the work is in `web/` plus one new
+dependency.
+
+### Detection — where, how, and the frame-size decision
+
+Detection uses the **McLeod pitch method (MPM)** via the **`pitchy`** npm package
+(MIT, tiny — the ONLY new dependency) on the **MAIN THREAD**, fed by frames the
+worklet taps off the **post-input-trim, pre-chain** signal (the raw guitar, before
+any pedal) — the same message-port tap pattern the M6.1 peak meter uses. The
+worklet keeps a ring buffer of the raw input and, **only while an engaged tuner is
+in the chain** (zero cost otherwise), posts the most recent `TUNER_FRAME_SIZE`
+samples every `TUNER_HOP_BLOCKS` render quanta as a `tunerFrame` message; `audio.ts`
+runs a reused `PitchDetector` over each frame and converts the result to a note +
+cents (`analyzePitch` in `web/src/tuner.ts`). Nothing streams into the assistant —
+it reads a throttled point-in-time snapshot.
+
+**Frame size = 4096 samples (~85 ms @ 48 k), hop = every 4th block.** MPM needs the
+analysis window to hold a couple of periods of the note for the NSDF
+autocorrelation peak at that lag to have enough overlap to lock. Measured on
+synthetic plucked tones (fundamental + decaying harmonics, 30 trials each):
+
+| frame | low B (B0, 30.87 Hz) | low E (82.41 Hz) | A4 (440 Hz) |
+|---|---|---|---|
+| **2048** (~43 ms) | **30/30 FAIL** (only ~1.3 periods) | 0.00 c, clarity 1.0 | −0.02 c |
+| **4096** (~85 ms) | −0.04 c, clarity 1.0, 0 fails | −0.02 c | −0.01 c |
+
+So 2048 (the size the peak meter would suggest) cannot see a 7-string low B at all,
+while 4096 (~2.6 periods of B0) locks it to **<0.1 cents**. The larger frame costs
+nothing the rest of the time because the tap only runs while the tuner is engaged.
+**Lowest reliable note: B0 (~31 Hz).** The gates in `tuner.ts` reject <27.5 Hz,
+>1400 Hz, or clarity <0.7. Reference pitch is fixed at **A=440** (12-TET:
+`MIDI = 69 + 12·log2(f/440)`; nearest integer = note, fractional remainder = cents).
+A hop of 4 blocks ≈ 93 readings/s, well above the 60 fps the needle interpolates at.
+`TUNER_FRAME_SIZE` / `TUNER_HOP_BLOCKS` are mirrored in the worklet with a sync
+comment (the worklet is un-bundled and can't import the module).
+
+### DSP behavior — engaged tuner MUTES the chain (`web/worklet/clipper-processor.js`)
+
+True tuner-pedal behavior: **engaged = muted** (stomp the tuner on, the rig goes
+silent, you tune; stomp off, audio returns). The tuner is a **handle-less chain
+node** — `_createPedal('…','tuner',…)` makes no WASM instance, the DSP loop skips
+it (pass-through), and it contributes 0 latency. `_refreshMute()` derives
+`_muteActive = any engaged tuner`, recomputed on every chain commit and bypass
+toggle. A per-sample `_muteGain` ramps toward the target (0 when muted) reusing the
+**same 6 ms raised-cosine step as the M6.4 declick fade**, so mute/unmute is
+click-free — the mute envelope multiplies the output alongside the declick
+envelope. The tap ring is written in the same input loop that computes the peak
+(only when `_muteActive`), and posted (no per-block allocation — a reused scratch
+buffer, structured-cloned by the postMessage) every hop.
+
+### UI — the tuner pedal (`web/src/components/Tuner.tsx`, `styles/tuner.css`)
+
+Pedal-format enclosure on the shared `.pedal raised` shell: model line
+`TUNE Nº0 · CHROMATIC`, a **lock LED** (green when |cents| ≤ 3 held ≥ 350 ms, red
+when off-pitch, dim when no signal), a **big note name + octave** (Anton display
+face), an **SVG arc needle** that sweeps with the cents deviation, a **±cents
+readout** (flat = amber, sharp = blue), and a footswitch labelled **Tune / Muted**.
+The needle sweep and LED run off a single `requestAnimationFrame` loop that eases
+toward the latest reading (~60 fps smoothing independent of the ~93/s detection
+rate); App throttles the reading state to ~30/s for text while keeping a full-rate
+ref for the assistant. Detection only runs while engaged, so a disengaged tuner
+rests the needle at center and shows `—`.
+
+### Integration & serialization
+
+`'tuner'` joins the pedal-type registry **additively** (kept minimal so the
+parallel SD-1 work merges cleanly): the `rig.ts` `PedalType` union, the gear-tray
+`AVAILABLE_PEDAL_TYPES`, `PEDAL_TYPE_LABEL`, the worklet chain dispatch, and
+`Board` rendering (a tuner instance renders `<Tuner>` instead of `<Pedal>`). A
+fresh tuner (`makePedal('tuner')`) starts **DISENGAGED** so dropping it on the
+board doesn't silence the rig, and carries the uniform `params` object (ignored —
+its only state is `engaged`), so it **round-trips through rig JSON** like any pedal
+and old rigs keep loading (`normalizePedal` coerces unknown types to the RAT).
+Assistant: `add_pedal` gains `type:'tuner'`; the coach can toggle it via
+`set_engaged`; the per-turn rig context adds a **`## Tuner`** section (nearest note
++ cents + flat/sharp) whenever a tuner is engaged, and the system prompt learns to
+suggest checking tuning ("that sourness is tuning, not tone").
+
+### Build and test (M7)
+
+```bash
+# No core change, but the worklet changed -> re-copy the committed artifact:
+bash scripts/build-wasm.sh            # WASM binary unchanged; re-copies the worklet
+cd web && npm install                 # pulls in pitchy@4.1.0 (the one new dep)
+npm run build && npm test             # 28 Playwright (25 + 3 new)
+```
+
+New Playwright coverage (`tests/tuner.spec.ts`): known frequencies (low E 82.41 Hz,
+A4 440 Hz, a +20-cent-sharp 445 Hz, and low B B0 ≈ 30.87 Hz) detect to the right
+note + cents within ±2 through the real McLeod path; an **offline render** proves an
+engaged tuner silences the chain (RMS ≈ 0) while a disengaged one passes audio; and
+the gear tray adds a tuner that renders the enclosure, starts disengaged, and
+engages on a footswitch stomp. Both themes were screenshotted with the tuner locked
+on the 220 Hz test tone (A3). (Two pre-existing offline-render WebAudio flakes may
+retry, per `playwright.config.ts`.)
+
 ## Notes / conventions
 
 - `core/` must never include platform/OS/browser/Emscripten headers. The only

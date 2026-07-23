@@ -14,12 +14,14 @@
 import { OVERSAMPLING_FACTORS, INPUT_TRIM_UNITY_KNOB } from './params';
 
 export type SourceKind = 'test' | 'live';
-export type PedalType = 'rat';
+// M7 appends 'tuner' (a chromatic needle tuner: no audio DSP, engaged = mutes the
+// chain). Kept additive so the parallel SD-1 work merges cleanly.
+export type PedalType = 'rat' | 'tuner';
 export type AmpType = 'clean120';
 
-// The pedal types that can be added from the gear tray (M6.4). Currently just the
-// RAT; M8's SD-1 and M7's tuner will append here (each with its own params).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat'];
+// The pedal types that can be added from the gear tray (M6.4). M7 adds the tuner;
+// M8's SD-1 will append here too (each with its own params).
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4). Currently just the
 // Clean 120; M9's JCM800 appends here.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = ['clean120'];
@@ -131,12 +133,14 @@ export const INPUT_DEFAULTS: InputState = {
 };
 
 // A fresh pedal instance of the given type, with that type's default knobs and a
-// new unique id. The gear tray's "add pedal" and swap flows use this.
+// new unique id. The gear tray's "add pedal" and swap flows use this. A tuner has
+// no params (they're carried but ignored) and starts DISENGAGED, so dropping one
+// on the board doesn't silence the rig — you stomp it on to tune.
 export function makePedal(type: PedalType = 'rat'): PedalInstance {
   return {
     id: newPedalId(type),
     type,
-    engaged: true,
+    engaged: type !== 'tuner',
     params: { ...KNOB_DEFAULTS },
   };
 }
@@ -192,9 +196,11 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
   const pr = (p.params ?? {}) as Record<string, unknown>;
   const dp = DEFAULT_RIG.pedals[0];
   const id = typeof p.id === 'string' && p.id.length > 0 ? p.id : fallbackId;
+  // Known types round-trip; anything else coerces to the RAT.
+  const type: PedalType = p.type === 'tuner' ? 'tuner' : 'rat';
   return {
     id,
-    type: 'rat', // only RAT today; unknown types coerce to it
+    type,
     engaged: typeof p.engaged === 'boolean' ? p.engaged : dp.engaged,
     params: {
       distortion: clamp01(pr.distortion, dp.params.distortion),

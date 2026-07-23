@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { startEngine, listInputDevices, type Engine } from './audio';
+import { startEngine, listInputDevices, detectPitch, type Engine } from './audio';
+import { TUNER_FRAME_SIZE, type TunerReading } from './tuner';
 import { PARAM_ID, AMP_PARAM_ID, OVERSAMPLING_FACTORS } from './params';
 import {
   loadRig,
@@ -24,6 +25,7 @@ import './styles/base.css';
 import './styles/pedal.css';
 import './styles/amp.css';
 import './styles/board.css';
+import './styles/tuner.css';
 import './styles/app.css';
 import './styles/chat.css';
 
@@ -60,6 +62,21 @@ export default function App() {
   const inputPeakRef = useRef<number | null>(null);
   inputPeakRef.current = inputPeak;
 
+  // Latest tuner reading (M7). The ref holds the full-rate value (for the needle
+  // + the assistant snapshot); the state is throttled so the app doesn't re-render
+  // ~90x/s — the needle smooths from the ref via its own rAF loop.
+  const [tunerReading, setTunerReading] = useState<TunerReading | null>(null);
+  const tunerReadingRef = useRef<TunerReading | null>(null);
+  const tunerThrottleRef = useRef(0);
+  function handleTuner(r: TunerReading | null) {
+    tunerReadingRef.current = r;
+    const now = performance.now();
+    if (now - tunerThrottleRef.current >= 33) {
+      tunerThrottleRef.current = now;
+      setTunerReading(r);
+    }
+  }
+
   // The guitar profile (M6): injected into the assistant's context. Separate
   // localStorage key from the rig; editable anytime from the chat panel.
   const [guitar, setGuitar] = useState<GuitarProfile>(() => loadGuitar());
@@ -87,6 +104,9 @@ export default function App() {
       getRig: () => rigRef.current,
       serializeRig,
       deserializeRig,
+      // M7 tuner detection seam: run the McLeod pitch path over a known frame.
+      tuner: { frameSize: TUNER_FRAME_SIZE, detect: detectPitch },
+      getTunerReading: () => tunerReadingRef.current,
     };
   }, []);
 
@@ -250,6 +270,8 @@ export default function App() {
         const p = inputPeakRef.current;
         return p != null && p > 0 ? 20 * Math.log10(p) : null;
       },
+      // Latest tuner reading snapshot (M7), so the coach can see pitch/cents.
+      getTunerReading: () => tunerReadingRef.current,
       setParam: (unit, param, value, pedalIndex) => {
         const v = Math.min(1, Math.max(0, value));
         if (unit === 'input') setInputTrim(v);
@@ -310,6 +332,7 @@ export default function App() {
         oversampling: r.oversampling,
         onLatencySamples: setLatencySamples,
         onPeak: setInputPeak,
+        onTuner: handleTuner,
       });
       engineRef.current = engine;
       setSampleRate(engine.context.sampleRate);
@@ -334,6 +357,8 @@ export default function App() {
     setRunning(false);
     setStatus('stopped');
     setInputPeak(null);
+    tunerReadingRef.current = null;
+    setTunerReading(null);
   }
 
   const modelLatencyMs = sampleRate ? (latencySamples / sampleRate) * 1000 : 0;
@@ -390,6 +415,7 @@ export default function App() {
           <Board
             pedals={rig.pedals}
             amp={rig.amp}
+            tunerReading={tunerReading}
             onPedalParam={setPedalParamById}
             onPedalToggle={toggleEngagedById}
             onAddPedal={addPedal}

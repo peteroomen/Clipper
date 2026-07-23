@@ -137,20 +137,28 @@ Field feedback from real playing, prioritized ahead of new pedals:
   the RAT is already handle-based, so multiple instances stack safely.
   Architecture for everything M7+ plugs into.
 
-### M7 — Tuner *(S)*
+### M7 — Tuner *(S)* — **SHIPPED**
 
 Not a modeling problem — pitch detection + mute. Chromatic needle tuner
 (Polytune-style *polyphonic* mode is a much harder multi-pitch problem;
-deliberately out of scope).
+deliberately out of scope). No core/DSP/C-ABI change; all in `web/`. See
+docs/DEVELOPMENT.md §12.
 
-- Detection in the web layer via the McLeod pitch method (`pitchy`, the same
-  tiny MIT library Riff uses) on an analyser tap of the live input — zero
-  core-DSP changes.
-- Pedal-format UI in the design language: note + cents needle, green-lock LED,
-  footswitch = mute (the one DSP touch: a mute flag in the worklet chain).
-- Forces the rig into a proper multi-pedal chain (tuner → dirt → amp) —
-  RigState grows `pedals[]`, the seam M4 left ready.
-- Assistant learns `tune` awareness ("you're a quarter-tone flat on the G").
+- **Detection** in the web layer via the McLeod pitch method (`pitchy`, the one
+  tiny MIT dep) on a worklet tap of the **post-trim, pre-chain** raw guitar —
+  zero core-DSP changes. **4096-sample frames** (~85 ms), chosen so a 7-string
+  low B (B0 ≈ 31 Hz) locks reliably; measured <0.1 cents on the test tones.
+  Detection runs on the main thread; frames are tapped only while a tuner is
+  engaged (zero overhead otherwise). Lowest reliable note: **B0 (~31 Hz)**.
+- **Pedal-format UI** in the design language: big note name, SVG cents needle
+  (~60 fps), ±cents readout, **green-lock LED** (|cents| ≤ 3 held), footswitch
+  = **mute** — the one DSP touch, a per-chain mute flag that reuses the M6.4
+  raised-cosine declick so mute/unmute is click-free. Reference A=440.
+- Joins the multi-pedal chain (tuner → dirt → amp) additively; the tuner
+  instance round-trips through rig JSON (state = just `engaged`).
+- Assistant learns `tune` awareness: `add_pedal type:'tuner'`, and the rig
+  context reports the live note + cents so the coach can say "you're a few
+  cents flat on the G."
 
 ### M8 — SD-1 Super Overdrive *(M)*
 

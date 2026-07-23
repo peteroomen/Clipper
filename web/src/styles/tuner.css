@@ -1,0 +1,125 @@
+/* tuner (M7) — chromatic needle tuner, built on the shared .pedal shell */
+.pedal.tuner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Lock LED: green in tune / red when off-pitch / dim when no signal. Overrides
+   the default red .pedal.on .led (higher specificity so it always wins). */
+.pedal.tuner .tuner-led {
+  transition: box-shadow 0.18s, background 0.18s;
+}
+.pedal.tuner .tuner-led.off {
+  background: color-mix(in srgb, var(--ink-faint) 22%, var(--well));
+  box-shadow: inset 2px 2px 4px var(--sh-darker), inset -1px -1px 3px var(--sh-light);
+}
+.pedal.tuner .tuner-led.red {
+  background: var(--led);
+  box-shadow: 0 0 14px var(--led-glow), 0 0 4px var(--led-glow), inset 0 -2px 4px rgba(0, 0, 0, 0.25);
+}
+.pedal.tuner .tuner-led.green {
+  background: #2fce6a;
+  box-shadow: 0 0 15px rgba(47, 206, 106, 0.65), 0 0 5px rgba(47, 206, 106, 0.6),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.25);
+}
+
+/* Big note name + octave. */
+.tuner-note-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+  margin: 10px 0 2px;
+  min-height: 62px;
+}
+.tuner-note {
+  font-family: Anton, 'Arial Narrow', sans-serif;
+  font-size: 64px;
+  line-height: 1;
+  color: var(--ink);
+  text-shadow: 1px 1px 0 var(--sh-light);
+  min-width: 1.4ch;
+  text-align: center;
+}
+.tuner-oct {
+  font-size: 18px;
+  color: var(--ink-dim);
+}
+.pedal.tuner:not(.on) .tuner-note {
+  color: var(--ink-faint);
+}
+
+/* Gauge. */
+.tuner-gauge {
+  width: 100%;
+  height: auto;
+  margin: 2px 0 4px;
+  overflow: visible;
+}
+.gauge-track {
+  fill: none;
+  stroke: var(--arc-track);
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+.gauge-zone {
+  fill: none;
+  stroke: color-mix(in srgb, #2fce6a 60%, transparent);
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+.gauge-tick {
+  stroke: var(--ink-faint);
+  stroke-width: 2;
+  stroke-linecap: round;
+  opacity: 0.7;
+}
+.gauge-tick.center {
+  stroke: var(--ink-dim);
+  stroke-width: 2.5;
+  opacity: 0.9;
+}
+.gauge-needle {
+  stroke: var(--led);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.pedal.tuner.on .gauge-needle {
+  stroke: var(--led);
+}
+.gauge-hub {
+  fill: var(--cap);
+  stroke: var(--sh-darker);
+  stroke-width: 1.5;
+}
+.pedal.tuner:not(.on) .gauge-needle {
+  stroke: var(--ink-faint);
+  opacity: 0.5;
+}
+
+/* ±cents readout. */
+.tuner-cents-row {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-bottom: 4px;
+}
+.tuner-cents {
+  font-size: 20px;
+  color: var(--ink-dim);
+  min-width: 3ch;
+  text-align: right;
+}
+.tuner-cents.flat {
+  color: #d8863a;
+}
+.tuner-cents.sharp {
+  color: #3e8fd6;
+}
+.tuner-cents-unit {
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}

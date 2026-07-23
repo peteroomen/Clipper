@@ -106,7 +106,8 @@ export function Chat({ controller, guitar, onGuitarChange }: ChatProps) {
     const preamble = buildContextPreamble(
       controller.getRig(),
       guitar,
-      controller.getPeakDbFs?.()
+      controller.getPeakDbFs?.(),
+      controller.getTunerReading?.()
     );
     historyRef.current.push({
       role: 'user',
