@@ -31,6 +31,9 @@ export interface RigController {
   setParam: (unit: Unit, param: string, value: number, pedalIndex?: number) => number;
   setEngaged: (unit: Unit, engaged: boolean, pedalIndex?: number) => void;
   setSwitch: (name: SwitchName, on: boolean) => void;
+  // Cab expansion: switch between the BUILT-IN cabs ('clean212' | 'brit412').
+  // Never selects 'custom' (that needs a user file upload).
+  setCab: (cab: 'clean212' | 'brit412') => void;
   // Chain edits (M6.4). addPedal returns the new instance's chain index.
   addPedal: (type: string, position?: number) => number;
   removePedal: (index: number) => void;
@@ -132,6 +135,26 @@ export const TOOLS = [
         on: { type: 'boolean' },
       },
       required: ['name', 'on'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'set_cab',
+    description:
+      "Choose the speaker CABINET. Two built-ins: 'clean212' — the Clean 2×12, " +
+      'the flat, open clean platform (pairs with the JC-120 amp); and ' +
+      "'brit412' — a Marshall-style 4×12, thicker in the low-mids and noticeably " +
+      'DARKER on top (a greenback-ish voicing), the classic rock/JCM cab. Reach ' +
+      "for brit412 when the player wants a thicker, darker, rock voicing, and " +
+      'clean212 for the pristine clean platform. This selects WHICH cab; the ' +
+      "'cab' switch (set_switch) still bypasses the cab entirely. You cannot pick " +
+      'a user-uploaded custom IR — the player loads that themselves from the amp menu.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        cab: { type: 'string', enum: ['clean212', 'brit412'] },
+      },
+      required: ['cab'],
       additionalProperties: false,
     },
   },
@@ -350,6 +373,15 @@ export function executeTool(
     return {
       content: JSON.stringify({ applied: { moved: from, to } }),
       chip: `Move #${from + 1} → #${to + 1}`,
+    };
+  }
+
+  if (name === 'set_cab') {
+    const cab = input.cab === 'brit412' ? 'brit412' : 'clean212';
+    controller.setCab(cab);
+    return {
+      content: JSON.stringify({ applied: { cab } }),
+      chip: `Cab ${cab === 'brit412' ? 'Brit 4×12' : 'Clean 2×12'}`,
     };
   }
 

@@ -25,11 +25,13 @@ import type { TunerReading } from '../tuner';
 import {
   AVAILABLE_PEDAL_TYPES,
   AVAILABLE_AMP_TYPES,
+  AVAILABLE_CABS,
   type PedalInstance,
   type PedalType,
   type AmpState,
   type ParamName,
   type AmpParamName,
+  type CabChoice,
 } from '../rig';
 
 export interface BoardProps {
@@ -47,6 +49,9 @@ export interface BoardProps {
   onAmpToggle: (name: 'bright' | 'cab') => void;
   onAmpPower: () => void;
   onChorusMode: (mode: number) => void;
+  // Cab expansion: pick a built-in/custom cab, or upload a user IR (.wav).
+  onCabSelect: (cab: CabChoice) => void;
+  onUploadIr: (file: File) => void;
 }
 
 // A friendly display name per pedal type (for the gear tray + swap menu).
@@ -57,6 +62,10 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
 };
 const AMP_TYPE_LABEL: Record<string, string> = {
   clean120: 'Clean 120 (JC-120 style)',
+};
+const CAB_LABEL: Record<'clean212' | 'brit412', string> = {
+  clean212: 'Clean 2×12 (JC platform)',
+  brit412: 'Brit 4×12 (Marshall-style)',
 };
 
 interface Segment {
@@ -81,6 +90,8 @@ export function Board({
   onAmpToggle,
   onAmpPower,
   onChorusMode,
+  onCabSelect,
+  onUploadIr,
 }: BoardProps) {
   const boardRef = useRef<HTMLDivElement>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -406,6 +417,59 @@ export function Board({
                   </button>
                 ))}
                 <div className="unit-menu-note">More amps coming (JCM800…)</div>
+
+                {/* Cab expansion: pick the speaker cab IR or upload a user IR. */}
+                <div className="unit-menu-head">Cab</div>
+                {AVAILABLE_CABS.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={amp.cabModel === c}
+                    className={`unit-menu-item${amp.cabModel === c ? ' current' : ''}`}
+                    data-testid={`cab-${c}`}
+                    onClick={() => {
+                      onCabSelect(c);
+                      setAmpMenuOpen(false);
+                    }}
+                  >
+                    {CAB_LABEL[c]}
+                    {amp.cabModel === c ? ' ✓' : ''}
+                  </button>
+                ))}
+                {amp.customCabLabel && (
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={amp.cabModel === 'custom'}
+                    className={`unit-menu-item${amp.cabModel === 'custom' ? ' current' : ''}`}
+                    data-testid="cab-custom"
+                    onClick={() => {
+                      onCabSelect('custom');
+                      setAmpMenuOpen(false);
+                    }}
+                  >
+                    {amp.customCabLabel} (custom)
+                    {amp.cabModel === 'custom' ? ' ✓' : ''}
+                  </button>
+                )}
+                <label className="unit-menu-item" data-testid="cab-upload">
+                  Upload IR…
+                  <input
+                    type="file"
+                    accept=".wav,audio/wav,audio/x-wav,audio/*"
+                    style={{ display: 'none' }}
+                    data-testid="cab-upload-input"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      e.target.value = ''; // allow re-uploading the same file
+                      if (f) {
+                        onUploadIr(f);
+                        setAmpMenuOpen(false);
+                      }
+                    }}
+                  />
+                </label>
               </div>
             )}
           </div>

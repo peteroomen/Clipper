@@ -209,7 +209,11 @@ is one of the most canonical pairings in rock.
 - **BD-2 Blues Driver** (third dirt flavor), **DD-3 delay** (new DSP family:
   delay lines — easy after the above).
 - **Presets & sharing** — the M4 rig-state JSON is already the format.
-- **User cab IR upload** + a Marshall 4×12-style IR to pair with M9.
+- ~~**User cab IR upload** + a Marshall 4×12-style IR to pair with M9.~~ ✅
+  *(shipped — see docs §15: a modal-synthesis rebuild of both cabs that root-caused
+  the "fizzy with the cab on" noise-tail hash, a `brit412` Marshall-style 4×12, and
+  `.wav` IR upload with in-core peak-normalization. Also fixed a latent in-place
+  convolver overlap bug.)*
 - **Native path** — only when latency or Logic integration actually bites:
   JUCE wrap of the identical core → VST3/AU/CLAP. A re-wrap, not a rewrite.
 - **Riff integration** — Clipper's rig as Riff's practice-tone engine; the

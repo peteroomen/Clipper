@@ -23,6 +23,21 @@ export type SourceKind = 'test' | 'live';
 export type PedalType = 'rat' | 'sd1' | 'tuner';
 export type AmpType = 'clean120';
 
+// Cab expansion: which speaker cabinet IR the amp runs. 'clean212' is the
+// built-in Clean 2x12 (the JC-120 platform), 'brit412' the darker/thicker Brit
+// 4x12 (pairs with a Marshall-style amp), and 'custom' a user-uploaded IR (its
+// samples live in a SEPARATE localStorage key, never in the rig/preset JSON —
+// see cab.ts; the rig only records the choice + a short label).
+export type CabChoice = 'clean212' | 'brit412' | 'custom';
+// The two BUILT-IN cabs offered in the amp menu (and the ones the assistant may
+// switch between). 'custom' is reached only via Upload IR, never listed here.
+export const AVAILABLE_CABS: readonly ('clean212' | 'brit412')[] = ['clean212', 'brit412'];
+// The worklet's built-in cab index (mirrors CabBuiltin in clipper_c_api.cpp).
+export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412', number> = {
+  clean212: 0,
+  brit412: 1,
+};
+
 // The pedal types that can be added from the gear tray (M6.4).
 export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4). Currently just the
@@ -89,6 +104,14 @@ export interface AmpParams {
 export interface AmpState {
   type: AmpType;
   engaged: boolean; // true = amp powered (jewel lit); false = amp+cab bypassed
+  // Cab expansion: which speaker cab IR is loaded (SEPARATE from the `cab` 0/1
+  // ENABLE lever in params — that bypasses the convolver; this selects the IR).
+  // 'custom' means a user IR whose samples are persisted under a separate
+  // localStorage key; `customCabLabel` is a short human name for it (e.g. the
+  // file name), shown in the UI and rig context. Presets/rig JSON never embed IR
+  // data.
+  cabModel: CabChoice;
+  customCabLabel?: string;
   params: AmpParams;
 }
 
@@ -177,6 +200,7 @@ export const DEFAULT_RIG: RigState = {
   amp: {
     type: 'clean120',
     engaged: true,
+    cabModel: 'clean212',
     params: { ...AMP_KNOB_DEFAULTS },
   },
   oversampling: 4,
@@ -263,12 +287,23 @@ export function normalizeRig(raw: unknown): RigState {
     pedals = d.pedals.map((p) => ({ ...p, params: { ...p.params } }));
   }
 
+  // Cab selection migration (cab expansion): old rigs (no cabModel) -> the built-
+  // in Clean 2x12. A rig that references 'custom' keeps that here; whether the
+  // custom IR data actually EXISTS is resolved at load time (App falls back to
+  // clean212 with a note if it's missing) — the rig JSON alone can't know.
+  const cabModel: CabChoice =
+    a.cabModel === 'brit412' || a.cabModel === 'custom' ? a.cabModel : 'clean212';
+  const customCabLabel =
+    typeof a.customCabLabel === 'string' ? a.customCabLabel : undefined;
+
   return {
     input: { trim: clamp01(inp.trim, d.input.trim) },
     pedals,
     amp: {
       type: 'clean120',
       engaged: typeof a.engaged === 'boolean' ? a.engaged : d.amp.engaged,
+      cabModel,
+      ...(customCabLabel !== undefined ? { customCabLabel } : {}),
       params: {
         volume: clamp01(ar.volume, d.amp.params.volume),
         bass: clamp01(ar.bass, d.amp.params.bass),
@@ -313,7 +348,7 @@ export function freshDefaultRig(): RigState {
   return {
     input: { ...INPUT_DEFAULTS },
     pedals: [makePedal('rat')],
-    amp: { type: 'clean120', engaged: true, params: { ...AMP_KNOB_DEFAULTS } },
+    amp: { type: 'clean120', engaged: true, cabModel: 'clean212', params: { ...AMP_KNOB_DEFAULTS } },
     oversampling: DEFAULT_RIG.oversampling,
     source: DEFAULT_RIG.source,
   };
