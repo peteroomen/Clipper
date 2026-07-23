@@ -22,8 +22,10 @@ if [[ "$(node -p process.arch)" != "arm64" ]]; then
   exit 1
 fi
 
-[[ -d web/node_modules ]]      || (cd web && npm install)
-[[ -d electron/node_modules ]] || (cd electron && npm install)
+# Always run npm install: it's a fast no-op when in sync, and skipping it
+# breaks the build whenever a pull brings a new dependency (e.g. M7's pitchy).
+(cd web && npm install --no-audit --no-fund)
+(cd electron && npm install --no-audit --no-fund)
 
 echo "==> Building web app"
 (cd web && npm run build)
