@@ -1202,16 +1202,17 @@ A single modulated delay line that splits mono → stereo, owned by `AmpModel`
 - **Numbers (tuned in `ChorusModel.cpp`):**
   - base delay **5.0 ms** — decorrelates the wet side for the stereo bloom;
     long enough to widen, short enough not to read as slapback.
-  - depth `0..1` → sine sweep **0 .. 1.5 ms peak** (linear). Full depth swings
-    the wet delay 5 ± 1.5 ms (3.5..6.5 ms) — always well inside the buffer and
+  - depth `0..1` → sine sweep **0 .. 3.5 ms peak** (squared taper, `A = depth²·3.5 ms`;
+    widened from 1.5 ms linear on field feedback that the effect was too subtle).
+    Full depth swings the wet delay 5 ± 3.5 ms (1.5..8.5 ms) — always well inside the buffer and
     far above the interpolator floor.
   - speed `0..1` → LFO rate **~0.15 .. 8 Hz**, **log** mapped
     (`rate = 0.15·(8/0.15)^speed`) so the musical 0.5–3 Hz range fills most of the
     knob.
 - **Peak pitch deviation.** For `delay(t) = D0 + A·sin(ωt)` the instantaneous
   fractional pitch shift is `−d(delay)/dt = −A·ω·cos(ωt)`, so the **peak** is
-  `A·2π·f`, i.e. in cents `≈ (1200/ln2)·A·2π·f ≈ 16.3 · depth · f_Hz`
-  (with `A = depth·1.5 ms`). Examples: **depth 1 @ 2 Hz ≈ 33 ¢**, depth 1 @ 5 Hz
+  `A·2π·f`, i.e. in cents `≈ (1200/ln2)·A·2π·f ≈ 38.1 · depth² · f_Hz`
+  (with `A = depth²·3.5 ms`). Examples: **depth 1 @ 2 Hz ≈ 76 ¢**, depth 1 @ 5 Hz
   ≈ 82 ¢, depth 0.5 @ 2 Hz ≈ 16 ¢. Deviation grows with **both** depth and rate
   — the physical truth of a fixed-excursion swept delay; the 1.5 ms cap keeps a
   full-depth mid-rate vibrato lush (~30–40 ¢) rather than seasick.

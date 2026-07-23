@@ -578,9 +578,9 @@ void testChorusVibrato(double fs) {
         maxDevCents = std::max(maxDevCents, std::fabs(cents));
     }
 
-    // Predicted peak deviation: A = depth * 1.5 ms; peak = A * 2*pi*f (fractional),
+    // Predicted peak deviation: A = depth^2 * 3.5 ms; peak = A * 2*pi*f (fractional),
     // in cents = 1200/ln2 * that. (Matches ChorusModel.cpp's documented formula.)
-    const double A = depth * 0.0015;  // seconds
+    const double A = static_cast<double>(depth) * depth * 0.0035;  // seconds
     const double predFrac = A * kTwoPi * targetHz;
     const double predCents = 1200.0 / std::log(2.0) * predFrac;
     // Zero-crossing spacing averages the deviation over a signal period, so the

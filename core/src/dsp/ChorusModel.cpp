@@ -10,12 +10,13 @@
 //     ~100 Hz and its odd multiples). 5 ms is the classic short-chorus figure —
 //     long enough to widen, short enough not to read as a slapback echo.
 //
-//   DEPTH -> SWEEP. depth 0..1 maps LINEARLY to a sine sweep amplitude of
-//     0 .. kMaxSweepMs (1.5 ms) PEAK. So at full depth the wet delay swings
-//     5 ± 1.5 ms (3.5 .. 6.5 ms) — always comfortably positive and many samples
-//     above the interpolator's floor. 1.5 ms peak was picked so a full-depth
-//     mid-rate vibrato lands ~30-40 cents (lush, obviously moving) rather than
-//     the >1 semitone "seasick" wobble a larger excursion gives.
+//   DEPTH -> SWEEP. depth 0..1 maps with a SQUARED taper to a sine sweep
+//     amplitude of 0 .. kMaxSweepMs (3.5 ms) PEAK: A = depth^2 * 3.5 ms. At
+//     full depth the wet delay swings 5 ± 3.5 ms (1.5 .. 8.5 ms) — still
+//     comfortably positive and well above the interpolator's floor. The wide
+//     excursion came from field feedback ("chorus/vibrato needs to be
+//     stronger"); the squared taper keeps the knob's lower half in
+//     subtle-shimmer territory so the extra range costs no resolution.
 //
 //   SPEED -> RATE. speed 0..1 maps LOG to kMinHz .. kMaxHz (0.15 .. 8 Hz):
 //     rate = kMinHz * (kMaxHz/kMinHz)^speed. Log so the musical slow-to-medium
@@ -25,10 +26,11 @@
 //   PEAK PITCH DEVIATION. For delay(t) = D0 + A*sin(w t) (A in seconds, w=2*pi*f),
 //     the instantaneous fractional pitch shift is -d(delay)/dt = -A*w*cos(w t),
 //     so the PEAK deviation is |A*w| = A * 2*pi*f, and in cents
-//        peak_cents ~= (1200/ln2) * A * 2*pi*f  ~= 16.3 * depth * f_hz
-//     (using A = depth*1.5 ms). Examples: depth 1 @ 2 Hz ~= 33 cents; depth 1 @
-//     5 Hz ~= 82 cents; depth 0.5 @ 2 Hz ~= 16 cents. Deviation grows with BOTH
-//     depth and rate — the physical truth of a fixed-excursion swept delay.
+//        peak_cents ~= (1200/ln2) * A * 2*pi*f  ~= 38.1 * depth^2 * f_hz
+//     (using A = depth^2 * 3.5 ms). Examples: depth 1 @ 2 Hz ~= 76 cents;
+//     depth 1 @ 5 Hz ~= 190 cents (full seasick, by request); depth 0.5 @
+//     2 Hz ~= 19 cents. Deviation grows with BOTH depth and rate — the
+//     physical truth of a fixed-excursion swept delay.
 //
 //   INTERPOLATION: 4-point Lagrange (cubic). Stateless, so the twice-per-cycle
 //     sweep reversal leaves no ringing (an all-pass interpolator would).
@@ -52,7 +54,7 @@ namespace {
 constexpr double kTwoPi = 6.283185307179586;
 
 constexpr double kBaseMs = 5.0;      // base wet delay
-constexpr double kMaxSweepMs = 1.5;  // sine sweep PEAK amplitude at depth = 1
+constexpr double kMaxSweepMs = 3.5;  // sine sweep PEAK amplitude at depth = 1
 constexpr double kMinHz = 0.15;      // LFO rate at speed = 0
 constexpr double kMaxHz = 8.0;       // LFO rate at speed = 1
 constexpr double kGuardMs = 3.0;     // extra delay-buffer headroom past max delay
@@ -141,7 +143,11 @@ void ChorusModel::setSpeed(float knob01) {
 }
 
 void ChorusModel::setDepth(float knob01) {
-    const double sweep = clamp01(knob01) * kMaxSweepMs * impl_->sampleRate / 1000.0;
+    // Squared taper: the knob's lower half stays in subtle-shimmer territory
+    // while the upper half opens into the strong JC wobble (field feedback:
+    // a linear map into the wider sweep made low settings too hot).
+    const double k = clamp01(knob01);
+    const double sweep = k * k * kMaxSweepMs * impl_->sampleRate / 1000.0;
     impl_->sweepSamples.setTarget(static_cast<float>(sweep));
 }
 
