@@ -230,8 +230,19 @@ is one of the most canonical pairings in rock.
   delay lines — easy after the above).
 - **Presets & sharing** — the M4 rig-state JSON is already the format.
 - **User cab IR upload** + a Marshall 4×12-style IR to pair with M9.
-- **Native path** — only when latency or Logic integration actually bites:
-  JUCE wrap of the identical core → VST3/AU/CLAP. A re-wrap, not a rewrite.
+- **Native path — phase 1 SHIPPED** (plugin + standalone). A JUCE (CMake,
+  FetchContent-pinned to JUCE 8.0.4) wrap of the **identical** core in `native/`:
+  Standalone + VST3 + AU (AU mac-only), mirroring the web rig's signal chain
+  (input trim → RAT → SD-1 → Clean 120 amp + stereo chorus + cab → OutputLimiter),
+  driven by an AudioProcessorValueTreeState with ids/ranges/defaults matching
+  `web/src/rig.ts`. It is a re-wrap, not a rewrite: a console test renders the
+  M2-style 220 Hz sine + pluck through the real PluginProcessor and through the
+  core classes directly and asserts **bit-exact** (0.0) output on both channels,
+  plus matching host latency. Verified on Linux (Standalone + VST3); AU + Logic
+  are the mac follow-up. The native **neumorphic UI is still deferred** — the
+  shipped editor is a tidy flat panel. See `docs/DEVELOPMENT.md` → "Native app
+  (JUCE)". Remaining phase-2 native work (drag-reorderable chain, neumorphic UI,
+  CLAP) stays parked here.
 - **Riff integration** — Clipper's rig as Riff's practice-tone engine; the
   assistant patterns already converge (both grew an "applied chip" chat UI).
 

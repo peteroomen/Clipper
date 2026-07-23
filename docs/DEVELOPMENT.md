@@ -2221,3 +2221,189 @@ retry, per `playwright.config.ts`.)
   (`clipper::ParamId::PARAM_GAIN=0` in `Processor.h`) still exists in the WASM
   module but the live app no longer uses it.
 ```
+
+## Native app (JUCE)
+
+`native/` is the desktop shell: a JUCE audio plugin (Standalone + VST3, plus AU
+on macOS) that wraps the **identical** portable core (`core/`) — the roadmap's
+"re-wrap, not a rewrite." It exists so the user can play through Logic (AU) on
+Apple Silicon at native buffer latency instead of the ~20–40 ms WebAudio round
+trip. Nothing in `core/`, `web/`, `server/`, or `electron/` changes; `native/`
+consumes `core/` as a CMake subproject and links `clipper_dsp` directly.
+
+### Architecture
+
+```
+mono in ──► × input trim (−12..+24 dB) ──► RAT (if on) ──► SD-1 (if on)
+        ──► AmpModel.processStereo (tone stack + volume + bright + JC-120
+            chorus/vibrato split: mono → stereo) ──► per-side CabConvolver
+            (cabL / cabR, if cab on) ──► OutputLimiter.processStereo ──► stereo out
+```
+
+- **`native/src/ClipperEngine.{h,cpp}`** — the whole DSP chain, using the core
+  C++ classes **directly** (`RatModel`, `SdModel`, `AmpModel` + its owned
+  `ChorusModel`, two `CabConvolver`s, `OutputLimiter`) — **not** the `clipper_c_api`
+  C ABI. This mirrors `web/worklet/clipper-processor.js` sample-for-sample. It has
+  no JUCE dependency, so the console test can drive it standalone.
+- **`native/src/PluginProcessor.{h,cpp}`** — the JUCE `AudioProcessor`. Owns an
+  `AudioProcessorValueTreeState` (the param store + state save/restore) and one
+  `ClipperEngine`. Pure host glue: no DSP. Mono-in → stereo-out bus layout (also
+  accepts a stereo track and takes channel 0 as the mono source).
+- **`native/src/PluginEditor.{h,cpp}`** — a tidy **flat** custom editor (dark
+  panels, JUCE sliders/toggles grouped **Pedals | Amp | Chorus | Output**, no
+  image assets). The neumorphic web design is a later native pass. The **build
+  git hash** is shown bottom-right (configured via CMake as `CLIPPER_GIT_HASH`).
+
+**Fixed two-pedal chain (v1):** RAT then SD-1, both default off **except** RAT.
+Drag-reorder / arbitrary-length chains remain a web/UI feature for now; the native
+shell ships the fixed order. Mono in → stereo out so the chorus bloom works in
+Logic.
+
+### Parameter map (APVTS ↔ `web/src/rig.ts`)
+
+Knob params are plain `0..1` `AudioParameterFloat`s — the **core owns the taper
+laws** (audio-taper volume, RAT/SD gain maps, etc.), identical to the web build,
+so the host sees a linear normalized position and the value passes through
+unchanged. Toggles are `AudioParameterBool`; oversampling and chorus mode are
+`AudioParameterChoice`. Defaults mirror `DEFAULT_RIG` / `*_KNOB_DEFAULTS`.
+
+| APVTS id | type | default | core target |
+|---|---|---|---|
+| `inputTrim` | float 0..1 | 1/3 (= 0 dB) | worklet-style linear pre-gain |
+| `ratOn` | bool | true | chain: engage RAT |
+| `ratDist` / `ratFilter` / `ratLevel` | float | 0.7 / 0.4 / 0.8 | `RatModel` id 0 / 1 / 2 |
+| `sdOn` | bool | false | chain: engage SD-1 |
+| `sdDrive` / `sdTone` / `sdLevel` | float | 0.5 / 0.5 / 0.7 | `SdModel` id 0 / 1 / 2 |
+| `ampOn` | bool | true | chain: amp power (off ⇒ stereo passthrough) |
+| `volume` / `bass` / `middle` / `treble` | float | 0.4 / 0.5 / 0.5 / 0.6 | `AmpModel` id 0 / 1 / 2 / 3 |
+| `bright` | bool | false | `AmpModel` id 4 |
+| `cab` | bool | true | chain-level cab on/off (per-side `CabConvolver`) |
+| `chorusMode` | choice Off/Chorus/Vibrato | Off | `AmpModel` id 8 (0/1/2) |
+| `chorusSpeed` / `chorusDepth` | float | 0.3 / 0.5 | `AmpModel` id 6 / 7 |
+| `oversampling` | choice 1x/2x/4x/8x | 4x | `RatModel`/`SdModel` `setOversampling` |
+
+State save/restore is APVTS XML via `getStateInformation`/`setStateInformation`.
+
+**Smoothing:** the core already one-pole-smooths (~5 ms) every param, so the
+plugin does **not** double-smooth. Critically, `processBlock` applies only the
+params that **changed** since the previous block (`ClipperEngine::updateParams`),
+exactly like the web worklet sets a core param only on a knob message. Re-pushing
+an *unchanged* value every block would re-seed the smoother target and — through
+the RAT/SD-1 high-gain nonlinearity — perturb the output; change-only application
+keeps a steady chain bit-for-bit identical to a single-shot render (this is what
+the identical-core test proves). Setup params are pushed once and **snapped** in
+`prepareToPlay` (the smoother `prepare()` snaps value → target).
+
+### Latency reporting
+
+`setLatencySamples()` is published from the model latency accessors and updated on
+cab toggle / oversampling change:
+
+```
+latency = (ratOn  ? RatModel::latencySamples() : 0)   // OS group delay
+        + (sdOn   ? SdModel::latencySamples()  : 0)   // OS group delay
+        + (ampOn && cab ? 128 : 0)                    // CabConvolver partition
+        + 64                                          // OutputLimiter lookahead
+```
+
+At the default 4× oversampling each dirt pedal reports **72** samples, the cab
+partition is **128**, and the limiter lookahead is **64**, so the full default
+rig (RAT + SD-1 + cab + limiter) reports **336** samples. The pedal group delay
+tracks the oversampling factor via each model's `latencySamples()` accessor; the
+value is re-published whenever `cab` or `oversampling` changes.
+
+### Oversampling
+
+Fixed **4×** default, exposed as an optional `oversampling` choice (1/2/4/8)
+mirroring the web select. A change routes to each pedal's `setOversampling`
+(resets only the oversampling filter state), never a full re-prepare, so it is
+realtime-safe.
+
+### Build targets
+
+`juce_add_plugin(Clipper …)` with `FORMATS Standalone VST3` and — guarded by
+`if(APPLE)` — `AU`. CLAP was skipped (JUCE has no first-party CLAP target; it
+would add a helper-clap dependency for no phase-1 benefit). JUCE is pulled via
+`FetchContent`, **pinned to tag `8.0.4`**. `CMAKE_POSITION_INDEPENDENT_CODE ON`
+is set in `native/CMakeLists.txt` *before* adding `core/` so the static
+`clipper_dsp` links into the shared VST3/AU modules (core sources untouched).
+
+### Verified on Linux vs deferred to Mac
+
+| Item | Status |
+|---|---|
+| FetchContent JUCE 8.0.4 (clone through proxy) | ✅ works |
+| Configure + build **Standalone** (Linux) | ✅ |
+| Configure + build **VST3** (Linux) | ✅ |
+| **Identical-core** console test (bit-exact) | ✅ 0.0 diff L+R, latency 336=336 |
+| Core ctest (5 suites) still green | ✅ unchanged |
+| Headless Standalone launch under `xvfb-run` | ✅ starts, no crash (no audio HW in container — ALSA device warnings are expected) |
+| **AU** build + `auval` + Logic load | ⏳ mac-only, deferred |
+| VST3 in a real host (Reaper/Live) | ⏳ not run here |
+
+### The identical-core proof (`native/tests/identical_core_test.cpp`)
+
+The load-bearing test: it instantiates the **real** `ClipperAudioProcessor`,
+sets a known full-chain parameter set through the APVTS, and renders an M2-style
+220 Hz sine + exponential pluck at 48 kHz in 128-sample blocks. Independently it
+renders the same signal through a **from-scratch** chain built from the core
+classes directly (`RatModel`/`SdModel`/`AmpModel`/`CabConvolver`×2/`OutputLimiter`),
+then asserts the plugin's L **and** R output is **bit-exact** (≤ 1e-6, observed
+0.0) against that reference and that reported latency matches. A secondary check
+renders through `ClipperEngine` alone to isolate the engine from the JUCE wrapper.
+Because both paths run the same core and the same internal delays, they are
+time-aligned — no latency offset is applied in the comparison. Wired into `ctest`
+as `clipper_identical_core`.
+
+### Building on Linux
+
+```bash
+cd native
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release   # fetches JUCE (first run only)
+cmake --build build                                  # all targets
+ctest --test-dir build --output-on-failure           # identical-core + core suites
+# artefacts:
+#   build/Clipper_artefacts/Release/Standalone/Clipper
+#   build/Clipper_artefacts/Release/VST3/Clipper.vst3
+```
+
+Apt packages required for a JUCE Linux build (installed in the dev container):
+`libasound2-dev libjack-jackd2-dev libx11-dev libxcomposite-dev libxcursor-dev
+libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libfreetype-dev
+libfontconfig1-dev libglu1-mesa-dev libcurl4-openssl-dev libwebkit2gtk-4.1-dev`.
+
+### Building on the user's Mac (the actual target: AU into Logic)
+
+```bash
+cd native
+# Xcode generator (recommended for macOS; builds Standalone + VST3 + AU):
+cmake -B build -G Xcode -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+# …or plain Makefiles / Ninja also work:
+#   cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+```
+
+Default target is Apple Silicon (arm64) for the host machine. Artefacts land under
+`build/Clipper_artefacts/Release/`:
+- `Standalone/Clipper.app`
+- `VST3/Clipper.vst3`
+- `AU/Clipper.component`
+
+Getting the AU into Logic:
+1. Copy (or symlink) `Clipper.component` to
+   `~/Library/Audio/Plug-Ins/Components/`.
+2. Validate: `auval -v aufx Clp1 Clpr` (the codes are `PLUGIN_CODE=Clp1`,
+   `PLUGIN_MANUFACTURER_CODE=Clpr` from `native/CMakeLists.txt`). A clean
+   `auval` pass is what Logic's plugin manager gates on.
+3. Launch Logic; it rescans AUs on start. If it does not appear, reset the AU
+   cache (`killall -9 AudioComponentRegistrar`) and relaunch, or run
+   `auval` again to surface the validation error.
+
+**Unsigned caveat:** the artefacts are **not code-signed / notarized**. On a
+fresh Mac, Gatekeeper may quarantine an unsigned `.component`/`.vst3` downloaded
+from the internet; a locally-built one is usually fine, but if macOS blocks it,
+clear the quarantine bit with
+`xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/Clipper.component`.
+For distribution (not needed for local play) you would sign with a Developer ID
+and notarize. Standalone `.app` runs the same core through JUCE's own audio
+device I/O for a quick check without a host.
