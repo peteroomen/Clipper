@@ -38,6 +38,11 @@ target_link_libraries(clipper_c_api PUBLIC clipper_core)
 # they do not trip our -Wall -Wextra. The library's own tests/benchmarks are
 # force-disabled (they are off by default when not top-level, but be explicit).
 include(FetchContent)
+# chowdsp_wdf v1.0.0 declares an old cmake_minimum_required that CMake 4.x
+# refuses outright. This variable (introduced in CMake 4, silently ignored by
+# older CMakes) tells CMake to configure such subprojects as if they required
+# at least 3.5. Remove once the pin moves to a release that raises its minimum.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 set(CHOWDSP_WDF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(CHOWDSP_WDF_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(chowdsp_wdf
