@@ -127,6 +127,49 @@ test('assistant: a tool_use moves the knob, updates rig state, and sends a tool_
   expect(hasToolResult).toBe(true);
 });
 
+// M6.1: the coach can calibrate the INPUT TRIM (set_param unit:"input").
+const TRIM_TURN = sse([
+  { type: 'message_start', message: { id: 'msg_t', type: 'message', role: 'assistant', content: [] } },
+  { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+  { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Your input is weak — lifting the trim.' } },
+  { type: 'content_block_stop', index: 0 },
+  { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_t', name: 'set_param', input: {} } },
+  { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"unit":"input","param":"trim","value":0.7}' } },
+  { type: 'content_block_stop', index: 1 },
+  { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 12 } },
+  { type: 'message_stop' },
+]);
+
+test('assistant: set_param unit:"input" moves the trim knob and updates the rig', async ({
+  page,
+}) => {
+  let call = 0;
+  await page.route('**/api/health', mockHealthOk);
+  await page.route('**/api/chat', async (route) => {
+    call += 1;
+    if (call === 1) {
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: TRIM_TURN });
+    } else {
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: FOLLOWUP });
+    }
+  });
+
+  await page.goto('/');
+  // Default trim is unity (knob 1/3 -> readout 33).
+  await expect(page.getByTestId('knob-input-trim-value')).toHaveText('33');
+
+  await page.getByTestId('chat-input').fill('the pedal has no balls even cranked');
+  await page.getByTestId('chat-send').click();
+
+  // The applied tool call renders a chip and the trim knob moves to 70.
+  await expect(page.getByTestId('tool-chips')).toContainText('Trim 33 → 70');
+  await expect(page.getByTestId('knob-input-trim-value')).toHaveText('70');
+  const trim = await page.evaluate(
+    () => (window as unknown as { __CLIPPER_TEST__: { getRig: () => any } }).__CLIPPER_TEST__.getRig().input.trim
+  );
+  expect(trim).toBe(0.7);
+});
+
 test('assistant: proxy-down shows a clear in-chat error notice', async ({ page }) => {
   await page.route('**/api/health', mockHealthOk);
   await page.route('**/api/chat', (route) => route.abort());

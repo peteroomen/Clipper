@@ -15,6 +15,7 @@ import { loadGuitar, saveGuitar, type GuitarProfile } from './guitar';
 import type { RigController } from './assistant/tools';
 import { Pedal } from './components/Pedal';
 import { Amp } from './components/Amp';
+import { InputStage } from './components/InputStage';
 import { Chat } from './components/Chat';
 
 import './styles/tokens.css';
@@ -51,6 +52,11 @@ export default function App() {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState<string>('');
   const [theme, setTheme] = useState<ThemeChoice>('system');
+
+  // Post-trim input peak (linear, from the worklet meter). null until running.
+  const [inputPeak, setInputPeak] = useState<number | null>(null);
+  const inputPeakRef = useRef<number | null>(null);
+  inputPeakRef.current = inputPeak;
 
   // The guitar profile (M6): injected into the assistant's context. Separate
   // localStorage key from the rig; editable anytime from the chat panel.
@@ -103,6 +109,14 @@ export default function App() {
     if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastParam = { id, value };
   }
 
+  // Rig-level input trim (0..1 knob). Applied in the worklet before the pedal.
+  function setInputTrim(value: number) {
+    setRig((r) => ({ ...r, input: { ...r.input, trim: value } }));
+    engineRef.current?.setInputTrim(value);
+    const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
+    if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastInputTrim = value;
+  }
+
   // Set the pedal engaged state to an explicit value (used by the footswitch and
   // the assistant's set_engaged tool). engaged=false -> bypassed.
   function setPedalEngaged(engaged: boolean) {
@@ -151,9 +165,16 @@ export default function App() {
   const rigController = useMemo<RigController>(
     () => ({
       getRig: () => rigRef.current,
+      // Current post-trim input peak in dBFS (null when not running), so the
+      // assistant can help calibrate the trim.
+      getPeakDbFs: () => {
+        const p = inputPeakRef.current;
+        return p != null && p > 0 ? 20 * Math.log10(p) : null;
+      },
       setParam: (unit, param, value) => {
         const v = Math.min(1, Math.max(0, value));
-        if (unit === 'pedal') setParam(param as ParamName, v);
+        if (unit === 'input') setInputTrim(v);
+        else if (unit === 'pedal') setParam(param as ParamName, v);
         else setAmpParam(param as AmpParamName, v);
         return v;
       },
@@ -187,6 +208,7 @@ export default function App() {
       const engine = await startEngine({
         source: r.source,
         deviceId: r.source === 'live' && deviceId ? deviceId : undefined,
+        inputTrim: r.input.trim,
         distortion: r.pedal.params.distortion,
         filter: r.pedal.params.filter,
         level: r.pedal.params.level,
@@ -195,6 +217,7 @@ export default function App() {
         oversampling: r.oversampling,
         bypass: !r.pedal.engaged,
         onLatencySamples: setLatencySamples,
+        onPeak: setInputPeak,
       });
       engineRef.current = engine;
       setSampleRate(engine.context.sampleRate);
@@ -218,6 +241,7 @@ export default function App() {
     engineRef.current = null;
     setRunning(false);
     setStatus('stopped');
+    setInputPeak(null);
   }
 
   const modelLatencyMs = sampleRate ? (latencySamples / sampleRate) * 1000 : 0;
@@ -262,6 +286,12 @@ export default function App() {
 
         <div className="workspace">
           <div className="stage">
+          <InputStage
+            trim={rig.input.trim}
+            onTrim={setInputTrim}
+            peak={inputPeak}
+            running={running}
+          />
           <div className="rig">
             <Pedal pedal={rig.pedal} onParam={setParam} onToggleEngaged={toggleEngaged} />
             <Amp

@@ -11,6 +11,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -125,6 +126,67 @@ void testHarmonics(double fs) {
     assert(e5 < e9 && "harmonic energy did not grow 0.5 -> 0.9");
 
     std::printf("  [ok] harmonic generation @ %.0f Hz (odd harmonics, monotonic)\n", fs);
+}
+
+// --- Test 1b: pre-clip voicing (M6.1) matches the real RAT gain stage. --------
+// The DISTORTION knob's frequency shaping is the ProCo RAT LM308 non-inverting
+// stage: A(s) = 1 + Rf/Zg, Zg = (560R+4.7uF) || (47R+2.2uF) to ground, Rf=100k.
+// Normalized to the HF plateau it rises through two corners (~60.5 Hz, ~1539 Hz)
+// and falls toward unity at DC — NOT the old fixed 320 Hz / -10.5 dB shelf.
+//
+// Measure the small-signal shape in isolation: DISTORTION=0 => pre-gain is unity
+// (0 dB), so stage 1 is JUST the shaping filter; tiny input keeps the diodes
+// linear; FILTER=0 (bright) keeps stage 3 wide open. Normalize the measured
+// response to its 3 kHz value and compare to the analytical A(f)/A(3kHz) target,
+// which must match within +/-1.5 dB at every probe frequency.
+void testPreClipVoicing(double fs) {
+    // Analytical target: |A(f)| for the RAT network (dB, relative to 3 kHz).
+    auto analyticalDbRel3k = [](double f) {
+        const double Rf = 100e3, R1 = 560.0, C1 = 4.7e-6, R2 = 47.0, C2 = 2.2e-6;
+        auto magA = [&](double fr) {
+            const double w = kTwoPi * fr;
+            // Z = R + 1/(jwC) -> 1/Z = jwC/(1+jwRC); Y = Y1 + Y2; A = 1 + Rf*Y.
+            auto Y = [&](double R, double C) {
+                // jwC / (1 + jwRC): return (re, im).
+                const double a = 0.0, b = w * C;            // numerator jwC
+                const double c = 1.0, dd = w * R * C;        // denom 1 + jwRC
+                const double den = c * c + dd * dd;
+                return std::complex<double>((a * c + b * dd) / den, (b * c - a * dd) / den);
+            };
+            std::complex<double> A = std::complex<double>(1.0, 0.0) + Rf * (Y(R1, C1) + Y(R2, C2));
+            return std::abs(A);
+        };
+        return 20.0 * std::log10(magA(f) / magA(3000.0));
+    };
+
+    const double f0Ref = 3000.0;
+    const float amp = 1e-3f;  // tiny: stay linear through the diode stage
+    auto shapeDbRel3k = [&](double f) {
+        // DISTORTION=0 (unity pre-gain), FILTER=0 (bright), LEVEL=1.
+        auto out = render(sine(f, amp, 0.5, fs), {0.0f, 0.0f, 1.0f}, fs);
+        auto outRef = render(sine(f0Ref, amp, 0.5, fs), {0.0f, 0.0f, 1.0f}, fs);
+        const size_t n = out.size(), win = std::min(n, static_cast<size_t>(0.3 * fs));
+        const size_t start = n - win;
+        return toDb(goertzelAmp(out, start, win, f, fs)) -
+               toDb(goertzelAmp(outRef, start, win, f0Ref, fs));
+    };
+
+    const double probes[] = {82.4, 220.0, 320.0, 500.0, 1000.0, 1539.0, 5000.0};
+    double worst = 0.0;
+    for (double f : probes) {
+        const double meas = shapeDbRel3k(f);
+        const double want = analyticalDbRel3k(f);
+        const double err = std::fabs(meas - want);
+        worst = std::max(worst, err);
+        assert(err < 1.5 && "pre-clip voicing deviates >1.5 dB from the RAT analytical target");
+    }
+    // The two documented corners bracket the rise; HF plateau ~0 dB (rel 3 kHz).
+    assert(std::fabs(shapeDbRel3k(5000.0)) < 1.0 && "HF plateau not ~unity (rel 3 kHz)");
+    assert(shapeDbRel3k(82.4) < -12.0 && "low E not shelved (voicing missing?)");
+    std::printf(
+        "  [ok] pre-clip voicing @ %.0f Hz: worst dev %.2f dB (82Hz=%.1f 320Hz=%.1f "
+        "1539Hz=%.1f dB rel 3k)\n",
+        fs, worst, shapeDbRel3k(82.4), shapeDbRel3k(320.0), shapeDbRel3k(1539.0));
 }
 
 // --- Test 2: clipping ceiling. ----------------------------------------------
@@ -326,9 +388,11 @@ void testPassbandIntegrity() {
 }
 
 // --- Test M2-3: factor-1 regression — os=1 reproduces the M1 path. -----------
-// Golden samples captured from the committed M1 RatModel (pre-M2) rendering a
-// 987 Hz sine (amp 0.25) at dist 0.8 / filter 0.35 / level 0.9. os=1 is a pure
-// pass-through around the identical WDF stage, so it must match bit-closely.
+// Golden samples captured from the RatModel os=1 path rendering a 987 Hz sine
+// (amp 0.25) at dist 0.8 / filter 0.35 / level 0.9. os=1 is a pure pass-through
+// around the WDF stage, so it must match bit-closely. Regenerated for the M6.1
+// re-voice (two-corner pre-clip shaping + +66 dB max gain) — the guard now pins
+// the current single-rate path against accidental future drift.
 void testFactorOneRegression() {
     const double fs = 44100.0, f0 = 987.0;
     const int N = 4096;
@@ -338,9 +402,9 @@ void testFactorOneRegression() {
     auto out = renderOS(in, {0.8f, 0.35f, 0.9f}, fs, 1);
     struct G { int i; float v; };
     const G golden[] = {
-        {128, -1.467215121e-01f}, {256, -2.349628359e-01f}, {512, 2.845178246e-01f},
-        {1024, -3.341084719e-01f}, {2048, -3.481807411e-01f}, {3000, 3.482832611e-01f},
-        {4095, -3.490836918e-01f},
+        {128, -9.958429635e-02f}, {256, -2.417384386e-01f}, {512, -2.893901765e-01f},
+        {1024, 2.693854570e-01f}, {2048, -3.387029767e-01f}, {3000, 3.498205841e-01f},
+        {4095, -3.494887948e-01f},
     };
     double maxDiff = 0.0;
     for (const auto& g : golden)
@@ -409,6 +473,8 @@ int main() {
     std::printf("Running clipper::dsp::RatModel tests...\n");
     testHarmonics(44100.0);
     testHarmonics(96000.0);   // Test 6: SR robustness for test 1
+    testPreClipVoicing(44100.0);
+    testPreClipVoicing(96000.0);
     testClippingCeiling();
     testFilter(44100.0);
     testFilter(96000.0);      // Test 6: SR robustness for test 3

@@ -10,13 +10,16 @@
 
 import type { RigState } from '../rig';
 
-export type Unit = 'pedal' | 'amp';
+export type Unit = 'pedal' | 'amp' | 'input';
 export type SwitchName = 'bright' | 'cab';
 
 // The seam between the assistant and the live rig. App implements this over its
 // existing setters; the tool executor only ever touches the rig through here.
 export interface RigController {
   getRig: () => RigState;
+  // Current post-trim input peak in dBFS (null when not running), for the coach
+  // to help calibrate the input trim.
+  getPeakDbFs?: () => number | null;
   // Apply a normalized param; returns the clamped value actually applied.
   setParam: (unit: Unit, param: string, value: number) => number;
   setEngaged: (unit: Unit, engaged: boolean) => void;
@@ -34,14 +37,18 @@ export const TOOLS = [
       "1=dark — the RAT filter is a post-clipping low-pass, so clockwise/higher " +
       "tames fizz without changing how hard it clips), 'level' (output volume). " +
       "Amp params: 'volume', 'bass', 'middle', 'treble' (tone controls are flat " +
-      'at 0.5). The knob moves visibly and the change is heard immediately.',
+      "at 0.5). Input params: 'trim' — the rig-level INPUT gain BEFORE the pedal " +
+      "(0..1 maps to -12..+24 dB, 1/3 = 0 dB). Raise it when the input peak is " +
+      "weak (below ~-12 dBFS) so the guitar actually drives the diodes; lower it " +
+      "if it's hot (near 0 dBFS). The knob moves visibly and the change is heard " +
+      'immediately.',
     input_schema: {
       type: 'object',
       properties: {
-        unit: { type: 'string', enum: ['pedal', 'amp'] },
+        unit: { type: 'string', enum: ['pedal', 'amp', 'input'] },
         param: {
           type: 'string',
-          enum: ['dist', 'filter', 'level', 'volume', 'bass', 'middle', 'treble'],
+          enum: ['dist', 'filter', 'level', 'volume', 'bass', 'middle', 'treble', 'trim'],
         },
         value: { type: 'number', minimum: 0, maximum: 1 },
       },
@@ -96,6 +103,9 @@ const AMP_PARAM: Record<string, string> = {
   middle: 'middle',
   treble: 'treble',
 };
+const INPUT_PARAM: Record<string, string> = {
+  trim: 'trim',
+};
 
 // A short, human-readable label for a param (for the in-flow chips).
 const PARAM_LABEL: Record<string, string> = {
@@ -106,6 +116,7 @@ const PARAM_LABEL: Record<string, string> = {
   bass: 'Bass',
   middle: 'Mid',
   treble: 'Treble',
+  trim: 'Trim',
 };
 
 const clamp01 = (n: number) => Math.min(1, Math.max(0, typeof n === 'number' ? n : 0));
@@ -127,11 +138,12 @@ export function executeTool(
   input: Record<string, unknown>
 ): ToolExecution {
   if (name === 'set_param') {
-    const unit = input.unit === 'amp' ? 'amp' : 'pedal';
+    const unit: Unit =
+      input.unit === 'amp' ? 'amp' : input.unit === 'input' ? 'input' : 'pedal';
     const param = String(input.param ?? '');
     const target = clamp01(Number(input.value));
     const rig = controller.getRig();
-    const map = unit === 'pedal' ? PEDAL_PARAM : AMP_PARAM;
+    const map = unit === 'pedal' ? PEDAL_PARAM : unit === 'amp' ? AMP_PARAM : INPUT_PARAM;
     const rigParam = map[param];
     if (!rigParam) {
       return {
@@ -139,7 +151,8 @@ export function executeTool(
         chip: `? ${param}`,
       };
     }
-    const params = unit === 'pedal' ? rig.pedal.params : rig.amp.params;
+    const params =
+      unit === 'pedal' ? rig.pedal.params : unit === 'amp' ? rig.amp.params : rig.input;
     const from = to100((params as unknown as Record<string, number>)[rigParam] ?? 0);
     const applied = controller.setParam(unit, rigParam, target);
     const to = to100(applied);

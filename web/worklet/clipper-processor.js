@@ -20,6 +20,19 @@ const AMP_PARAM_CAB = 5;
 
 const RENDER_QUANTUM = 128;
 
+// Peak meter: report the post-trim input block peak back to the main thread
+// every PEAK_REPORT_BLOCKS render quanta (~2.9 ms/block => ~23 ms at 128/44.1k,
+// ~43 Hz), carrying the max seen across the window. Cheap and smooth for a UI
+// meter without flooding the message port.
+const PEAK_REPORT_BLOCKS = 8;
+
+// Output soft limiter (M6.1). Transparent below ±LIM_THRESH, then a tanh knee
+// asymptoting to ±1.0 so the louder M6.1 staging can never hand the browser raw
+// overs. C1-continuous at the threshold (slope 1). Threshold kept high (0.9) so
+// in-range signals (incl. a full-scale bypass passthrough) are ~untouched — a
+// ±1.0 sine picks up only ~0.6% 3rd harmonic. See _softLimit below.
+const LIM_THRESH = 0.9;
+
 class ClipperProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
@@ -38,6 +51,14 @@ class ClipperProcessor extends AudioWorkletProcessor {
     // applicable even before WASM is ready. pedal bypass = skip the RAT; amp
     // bypass ("power off") = skip amp+cab, passing the pedal output straight out.
     this._bypass = { pedal: false, amp: false };
+
+    // Rig-level input trim (M6.1): a LINEAR gain applied to the input BEFORE the
+    // pedal chain (calibration for real-world interface levels). Default unity.
+    this._inputGain = 1.0;
+
+    // Peak meter accumulator (post-trim block peak) + block counter.
+    this._peakAccum = 0.0;
+    this._blockCount = 0;
 
     // Queue param/oversampling messages that arrive before WASM is ready.
     this._pending = [];
@@ -95,6 +116,13 @@ class ClipperProcessor extends AudioWorkletProcessor {
       if (unit === 'amp' && this._ready) this._postLatency();
       return;
     }
+    // Input trim is a worklet-local sample multiply — no core state, apply
+    // immediately regardless of WASM readiness. Carries a LINEAR gain.
+    if (data.type === 'input') {
+      const g = +data.gain;
+      this._inputGain = Number.isFinite(g) && g >= 0 ? g : 1.0;
+      return;
+    }
     if (this._ready) this._apply(data);
     else this._pending.push(data);
   }
@@ -117,6 +145,14 @@ class ClipperProcessor extends AudioWorkletProcessor {
     }
   }
 
+  // Soft limiter: identity below ±LIM_THRESH, tanh knee to ±1.0 above it.
+  _softLimit(x) {
+    const t = LIM_THRESH;
+    if (x > t) return t + (1 - t) * Math.tanh((x - t) / (1 - t));
+    if (x < -t) return -t + (1 - t) * Math.tanh((x + t) / (1 - t));
+    return x;
+  }
+
   process(inputs, outputs) {
     const output = outputs[0];
     const input = inputs[0];
@@ -133,14 +169,31 @@ class ClipperProcessor extends AudioWorkletProcessor {
 
     const mod = this._module;
 
-    // 1. Copy input into the WASM heap (or zeros if nothing upstream).
+    // 1. Copy input into the WASM heap (or zeros if nothing upstream), applying
+    // the rig-level input trim FIRST (before the pedal chain), and track the
+    // post-trim block peak for the meter.
     // Re-fetch HEAPF32 each block: ALLOW_MEMORY_GROWTH can detach old views.
     let heap = mod.HEAPF32;
     const inBase = this._inPtr >> 2;
+    const g = this._inputGain;
+    let blockPeak = 0;
     if (inCh) {
-      for (let i = 0; i < n; i++) heap[inBase + i] = inCh[i];
+      for (let i = 0; i < n; i++) {
+        const s = inCh[i] * g;
+        heap[inBase + i] = s;
+        const a = s < 0 ? -s : s;
+        if (a > blockPeak) blockPeak = a;
+      }
     } else {
       for (let i = 0; i < n; i++) heap[inBase + i] = 0;
+    }
+    // Accumulate + periodically report the post-trim peak (dBFS computed on the
+    // main thread) so the UI meter reflects the level actually hitting the pedal.
+    if (blockPeak > this._peakAccum) this._peakAccum = blockPeak;
+    if (++this._blockCount >= PEAK_REPORT_BLOCKS) {
+      this.port.postMessage({ type: 'peak', peak: this._peakAccum });
+      this._peakAccum = 0;
+      this._blockCount = 0;
     }
 
     // 2. Pedal stage: RAT into _midPtr, or bypass (copy input -> mid).
@@ -158,10 +211,11 @@ class ClipperProcessor extends AudioWorkletProcessor {
       mod._amp_process(this._amp, this._midPtr, this._outPtr, n);
     }
 
-    // 4. Read _outPtr to the output (re-fetch heap in case of growth).
+    // 4. Read _outPtr to the output (re-fetch heap in case of growth), through
+    // the soft limiter so louder staging can never emit raw overs past ±1.0.
     heap = mod.HEAPF32;
     const outBase = this._outPtr >> 2;
-    for (let i = 0; i < n; i++) outCh[i] = heap[outBase + i];
+    for (let i = 0; i < n; i++) outCh[i] = this._softLimit(heap[outBase + i]);
 
     // Mirror to any additional output channels (mono source).
     for (let c = 1; c < output.length; c++) output[c].set(outCh);

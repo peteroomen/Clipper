@@ -79,9 +79,37 @@ constexpr double kTwoPi = 6.283185307179586;
 
 // --- Stage 1 constants ---
 constexpr float kDistMinDb = 0.0f;
-constexpr float kDistMaxDb = 54.0f;
-constexpr double kShelfCornerHz = 320.0;  // pre-clip high-shelf corner
-constexpr float kShelfBassGain = 0.30f;   // bass gain relative to treble (unity)
+// Max pre-clip gain. The real RAT non-inverting stage reaches 1 + P1/(R1||R2)
+// with P1 = 100 k DISTORTION pot at max => +67.3 dB at the HF plateau (see the
+// shaping network below). We cap at +66 dB (essentially the plateau) so a
+// cranked knob actually slams the diodes — previously capped at +54 dB, which
+// (with real interface-level input) left the signal short of the diode knee.
+constexpr float kDistMaxDb = 66.0f;
+
+// Pre-clip frequency shaping — the ProCo RAT LM308 non-inverting gain stage,
+// re-voiced (M6.1) against the real circuit rather than a single 320 Hz shelf.
+//
+//   A(s) = 1 + Rf/Zg,  Zg = two series-RC legs to ground (from the inverting
+//   input), in PARALLEL:
+//     leg 1:  R1 = 560 Ohm + C1 = 4.7 uF  -> pole  ~60.5 Hz
+//     leg 2:  R2 =  47 Ohm + C2 = 2.2 uF  -> pole ~1539 Hz
+//   Rf = 100 k DISTORTION pot at max.
+//
+// Gain RISES with frequency in two steps and falls toward UNITY (not a fixed
+// shelf floor) below ~60 Hz. Normalized to unity at the HF plateau (so the
+// DISTORTION knob's dB sets that plateau), the transfer reduces EXACTLY to
+//   H_shape(x) = c0*x + g1*(x - LP1(x)) + g2*(x - LP2(x))
+//              = x - g1*LP1(x) - g2*LP2(x)      (since c0 + g1 + g2 == 1)
+// two one-pole low-passes at the leg corners. Constants below (Ainf = 1 +
+// Rf/R1 + Rf/R2 = 2307.23):
+//   g1 = (Rf/R1)/Ainf,  g2 = (Rf/R2)/Ainf.
+// At DC the residual is c0 = 1/Ainf (~ -67 dB rel. plateau) — the circuit's
+// unity DC gain. *Approximation:* the shape is fixed at Rf = 100 k; the real
+// pot-dependent shape flattens at low DISTORTION (same spirit as before).
+constexpr double kShapeLeg1Hz = 60.4692;    // 1/(2*pi*R1*C1)
+constexpr double kShapeLeg2Hz = 1539.2161;  // 1/(2*pi*R2*C2)
+constexpr float kShapeG1 = 0.0773964f;      // (Rf/R1)/Ainf  (560-Ohm leg)
+constexpr float kShapeG2 = 0.9221702f;      // (Rf/R2)/Ainf  (47-Ohm leg)
 
 // --- Stage 2 constants ---
 constexpr double kRs = 1.0e3;    // series/source resistance (Ohm)
@@ -116,10 +144,13 @@ struct RatModel::Impl {
     OnePoleSmoother filterCoef;  // one-pole LP coefficient a
     OnePoleSmoother level;       // linear output gain
 
-    // Stage 1 shaping: first-order high-shelf state (a low-pass whose output is
-    // the "bass" we partially subtract). shelfCoef is fixed after prepare.
-    float shelfCoef = 0.0f;
-    float shelfLpState = 0.0f;
+    // Stage 1 shaping: two first-order low-passes (one per RAT feedback leg)
+    // whose outputs are subtracted from the dry signal (see the constants
+    // above). Coeffs are fixed after prepare; states carry across blocks.
+    float shape1Coef = 0.0f;  // 560-Ohm leg, ~60.5 Hz
+    float shape2Coef = 0.0f;  // 47-Ohm leg, ~1539 Hz
+    float shape1State = 0.0f;
+    float shape2State = 0.0f;
 
     // Stage 3 low-pass state.
     float loPassState = 0.0f;
@@ -170,9 +201,11 @@ void RatModel::prepare(double sampleRate, int maxBlockSize) {
     d.filterCoef.prepare(kSmoothSeconds, d.sampleRate);
     d.level.prepare(kSmoothSeconds, d.sampleRate);
 
-    // Stage 1 shelf corner (fixed).
-    d.shelfCoef = onePoleCoeff(kShelfCornerHz, d.sampleRate);
-    d.shelfLpState = 0.0f;
+    // Stage 1 shaping low-passes (fixed corners).
+    d.shape1Coef = onePoleCoeff(kShapeLeg1Hz, d.sampleRate);
+    d.shape2Coef = onePoleCoeff(kShapeLeg2Hz, d.sampleRate);
+    d.shape1State = 0.0f;
+    d.shape2State = 0.0f;
 
     // Stage 3.
     d.loPassState = 0.0f;
@@ -239,15 +272,18 @@ void RatModel::process(const float* in, float* out, int numFrames) {
 void RatModel::processChunk(const float* in, float* out, int numFrames) {
     Impl& d = *impl_;
     assert(numFrames <= d.maxBlockSize && "chunk exceeds maxBlockSize");
-    const float shelfCoef = d.shelfCoef;
+    const float c1 = d.shape1Coef;
+    const float c2 = d.shape2Coef;
 
     // --- Stage 1 (base rate, linear): pre-clip shaping + variable gain. ---
-    // bass = LP(x); shaped = x - (1 - bassGain) * bass => unity above the corner,
-    // kShelfBassGain below it. Computed into stage1Buf so in/out may alias.
+    // Two-corner RAT feedback voicing: shaped = x - g1*LP1(x) - g2*LP2(x)
+    // (unity at HF, rising through the two leg corners, -> unity DC). See the
+    // stage-1 constants above. Computed into stage1Buf so in/out may alias.
     for (int i = 0; i < numFrames; ++i) {
         const float x = in[i];
-        d.shelfLpState += shelfCoef * (x - d.shelfLpState);
-        const float shaped = x - (1.0f - kShelfBassGain) * d.shelfLpState;
+        d.shape1State += c1 * (x - d.shape1State);
+        d.shape2State += c2 * (x - d.shape2State);
+        const float shaped = x - kShapeG1 * d.shape1State - kShapeG2 * d.shape2State;
         d.stage1Buf[static_cast<size_t>(i)] = shaped * d.preGain.next();
     }
 

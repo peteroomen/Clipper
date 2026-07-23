@@ -11,6 +11,7 @@ import {
   AMP_PARAM_BRIGHT,
   AMP_PARAM_CAB,
   WORKLET_URL,
+  trimKnobToGain,
 } from './params';
 import type { SourceKind, AmpParams } from './rig';
 
@@ -21,6 +22,7 @@ export type Unit = 'pedal' | 'amp';
 export interface StartOptions {
   source: SourceKind;
   deviceId?: string; // preferred audio input (live only)
+  inputTrim: number; // 0..1 knob position, rig-level pre-pedal input trim
   distortion: number; // 0..1 knob (pedal)
   filter: number; // 0..1 knob (pedal)
   level: number; // 0..1 knob (pedal)
@@ -31,6 +33,9 @@ export interface StartOptions {
   // Called whenever the model reports a new latency (e.g. after an oversampling
   // or cab-toggle change). samples are base-rate samples.
   onLatencySamples?: (samples: number) => void;
+  // Called ~43x/s with the worklet's post-trim input block peak (linear 0..1+),
+  // for the input meter.
+  onPeak?: (peak: number) => void;
 }
 
 export interface Engine {
@@ -41,6 +46,7 @@ export interface Engine {
   latencySamples: number;
   setParam(id: number, value: number): void; // pedal param
   setAmpParam(id: number, value: number): void; // amp param
+  setInputTrim(knob: number): void; // 0..1 knob -> linear gain, applied pre-pedal
   setOversampling(factor: number): void;
   setBypass(on: boolean): void; // pedal bypass
   setAmpBypass(on: boolean): void; // amp power off = bypass
@@ -98,6 +104,9 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
     setAmpParam(id, value) {
       node.port.postMessage({ type: 'param', unit: 'amp', id, value });
     },
+    setInputTrim(knob) {
+      node.port.postMessage({ type: 'input', gain: trimKnobToGain(knob) });
+    },
     setOversampling(factor) {
       node.port.postMessage({ type: 'oversampling', factor });
     },
@@ -110,15 +119,19 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
     stop: async () => {}, // replaced below once the source is wired
   };
 
-  // After ready, keep listening for post-oversampling latency updates.
+  // After ready, keep listening for post-oversampling latency updates and the
+  // periodic input peak-meter reports.
   node.port.onmessage = (e) => {
     if (e.data?.type === 'latency') {
       engine.latencySamples = e.data.latencySamples ?? engine.latencySamples;
       opts.onLatencySamples?.(engine.latencySamples);
+    } else if (e.data?.type === 'peak') {
+      opts.onPeak?.(e.data.peak ?? 0);
     }
   };
 
   // Apply the initial configuration.
+  engine.setInputTrim(opts.inputTrim);
   engine.setOversampling(opts.oversampling);
   engine.setParam(PARAM_DISTORTION, opts.distortion);
   engine.setParam(PARAM_FILTER, opts.filter);

@@ -101,9 +101,13 @@ export function Chat({ controller, guitar, onGuitarChange }: ChatProps) {
 
     setItems((prev) => [...prev, { id: nextId(), kind: 'user', text }]);
 
-    // Volatile context (rig + guitar) goes in the USER turn so the system prompt
-    // stays cacheable.
-    const preamble = buildContextPreamble(controller.getRig(), guitar);
+    // Volatile context (rig + guitar + live input peak) goes in the USER turn so
+    // the system prompt stays cacheable.
+    const preamble = buildContextPreamble(
+      controller.getRig(),
+      guitar,
+      controller.getPeakDbFs?.()
+    );
     historyRef.current.push({
       role: 'user',
       content: [

@@ -33,7 +33,7 @@ public:
     // Normalized knob positions in [0, 1]. flat (tone-neutral) is 0.5 for the
     // three tone controls; BRIGHT is a 0/1 toggle.
     enum ParamId : int {
-        PARAM_VOLUME = 0,   // linear-in-dB, -inf..+6 dB (0 = silence)
+        PARAM_VOLUME = 0,   // audio-taper master, +6 dB max, 0.4=unity (0=silent)
         PARAM_BASS = 1,     // low-shelf,  +/-12 dB around 0.5
         PARAM_MIDDLE = 2,   // mid peak,   +/- 9 dB around 0.5
         PARAM_TREBLE = 3,   // high-shelf, +/-12 dB around 0.5

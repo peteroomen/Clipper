@@ -275,7 +275,7 @@ test('amp: treble knob changes 5 kHz content through the full chain', async ({ p
           if (e.data?.type === 'latency') resolve();
         };
         node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
-        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.8 }); // volume ~unity
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.4 }); // volume = unity (M6.1 taper)
         node.port.postMessage({ type: 'param', unit: 'amp', id: 3, value: trebleKnob }); // treble
         node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 }); // cab on -> echoes latency
       });
@@ -358,6 +358,10 @@ test('amp: power off passes the pedal signal through untouched', async ({ page }
           if (e.data?.type === 'latency') resolve();
         };
         node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        // Explicit low amp volume (0.2 -> ~-13 dB in the M6.1 taper) so "amp on"
+        // is unambiguously quieter than the passthrough regardless of the taper's
+        // loud default (0.4 = unity).
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.2 });
         node.port.postMessage({ type: 'bypass', unit: 'amp', on: !ampOn }); // echoes latency
       });
 
@@ -385,11 +389,86 @@ test('amp: power off passes the pedal signal through untouched', async ({ page }
   });
 
   // Power off: pure passthrough of the (bypassed-pedal) input == the raw
-  // oscillator, RMS ~0.707. Power on: the amp's default volume (~0.4 knob) and
-  // the cab clearly attenuate it, so the two are audibly different.
+  // oscillator, RMS ~0.707 (the output soft limiter only kisses the ±1.0 peaks).
+  // Power on: with volume set low (0.2) the amp+cab clearly attenuate it.
   expect(result.offRms).toBeGreaterThan(0.6);
   expect(result.offRms).toBeLessThan(0.8);
   expect(result.onRms).toBeLessThan(result.offRms * 0.5);
+});
+
+// M6.1: the full default rig lands at a healthy output level (the "no volume"
+// fix) and the output soft limiter guarantees no raw overs even when driven hard.
+test('output level: default rig is healthily loud and never overs (limiter)', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.5;
+
+    // Render the FULL default rig (pedal -> amp -> cab) through the worklet, with
+    // a 0.1-amplitude 220 Hz input, optionally cranking to test the limiter.
+    async function render(hot: boolean): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') {
+            clearTimeout(t);
+            resolve();
+          } else if (e.data?.type === 'error') {
+            clearTimeout(t);
+            reject(new Error(e.data.message));
+          }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') resolve();
+        };
+        // Default rig pedal + amp params (amp volume 0.4 = unity in the M6.1 taper).
+        node.port.postMessage({ type: 'param', unit: 'pedal', id: 0, value: hot ? 1.0 : 0.7 });
+        node.port.postMessage({ type: 'param', unit: 'pedal', id: 1, value: 0.4 });
+        node.port.postMessage({ type: 'param', unit: 'pedal', id: 2, value: 0.8 });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: hot ? 1.0 : 0.4 });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 1, value: 0.5 });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 2, value: 0.5 });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 3, value: 0.6 });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 }); // cab on -> latency echo
+      });
+
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: 0.1 }); // ~real interface level
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+
+    function peak(data: Float32Array): number {
+      let p = 0;
+      const start = Math.floor(data.length / 3);
+      for (let i = start; i < data.length; i++) p = Math.max(p, Math.abs(data[i]));
+      return p;
+    }
+
+    const def = await render(false);
+    const hot = await render(true);
+    return { defPeak: peak(def), hotPeak: peak(hot) };
+  });
+
+  // Default rig at a 0.1 input is loud (~-3 dBFS peak) — NOT the old ~-26 dBFS.
+  expect(result.defPeak).toBeGreaterThan(0.35); // > ~-9 dBFS
+  expect(result.defPeak).toBeLessThanOrEqual(1.0);
+  // Cranked, the soft limiter holds the output at/below full scale (no overs).
+  expect(result.hotPeak).toBeLessThanOrEqual(1.0);
 });
 
 test('UI exposes M4 controls: pedal, three knobs, footswitch, source, oversampling', async ({
@@ -415,6 +494,13 @@ test('UI exposes M4 controls: pedal, three knobs, footswitch, source, oversampli
   await expect(page.getByTestId('footswitch')).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Oversampling' })).toBeVisible();
 
+  // M6.1 input calibration: the Trim knob and the peak meter render.
+  await expect(page.getByTestId('input-stage')).toBeVisible();
+  await expect(page.getByRole('slider', { name: 'Input trim' })).toBeVisible();
+  await expect(page.getByTestId('input-meter')).toBeVisible();
+  // Default trim is unity (0 dB), knob ~33/100.
+  await expect(page.getByTestId('input-trim-db')).toHaveText('0 dB');
+
   // M5 amp panel: Clean 120 with four knobs + bright/cab/power controls.
   await expect(page.getByTestId('amp')).toBeVisible();
   for (const name of ['Volume', 'Bass', 'Middle', 'Treble']) {
@@ -431,7 +517,9 @@ test('rig state: JSON round-trips exactly and restores from localStorage', async
   // Pure serialize -> deserialize round-trip is exact for a valid rig (incl amp).
   const roundTrip = await page.evaluate(() => {
     const t = (window as any).__CLIPPER_TEST__;
+    // Key order must match normalizeRig's output for the exact-JSON round-trip.
     const rig = {
+      input: { trim: 0.5 },
       pedal: { type: 'rat', engaged: false, params: { distortion: 0.42, filter: 0.13, level: 0.9 } },
       amp: {
         type: 'clean120',

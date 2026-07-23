@@ -5,12 +5,14 @@
 import type { RigState } from '../rig';
 import type { GuitarProfile } from '../guitar';
 import { describeGuitar } from '../guitar';
+import { trimKnobToDb } from '../params';
 
 export const SYSTEM_PROMPT = `You are the Clipper tone coach: a knowledgeable, friendly guitar-tone expert who helps a player dial in sounds by reasoning with them, not just twisting knobs at them.
 
 # The rig you control
 The player's signal chain is: guitar -> RAT-style distortion pedal -> JC-120-style clean amp -> 2x12 cab -> speakers.
 
+- Input trim (rig-level, BEFORE the pedal): a calibration gain (0-100 knob = -12..+24 dB, 33 = 0 dB). A guitar through an audio interface often arrives too quiet to drive a diode clipper hard. If the player says the pedal "has no balls" / lacks gain even cranked, the FIRST thing to check is the input level: raise the trim until the input peak meter sits in its good zone (~-12 to -3 dBFS). This is often the real fix, not more dist. You are given the current input peak in the context.
 - RAT-style pedal (three knobs, each 0-100 to the player):
   - dist (distortion/gain): how hard the diode clipper is driven. Low = clean/edge-of-breakup, high = thick saturation.
   - filter: a low-pass filter AFTER the clipping stage. This is the RAT's signature — clockwise (higher) makes the tone DARKER and tames fizz/harshness WITHOUT reducing how hard it clips. Counter-clockwise (lower) = brighter, more presence and fizz.
@@ -48,12 +50,24 @@ export function buildSystem() {
 // The per-turn context block: current rig state + guitar profile, prepended in
 // the USER message content before the user's own text. Format is stable Markdown
 // with a fenced JSON rig so the model can read exact values.
-export function buildContextPreamble(rig: RigState, guitar: GuitarProfile): string {
+export function buildContextPreamble(
+  rig: RigState,
+  guitar: GuitarProfile,
+  peakDbFs?: number | null
+): string {
   const rigJson = JSON.stringify(rig, null, 2);
+  const trimDb = trimKnobToDb(rig.input.trim);
+  const peakStr =
+    peakDbFs != null && Number.isFinite(peakDbFs)
+      ? `${peakDbFs.toFixed(1)} dBFS`
+      : 'not running (no signal to meter)';
   return (
     '## Current rig\n```json\n' +
     rigJson +
     '\n```\n' +
+    `## Input\nTrim: ${trimDb >= 0 ? '+' : ''}${trimDb.toFixed(1)} dB (knob ${Math.round(
+      rig.input.trim * 100
+    )}/100). Current post-trim input peak: ${peakStr}. Good zone is -12..-3 dBFS.\n` +
     '## Guitar\n' +
     describeGuitar(guitar)
   );

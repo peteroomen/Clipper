@@ -235,7 +235,7 @@ mapped internally and one-pole smoothed (~5 ms, the M0 philosophy):
 
 | Param (id) | Knob 0 | Knob 1 | Mapping | Notes |
 |---|---|---|---|---|
-| `PARAM_DISTORTION` (0) | 0 dB | +54 dB | linear-in-dB pre-clip gain | plus a fixed pre-clip high-shelf (see below) |
+| `PARAM_DISTORTION` (0) | 0 dB | +66 dB | linear-in-dB pre-clip gain | plus the two-corner RAT feedback voicing (see below; M6.1 re-voice — was +54 dB + a single 320 Hz shelf) |
 | `PARAM_FILTER` (1) | 20 kHz (bright) | 500 Hz (dark) | log-swept one-pole LP cutoff | RAT convention: clockwise = darker |
 | `PARAM_LEVEL` (2) | 0.0 | 1.0 | identity linear gain | audio-taper law is a future refinement |
 
@@ -245,15 +245,25 @@ Reference level: input float `1.0f == 1.0 V` at the diode stage (a hot humbucker
 DI peaks ~0.3 V), so pre-gain must lift the signal past the diode knee to clip —
 as the real LM308 stage does.
 
-1. **Gain / shaping (LM308 non-inverting amp).** Variable pre-gain (0…+54 dB;
-   the real RAT reaches ~+66 dB via `1 + P1/Rg`, P1 = 100 k Distortion pot, Rg ≈
-   47 Ω — capped lower here since we do not model the LM308's slew limiting).
-   The RAT feedback network (47 Ω + 2.2 µF leg to ground, ~100 pF across the
-   feedback) makes the stage gain **rise toward the mids/highs** with corners
-   roughly in the 100–800 Hz band — this is the RAT's tightness. Modeled as a
-   first-order high-shelf: unity above ~320 Hz, bass shelved to 0.30 (≈ −10.5 dB).
-   *Assumption:* a single shelf approximates the two-pole feedback transfer; exact
-   component-accurate EQ and op-amp slew limiting are future refinements.
+1. **Gain / shaping (LM308 non-inverting amp).** Variable pre-gain 0…**+66 dB**
+   (M6.1: was +54 dB). The real RAT non-inverting gain is `1 + P1/(R1‖R2)` with
+   P1 = 100 k Distortion pot; at max the two ground legs short to R1‖R2 ≈ 43 Ω
+   → +67.3 dB HF plateau, so +66 dB is essentially that plateau. **Pre-clip
+   voicing (M6.1 re-voice against the real circuit).** The RAT feedback network
+   has TWO series-RC legs from the inverting input to ground —
+   **560 Ω + 4.7 µF** (corner ≈ 60.5 Hz) and **47 Ω + 2.2 µF** (corner ≈ 1539 Hz)
+   — so the stage gain **rises with frequency in two steps** and falls toward
+   unity below ~60 Hz (NOT a fixed −10.5 dB shelf below 320 Hz, which the old M1
+   single shelf used). Normalized to the HF plateau (= the knob's dB), the
+   response reduces exactly to `shaped = x − g1·LP₆₀(x) − g2·LP₁₅₃₉(x)`
+   (g1 = 0.0774, g2 = 0.9222 — two one-pole low-passes at the leg corners; see
+   `RatModel.cpp`). *Validation* (core test `testPreClipVoicing`, small-signal
+   shape vs the analytical `A(f)` at Rf = 100 k, dB relative to the 3 kHz plateau,
+   measured within **±1.5 dB** — worst 0.67 dB at 44.1 k): 82 Hz **−18.2 dB**,
+   320 Hz **−11.5 dB**, 1539 Hz **−1.8 dB**, 5 kHz **≈ 0 dB** (analytical targets
+   −18.9 / −11.8 / −2.1 / −0.4 dB). *Assumption:* the shape is fixed at Rf = 100 k
+   (the real pot-dependent shape flattens at low DISTORTION); op-amp slew limiting
+   is still not modeled — future refinements.
 2. **Clipper (WDF, `chowdsp_wdf`).** Antiparallel silicon diode pair to ground
    (1N914-ish: Is = 2.52 nA, Vt = 25.85 mV, one diode/side → ±0.6 V knee), built
    exactly like the library's RC diode-clipper example: a resistive voltage
@@ -1072,6 +1082,82 @@ leak). The existing 10 audio/UI tests stay green. **The one thing the suite
 cannot cover is the live-key path** — a real end-to-end request to Anthropic
 requires a valid `ANTHROPIC_API_KEY` and must be verified by hand. The keyless
 `MOCK=1` path is verified against the real local server (curl / manual).
+
+## 11.1 M6.1 — RAT re-voice + input calibration + output level
+
+A bug-fix pass driven by a real-guitar report ("the RAT has no balls — even
+cranked it only gives a small amount of gain/saturation") plus a follow-up
+("it needs more volume — the whole rig is too quiet"). Root causes, in order of
+impact, and what changed.
+
+**Cause 1 (primary): input level.** A guitar through an audio interface arrives
+far below the model's `1.0f == 1 V` diode reference (DIs often peak 0.01–0.05),
+so at real-world knob settings the signal barely reaches the ±0.6 V diode knee —
+it stays clean/thin no matter how high DISTORTION goes. There was no calibration
+control. **Fix:** a rig-level **input trim** (−12…+24 dB, default 0 dB) applied in
+the worklet *before* the pedal (a sample multiply — no core change), plus a
+**peak meter** (the worklet reports the post-trim block peak; the UI meter marks
+the good zone ~−12…−3 dBFS). A/B (low-E pluck, `dist 0.5`, real level `amp 0.03`,
+tail RMS): **0.028** (no trim) → **0.077** (+12 dB) → **0.142** (+24 dB, into
+sustained clipping). This is the real "balls" fix.
+
+**Cause 2: over-aggressive / wrong pre-clip voicing.** M1 approximated the RAT
+op-amp EQ as a single low shelf cutting everything below 320 Hz to a flat
+−10.5 dB. **Fix:** re-voiced against the actual ProCo RAT LM308 non-inverting
+stage — `A(s) = 1 + Rf/Zg`, `Zg = (560 Ω+4.7 µF) ‖ (47 Ω+2.2 µF)` to ground,
+Rf = 100 k — a two-corner rise (≈60.5 Hz, ≈1539 Hz) that falls toward unity at DC
+rather than a fixed shelf floor. Implemented as `x − g1·LP₆₀ − g2·LP₁₅₃₉` (see §6
+bullet 1). Validated in `testPreClipVoicing` within **±1.5 dB** of the analytical
+target (worst 0.67 dB). *(ElectroSmash's ProCo Rat Analysis was requested for
+cross-check but the host is blocked by this environment's egress policy; the
+network is fully specified by the component values, so the response is derived
+analytically.)*
+
+**Cause 3: max gain too low.** `+54 dB` → **`+66 dB`** (`RAT_GAIN_DB_MAX`, i.e.
+`kDistMaxDb`) — the real RAT's ≈+66–67 dB HF plateau, so a cranked knob has the
+headroom to slam the diodes.
+
+**Cause 4 (task-1 live-path audit): no bug found.** Traced dist-knob →
+`setParam` → worklet `{param, unit:'pedal', id:0, value}` → `rat_set_param` →
+`RatModel::setParameter`: the 0..1 reaches the core **unscaled**; oversampling is
+a unity-passband cascade (the existing factor-1 bit-regression + 1 kHz
+0.0003 dB passband tests prove no gain is dropped); the worklet feeds the pedal
+the **raw** input (no hidden attenuation). Verified, no change.
+
+**Output level (task 4b).** The rig came out ~20 dB too quiet: the amp VOLUME
+default knob (0.4) sat at −21.6 dB under the M5 linear `−40…+6 dB` map, so a
+default render peaked at **−26.2 dBFS**. The cab IR is already ~unity-RMS
+(measured −1.1 dB for a guitar signal — no makeup needed), so the loss was
+entirely the volume taper. **Fix:** a loud-biased **audio taper**
+`db(knob) = +6 − 46·(1−knob)⁴`, so the design's default 0.4 == **unity** and the
+bottom third stays a usable quiet range (fades to silence at 0). A default render
+(0.1 input, 220 Hz) now peaks at **−2.7 dBFS** (+23.5 dB). A **soft limiter** on
+the worklet output (transparent below ±0.9, tanh knee to ±1.0) guarantees the
+louder staging never emits raw overs; a full-scale bypass passthrough picks up
+only ~0.6% 3rd harmonic. Validated: `testChainGain` (amp+cab ≈ unity at default),
+`testVolume` (audio taper: 0.4 = unity, +6 dB top, quiet bottom), and a Playwright
+full-chain render (healthy peak + never overs).
+
+**Assistant.** `set_param` now also accepts `unit:"input"`, `param:"trim"`
+(0..1 → −12…+24 dB); the per-turn rig context carries the input trim (dB) and the
+live post-trim peak (dBFS) so the coach can diagnose "no balls" as an input-level
+problem and raise the trim.
+
+**A/B evidence.** `bash core/scripts/ab_render.sh` builds the OLD model
+(HEAD `RatModel`, +54 dB + 320 Hz shelf) beside the NEW one and renders matched
+pluck/sine/sweep signals to an untracked `core/.ab-scratch/` (peak/RMS + spectra).
+Output-level before/after: default rig cab peak **−26.2 → −2.7 dBFS**.
+
+**Files changed.** Core: `src/dsp/RatModel.cpp` (voicing + +66 dB),
+`src/dsp/AmpModel.cpp` (+ `.h` comment; volume taper), `tools/render/main.cpp`
+(`pluck` generator), `tests/test_rat_model.cpp` (+`testPreClipVoicing`,
+regenerated factor-1 golden), `tests/test_amp_model.cpp` (+`testChainGain`,
+rewritten `testVolume`, updated smoothing bound), `scripts/ab_render.sh` (new).
+Web: `worklet/clipper-processor.js` (input trim + peak + limiter),
+`src/params.ts`, `src/rig.ts` (`input` section), `src/audio.ts`, `src/App.tsx`,
+`src/components/InputStage.tsx` (new), `src/styles/app.css`,
+`src/assistant/{tools,prompt}.ts`, `src/components/Chat.tsx`, and the two test
+specs (+ `playwright.config.ts` retries for the known WebAudio flake).
 
 ## Mac app (Electron)
 

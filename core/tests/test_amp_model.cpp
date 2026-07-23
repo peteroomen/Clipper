@@ -63,7 +63,7 @@ std::vector<float> sine(double f, float amp, double secs, double fs) {
 }
 
 struct AmpKnobs {
-    float volume = 0.8696f;  // ~unity gain (db 0)
+    float volume = 0.4f;  // ~unity gain (0 dB) in the M6.1 audio taper
     float bass = 0.5f, middle = 0.5f, treble = 0.5f, bright = 0.0f;
 };
 
@@ -168,18 +168,29 @@ void testBright(double fs) {
                 hiBoost, loBoost, fs);
 }
 
-// --- Test 3: volume is linear-in-dB. ------------------------------------------
+// --- Test 3: volume is a loud-biased audio taper (M6.1). ----------------------
 void testVolume(double fs) {
-    // Two knob positions in the dB-linear region; the gain ratio must match the
-    // dB spacing. knob 0.5 -> -17 dB, knob 1.0 -> +6 dB => 23 dB apart.
-    AmpKnobs lo, hi;
-    lo.volume = 0.5f;
-    hi.volume = 1.0f;
-    const double aLo = ampResponse(1000.0, lo, fs);
-    const double aHi = ampResponse(1000.0, hi, fs);
-    const double measured = toDb(aHi / aLo);
-    // knob 1.0 db = -40 + 46 = +6; knob 0.5 db = -40 + 23 = -17. delta = 23 dB.
-    assert(std::fabs(measured - 23.0) < 1.0 && "volume not linear-in-dB (23 dB span)");
+    // Audio taper: db(knob) = +6 - 46*(1-knob)^4.
+    //   0.4 -> +0.04 dB (unity), 1.0 -> +6 dB, 0.2 -> -12.8 dB.
+    // Anchor 1: the DEFAULT knob (0.4) is unity, so the rig is loud by default.
+    {
+        AmpKnobs unity;
+        unity.volume = 0.4f;
+        AmpKnobs top;
+        top.volume = 1.0f;
+        const double aU = ampResponse(1000.0, unity, fs);
+        const double aT = ampResponse(1000.0, top, fs);
+        // 0.4 -> 1.0 spans ~+6 dB (the taper's headroom above unity).
+        assert(std::fabs(toDb(aT / aU) - 6.0) < 1.0 && "volume 0.4->1.0 not ~ +6 dB");
+    }
+    // Anchor 2: the bottom third is meaningfully quieter (usable quiet range).
+    {
+        AmpKnobs a04, a02;
+        a04.volume = 0.4f;
+        a02.volume = 0.2f;
+        const double s = toDb(ampResponse(1000.0, a04, fs) / ampResponse(1000.0, a02, fs));
+        assert(s > 10.0 && s < 15.0 && "volume 0.2->0.4 not ~ +12.8 dB (taper too flat)");
+    }
 
     // Knob 0 = true silence.
     {
@@ -191,7 +202,12 @@ void testVolume(double fs) {
             pk = std::max(pk, static_cast<double>(std::fabs(out[i])));
         assert(pk < 1e-4 && "volume knob 0 should be silent");
     }
-    std::printf("  [ok] volume linear-in-dB: measured %.2f dB across 0.5->1.0 (expect 23); knob 0 silent (fs=%g)\n",
+    // Print the unity anchor for the record.
+    AmpKnobs lo, hi;
+    lo.volume = 0.5f;
+    hi.volume = 1.0f;
+    const double measured = toDb(ampResponse(1000.0, hi, fs) / ampResponse(1000.0, lo, fs));
+    std::printf("  [ok] volume audio taper: 0.5->1.0 = %.2f dB, 0.4=unity, knob 0 silent (fs=%g)\n",
                 measured, fs);
 }
 
@@ -221,6 +237,51 @@ void testCabIR(double fs) {
     assert(d60 < -6.0 && "cab IR: sub-bass (60 Hz) not cut");
     std::printf("  [ok] cab IR shape (dB re 1kHz): 60Hz %.1f  100Hz %.1f  2.5k %.1f  5k %.1f  8k %.1f (fs=%g, len=%zu)\n",
                 d60, d100, d25k, d5k, d8k, fs, n);
+}
+
+// --- Test 4b: amp+cab makeup gain (M6.1). -------------------------------------
+// The rig was ~20 dB too quiet because the amp volume default (0.4) sat at
+// -21.6 dB. With the M6.1 audio taper, knob 0.4 == unity, and the default cab IR
+// is already normalized to ~unity passband, so the amp(0.4)+cab stage passes a
+// broadband signal at roughly unity RMS (a clean platform, not an attenuator).
+void testChainGain(double fs) {
+    // A broadband-ish test signal (three partials across the guitar band).
+    const int n = static_cast<int>(fs);
+    std::vector<float> in(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        const double t = i / fs;
+        in[static_cast<size_t>(i)] = 0.2f * static_cast<float>(
+            std::sin(kTwoPi * 220.0 * t) + std::sin(kTwoPi * 660.0 * t) +
+            std::sin(kTwoPi * 1500.0 * t)) / 3.0f;
+    }
+    auto rmsTail = [&](const std::vector<float>& x) {
+        double a = 0.0;
+        size_t s = x.size() / 3;
+        for (size_t i = s; i < x.size(); ++i) a += double(x[i]) * x[i];
+        return std::sqrt(a / (x.size() - s));
+    };
+    const double inRms = rmsTail(in);
+
+    // amp at the DEFAULT volume knob (0.4), tone flat, then the default cab.
+    AmpKnobs def;
+    def.volume = 0.4f;
+    auto amped = renderAmp(in, def, fs);
+    auto ir = clipper::dsp::generateDefaultCab2x12IR(fs);
+    CabConvolver cab;
+    cab.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
+    std::vector<float> chained = amped;
+    cab.process(chained.data(), chained.data(), static_cast<int>(chained.size()));
+
+    const double ampGainDb = toDb(rmsTail(amped) / inRms);
+    const double chainGainDb = toDb(rmsTail(chained) / inRms);
+    // amp(0.4) is unity within ~2 dB across this band (tone flat-ish).
+    assert(std::fabs(ampGainDb) < 2.0 && "amp default volume (0.4) not ~ unity");
+    // amp+cab net gain sits near unity (cab colors, does not attenuate ~20 dB).
+    // (Upper edge allows the 96 kHz cab's stronger presence bump, ~+3 dB.)
+    assert(chainGainDb > -5.0 && chainGainDb < 5.0 &&
+           "amp+cab chain gain at default not near unity (rig too quiet/loud)");
+    std::printf("  [ok] chain gain @ default vol 0.4: amp %.1f dB, amp+cab %.1f dB (fs=%g)\n",
+                ampGainDb, chainGainDb, fs);
 }
 
 // --- Test 5: impulse through the convolver reproduces the IR, delayed by the
@@ -325,7 +386,9 @@ void testSmoothing(double fs) {
 
     // A click at the switch would spike the sample-to-sample difference far above
     // the sine's own maximum slope. Bound: 1.5x the sine slope at the TARGET gain.
-    const double targetGainDb = -40.0 + 46.0 * 0.9;  // = +1.4 dB
+    // M6.1 audio taper: db(knob) = +6 - 46*(1-knob)^4; at 0.9 that is ~+6 dB.
+    const double tk = 1.0 - 0.9;
+    const double targetGainDb = 6.0 - 46.0 * (tk * tk) * (tk * tk);
     const double targetGain = std::pow(10.0, targetGainDb / 20.0);
     const double sineSlope = targetGain * A * kTwoPi * f / fs;
     const double bound = 1.5 * sineSlope;
@@ -375,6 +438,7 @@ int main() {
         testBright(fs);
         testVolume(fs);
         testCabIR(fs);
+        testChainGain(fs);
         testConvolverImpulse(fs);
         testConvolverChunking(fs);
         testSmoothing(fs);

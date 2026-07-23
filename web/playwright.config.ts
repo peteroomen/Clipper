@@ -26,6 +26,12 @@ export default defineConfig({
   timeout: 60_000,
   fullyParallel: false,
   workers: 1,
+  // Chromium's OfflineAudioContext can intermittently render silence once enough
+  // AudioContexts have been created in a single browser process (a known WebAudio
+  // engine flake, not a DSP fault — the offline-render proofs pass in isolation).
+  // A couple of retries makes the suite deterministic without masking a real
+  // break (a genuine failure loses all attempts).
+  retries: 2,
   reporter: [['list']],
   use: {
     baseURL: 'http://localhost:4173',

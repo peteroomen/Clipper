@@ -110,3 +110,32 @@ header.hero { position: relative; padding: 28px 0 8px; }
   .pedal { width: 100%; max-width: 340px; }
   .rig { gap: 30px; }
 }
+
+/* ---------- input stage (M6.1): trim knob + peak meter, rig header ---------- */
+.input-stage {
+  display: flex; align-items: center; gap: 22px;
+  padding: 14px 20px; margin-bottom: 26px;
+  border-radius: 20px;
+}
+.input-knob { flex: 0 0 auto; transform: scale(0.72); transform-origin: center; margin: -8px 0; }
+.input-meter-wrap { flex: 1 1 auto; min-width: 180px; }
+.input-meter-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 7px; }
+.input-meter-title { font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--ink-dim); }
+.input-meter-read { font-size: 12px; color: var(--ink); }
+.input-trim-read { margin-left: auto; font-size: 12px; color: var(--ink-dim); }
+.input-meter { position: relative; height: 14px; border-radius: 999px; overflow: hidden; }
+.input-meter-zone { position: absolute; top: 0; bottom: 0;
+  background: rgba(64, 176, 112, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(64, 176, 112, 0.45); }
+.input-meter-fill { position: absolute; left: 0; top: 0; bottom: 0;
+  background: linear-gradient(90deg, var(--ink-faint), var(--ink-dim));
+  transition: width 60ms linear; }
+.input-meter.in-zone .input-meter-fill {
+  background: linear-gradient(90deg, #4FB878, #38A063); }
+.input-meter.hot .input-meter-fill {
+  background: linear-gradient(90deg, var(--led), var(--led)); }
+
+@media (max-width: 760px) {
+  .input-stage { flex-wrap: wrap; }
+}

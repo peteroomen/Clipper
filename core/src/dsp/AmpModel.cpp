@@ -66,17 +66,28 @@ constexpr double kTrebleShelfS = 0.8;
 constexpr double kBrightHz = 3000.0;
 constexpr double kBrightDb = 5.0;  // when engaged
 
-// --- Volume ---
-constexpr float kVolMinDb = -40.0f;
-constexpr float kVolMaxDb = 6.0f;
-constexpr float kVolFadeKnob = 0.03f;  // below this knob value, fade to silence
+// --- Volume (M6.1 re-voice: an audio-taper MASTER, loud-biased) ---
+// The M5 mapping (linear-in-dB -40..+6) put the design's default knob (0.4) at
+// -21.6 dB — the whole rig came out ~20 dB too quiet. This is a loud-biased
+// audio taper instead: db(knob) = kVolMaxDb - kVolTaperDb*(1-knob)^4, so the
+// DEFAULT 0.4 sits at UNITY (~0 dB net through the near-unity cab), the top adds
+// a little headroom (+6 dB, caught by the worklet's soft limiter), and the
+// bottom third stays a usable quiet range that fades to true silence at 0. The
+// quartic keeps high knob positions loud while letting the bottom plunge — real
+// master-volume feel.
+constexpr float kVolMaxDb = 6.0f;      // knob 1.0
+constexpr float kVolTaperDb = 46.0f;   // taper depth: db at knob 0 = +6 - 46 = -40
+constexpr float kVolFadeKnob = 0.03f;  // below this knob value, fade to true silence
 
 // --- Smoothing / control rate ---
 constexpr double kSmoothSeconds = 0.008;  // ~8 ms
 constexpr int kCtrlBlock = 32;            // recompute biquad coeffs every N samples
 
 float knobToVolumeGain(float knob) {
-    const float db = kVolMinDb + (kVolMaxDb - kVolMinDb) * knob;
+    // Loud-biased quartic audio taper (see the constants above). t=(1-knob)^4.
+    const float t = 1.0f - knob;
+    const float taper = (t * t) * (t * t);
+    const float db = kVolMaxDb - kVolTaperDb * taper;
     float g = std::pow(10.0f, db / 20.0f);
     if (knob < kVolFadeKnob) g *= (knob / kVolFadeKnob);  // -> 0 at knob 0
     return g;

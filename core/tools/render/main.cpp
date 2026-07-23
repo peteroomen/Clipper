@@ -54,7 +54,7 @@ struct Args {
         "Usage:\n"
         "  %s in.wav out.wav [--distortion D] [--filter F] [--level L] [--spectrum s.csv]\n"
         "  %s --gen sine:FREQ:SECONDS out.wav [params] [--sr SR] [--amp A] [--spectrum s.csv]\n"
-        "  %s --gen sweep:F0:F1:SECONDS out.wav [params]\n"
+        "  %s --gen sweep:F0:F1:SECONDS out.wav [params]   (also: pluck:FREQ:SECONDS)\n"
         "  %s --alias-report [--sr SR] [--distortion D] [--stage2 wdf|adaa]\n"
         "Params are knob positions in [0,1] (defaults: distortion 0.7, filter 0.4, level 0.8).\n"
         "M2 flags: --os 1|2|4|8 (oversampling, default 4), --stage2 wdf|adaa (default wdf),\n"
@@ -90,6 +90,27 @@ bool generate(const Args& a, std::vector<float>& sig) {
         for (int i = 0; i < n; ++i)
             sig[static_cast<size_t>(i)] =
                 amp * static_cast<float>(std::sin(kTwoPi * f * i / fs));
+        return true;
+    }
+    if (parts[0] == "pluck" && parts.size() == 3) {
+        // A plucked-string-like burst: fast attack, exponentially decaying sum of
+        // a few harmonics (brighter partials decay faster). Tool-only test signal
+        // for A/B evidence — realistic dynamics without needing a WAV.
+        const double f = std::atof(parts[1].c_str());
+        const double secs = std::atof(parts[2].c_str());
+        const int n = static_cast<int>(secs * fs);
+        sig.resize(static_cast<size_t>(n));
+        const double attackS = 0.004;  // 4 ms pick attack
+        for (int i = 0; i < n; ++i) {
+            const double t = i / fs;
+            const double attack = 1.0 - std::exp(-t / attackS);
+            double s = 0.0;
+            for (int h = 1; h <= 6; ++h) {
+                const double decay = std::exp(-t * (2.0 + 1.2 * h));  // s^-1
+                s += (1.0 / h) * decay * std::sin(kTwoPi * f * h * t);
+            }
+            sig[static_cast<size_t>(i)] = amp * static_cast<float>(attack * s);
+        }
         return true;
     }
     if (parts[0] == "sweep" && parts.size() == 4) {

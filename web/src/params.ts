@@ -36,5 +36,28 @@ export const AMP_PARAM_ID = {
 // snap down in the core; the UI offers exactly these.
 export const OVERSAMPLING_FACTORS = [1, 2, 4, 8] as const;
 
+// --- Input trim (M6.1) --------------------------------------------------------
+// A rig-level input gain applied in the worklet BEFORE the pedal chain, so a
+// real-world interface signal (guitar DIs often arrive at 0.01..0.05, far below
+// the model's 1.0 == 1 V diode reference) can be lifted to actually drive the
+// clipper. Stored in RigState as a 0..1 knob position; mapped to a dB trim over
+// [INPUT_TRIM_MIN_DB, INPUT_TRIM_MAX_DB]. The knob position for 0 dB (the
+// default) is INPUT_TRIM_UNITY_KNOB.
+export const INPUT_TRIM_MIN_DB = -12;
+export const INPUT_TRIM_MAX_DB = 24;
+export const INPUT_TRIM_UNITY_KNOB =
+  (0 - INPUT_TRIM_MIN_DB) / (INPUT_TRIM_MAX_DB - INPUT_TRIM_MIN_DB); // = 1/3
+
+// 0..1 knob position -> dB trim.
+export function trimKnobToDb(knob: number): number {
+  const k = Math.min(1, Math.max(0, knob));
+  return INPUT_TRIM_MIN_DB + (INPUT_TRIM_MAX_DB - INPUT_TRIM_MIN_DB) * k;
+}
+
+// 0..1 knob position -> linear gain (what the worklet multiplies input by).
+export function trimKnobToGain(knob: number): number {
+  return Math.pow(10, trimKnobToDb(knob) / 20);
+}
+
 // Absolute URL of the copied worklet module (served from public/generated).
 export const WORKLET_URL = '/generated/clipper-processor.js';

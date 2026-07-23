@@ -17,3 +17,6 @@ web/.playwright/
 # Misc
 .DS_Store
 *.log
+
+# M6.1 A/B evidence (untracked scratch renders)
+core/.ab-scratch/

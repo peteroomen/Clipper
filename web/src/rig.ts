@@ -9,7 +9,7 @@
 // when the M5 amp/cab arrive — deserializeRig() already normalizes unknown
 // input, so widening the schema stays backward-compatible.
 
-import { OVERSAMPLING_FACTORS } from './params';
+import { OVERSAMPLING_FACTORS, INPUT_TRIM_UNITY_KNOB } from './params';
 
 export type SourceKind = 'test' | 'live';
 export type PedalType = 'rat';
@@ -47,7 +47,15 @@ export interface AmpState {
   params: AmpParams;
 }
 
+// Rig-level input stage (M6.1): a trim applied BEFORE the pedal, for calibrating
+// real-world interface levels into the model. `trim` is a 0..1 knob position
+// (mapped to a dB gain in params.ts; INPUT_TRIM_UNITY_KNOB == 0 dB == default).
+export interface InputState {
+  trim: number; // 0..1 knob position
+}
+
 export interface RigState {
+  input: InputState;
   pedal: PedalState;
   amp: AmpState;
   oversampling: number; // 1 | 2 | 4 | 8 (nonlinear-stage oversampling)
@@ -73,7 +81,13 @@ export const AMP_KNOB_DEFAULTS: AmpParams = {
   cab: 1,
 };
 
+// Default input trim: unity (0 dB).
+export const INPUT_DEFAULTS: InputState = {
+  trim: INPUT_TRIM_UNITY_KNOB,
+};
+
 export const DEFAULT_RIG: RigState = {
+  input: { ...INPUT_DEFAULTS },
   pedal: {
     type: 'rat',
     engaged: true,
@@ -121,7 +135,11 @@ export function normalizeRig(raw: unknown): RigState {
 
   const source: SourceKind = r.source === 'live' || r.source === 'test' ? r.source : d.source;
 
+  // Migration seam: a pre-M6.1 rig has no `input` — fall back to the default.
+  const inp = (r.input ?? {}) as Record<string, unknown>;
+
   return {
+    input: { trim: clamp01(inp.trim, d.input.trim) },
     pedal: {
       type: 'rat',
       engaged: typeof p.engaged === 'boolean' ? p.engaged : d.pedal.engaged,
@@ -171,6 +189,7 @@ export function saveRig(rig: RigState): void {
 // A fresh, deep-copied default rig (no shared references into DEFAULT_RIG).
 export function freshDefaultRig(): RigState {
   return {
+    input: { ...INPUT_DEFAULTS },
     pedal: { type: 'rat', engaged: true, params: { ...KNOB_DEFAULTS } },
     amp: { type: 'clean120', engaged: true, params: { ...AMP_KNOB_DEFAULTS } },
     oversampling: DEFAULT_RIG.oversampling,
