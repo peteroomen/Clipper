@@ -21,11 +21,13 @@ if(NOT MSVC)
 endif()
 
 # The C ABI wrapper is a separate object so native builds can exercise it too.
-# It only depends on the portable core.
+# It exports both the M0 gain core and (since M3) the RAT model, so it links
+# clipper_dsp as well. clipper_dsp is defined further down; CMake resolves the
+# target name at generation time regardless of declaration order.
 add_library(clipper_c_api STATIC
     src/clipper_c_api.cpp
 )
-target_link_libraries(clipper_c_api PUBLIC clipper_core)
+target_link_libraries(clipper_c_api PUBLIC clipper_core clipper_dsp)
 
 # --- M1: RAT diode-clipper model ---------------------------------------------
 # The pedal model is NEW code beside the M0 gain core (which the WASM pipeline

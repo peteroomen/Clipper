@@ -94,6 +94,16 @@ bundling AudioWorklet modules. The four exported C functions
 `HEAPF32` are used by the worklet to run each 128-frame render quantum through
 the C++ core.
 
+Since **M3** the module also compiles the RAT model (`src/dsp/RatModel.cpp`) and
+exports the `rat_*` C ABI (`rat_create/destroy/set_param/set_oversampling/`
+`latency_samples/process`) alongside the original `clipper_*` gain exports (kept
+so the M0 path still links). The RAT model needs the header-only `chowdsp_wdf`
+includes; `build-wasm.sh` locates them under `core/build/_deps/chowdsp_wdf-src/`
+`include` (the FetchContent checkout) and, if they are missing, runs a `cmake`
+configure of `core/` to populate them, failing with an actionable message rather
+than a raw include error. Configure the native core once (§6) before the first
+WASM build so the dependency is present offline.
+
 The web build/test will fail with a clear message
 (`web/scripts/check-artifact.mjs`) if this artifact is missing.
 
@@ -107,11 +117,14 @@ npm run dev        # dev server at http://localhost:5173
 ```
 
 Open http://localhost:5173. Click **Start audio** (an AudioContext needs a user
-gesture to start), then move the **Gain** slider (0..2). Status text shows the
-AudioContext state and sample rate. The graph is:
-`OscillatorNode (220 Hz sine) -> AudioWorkletNode (WASM gain) -> destination`.
-You cannot hear it inside the container; the audio proof is the Playwright test
-below.
+gesture to start). Since **M3** the app is the RAT pedal: pick a **source** (test
+tone or live input), then dial the **Distortion / Filter / Level** sliders,
+toggle **Bypass**, and pick an **Oversampling** factor; status text shows context
+state, sample rate, and latency. The graph is `source (220 Hz oscillator or
+getUserMedia) -> AudioWorkletNode (WASM RatModel) -> destination`. You cannot
+hear it inside the container; the audio proof is the Playwright suite (§8). (The
+M0 gain graph description is superseded — the gain export still ships in the WASM
+module but the app no longer wires it.)
 
 ## 5. Automated browser verification
 
@@ -432,6 +445,115 @@ better than 1×, 8× worst-alias < −60 dB; passband integrity (1 kHz within 0.
 golden; ADAA ≥ 12 dB better than the naive memoryless clipper; and an 8× perf
 sanity bound (1 s in ≪ 500 ms; measured ~60–75 ms).
 
+## 8. M3 — Live in the browser
+
+M3 wires the M2 RAT model into the AudioWorklet skeleton and makes it playable
+live: **guitar → audio interface → `getUserMedia` → worklet (RatModel) →
+speakers**, plus a built-in **test tone** so everything works with no instrument
+connected.
+
+What changed:
+
+- **C ABI** (`core/src/clipper_c_api.cpp`): added `rat_create(sr)`,
+  `rat_destroy`, `rat_set_param(h,id,v)`, `rat_set_oversampling(h,factor)`,
+  `rat_latency_samples(h)`, `rat_process(h,in,out,n)` beside the gain exports
+  (opaque handle, `EMSCRIPTEN_KEEPALIVE`). `prepare` uses maxBlockSize 128.
+  `clipper_c_api` now links `clipper_dsp` so this compiles/links natively too.
+- **`scripts/build-wasm.sh`**: compiles `dsp/RatModel.cpp`, adds the chowdsp_wdf
+  include dir, exports the `rat_*` functions. SIMD + SINGLE_FILE + EXPORT_ES6
+  unchanged.
+- **Worklet** (`web/worklet/clipper-processor.js`): runs the RAT model. Messages:
+  `{type:'param', id, value}` (the 3 knobs, 0..1), `{type:'oversampling',
+  factor}` (1/2/4/8), `{type:'bypass', on}` (bypass is done **in the worklet** —
+  input passed through untouched, so it works even before WASM is ready). Ready
+  handshake + pending-queue kept; the `ready` (and post-oversampling `latency`)
+  message carries `latencySamples`.
+- **App** (`web/src/{audio.ts,App.tsx,params.ts}`): source select (test tone /
+  live input), optional input-device selector, Distortion/Filter/Level sliders
+  (0..100 display, 0..1 to the core), Bypass toggle, Oversampling select (default
+  4×), Start/Stop, a latency/status readout, and a persistent headphone/feedback
+  hint when live input is selected.
+
+### Plugging in (real hardware: interface → browser)
+
+1. Connect the guitar to the audio interface (e.g. an **Alesis MultiMix 8** into
+   a Mac over USB) and select that interface as the system audio input.
+2. Open the app, choose **Live input** as the source, press **Start audio**, and
+   grant the microphone permission when the browser prompts. (Chrome first;
+   Safari has known getUserMedia/worklet quirks — not blocking per the roadmap.)
+3. If several inputs exist, a **device selector** appears (populated by
+   `enumerateDevices` after permission — labels are only exposed once permission
+   has been granted, a browser privacy rule).
+
+### Constraint rationale (why we disable browser DSP)
+
+Live input requests `getUserMedia({ audio: { echoCancellation:false,
+noiseSuppression:false, autoGainControl:false, channelCount:1 } })`. Those three
+processors are tuned for **speech on laptop mics** and destroy a guitar DI:
+echo cancellation comb-filters and gates, noise suppression chews sustain and
+pick attack, AGC pumps the level out from under the distortion. We want the raw,
+unprocessed signal — the pedal model is the only thing allowed to shape it. Mono
+(`channelCount:1`) matches the model's mono in/out.
+
+### Latency expectations
+
+Two contributions, both shown in the status readout:
+
+- **Model latency** — the oversampling filters' round-trip group delay
+  (`rat_latency_samples`): **72 base-rate samples at the default 4×** ≈ **1.6 ms
+  @ 44.1 kHz** (0 at 1×, 64 at 2×, 76 at 8×). Small.
+- **I/O latency** — `AudioContext.baseLatency + outputLatency`, dominated by the
+  interface + OS audio buffer, not our code.
+
+Total felt round trip is the roadmap's **~20–40 ms** — playable but noticeable.
+(The headless CI context reports ~40 ms I/O for its fake device, so the UI shows
+~41.6 ms total there; real Mac + MultiMix numbers will differ and depend on the
+interface's buffer size.) Lower latency is the deferred **native** answer (JUCE
+wrap of the identical core), not more web engineering.
+
+### Headphones / feedback
+
+When **live input** is selected the app shows a persistent hint recommending
+**headphones**: guitar into a live mic/interface with the modeled output on
+**speakers** can feed back (mic → speaker → mic loop), and at high distortion the
+model's gain makes that worse. Headphones break the loop.
+
+### Commands (verified)
+
+```bash
+# 1. Native core + tests (also fetches chowdsp_wdf on first configure):
+cd core && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+./build/clipper_tests        # "All tests passed."
+./build/clipper_rat_tests    # "All RatModel tests passed."
+
+# 2. Build the WASM artifact (now includes the RAT model):
+cd .. && bash scripts/build-wasm.sh
+
+# 3. Web build + headless Playwright suite:
+cd web && npm install && npm run build && npm test   # 4 passed
+
+# 4. Dev server:
+npm run dev   # http://localhost:5173
+```
+
+### M3 test coverage (`web/tests/audio.spec.ts`)
+
+- **UI:** Start button, Source select, Distortion/Filter/Level sliders (0..100),
+  Bypass checkbox, Oversampling select all render.
+- **Harmonics + LEVEL:** 220 Hz sine at high distortion through the worklet
+  (bright filter, default 4×) — an in-page Goertzel confirms the **3rd harmonic
+  (660 Hz) is strong**, the **2nd (440 Hz) sits near the floor** (symmetric diode
+  clipping = odd harmonics), and **LEVEL 1.0 vs 0.5 halves RMS** (clean linear
+  gain).
+- **Bypass:** with bypass on, output ≈ the raw oscillator (RMS ~0.71, no added
+  3rd harmonic); with it off the processed path clearly adds one.
+- **Live input (smoke):** using Chromium's fake-media flags
+  (`--use-fake-device-for-media-stream`, `--use-fake-ui-for-media-stream`, set in
+  `playwright.config.ts`), select Live input, Start, and assert the AudioContext
+  reaches `running` with **no console errors**. Reliable here; safe to skip on a
+  runner where the fake device misbehaves, since the offline tests already cover
+  the DSP.
+
 ## Notes / conventions
 
 - `core/` must never include platform/OS/browser/Emscripten headers. The only
@@ -439,8 +561,10 @@ sanity bound (1 s in ≪ 500 ms; measured ~60–75 ms).
   guarded by `#if defined(__EMSCRIPTEN__)` so the file still builds natively.
 - Gain smoothing (one-pole, ~5 ms) lives in the core, not in JS, so parameter
   changes are click-free regardless of the host.
-- Parameter ids are mirrored in three places and must stay in sync:
-  `core/include/clipper/Processor.h` (`clipper::ParamId`),
-  `web/src/params.ts` (`PARAM_GAIN`), and
-  `web/worklet/clipper-processor.js` (`PARAM_GAIN`).
+- Parameter ids are mirrored and must stay in sync. The **RAT** ids
+  (`PARAM_DISTORTION=0`, `PARAM_FILTER=1`, `PARAM_LEVEL=2`) live in
+  `core/include/clipper/dsp/RatModel.h` (`clipper::dsp::RatModel::ParamId`),
+  `web/src/params.ts`, and `web/worklet/clipper-processor.js`. The M0 gain id
+  (`clipper::ParamId::PARAM_GAIN=0` in `Processor.h`) still exists in the WASM
+  module but the live app no longer uses it.
 ```

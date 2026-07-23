@@ -49,10 +49,36 @@ fi
 echo "Using: $(emcc --version | head -1)"
 mkdir -p "$OUT_DIR"
 
+# --- Locate chowdsp_wdf headers (needed by the M2 RAT model's WDF diode stage).
+# They are fetched by CMake FetchContent into core/build/_deps. If they are not
+# there yet, run a cmake configure to populate them (needs network the first
+# time), then fail loudly with an actionable message if still absent — never let
+# emcc surface a mysterious "chowdsp_wdf/chowdsp_wdf.h: No such file" error.
+WDF_INC="$CORE_DIR/build/_deps/chowdsp_wdf-src/include"
+if [ ! -d "$WDF_INC" ]; then
+    echo "chowdsp_wdf headers not found under core/build/_deps; running cmake" \
+         "configure to fetch them (FetchContent, needs network the first time)..."
+    if ! cmake -S "$CORE_DIR" -B "$CORE_DIR/build" -DCMAKE_BUILD_TYPE=Release; then
+        echo "ERROR: cmake configure failed — could not fetch chowdsp_wdf." >&2
+        echo "       Run 'cmake -B build' in core/ manually and re-run this." >&2
+        exit 1
+    fi
+fi
+if [ ! -d "$WDF_INC" ]; then
+    echo "ERROR: chowdsp_wdf headers still missing at:" >&2
+    echo "       $WDF_INC" >&2
+    echo "       Configure the native core first (see docs/DEVELOPMENT.md §6):" >&2
+    echo "         cd core && cmake -B build -DCMAKE_BUILD_TYPE=Release" >&2
+    exit 1
+fi
+echo "Using chowdsp_wdf headers: $WDF_INC"
+
 emcc \
     "$CORE_DIR/src/Processor.cpp" \
     "$CORE_DIR/src/clipper_c_api.cpp" \
+    "$CORE_DIR/src/dsp/RatModel.cpp" \
     -I "$CORE_DIR/include" \
+    -isystem "$WDF_INC" \
     -O3 \
     -msimd128 \
     -std=c++17 \
@@ -61,7 +87,7 @@ emcc \
     -s SINGLE_FILE=1 \
     -s ENVIRONMENT=web,worker \
     -s ALLOW_MEMORY_GROWTH=1 \
-    -s EXPORTED_FUNCTIONS='["_clipper_create","_clipper_destroy","_clipper_set_param","_clipper_process","_malloc","_free"]' \
+    -s EXPORTED_FUNCTIONS='["_clipper_create","_clipper_destroy","_clipper_set_param","_clipper_process","_rat_create","_rat_destroy","_rat_set_param","_rat_set_oversampling","_rat_latency_samples","_rat_process","_malloc","_free"]' \
     -s EXPORTED_RUNTIME_METHODS='["HEAPF32","HEAPU8"]' \
     -o "$OUT_FILE"
 

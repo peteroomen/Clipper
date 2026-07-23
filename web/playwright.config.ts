@@ -37,7 +37,14 @@ export default defineConfig({
         ...devices['Desktop Chrome'],
         launchOptions: {
           executablePath,
-          args: ['--no-sandbox'],
+          // Fake media device + auto-accepted permission so the live-input
+          // (getUserMedia) path can be smoke-tested headless. Harmless to the
+          // offline-render tests, which never touch getUserMedia.
+          args: [
+            '--no-sandbox',
+            '--use-fake-device-for-media-stream',
+            '--use-fake-ui-for-media-stream',
+          ],
         },
       },
     },
