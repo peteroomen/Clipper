@@ -80,6 +80,7 @@ emcc \
     "$CORE_DIR/src/dsp/SdModel.cpp" \
     "$CORE_DIR/src/dsp/AmpModel.cpp" \
     "$CORE_DIR/src/dsp/ChorusModel.cpp" \
+    "$CORE_DIR/src/dsp/ReverbModel.cpp" \
     "$CORE_DIR/src/dsp/CabConvolver.cpp" \
     "$CORE_DIR/src/dsp/CabIR.cpp" \
     -I "$CORE_DIR/include" \

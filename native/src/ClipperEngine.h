@@ -71,6 +71,7 @@ struct Params {
     int   chorusMode = 0;  // 0 off | 1 chorus | 2 vibrato
     float chorusSpeed = 0.3f;
     float chorusDepth = 0.5f;
+    float reverb = 0.0f;   // M6.7 spring reverb wet/dry mix (0 = dry)
 
     // Nonlinear-stage oversampling for the dirt pedals (1/2/4/8, default 4).
     int oversampling = 4;

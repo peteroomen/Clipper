@@ -42,6 +42,7 @@
 #include "clipper/dsp/Biquad.h"
 #include "clipper/dsp/ChorusModel.h"
 #include "clipper/dsp/OnePoleSmoother.h"
+#include "clipper/dsp/ReverbModel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -118,6 +119,12 @@ struct AmpModel::Impl {
     Biquad bass, mid, treble, bright;
     int ctrlCounter = 0;
 
+    // M6.7: the spring-flavored reverb, in the JC-120 spring-tank position —
+    // applied to the post-volume mono voice BEFORE the chorus split, so the tail
+    // blooms in stereo through the chorus. AmpModel owns it and routes PARAM_REVERB
+    // here. Default mix 0 => bit-exact passthrough.
+    ReverbModel reverb;
+
     // M6.3: the chorus/vibrato stereo split, fed the amp's post-volume mono
     // voice. AmpModel owns it and routes PARAM_CHORUS_* here.
     ChorusModel chorus;
@@ -177,6 +184,11 @@ void AmpModel::prepare(double sampleRate, int /*maxBlockSize*/) {
     d.ctrlCounter = 0;
     d.recomputeCoeffs();
 
+    // Reverb prepared to the same rate; default mix 0 (dry) so a fresh amp is a
+    // bit-exact passthrough through the reverb block.
+    d.reverb.prepare(d.sampleRate);
+    d.reverb.setMix(0.0f);
+
     // Chorus prepared to the same rate; defaults (mode off, mid speed, mid depth)
     // are applied here so an engaged chorus opens on a sensible voice.
     d.chorus.prepare(d.sampleRate);
@@ -216,6 +228,9 @@ void AmpModel::setParameter(int paramId, float value) {
         case PARAM_CHORUS_DEPTH:
             d.chorus.setDepth(knob);
             break;
+        case PARAM_REVERB:
+            d.reverb.setMix(knob);
+            break;
         default:
             break;
     }
@@ -227,10 +242,14 @@ void AmpModel::process(const float* in, float* out, int numFrames) {
 
 void AmpModel::processStereo(const float* in, float* outL, float* outR, int numFrames) {
     Impl& d = *impl_;
-    // Tone stack + volume into outL as scratch, then split into the stereo pair.
-    // ChorusModel tolerates in==outL (it reads each sample before overwriting it),
+    // Tone stack + volume into outL as scratch (the mono voice), then the spring
+    // reverb IN PLACE on that mono voice (JC-120 spring-tank position: after the
+    // preamp, BEFORE the split), then split into the stereo pair so the wet tail
+    // blooms in stereo through the chorus. Both ReverbModel (reads the dry sample
+    // before writing) and ChorusModel (reads before overwriting) tolerate in==out,
     // so no extra buffer is needed.
     d.processMonoVoice(in, outL, numFrames);
+    d.reverb.process(outL, outL, numFrames);
     d.chorus.processStereo(outL, outL, outR, numFrames);
 }
 

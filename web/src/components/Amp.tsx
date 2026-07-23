@@ -74,6 +74,16 @@ export function Amp({ amp, onParam, onToggle, onTogglePower, onChorusMode }: Amp
             onChange={(v) => onParam('treble', v)}
             testId="knob-treble"
           />
+          {/* M6.7 — the JC-120's spring REVERB, a single MIX knob on the facia
+              beside the tone controls (where the real amp's reverb pot sits). */}
+          <Knob
+            name="Reverb"
+            ariaLabel="Reverb"
+            value={params.reverb}
+            defaultValue={AMP_KNOB_DEFAULTS.reverb}
+            onChange={(v) => onParam('reverb', v)}
+            testId="knob-reverb"
+          />
 
           <div className="amp-right">
             <button

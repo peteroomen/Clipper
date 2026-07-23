@@ -219,6 +219,48 @@ test('assistant: set_switch chorus + set_param speed engage the JC chorus', asyn
   expect(state.speed).toBe(0.35);
 });
 
+// M6.7: the coach can dial in the spring reverb (set_param unit:'amp'
+// param:'reverb'). A canned tool_use sets the mix to 0.25 for an ambient-but-clear
+// wash; verify the rig state and the chip.
+const REVERB_TURN = sse([
+  { type: 'message_start', message: { id: 'msg_rv', type: 'message', role: 'assistant', content: [] } },
+  { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+  { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'A touch of the JC spring.' } },
+  { type: 'content_block_stop', index: 0 },
+  { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_rv', name: 'set_param', input: {} } },
+  { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"unit":"amp","param":"reverb","value":0.25}' } },
+  { type: 'content_block_stop', index: 1 },
+  { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 11 } },
+  { type: 'message_stop' },
+]);
+
+test('assistant: set_param reverb dials the spring reverb mix', async ({ page }) => {
+  let call = 0;
+  await page.route('**/api/health', mockHealthOk);
+  await page.route('**/api/chat', async (route) => {
+    call += 1;
+    if (call === 1) {
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: REVERB_TURN });
+    } else {
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: FOLLOWUP });
+    }
+  });
+
+  await page.goto('/');
+  await expect(page.getByTestId('chat')).toBeVisible();
+
+  await page.getByTestId('chat-input').fill('add a little ambience for this ballad');
+  await page.getByTestId('chat-send').click();
+
+  // The chip renders and the reverb knob reached the rig.
+  await expect(page.getByTestId('tool-chips')).toContainText('Reverb');
+  await expect(page.getByRole('slider', { name: 'Reverb' })).toHaveAttribute('aria-valuenow', '25');
+  const reverb = await page.evaluate(
+    () => (window as any).__CLIPPER_TEST__.getRig().amp.params.reverb
+  );
+  expect(reverb).toBe(0.25);
+});
+
 // M6.4: the coach can address a specific pedal INSTANCE by index. With two RATs
 // in the chain, a set_param carrying pedal:1 moves the SECOND pedal's knob only.
 const PEDAL1_TURN = sse([

@@ -59,6 +59,7 @@ FetchContent_MakeAvailable(chowdsp_wdf)
 # chowdsp_wdf is likewise header-only and portable.
 #   - RatModel.cpp     : M1/M2 RAT pedal (WDF diode clipper, oversampled)
 #   - AmpModel.cpp     : M5 JC-120-style clean amp (linear tone stack)
+#   - ReverbModel.cpp  : M6.7 spring-flavored algorithmic reverb (owned by AmpModel)
 #   - CabConvolver.cpp : M5 partitioned FFT cab convolver
 #   - CabIR.cpp        : M5 procedural default 2x12 cab impulse response
 #   - TriodeStage.cpp  : M9.1 12AX7 common-cathode gain stage (Koren + nodal Newton)
@@ -68,6 +69,7 @@ add_library(clipper_dsp STATIC
     src/dsp/SdModel.cpp
     src/dsp/AmpModel.cpp
     src/dsp/ChorusModel.cpp
+    src/dsp/ReverbModel.cpp
     src/dsp/CabConvolver.cpp
     src/dsp/CabIR.cpp
     src/dsp/TriodeStage.cpp

@@ -43,6 +43,7 @@ void ClipperEngine::applyParamsToModels() {
     amp_.setParameter(clipper::dsp::AmpModel::PARAM_CHORUS_DEPTH, p.chorusDepth);
     amp_.setParameter(clipper::dsp::AmpModel::PARAM_CHORUS_MODE,
                       static_cast<float>(p.chorusMode));
+    amp_.setParameter(clipper::dsp::AmpModel::PARAM_REVERB, p.reverb);
 }
 
 void ClipperEngine::setParams(const Params& p) {
@@ -74,6 +75,7 @@ void ClipperEngine::updateParams(const Params& p) {
     if (p.chorusDepth != o.chorusDepth) amp_.setParameter(AmpModel::PARAM_CHORUS_DEPTH, p.chorusDepth);
     if (p.chorusMode != o.chorusMode)
         amp_.setParameter(AmpModel::PARAM_CHORUS_MODE, static_cast<float>(p.chorusMode));
+    if (p.reverb != o.reverb) amp_.setParameter(AmpModel::PARAM_REVERB, p.reverb);
 
     // Oversampling change: reset only the pedals' OS filter state (like the web
     // worklet's per-node setOversampling), not a full re-prepare.

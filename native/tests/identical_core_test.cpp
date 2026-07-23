@@ -52,6 +52,7 @@ Params testParams() {
     p.bright = true; p.cab = true;
     p.chorusMode = 1;  // chorus (stereo bloom)
     p.chorusSpeed = 0.3f; p.chorusDepth = 0.5f;
+    p.reverb = 0.5f;   // M6.7 spring reverb engaged (exercises the wet stereo path)
     p.oversampling = 4;
     return p;
 }
@@ -99,6 +100,7 @@ void renderReference(const std::vector<float>& in, std::vector<float>& outL,
     amp.setParameter(AmpModel::PARAM_CHORUS_SPEED, p.chorusSpeed);
     amp.setParameter(AmpModel::PARAM_CHORUS_DEPTH, p.chorusDepth);
     amp.setParameter(AmpModel::PARAM_CHORUS_MODE, static_cast<float>(p.chorusMode));
+    amp.setParameter(AmpModel::PARAM_REVERB, p.reverb);
 
     rat.prepare(kFs, kBlock);
     sd.prepare(kFs, kBlock);
@@ -169,6 +171,7 @@ void renderPlugin(const std::vector<float>& in, std::vector<float>& outL,
     set(bright, 1.0f); set(cab, 1.0f);
     set(chorusMode, static_cast<float>(p.chorusMode));  // choice index 1 == Chorus
     set(chorusSpeed, p.chorusSpeed); set(chorusDepth, p.chorusDepth);
+    set(reverb, p.reverb);
     set(oversampling, 2.0f);  // choice index 2 == 4x
 
     proc.setPlayConfigDetails(1, 2, kFs, kBlock);

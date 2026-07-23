@@ -52,6 +52,9 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::chorusSpeed, "Chorus Speed", 0.3f));
     layout.add(knob(pid::chorusDepth, "Chorus Depth", 0.5f));
 
+    // M6.7 spring reverb: single wet/dry MIX knob, default 0 (dry).
+    layout.add(knob(pid::reverb, "Reverb", 0.0f));
+
     // Oversampling default index 2 == 4x.
     layout.add(std::make_unique<Choice>(juce::ParameterID{pid::oversampling, 1},
                                         "Oversampling", kOversampleChoices, 2));
@@ -89,6 +92,7 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.chorusMode = static_cast<int>(f(pid::chorusMode));  // choice index == mode
     p.chorusSpeed = f(pid::chorusSpeed);
     p.chorusDepth = f(pid::chorusDepth);
+    p.reverb = f(pid::reverb);
     p.oversampling = kOversampleFactors[static_cast<int>(f(pid::oversampling)) & 3];
     return p;
 }

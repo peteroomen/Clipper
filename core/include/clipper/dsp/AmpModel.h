@@ -47,6 +47,12 @@ public:
         PARAM_CHORUS_SPEED = 6,  // 0..1 knob, log map ~0.15..8 Hz
         PARAM_CHORUS_DEPTH = 7,  // 0..1 knob, sweep amount (0..~1.5 ms peak)
         PARAM_CHORUS_MODE = 8,   // 0=off, 1=chorus, 2=vibrato (NOT clamped to 0..1)
+        // --- M6.7 spring-flavored reverb (routed to the owned ReverbModel) ------
+        // Appended additively above the chorus ids. Sits in the JC-120 spring-tank
+        // position (preamp -> REVERB -> chorus split), so it is applied inside
+        // processStereo() BEFORE the chorus split. 0..1 equal-power wet MIX; 0 is a
+        // bit-exact dry passthrough. Handled by AmpModel::setParameter.
+        PARAM_REVERB = 9,        // 0..1 knob, reverb wet/dry mix (0 = dry)
     };
 
     AmpModel();
@@ -66,10 +72,13 @@ public:
     // for the pre-M6.3 mono path and the offline tone/volume tests.
     void process(const float* in, float* out, int numFrames);
 
-    // M6.3 STEREO entry point: tone stack + volume, then the chorus/vibrato split
-    // into a stereo pair (outL/outR must be distinct buffers; in may alias
-    // neither). With the chorus mode OFF, outL == outR == the mono voice, so this
-    // degrades to two copies of process().
+    // M6.3 STEREO entry point: tone stack + volume, then (M6.7) the spring-flavored
+    // REVERB in its authentic JC-120 spring-tank position, then the chorus/vibrato
+    // split into a stereo pair (outL/outR must be distinct buffers; in may alias
+    // neither) — so the reverb tail blooms in stereo THROUGH the chorus, like the
+    // hardware tank feeding the stereo section. With reverb == 0 (default) the
+    // reverb is a bit-exact passthrough; with the chorus mode OFF too, outL == outR
+    // == the mono voice, so this degrades to two copies of process().
     void processStereo(const float* in, float* outL, float* outR, int numFrames);
 
 private:

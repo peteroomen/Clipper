@@ -54,7 +54,8 @@ export type AmpParamName =
   | 'cab'
   | 'speed'
   | 'depth'
-  | 'chorusMode';
+  | 'chorusMode'
+  | 'reverb';
 
 export interface PedalParams {
   distortion: number; // 0..1 knob position
@@ -99,6 +100,7 @@ export interface AmpParams {
   speed: number; // 0..1 chorus/vibrato LFO rate knob
   depth: number; // 0..1 chorus/vibrato sweep-depth knob
   chorusMode: number; // 0 off | 1 chorus | 2 vibrato
+  reverb: number; // 0..1 spring-reverb wet/dry mix (M6.7; 0 = dry)
 }
 
 export interface AmpState {
@@ -157,6 +159,7 @@ export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
 // Amp defaults mirror the approved design's opening state: Vol 40, Bass/Mid 50
 // (flat), Treble 60, bright off, cab on. Tone controls are flat at 0.5. Chorus
 // ships OFF (mode 0) with a musical speed/depth ready for when it is engaged.
+// Reverb ships at 0 (dry) — the JC-120's single REVERB knob all the way down (M6.7).
 export const AMP_KNOB_DEFAULTS: AmpParams = {
   volume: 0.4,
   bass: 0.5,
@@ -167,6 +170,7 @@ export const AMP_KNOB_DEFAULTS: AmpParams = {
   speed: 0.3,
   depth: 0.5,
   chorusMode: 0,
+  reverb: 0,
 };
 
 // Default input trim: unity (0 dB).
@@ -316,6 +320,9 @@ export function normalizeRig(raw: unknown): RigState {
         speed: clamp01(ar.speed, d.amp.params.speed),
         depth: clamp01(ar.depth, d.amp.params.depth),
         chorusMode: mode012(ar.chorusMode, d.amp.params.chorusMode),
+        // Migration seam: a pre-M6.7 rig has no reverb field — old saved rigs
+        // load with reverb at 0 (dry).
+        reverb: clamp01(ar.reverb, d.amp.params.reverb),
       },
     },
     oversampling,

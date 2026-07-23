@@ -26,7 +26,8 @@ import createModule from './clipper.js';
 
 // Amp param ids flow straight through to _amp_set_param by numeric id; the only
 // one the worklet treats specially is the cab on/off toggle (it changes reported
-// latency). (Chorus params 6/7/8 route into the ChorusModel in the C ABI.)
+// latency). (Chorus params 6/7/8 route into the ChorusModel, and the M6.7 reverb
+// mix id 9 into the ReverbModel, in the C ABI — no worklet special-casing.)
 const AMP_PARAM_CAB = 5;
 
 const RENDER_QUANTUM = 128;

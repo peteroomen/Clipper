@@ -57,6 +57,10 @@ export const TOOLS = [
       "at 0.5), plus the chorus/vibrato modulation 'speed' (LFO rate ~0.15-8 Hz) " +
       "and 'depth' (sweep amount / how deep the pitch wobble is) — these only do " +
       "something when the chorus or vibrato mode is on (set that with set_switch). " +
+      "'reverb' is the JC-120 spring reverb MIX (0 = fully dry, 1 = drenched); the " +
+      "decay is fixed (~1.5 s, spring-flavored) so this one knob is just how much " +
+      "wet you blend in. Keep it low (10-30) for clarity and note definition, " +
+      "higher for ballads/ambient washes. " +
       "Input params: 'trim' — the rig-level INPUT gain BEFORE the pedal " +
       "(0..1 maps to -12..+24 dB, 1/3 = 0 dB). Raise it when the input peak is " +
       "weak (below ~-12 dBFS) so the guitar actually drives the diodes; lower it " +
@@ -80,6 +84,7 @@ export const TOOLS = [
             'treble',
             'speed',
             'depth',
+            'reverb',
             'trim',
           ],
         },
@@ -224,6 +229,7 @@ const AMP_PARAM: Record<string, string> = {
   treble: 'treble',
   speed: 'speed',
   depth: 'depth',
+  reverb: 'reverb',
 };
 const INPUT_PARAM: Record<string, string> = {
   trim: 'trim',
@@ -242,6 +248,7 @@ const PARAM_LABEL: Record<string, string> = {
   treble: 'Treble',
   speed: 'Speed',
   depth: 'Depth',
+  reverb: 'Reverb',
   trim: 'Trim',
 };
 

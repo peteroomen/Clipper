@@ -18,6 +18,10 @@ export const AMP_PARAM_CAB = 5;
 export const AMP_PARAM_CHORUS_SPEED = 6;
 export const AMP_PARAM_CHORUS_DEPTH = 7;
 export const AMP_PARAM_CHORUS_MODE = 8;
+// M6.7 spring reverb id (9), appended additively. 0..1 equal-power wet MIX
+// (0 = dry). Routed into the owned ReverbModel by the C ABI, in the JC-120
+// spring-tank position (preamp -> reverb -> chorus split).
+export const AMP_PARAM_REVERB = 9;
 
 // Chorus mode enum (mirrors ChorusModel::Mode). Kept as plain numbers so it flows
 // through the numeric param ABI untouched.
@@ -44,6 +48,7 @@ export const AMP_PARAM_ID = {
   speed: AMP_PARAM_CHORUS_SPEED,
   depth: AMP_PARAM_CHORUS_DEPTH,
   chorusMode: AMP_PARAM_CHORUS_MODE,
+  reverb: AMP_PARAM_REVERB,
 } as const;
 
 // Valid oversampling factors for the nonlinear stage (default 4x). Other values

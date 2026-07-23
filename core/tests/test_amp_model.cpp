@@ -10,6 +10,7 @@
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/OutputLimiter.h"
+#include "clipper/dsp/ReverbModel.h"
 
 #include <cassert>
 #include <chrono>
@@ -1092,6 +1093,241 @@ void testCustomIrNormalization(double fs) {
                 rawPeak, normPeak, outPk, fs);
 }
 
+// =============================================================================
+// M6.7 — spring-flavored reverb (clipper::dsp::ReverbModel, owned by AmpModel).
+// Deterministic, framework-free, run at 44.1 / 48 / 96 kHz like the rest.
+// =============================================================================
+
+using clipper::dsp::ReverbModel;
+
+// Render the reverb's wet impulse response: park the MIX at 1.0 (settle the ~10 ms
+// smoother on silence first), then feed a unit impulse and capture `secs` of tail.
+// At mix 1 the dry leak is cos(pi/2) ~= 0, so the capture is the wet IR.
+std::vector<float> reverbIR(double fs, double secs) {
+    ReverbModel rv;
+    rv.prepare(fs);
+    rv.setMix(1.0f);
+    const int settle = static_cast<int>(0.05 * fs);
+    std::vector<float> zin(static_cast<size_t>(settle), 0.0f), zout(static_cast<size_t>(settle), 0.0f);
+    rv.process(zin.data(), zout.data(), settle);  // ramp mix -> 1 on silence
+    const int n = static_cast<int>(secs * fs);
+    std::vector<float> in(static_cast<size_t>(n), 0.0f), out(static_cast<size_t>(n), 0.0f);
+    in[0] = 1.0f;
+    rv.process(in.data(), out.data(), n);
+    return out;
+}
+
+// Average |H(f)|^2 over a set of probe frequencies (a smoothed band-energy read of
+// a reverb IR — a single DTFT bin is spiky; a few points average out the modes).
+double bandEnergy(const std::vector<float>& h, const std::vector<double>& freqs, double fs) {
+    double e = 0.0;
+    for (double f : freqs) {
+        const double m = irMag(h, f, fs);
+        e += m * m;
+    }
+    return e / static_cast<double>(freqs.size());
+}
+
+// --- Test R1: reverb == 0 is a BIT-EXACT dry passthrough. ---------------------
+void testReverbPassthrough(double fs) {
+    auto in = sine(440.0, 0.3f, 0.2, fs);
+    const int n = static_cast<int>(in.size());
+
+    // Default (mix 0): out == in bit-for-bit (separate buffers).
+    ReverbModel rv;
+    rv.prepare(fs);
+    std::vector<float> out(static_cast<size_t>(n), -999.0f);
+    rv.process(in.data(), out.data(), n);
+    for (int i = 0; i < n; ++i)
+        assert(out[static_cast<size_t>(i)] == in[static_cast<size_t>(i)] &&
+               "reverb mix=0 not bit-exact passthrough");
+
+    // Explicit setMix(0) then in-place: leaves the buffer untouched, bit-exact.
+    std::vector<float> io = in;
+    rv.setMix(0.0f);
+    rv.process(io.data(), io.data(), n);
+    for (int i = 0; i < n; ++i)
+        assert(io[static_cast<size_t>(i)] == in[static_cast<size_t>(i)] &&
+               "reverb mix=0 in-place not bit-exact");
+    std::printf("  [ok] reverb mix=0: bit-exact dry passthrough (separate + in-place) (fs=%g)\n", fs);
+}
+
+// --- Test R2: decay time (T30->RT60) in the design window + a stable, monotone
+//     tail (no infinite/unstable ring). --------------------------------------
+// RT60 design target ~1.5 s (feedback tuned via RT60 ~= -3*D/(fs*log10(g)); at the
+// shortest comb D=1116, fs=44100, g=0.89 => ~1.5 s). Measured broadband via a
+// Schroeder energy-decay curve; asserted in a documented [0.9, 2.5] s band (the
+// 1.2-2.0 s design range plus measurement tolerance).
+void testReverbDecay(double fs) {
+    auto ir = reverbIR(fs, 4.0);
+    assert(!hasNaN(ir) && "reverb IR NaN/inf");
+    const int n = static_cast<int>(ir.size());
+
+    // Schroeder backward energy integration -> EDC in dB re the total.
+    std::vector<double> edc(static_cast<size_t>(n), 0.0);
+    double acc = 0.0;
+    for (int i = n - 1; i >= 0; --i) {
+        acc += static_cast<double>(ir[static_cast<size_t>(i)]) * ir[static_cast<size_t>(i)];
+        edc[static_cast<size_t>(i)] = acc;
+    }
+    const double e0 = edc[0] + 1e-30;
+    auto crossTime = [&](double db) {
+        const double thr = std::pow(10.0, db / 10.0) * e0;  // energy ratio
+        for (int i = 0; i < n; ++i)
+            if (edc[static_cast<size_t>(i)] <= thr) return static_cast<double>(i) / fs;
+        return static_cast<double>(n) / fs;
+    };
+    const double t5 = crossTime(-5.0);
+    const double t35 = crossTime(-35.0);
+    const double t30 = t35 - t5;
+    const double rt60 = 2.0 * t30;
+    assert(rt60 > 0.9 && rt60 < 2.5 && "reverb RT60 outside the 0.9..2.5 s design/tolerance band");
+
+    // Stable, non-exploding tail: raw energy in consecutive 100 ms windows AFTER
+    // 100 ms is monotone NON-increasing (each <= the previous, small float slack).
+    const int win = static_cast<int>(0.1 * fs);
+    const int startW = static_cast<int>(0.1 * fs);
+    double prevE = 1e300;
+    int windows = 0;
+    for (int s = startW; s + win < n; s += win) {
+        double e = 0.0;
+        for (int i = s; i < s + win; ++i) e += static_cast<double>(ir[static_cast<size_t>(i)]) * ir[static_cast<size_t>(i)];
+        assert(e <= prevE * 1.02 + 1e-20 && "reverb tail energy not monotone-decreasing (unstable ring)");
+        prevE = e;
+        ++windows;
+    }
+    assert(windows > 20 && "reverb decay too short to have measured a tail");
+    std::printf("  [ok] reverb decay: RT60 %.2f s (T30 %.2f s), tail monotone over %d windows (fs=%g)\n",
+                rt60, t30, windows, fs);
+}
+
+// --- Test R3: band-limited voice (spring passband ~150 Hz .. 4.5 kHz), NOT a
+//     bright plate. Tail energy above 6 kHz and below 100 Hz is well down. ------
+void testReverbBandLimit(double fs) {
+    auto ir = reverbIR(fs, 2.0);
+    const double mid = bandEnergy(ir, {500.0, 700.0, 1000.0, 1500.0, 2000.0}, fs);
+    const double hi = bandEnergy(ir, {6000.0, 7000.0, 8000.0, 10000.0}, fs);
+    const double lo = bandEnergy(ir, {50.0, 70.0, 100.0}, fs);
+    const double hiDb = 10.0 * std::log10(hi / (mid + 1e-30) + 1e-30);
+    const double loDb = 10.0 * std::log10(lo / (mid + 1e-30) + 1e-30);
+    // Documented bounds: the 4th-order transducer band-limit puts both edges well
+    // below the mid band. >6 kHz and <100 Hz must be at least 12 dB down.
+    assert(hiDb < -12.0 && "reverb tail not dark above 6 kHz (sounds like a bright plate)");
+    assert(loDb < -12.0 && "reverb tail low end (<100 Hz) not rolled off (boomy, not spring)");
+    std::printf("  [ok] reverb band-limit: >6kHz %.1f dB, <100Hz %.1f dB re mid (both <-12, spring passband) (fs=%g)\n",
+                hiDb, loDb, fs);
+}
+
+// --- Test R4: diffuse tail, not discrete slapback (echo-density proxy: the tail's
+//     crest factor is low). ----------------------------------------------------
+void testReverbDensity(double fs) {
+    auto ir = reverbIR(fs, 2.0);
+    // Crest factor (peak/RMS) over a mid-tail window [0.2 s, 0.6 s]: a diffuse,
+    // dense reverb has many overlapping echoes -> a noise-like tail -> LOW crest;
+    // a discrete slapback would spike (high crest).
+    const int a = static_cast<int>(0.2 * fs);
+    const int b = static_cast<int>(0.6 * fs);
+    double peak = 0.0, sumSq = 0.0;
+    for (int i = a; i < b; ++i) {
+        const double v = std::fabs(static_cast<double>(ir[static_cast<size_t>(i)]));
+        peak = std::max(peak, v);
+        sumSq += v * v;
+    }
+    const double rms = std::sqrt(sumSq / (b - a));
+    const double crest = peak / (rms + 1e-30);
+    // A Gaussian-noise tail sits ~3.5-4.5; a slapback would be >>10. Bound at 8.
+    assert(crest < 8.0 && "reverb tail crest factor too high (discrete slapback, not diffuse)");
+    std::printf("  [ok] reverb density: mid-tail crest factor %.2f (<8 => diffuse, not slapback) (fs=%g)\n",
+                crest, fs);
+}
+
+// --- Test R5: stability under a slam (+/-1 square + white noise), no NaN, bounded. -
+void testReverbStability(double fs) {
+    ReverbModel rv;
+    rv.prepare(fs);
+    rv.setMix(1.0f);
+    const int n = static_cast<int>(fs);  // 1 s
+    std::vector<float> in(static_cast<size_t>(n)), out(static_cast<size_t>(n), 0.0f);
+    uint32_t rng = 0xC0FFEEu;
+    for (int i = 0; i < n; ++i) {
+        rng = rng * 1664525u + 1013904223u;
+        const float noise = static_cast<float>(rng >> 9) / 4194304.0f - 1.0f;  // ~[-1,1)
+        const float sq = (i % 2 == 0) ? 1.0f : -1.0f;                          // full-scale slam
+        in[static_cast<size_t>(i)] = 0.5f * (sq + noise);  // in [-1, 1]
+    }
+    rv.process(in.data(), out.data(), n);
+    assert(!hasNaN(out) && "reverb produced NaN/inf under slam");
+    double pk = 0.0;
+    for (float v : out) pk = std::max(pk, static_cast<double>(std::fabs(v)));
+    assert(pk < 20.0 && "reverb output unbounded under slam (runaway feedback)");
+    std::printf("  [ok] reverb stability: +/-1 slam + noise -> no NaN, peak %.2f (bounded) (fs=%g)\n", pk, fs);
+}
+
+// --- Test R6: chain placement — with chorus ON and reverb up, BOTH L and R carry
+//     the wet tail after the input stops; with reverb 0 there is no tail. --------
+void testReverbChainPlacement(double fs) {
+    auto render = [&](float reverbMix) {
+        AmpModel a;
+        a.prepare(fs, 128);
+        a.setParameter(AmpModel::PARAM_VOLUME, 0.4f);
+        a.setParameter(AmpModel::PARAM_CHORUS_SPEED, 0.5f);
+        a.setParameter(AmpModel::PARAM_CHORUS_DEPTH, 0.5f);
+        a.setParameter(AmpModel::PARAM_CHORUS_MODE, static_cast<float>(ChorusMode::Chorus));
+        a.setParameter(AmpModel::PARAM_REVERB, reverbMix);
+        const int nBurst = static_cast<int>(0.10 * fs);
+        const int nTotal = static_cast<int>(0.60 * fs);
+        std::vector<float> in(static_cast<size_t>(nTotal), 0.0f);
+        // 100 ms noise burst, then silence.
+        uint32_t rng = 0x5EED42u;
+        for (int i = 0; i < nBurst; ++i) {
+            rng = rng * 1664525u + 1013904223u;
+            in[static_cast<size_t>(i)] = (static_cast<float>(rng >> 9) / 4194304.0f - 1.0f) * 0.3f;
+        }
+        std::vector<float> L(static_cast<size_t>(nTotal), 0.0f), R(static_cast<size_t>(nTotal), 0.0f);
+        a.processStereo(in.data(), L.data(), R.data(), nTotal);
+        // RMS of the last 200 ms (well after the burst + predelay), per side.
+        const int s = static_cast<int>(0.40 * fs);
+        auto rms = [&](const std::vector<float>& x) {
+            double e = 0.0;
+            for (int i = s; i < nTotal; ++i) e += static_cast<double>(x[static_cast<size_t>(i)]) * x[static_cast<size_t>(i)];
+            return std::sqrt(e / (nTotal - s));
+        };
+        return std::make_pair(rms(L), rms(R));
+    };
+
+    auto [wetL, wetR] = render(0.7f);
+    auto [dryL, dryR] = render(0.0f);
+    // Reverb up: a real wet tail blooms in BOTH channels after the input stops.
+    assert(wetL > 1e-3 && wetR > 1e-3 && "reverb tail missing on L and/or R (chain placement wrong)");
+    // Reverb 0: chorus of silence is silence — no tail (true reverb bypass).
+    assert(dryL < 1e-5 && dryR < 1e-5 && "reverb 0 still leaves a tail (not a clean bypass)");
+    std::printf("  [ok] reverb placement: tail after input stops L %.4f R %.4f (reverb 0: L %.2e R %.2e) (fs=%g)\n",
+                wetL, wetR, dryL, dryR, fs);
+}
+
+// --- Test R7: CPU budget — the reverb is well under the chorus + 2x cab cost. ---
+void testReverbPerf(double fs) {
+    ReverbModel rv;
+    rv.prepare(fs);
+    rv.setMix(0.5f);
+    const int n = static_cast<int>(fs);  // 1 s
+    std::vector<float> in(static_cast<size_t>(n)), out(static_cast<size_t>(n), 0.0f);
+    for (int i = 0; i < n; ++i)
+        in[static_cast<size_t>(i)] = 0.2f * static_cast<float>(std::sin(kTwoPi * 220.0 * i / fs));
+
+    const auto t0 = std::chrono::high_resolution_clock::now();
+    for (int off = 0; off < n; off += 128) {
+        const int m = std::min(128, n - off);
+        rv.process(in.data() + off, out.data() + off, m);
+    }
+    const auto t1 = std::chrono::high_resolution_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    assert(!hasNaN(out) && "reverb perf run produced NaN");
+    assert(ms < 60.0 && "reverb slower than 0.06x real time (should be tiny vs chorus+2xcab)");
+    std::printf("  [ok] reverb perf: 1 s in %.1f ms (%.2f%% of one core, << chorus+2xcab, fs=%g)\n",
+                ms, ms / 1000.0 * 100.0, fs);
+}
+
 }  // namespace
 
 int main() {
@@ -1119,6 +1355,14 @@ int main() {
         testChorusChorus(fs);
         testChorusVibrato(fs);
         testChorusPerf(fs);
+        // M6.7 spring-flavored reverb.
+        testReverbPassthrough(fs);
+        testReverbDecay(fs);
+        testReverbBandLimit(fs);
+        testReverbDensity(fs);
+        testReverbStability(fs);
+        testReverbChainPlacement(fs);
+        testReverbPerf(fs);
     }
     std::printf("All AmpModel + CabConvolver tests passed.\n");
     return 0;

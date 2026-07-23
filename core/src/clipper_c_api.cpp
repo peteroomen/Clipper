@@ -151,7 +151,9 @@ void sd_process(void* handle, const float* in_ptr, float* out_ptr,
 // The worklet drives the pedal (rat_*) and the amp (amp_*) as SEPARATE instances
 // in sequence (pedal -> amp); the cab is part of THIS amp instance, so
 // amp_process runs amp -> cab. AMP_PARAM_CAB (id == AmpModel::PARAM_COUNT)
-// bypasses the cab for A/B without tearing anything down.
+// bypasses the cab for A/B without tearing anything down. All other amp param ids
+// (tone/volume/bright, chorus 6/7/8, M6.7 reverb 9) route straight into the owned
+// AmpModel via amp_set_param — no special-casing here beyond the cab toggle.
 
 namespace {
 // Chain-level param id for the cab on/off toggle (0 = bypass cab, 1 = cab on).

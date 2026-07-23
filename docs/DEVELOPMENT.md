@@ -2326,7 +2326,139 @@ cd web && npm run build && npx playwright test   # 35 specs incl. 5 new cab test
 core/build/clipper-render --gen pluck:82.4:2.0 out.wav --chain clean --cab brit412
 ```
 
-## Notes / conventions
+## 16. M6.7 — Spring-flavored reverb (the JC-120's missing tank)
+
+M5 shipped the Clean 120 with **no reverb** — the real Roland JC-120 has a spring
+tank, and the panel had no knob because the block did not exist. M6.7 adds an
+**algorithmic, spring-flavored** reverb in the amp's **authentic position** with a
+single **REVERB** knob.
+
+> **Scope.** This is a compact Schroeder/Moorer network *tuned to read as
+> spring-ish* — **not** the full dispersive-waveguide spring. That physics (chirped
+> echo trains, dual detuned springs, transducer resonances — the true "boing" and
+> "drip") is parked as **M6.7-2**, which swaps out *only this core* behind the same
+> one-knob interface. M6.7 gives the JC its ambience now; M6.7-2 gives it the exact
+> physics later.
+
+### Position — why it lives inside `AmpModel::processStereo`
+
+The real signal path is **preamp/tone → spring tank → the stereo chorus fork →
+two power-amps + speakers**. So the reverb is a **mono** block (the split comes
+after it) sitting **after the tone stack + volume and before the chorus split**:
+
+```
+in ─► tone stack + volume (mono voice) ─► ReverbModel (mono) ─► ChorusModel split
+                                                              ─► per-side cab L / R
+```
+
+`ReverbModel` is **owned by `AmpModel`** (like `ChorusModel`), which routes
+`PARAM_REVERB` to it. Because it is upstream of the split, the wet tail **blooms in
+stereo through the chorus and both per-side cabs** — exactly like the hardware tank
+feeding the stereo section. The mono legacy `AmpModel::process()` path is left
+untouched (reverb is a stereo-path feature; it is the real amp's stereo voice).
+
+### DSP (`core/src/dsp/ReverbModel.{h,cpp}`)
+
+A mono network, in signal order:
+
+```
+in ─► predelay 10 ms ─► [4 parallel damped combs] ─►×0.25
+   ─► [2 series Schroeder allpass diffusers]
+   ─► [4 short "spring chirp" allpasses]
+   ─► band-limit: 2× HP @150 Hz + 2× LP @4.5 kHz ─► wet
+out = cos(mix·π/2)·dry + sin(mix·π/2)·(0.6·wet)     [equal-power mix]
+```
+
+- **Predelay 10 ms** — the pickup-to-first-return travel; separates the dry pluck
+  from the wet bloom without reading as a delay.
+- **4 damped combs** (Freeverb-style, lowpass **in** the feedback loop). Delays are
+  mutually prime-ish (`1116/1188/1277/1356` @44.1k, scaled by `fs`) so their modes
+  interleave into a dense, non-periodic tail. The in-loop lowpass (`damp = 0.28`)
+  makes **highs decay faster than lows** — springs are dark and get darker as they
+  ring, the opposite of a bright plate. **Decay is FIXED** (the knob is a MIX, like
+  the real amp's single REVERB pot): the feedback (`g = 0.89`) is tuned for a
+  broadband **RT60 ≈ 1.5 s** via `RT60 ≈ −3·D / (fs·log₁₀ g)` (shortest comb
+  `D=1116`, `fs=44100`, `g=0.89` ⇒ ~1.5 s).
+- **2 series allpass diffusers** (Schroeder, `g = 0.5`) — smear the comb output into
+  a diffuse tail (raise echo density) without touching the magnitude spectrum.
+- **4 short "spring chirp" allpasses** (`67/97/131/173` @44.1k, `g = 0.6`). A
+  cascade of short allpasses has strongly frequency-dependent group delay, so
+  different frequencies exit at slightly different times — a **taste** of the
+  dispersive spring boing without modeling the waveguide. Explicitly a *flavor*, not
+  the real dispersion (that's M6.7-2).
+- **Band-limit — 4th-order HP @150 Hz + 4th-order LP @4.5 kHz.** A real spring is a
+  pair of narrowband electromechanical transducers passing roughly **150 Hz .. 4.5
+  kHz**. This steep cut is the line between "spring-ish" and "generic bright digital
+  reverb": it keeps the sub-150 Hz from booming and the >4.5 kHz from fizzing.
+- **One parameter — `reverb` (0..1), an equal-power wet MIX.** `dryGain = cos(mix·π/2)`,
+  `wetGain = sin(mix·π/2)`. At `mix == 0`, `cos(0)==1` and `sin(0)==0` **exactly**
+  (IEEE), and the network is **skipped entirely** (fast path), so `reverb == 0` is a
+  **bit-exact dry passthrough** — adding this block leaves a reverb-off rig unchanged
+  sample-for-sample (asserted). Deterministic and allocation-free in `process()`; a
+  ~1e-20 anti-denormal offset in each comb store keeps a decaying tail off the
+  denormal CPU cliff (>100 dB below anything audible).
+
+### Validation (`testReverb*` in `core/tests/test_amp_model.cpp`, 44.1/48/96 kHz)
+
+The sound-validation house style — deterministic, framework-free, run at all three
+rates. Measured numbers (44.1 kHz shown; 48/96 k within a hair):
+
+| Test | Metric | Measured | Bound |
+|---|---|---|---|
+| Passthrough | `reverb=0` vs dry | **bit-exact** (separate + in-place) | `==` |
+| Decay | RT60 via Schroeder T30 | **1.52 s** | design 1.2–2.0 s; assert 0.9–2.5 s |
+| Decay | tail energy (100 ms windows) | **monotone** over 38 windows | non-increasing (±2 %) |
+| Band-limit | tail energy >6 kHz re mid | **−20.4 dB** | < −12 dB |
+| Band-limit | tail energy <100 Hz re mid | **−26.2 dB** | < −12 dB |
+| Density | mid-tail crest factor | **6.17** | < 8 (diffuse, not slapback) |
+| Stability | ±1 slam + white noise | no NaN, **peak 4.09** | bounded, < 20 |
+| Placement | tail after input stops, L / R | **0.049 / 0.051** | both > 1e-3 (blooms in stereo) |
+| Placement | `reverb=0` tail, L / R | **0 / 0** | < 1e-5 (clean bypass) |
+
+RT60 is a **Schroeder backward energy-decay** curve: integrate the wet impulse
+response's energy from the tail forward, read the `−5 dB → −35 dB` slope (T30), and
+extrapolate `RT60 = 2·T30`. Band energy is averaged `|H(f)|²` over several probes
+per band (a single DTFT bin of a reverb IR is spiky; a few points smooth the modes).
+Echo density is proxied by the mid-tail **crest factor** (peak/RMS over `[0.2, 0.6] s`):
+a dense, diffuse tail is noise-like (crest ~4–6), a discrete slapback would spike
+(≫10). The placement test drives the whole `AmpModel::processStereo` with **chorus on
+and reverb up**, feeds a 100 ms burst then silence, and confirms a real wet tail in
+**both** channels afterward — and none at all with `reverb=0`.
+
+### CPU
+
+From `testReverbPerf` (1 s of audio through the reverb alone):
+
+| Sample rate | Time for 1 s | Fraction of one core |
+|---|---|---|
+| 44.1 kHz | ~1.4 ms | ~0.14 % |
+| 48 kHz | ~1.7 ms | ~0.17 % |
+| 96 kHz | ~3.2 ms | ~0.32 % |
+
+Well under the chorus + 2×cab budget (`testChorusPerf`: ~6.3 ms @44.1k / ~14 ms
+@96k — the reverb is **~4–5×** cheaper than the stereo cab pair it feeds), so it is
+a negligible add to the audio thread.
+
+### Integration
+
+- **C ABI / worklet.** `PARAM_REVERB = 9` is appended additively to the amp ABI
+  (chorus stays 6/7/8, cab stays 5). The worklet passes amp param ids straight
+  through to `_amp_set_param` — **no special-casing** beyond the existing cab-toggle
+  latency echo — so the reverb needs zero worklet plumbing.
+- **RigState** (`web/src/rig.ts`). `amp.params.reverb` (0..1, default **0**),
+  persisted and migrated: a pre-M6.7 saved rig (no `reverb` field) loads at 0 (dry).
+- **UI** (`web/src/components/Amp.tsx`). A **REVERB** knob on the amp facia beside
+  the tone controls (Vol / Bass / Mid / **Treble / Reverb**), reusing the shared
+  `Knob` and existing tokens — where the real JC's reverb pot sits.
+- **Assistant** (`web/src/assistant/{tools,prompt}.ts`). `set_param 'reverb'` (unit
+  `amp`) plus a coaching line: the JC spring is surfy/ambient, keep it low (10–30)
+  for clarity and note definition, higher for ballads/ambient washes; the knob is a
+  mix, decay is fixed.
+- **Native** (`native/`). `Params.reverb` + an APVTS `reverb` knob (default 0)
+  keep the JUCE plugin chain-complete; the **identical-core test exercises the wet
+  path** (`reverb = 0.5` in its param set) and still passes **bit-exact**.
+
+
 
 - `core/` must never include platform/OS/browser/Emscripten headers. The only
   Emscripten touch point is `EMSCRIPTEN_KEEPALIVE` in `src/clipper_c_api.cpp`,
@@ -2339,8 +2471,9 @@ core/build/clipper-render --gen pluck:82.4:2.0 out.wav --chain clean --cab brit4
   `web/src/params.ts`, and `web/worklet/clipper-processor.js`. The **AMP** ids
   (`PARAM_VOLUME=0`, `PARAM_BASS=1`, `PARAM_MIDDLE=2`, `PARAM_TREBLE=3`,
   `PARAM_BRIGHT=4` in `clipper::dsp::AmpModel::ParamId`, plus the chain-level
-  `AMP_PARAM_CAB=5` handled by the C ABI wrapper) are likewise mirrored in
-  `web/src/params.ts` and the worklet. The M0 gain id
+  `AMP_PARAM_CAB=5` handled by the C ABI wrapper, the chorus
+  `PARAM_CHORUS_SPEED=6 / _DEPTH=7 / _MODE=8`, and the M6.7 `PARAM_REVERB=9`) are
+  likewise mirrored in `web/src/params.ts` and the worklet. The M0 gain id
   (`clipper::ParamId::PARAM_GAIN=0` in `Processor.h`) still exists in the WASM
   module but the live app no longer uses it.
 ```

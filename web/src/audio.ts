@@ -10,6 +10,7 @@ import {
   AMP_PARAM_CHORUS_SPEED,
   AMP_PARAM_CHORUS_DEPTH,
   AMP_PARAM_CHORUS_MODE,
+  AMP_PARAM_REVERB,
   WORKLET_URL,
   trimKnobToGain,
 } from './params';
@@ -222,6 +223,7 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   engine.setAmpParam(AMP_PARAM_CHORUS_SPEED, opts.amp.speed);
   engine.setAmpParam(AMP_PARAM_CHORUS_DEPTH, opts.amp.depth);
   engine.setAmpParam(AMP_PARAM_CHORUS_MODE, opts.amp.chorusMode);
+  engine.setAmpParam(AMP_PARAM_REVERB, opts.amp.reverb);
   engine.setAmpBypass(!opts.ampEngaged);
 
   // Cab: the worklet's amp_create loads the Clean 2x12 by default. Apply the

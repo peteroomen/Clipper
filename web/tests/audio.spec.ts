@@ -549,6 +549,94 @@ test('chorus: engaged makes L/R differ; off leaves them identical (stereo)', asy
   expect(result.chorus.maxDiff).toBeGreaterThan(0.05);
 });
 
+// M6.7: the spring reverb (amp param id 9). reverb=0 renders identically to a
+// render that never touches the param (bit-exact dry passthrough); with reverb up
+// a wet tail rings on AFTER the source stops, and it DECAYS.
+test('reverb: 0 == dry; up leaves a decaying tail after the input stops', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.6;
+    const stopAt = 0.2; // the oscillator plays for 200 ms, then silence
+
+    // Render the worklet (mono) with the amp on, chorus off. `reverb` null = never
+    // set the param; a number = set amp id 9 to it.
+    async function render(reverb: number | null): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') {
+            clearTimeout(t);
+            resolve();
+          } else if (e.data?.type === 'error') {
+            clearTimeout(t);
+            reject(new Error(e.data.message));
+          }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') resolve();
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.4 }); // volume
+        if (reverb != null) {
+          node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: reverb }); // reverb mix
+        }
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 }); // cab on -> latency echo
+      });
+
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      osc.connect(node).connect(ctx.destination);
+      osc.start();
+      osc.stop(stopAt);
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+
+    const rms = (x: Float32Array, from: number, to: number) => {
+      const a = Math.floor(from * sampleRate);
+      const b = Math.floor(to * sampleRate);
+      let s = 0;
+      for (let i = a; i < b; i++) s += x[i] * x[i];
+      return Math.sqrt(s / (b - a));
+    };
+
+    const dry = await render(null); // param never set
+    const zero = await render(0); // explicitly reverb=0
+    const wet = await render(0.8); // drenched
+
+    // reverb=0 vs the untouched render: bit-exact (passthrough).
+    let maxDiff = 0;
+    for (let i = 0; i < dry.length; i++) maxDiff = Math.max(maxDiff, Math.abs(dry[i] - zero[i]));
+
+    return {
+      maxDiff,
+      dryTail: rms(dry, 0.32, 0.5), // dry: nothing after the source stops
+      wetTail1: rms(wet, 0.32, 0.42), // wet: early tail
+      wetTail2: rms(wet, 0.46, 0.56), // wet: later tail (should be quieter)
+    };
+  });
+
+  // reverb=0 is a bit-exact dry passthrough.
+  expect(result.maxDiff).toBeLessThan(1e-6);
+  // Dry: essentially silent once the oscillator stops.
+  expect(result.dryTail).toBeLessThan(1e-3);
+  // Wet: a real tail rings on after the input stops, and it decays.
+  expect(result.wetTail1).toBeGreaterThan(5e-3);
+  expect(result.wetTail2).toBeLessThan(result.wetTail1);
+});
+
 // M6.4: the pedal CHAIN is dynamic and ordered. Reordering two RATs with
 // different settings changes the processed signal (distortion is nonlinear, so
 // A->B != B->A); the SAME order renders deterministically (bit-identical).
@@ -842,11 +930,21 @@ test('UI exposes M4 controls: pedal, three knobs, footswitch, source, oversampli
   // Default trim is unity (0 dB), knob ~33/100.
   await expect(page.getByTestId('input-trim-db')).toHaveText('0 dB');
 
-  // M5 amp panel: Clean 120 with four knobs + bright/cab/power controls.
+  // M5 amp panel: Clean 120 with four tone knobs + the M6.7 Reverb knob +
+  // bright/cab/power controls.
   await expect(page.getByTestId('amp')).toBeVisible();
-  for (const name of ['Volume', 'Bass', 'Middle', 'Treble']) {
+  for (const name of ['Volume', 'Bass', 'Middle', 'Treble', 'Reverb']) {
     await expect(page.getByRole('slider', { name })).toBeVisible();
   }
+  // Reverb ships at 0 (dry) and drags to a wet mix, updating the rig.
+  const reverbKnob = page.getByRole('slider', { name: 'Reverb' });
+  await expect(reverbKnob).toHaveAttribute('aria-valuenow', '0');
+  await reverbKnob.focus();
+  await page.keyboard.press('ArrowUp');
+  const reverbVal = await page.evaluate(
+    () => (window as any).__CLIPPER_TEST__.getRig().amp.params.reverb
+  );
+  expect(reverbVal).toBeGreaterThan(0);
   await expect(page.getByRole('switch', { name: 'Bright' })).toBeVisible();
   await expect(page.getByRole('switch', { name: 'Cab' })).toBeVisible();
   await expect(page.getByRole('switch', { name: 'Power' })).toBeVisible();
@@ -903,6 +1001,7 @@ test('rig state: JSON round-trips exactly and restores from localStorage', async
           speed: 0.6,
           depth: 0.8,
           chorusMode: 2,
+          reverb: 0.5,
         },
       },
       oversampling: 8,
