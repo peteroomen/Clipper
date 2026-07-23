@@ -14,12 +14,17 @@
 import { OVERSAMPLING_FACTORS, INPUT_TRIM_UNITY_KNOB } from './params';
 
 export type SourceKind = 'test' | 'live';
-export type PedalType = 'rat';
+// M8 adds 'sd1' (Boss SD-1 Super Overdrive). Both dirt pedals share the SAME
+// three-knob param shape (PedalParams below) and the same numeric worklet ABI
+// (id 0/1/2); for an SD-1 those three knobs READ as Drive / Tone / Level (the
+// Pedal component relabels them), so distortion==Drive and filter==Tone. Keeping
+// one param shape keeps the chain/worklet/serializer pedal-agnostic.
+export type PedalType = 'rat' | 'sd1';
 export type AmpType = 'clean120';
 
-// The pedal types that can be added from the gear tray (M6.4). Currently just the
-// RAT; M8's SD-1 and M7's tuner will append here (each with its own params).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat'];
+// The pedal types that can be added from the gear tray (M6.4). RAT + SD-1 today;
+// M7's tuner appends here.
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1'];
 // The amp types that can be selected in the amp slot (M6.4). Currently just the
 // Clean 120; M9's JCM800 appends here.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = ['clean120'];
@@ -110,6 +115,20 @@ export const KNOB_DEFAULTS: PedalParams = {
   level: 0.8,
 };
 
+// SD-1 (M8) opening state. Same param slots (distortion==Drive, filter==Tone,
+// level==Level): a moderate Drive, Tone at noon (transparent), healthy Level.
+export const SD1_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.5,
+  filter: 0.5,
+  level: 0.7,
+};
+
+// Per-type opening knob positions (gear tray "add" / swap use this).
+export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
+  rat: KNOB_DEFAULTS,
+  sd1: SD1_KNOB_DEFAULTS,
+};
+
 // Amp defaults mirror the approved design's opening state: Vol 40, Bass/Mid 50
 // (flat), Treble 60, bright off, cab on. Tone controls are flat at 0.5. Chorus
 // ships OFF (mode 0) with a musical speed/depth ready for when it is engaged.
@@ -137,7 +156,7 @@ export function makePedal(type: PedalType = 'rat'): PedalInstance {
     id: newPedalId(type),
     type,
     engaged: true,
-    params: { ...KNOB_DEFAULTS },
+    params: { ...(PEDAL_KNOB_DEFAULTS[type] ?? KNOB_DEFAULTS) },
   };
 }
 
@@ -192,9 +211,10 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
   const pr = (p.params ?? {}) as Record<string, unknown>;
   const dp = DEFAULT_RIG.pedals[0];
   const id = typeof p.id === 'string' && p.id.length > 0 ? p.id : fallbackId;
+  const type: PedalType = p.type === 'sd1' ? 'sd1' : 'rat'; // unknown coerces to RAT
   return {
     id,
-    type: 'rat', // only RAT today; unknown types coerce to it
+    type,
     engaged: typeof p.engaged === 'boolean' ? p.engaged : dp.engaged,
     params: {
       distortion: clamp01(pr.distortion, dp.params.distortion),

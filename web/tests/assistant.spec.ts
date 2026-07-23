@@ -269,6 +269,57 @@ test('assistant: set_param addresses a pedal instance by index', async ({ page }
   expect(dists).toEqual([0.7, 0.3]);
 });
 
+// M8: the coach can set an SD-1's DRIVE. The SD-1 is added via the gear tray
+// (index 1); a canned set_param carrying param:'drive' on pedal 1 moves its Drive
+// knob only (the 'drive' alias resolves to the shared distortion slot).
+const SD1_DRIVE_TURN = sse([
+  { type: 'message_start', message: { id: 'msg_s', type: 'message', role: 'assistant', content: [] } },
+  { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+  { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Backing the SD-1 down to a clean boost.' } },
+  { type: 'content_block_stop', index: 0 },
+  { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_sd', name: 'set_param', input: {} } },
+  { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"unit":"pedal","pedal":1,"param":"drive","value":0.35}' } },
+  { type: 'content_block_stop', index: 1 },
+  { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 12 } },
+  { type: 'message_stop' },
+]);
+
+test('assistant: set_param drive dials an SD-1 instance', async ({ page }) => {
+  let call = 0;
+  await page.route('**/api/health', mockHealthOk);
+  await page.route('**/api/chat', async (route) => {
+    call += 1;
+    if (call === 1) {
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: SD1_DRIVE_TURN });
+    } else {
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: FOLLOWUP });
+    }
+  });
+
+  await page.goto('/');
+  // Add an SD-1 via the gear tray so index 1 exists (default SD-1 drive = 50).
+  await page.getByTestId('add-pedal').click();
+  await page.getByTestId('add-pedal-sd1').click();
+  await expect(page.getByTestId('board-unit-1')).toBeVisible();
+  await expect(
+    page.getByTestId('board-unit-1').getByRole('slider', { name: 'Drive' })
+  ).toHaveAttribute('aria-valuenow', '50');
+
+  await page.getByTestId('chat-input').fill('make the SD-1 a clean boost');
+  await page.getByTestId('chat-send').click();
+
+  // The chip renders and the SD-1's Drive knob moved to 35.
+  await expect(page.getByTestId('tool-chips')).toContainText('Drive');
+  await expect(
+    page.getByTestId('board-unit-1').getByRole('slider', { name: 'Drive' })
+  ).toHaveAttribute('aria-valuenow', '35');
+  // Rig state: the second pedal is an sd1 whose drive (distortion slot) is 0.35.
+  const pedals = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().pedals);
+  expect(pedals.length).toBe(2);
+  expect(pedals[1].type).toBe('sd1');
+  expect(pedals[1].params.distortion).toBe(0.35);
+});
+
 test('assistant: proxy-down shows a clear in-chat error notice', async ({ page }) => {
   await page.route('**/api/health', mockHealthOk);
   await page.route('**/api/chat', (route) => route.abort());

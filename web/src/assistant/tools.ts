@@ -40,9 +40,12 @@ export const TOOLS = [
     name: 'set_param',
     description:
       "Set a continuous knob on the rig to an absolute normalized value (0..1). " +
-      "Pedal params: 'dist' (0=clean, 1=max saturation), 'filter' (0=bright, " +
+      "RAT pedal params: 'dist' (0=clean, 1=max saturation), 'filter' (0=bright, " +
       "1=dark — the RAT filter is a post-clipping low-pass, so clockwise/higher " +
       "tames fizz without changing how hard it clips), 'level' (output volume). " +
+      "SD-1 pedal params: 'drive' (0..1 overdrive amount), 'tone' (0=dark .. 1=bright, " +
+      "0.5=flat — a treble tilt), 'level'. (For an SD-1 you may use 'dist' as an " +
+      "alias for 'drive' and 'filter' for 'tone' — same slots.) " +
       "Amp params: 'volume', 'bass', 'middle', 'treble' (tone controls are flat " +
       "at 0.5), plus the chorus/vibrato modulation 'speed' (LFO rate ~0.15-8 Hz) " +
       "and 'depth' (sweep amount / how deep the pitch wobble is) — these only do " +
@@ -60,7 +63,9 @@ export const TOOLS = [
           type: 'string',
           enum: [
             'dist',
+            'drive',
             'filter',
+            'tone',
             'level',
             'volume',
             'bass',
@@ -130,13 +135,16 @@ export const TOOLS = [
     name: 'add_pedal',
     description:
       'Add a pedal to the chain. Signal runs guitar -> pedals in order -> amp, so ' +
-      'ORDER matters: a distortion earlier vs later in the chain hits the amp ' +
-      'differently. Only the RAT-type distortion exists today. Omit `position` to ' +
-      'append at the end (just before the amp), or give a 0-based slot to insert.',
+      'ORDER matters: a dirt box earlier vs later in the chain hits the amp ' +
+      "differently. Two dirt pedals exist: 'rat' (hard, aggressive, symmetric " +
+      "clipping — the scooped, cutting RAT) and 'sd1' (a Boss SD-1: soft, warm, " +
+      'asymmetric overdrive with a mid-hump — the classic transparent boost, great ' +
+      'in front of another dirt or a cranked amp). Omit `position` to append at the ' +
+      'end (just before the amp), or give a 0-based slot to insert.',
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat'] },
+        type: { type: 'string', enum: ['rat', 'sd1'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -175,7 +183,9 @@ export const TOOLS = [
 // expect. Pedal 'dist' -> 'distortion'; everything else is 1:1.
 const PEDAL_PARAM: Record<string, string> = {
   dist: 'distortion',
+  drive: 'distortion', // SD-1 Drive shares the distortion slot (id 0)
   filter: 'filter',
+  tone: 'filter', // SD-1 Tone shares the filter slot (id 1)
   level: 'level',
 };
 const AMP_PARAM: Record<string, string> = {
@@ -193,7 +203,9 @@ const INPUT_PARAM: Record<string, string> = {
 // A short, human-readable label for a param (for the in-flow chips).
 const PARAM_LABEL: Record<string, string> = {
   dist: 'Dist',
+  drive: 'Drive',
   filter: 'Filter',
+  tone: 'Tone',
   level: 'Level',
   volume: 'Vol',
   bass: 'Bass',
@@ -289,14 +301,14 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type = 'rat'; // only RAT today
+    const type = input.type === 'sd1' ? 'sd1' : 'rat';
     const rawPos = input.position;
     const position =
       typeof rawPos === 'number' && Number.isFinite(rawPos) ? Math.max(0, rawPos | 0) : undefined;
     const index = controller.addPedal(type, position);
     return {
       content: JSON.stringify({ applied: { added: type, index } }),
-      chip: `+ RAT #${index + 1}`,
+      chip: `+ ${type === 'sd1' ? 'SD-1' : 'RAT'} #${index + 1}`,
     };
   }
 

@@ -21,6 +21,7 @@
 #include "dr_wav.h"
 
 #include "clipper/dsp/RatModel.h"
+#include "clipper/dsp/SdModel.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
@@ -53,6 +54,7 @@ struct Args {
     bool aliasReport = false;     // print the alias metric table and exit
     bool idealOpAmp = false;      // M6.5: bypass the LM308 op-amp model (A/B)
     std::string chain = "rat";    // "rat" (pedal) or "clean" (amp+cab+limiter)
+    std::string pedal = "rat";    // M8: "rat" or "sd1" (SD-1 overdrive)
     float limThresh = 0.97f;      // M6.5: output soft-limiter threshold (clean chain)
 };
 
@@ -77,7 +79,9 @@ float softLimit(float x, float t) {
         "Params are knob positions in [0,1] (defaults: distortion 0.7, filter 0.4, level 0.8).\n"
         "M2 flags: --os 1|2|4|8 (oversampling, default 4), --stage2 wdf|adaa (default wdf),\n"
         "          --alias-report (print the aliasing metric table for os=1/2/4/8 and exit).\n"
-        "M6.5:     --ideal-opamp (bypass the LM308 op-amp model: ideal op-amp A/B),\n"
+        "M6.5:     --ideal-opamp (bypass the op-amp model: ideal op-amp A/B),\n"
+        "M8:       --pedal rat|sd1 (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
+        "          for sd1 the knob flags map positionally: --distortion=DRIVE, --filter=TONE),\n"
         "          --chain rat|clean (clean = amp+cab+limiter, pedal-bypassed path),\n"
         "          --limiter-thresh T (clean-chain output soft-limiter threshold, default 0.97).\n",
         argv0, argv0, argv0, argv0);
@@ -229,6 +233,7 @@ int main(int argc, char** argv) {
         else if (s == "--os") a.os = std::atoi(need("--os"));
         else if (s == "--stage2") a.stage2 = need("--stage2");
         else if (s == "--ideal-opamp") a.idealOpAmp = true;
+        else if (s == "--pedal") a.pedal = need("--pedal");
         else if (s == "--chain") a.chain = need("--chain");
         else if (s == "--limiter-thresh") a.limThresh = std::atof(need("--limiter-thresh"));
         else if (s == "--alias-report") a.aliasReport = true;
@@ -345,6 +350,18 @@ int main(int argc, char** argv) {
             lim.prepare(fs);
             if (!out.empty()) lim.processMono(out.data(), static_cast<int>(out.size()));
         }
+    } else if (a.pedal == "sd1") {
+        // M8: process through the SD-1 overdrive (soft, asymmetric feedback clip).
+        // Knob flags map positionally: --distortion -> DRIVE, --filter -> TONE.
+        clipper::dsp::SdModel model;
+        model.prepare(fs, 128);
+        model.setOversampling(a.os);
+        model.setIdealOpAmp(a.idealOpAmp);
+        model.setParameter(clipper::dsp::SdModel::PARAM_DRIVE, a.distortion);
+        model.setParameter(clipper::dsp::SdModel::PARAM_TONE, a.filter);
+        model.setParameter(clipper::dsp::SdModel::PARAM_LEVEL, a.level);
+        if (!input.empty())
+            model.process(input.data(), out.data(), static_cast<int>(input.size()));
     } else {
         // Process through the RAT pedal model.
         clipper::dsp::RatModel model;
@@ -386,9 +403,16 @@ int main(int argc, char** argv) {
             "Rendered %zu frames @ %.0f Hz -> %s  (chain=clean amp:vol0.4/treble0.6+cab, "
             "limiter-thresh=%.2f)\n  peak=%.4f  rms=%.4f\n",
             out.size(), fs, a.outFile.c_str(), a.limThresh, peak, rms);
+    } else if (a.pedal == "sd1") {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (pedal=sd1 drive=%.2f tone=%.2f level=%.2f "
+            "os=%dx ideal-opamp=%d)\n"
+            "  peak=%.4f  rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.distortion, a.filter, a.level, a.os,
+            a.idealOpAmp ? 1 : 0, peak, rms);
     } else {
         std::printf(
-            "Rendered %zu frames @ %.0f Hz -> %s  (dist=%.2f filter=%.2f level=%.2f "
+            "Rendered %zu frames @ %.0f Hz -> %s  (pedal=rat dist=%.2f filter=%.2f level=%.2f "
             "os=%dx stage2=%s ideal-opamp=%d)\n"
             "  peak=%.4f  rms=%.4f\n",
             out.size(), fs, a.outFile.c_str(), a.distortion, a.filter, a.level, a.os,

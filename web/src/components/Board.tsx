@@ -48,6 +48,7 @@ export interface BoardProps {
 // A friendly display name per pedal type (for the gear tray + swap menu).
 const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   rat: 'RAT-type distortion',
+  sd1: 'SD-type overdrive',
 };
 const AMP_TYPE_LABEL: Record<string, string> = {
   clean120: 'Clean 120 (JC-120 style)',
@@ -294,7 +295,7 @@ export function Board({
                         {t === p.type ? ' ✓' : ''}
                       </button>
                     ))}
-                    <div className="unit-menu-note">More pedals coming (SD-1, tuner…)</div>
+                    <div className="unit-menu-note">More pedals coming (tuner…)</div>
                   </div>
                 )}
               </div>
@@ -350,7 +351,7 @@ export function Board({
                   {PEDAL_TYPE_LABEL[t]}
                 </button>
               ))}
-              <div className="unit-menu-note">More coming: SD-1 overdrive, tuner…</div>
+              <div className="unit-menu-note">More coming: tuner…</div>
             </div>
           )}
           {pedals.length === 0 && (

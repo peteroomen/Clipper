@@ -732,6 +732,86 @@ test('chain: adding a pedal changes output; empty chain passes through clean', a
   expect(result.emptyH3).toBeLessThan(result.emptyRms * 0.02);
 });
 
+// M8: routed through the worklet's `chain` dispatch, an SD-1 pedal CHANGES the
+// sound — a clean 220 Hz sine comes out with real harmonic content (it clips),
+// and its soft, ASYMMETRIC feedback clip yields a substantial EVEN harmonic
+// (2nd / 440 Hz), comparable to the odd 3rd — the SD-1 warmth a symmetric clipper
+// cannot make. A pure pedal-chain proof (amp off), single render.
+test('SD-1 worklet: adds harmonics (changes the sound) with a strong even harmonic', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.5;
+    const length = Math.floor(sampleRate * seconds);
+    const ctx = new OfflineAudioContext(1, length, sampleRate);
+    await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+    const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+    });
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+      node.port.onmessage = (e: MessageEvent) => {
+        if (e.data?.type === 'ready') {
+          clearTimeout(t);
+          resolve();
+        } else if (e.data?.type === 'error') {
+          clearTimeout(t);
+          reject(new Error(e.data.message));
+        }
+      };
+    });
+    // Amp OFF -> a pure SD-1 pedal proof. An sd1 instance via the `chain` message
+    // exercises the worklet's sd_* dispatch (create/set_param/process).
+    const SD = { id: 'sd', type: 'sd1', engaged: true, params: { distortion: 0.6, filter: 0.5, level: 0.8 } };
+    await new Promise<void>((resolve) => {
+      node.port.onmessage = (e: MessageEvent) => {
+        if (e.data?.type === 'latency') resolve();
+      };
+      node.port.postMessage({ type: 'bypass', unit: 'amp', on: true });
+      node.port.postMessage({ type: 'chain', pedals: [SD] });
+      node.port.postMessage({ type: 'oversampling', factor: 4 });
+    });
+    const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+    const g = new GainNode(ctx, { gain: 0.3 });
+    osc.connect(g).connect(node).connect(ctx.destination);
+    osc.start();
+    const buffer = await ctx.startRendering();
+    const data = buffer.getChannelData(0);
+
+    function goertzel(freq: number): number {
+      const start = Math.floor(sampleRate * 0.15);
+      const N = data.length - start;
+      const w = (2 * Math.PI * freq) / sampleRate;
+      const c = 2 * Math.cos(w);
+      let s1 = 0, s2 = 0, s0 = 0;
+      for (let i = start; i < data.length; i++) {
+        s0 = data[i] + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+      }
+      const re = s1 - s2 * Math.cos(w);
+      const im = s2 * Math.sin(w);
+      return (2 * Math.sqrt(re * re + im * im)) / N;
+    }
+    return { f1: goertzel(220), h2: goertzel(440), h3: goertzel(660) };
+  });
+
+  // Real signal came through (guard against the known OfflineAudioContext silence
+  // flake) and it CHANGED — a clean sine has no harmonics; the SD-1 clips (odd 3rd).
+  expect(result.f1).toBeGreaterThan(0.05);
+  expect(result.h3).toBeGreaterThan(result.f1 * 0.02);
+  // The asymmetric feedback clip makes a STRONG even harmonic — comparable to the
+  // odd one, and well above any measurement floor (a symmetric clipper makes ~none).
+  expect(result.h2).toBeGreaterThan(result.f1 * 0.03);
+  expect(result.h2).toBeGreaterThan(result.h3 * 0.2);
+});
+
 test('UI exposes M4 controls: pedal, three knobs, footswitch, source, oversampling', async ({
   page,
 }) => {

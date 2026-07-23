@@ -20,6 +20,10 @@
   --ink-faint: #9B9D98;
   --led: #F03B24;
   --led-glow: rgba(240, 59, 36, 0.55);
+  /* M8 SD-1 accent (amber) — used by .pedal[data-pedal-type="sd1"] for its LED
+     and knob arcs, so the overdrive reads distinct from the RAT's red. */
+  --led-sd: #E39A12;
+  --led-sd-glow: rgba(227, 154, 18, 0.5);
   --arc-track: rgba(0, 0, 0, 0.08);
   --glass-bg: rgba(255, 255, 255, 0.42);
   --glass-edge: rgba(255, 255, 255, 0.75);
@@ -50,6 +54,8 @@
     --ink-faint: #6A6F77;
     --led: #FF4A34;
     --led-glow: rgba(255, 74, 52, 0.6);
+    --led-sd: #FFB627;
+    --led-sd-glow: rgba(255, 182, 39, 0.55);
     --arc-track: rgba(255, 255, 255, 0.07);
     --glass-bg: rgba(38, 42, 50, 0.38);
     --glass-edge: rgba(255, 255, 255, 0.16);
@@ -71,7 +77,8 @@
   --ground: #E5E3DE; --ground-deep: #DBD8D2;
   --sh-dark: rgba(163,157,146,.85); --sh-darker: rgba(140,134,122,.55); --sh-light: rgba(255,255,255,.95);
   --well: #D6D3CC; --ink: #2B2C2E; --ink-dim: #71736F; --ink-faint: #9B9D98;
-  --led: #F03B24; --led-glow: rgba(240,59,36,.55); --arc-track: rgba(0,0,0,.08);
+  --led: #F03B24; --led-glow: rgba(240,59,36,.55);
+  --led-sd: #E39A12; --led-sd-glow: rgba(227,154,18,.5); --arc-track: rgba(0,0,0,.08);
   --glass-bg: rgba(255,255,255,.42); --glass-edge: rgba(255,255,255,.75); --glass-ink: #26282B;
   --glass-tint: rgba(62,123,214,.10); --ai: #3E6FD6;
   --blob-a: rgba(240,96,60,.35); --blob-b: rgba(62,111,214,.30);
@@ -83,7 +90,8 @@
   --ground: #26292E; --ground-deep: #202329;
   --sh-dark: rgba(9,11,14,.85); --sh-darker: rgba(5,6,8,.6); --sh-light: rgba(255,255,255,.055);
   --well: #1D2025; --ink: #E8E9EB; --ink-dim: #969BA3; --ink-faint: #6A6F77;
-  --led: #FF4A34; --led-glow: rgba(255,74,52,.6); --arc-track: rgba(255,255,255,.07);
+  --led: #FF4A34; --led-glow: rgba(255,74,52,.6);
+  --led-sd: #FFB627; --led-sd-glow: rgba(255,182,39,.55); --arc-track: rgba(255,255,255,.07);
   --glass-bg: rgba(38,42,50,.38); --glass-edge: rgba(255,255,255,.16); --glass-ink: #ECEEF1;
   --glass-tint: rgba(112,156,255,.08); --ai: #7CA5F2;
   --blob-a: rgba(255,92,54,.20); --blob-b: rgba(92,132,255,.16);
