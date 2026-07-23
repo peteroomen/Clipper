@@ -1,0 +1,58 @@
+/* amp — the CLEAN 120 panel from the approved design ("Design Direction 01").
+   Ported verbatim from the artifact's `.amp` block (deliberately left out of M4,
+   added in M5). Reuses the same neu tokens/recipes as the pedal; the knob
+   anatomy itself lives in pedal.css and is shared (the amp just shrinks it via
+   `--kd`). */
+
+.amp-wing { display: flex; flex-direction: column; gap: 44px; flex: 1; min-width: 340px; }
+.amp { border-radius: 26px; padding: 22px 26px 24px; position: relative; z-index: 1; }
+.amp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.amp-name { font-family: Anton, "Arial Narrow", sans-serif; font-size: 25px; text-transform: uppercase;
+  letter-spacing: .03em; color: var(--ink); }
+.amp-name small { font-size: 11px; letter-spacing: .3em; color: var(--ink-faint); display: block;
+  font-family: ui-monospace, Menlo, monospace; margin-top: 2px; }
+.amp-controls { display: flex; align-items: flex-start; gap: 20px; flex-wrap: wrap; }
+.amp .knob { --kd: 56px; }
+.amp-right { margin-left: auto; display: flex; gap: 22px; align-items: flex-start; }
+
+/* the amp's value arcs dim when powered off (mirrors the pedal's .k-arc dim) */
+.amp:not(.on) .k-arc { opacity: .3; }
+
+/* toggle (bright / cab) — a lever in a carved slot */
+.toggle { display: flex; flex-direction: column; align-items: center; gap: 9px; cursor: pointer;
+  background: none; border: none; padding: 0; font: inherit; }
+.t-slot { width: 30px; height: 54px; border-radius: 15px; background: var(--well);
+  box-shadow: inset 4px 4px 9px var(--sh-darker), inset -3px -3px 7px var(--sh-light);
+  position: relative; }
+.t-lever { position: absolute; left: 4px; right: 4px; top: 4px; height: 24px; border-radius: 12px;
+  background: var(--cap);
+  box-shadow: 2px 3px 6px var(--sh-dark), inset 0 1px 1px var(--sh-light);
+  transition: top .16s cubic-bezier(.34,1.56,.64,1); }
+.toggle.on .t-lever { top: 26px; background: linear-gradient(145deg,
+  color-mix(in srgb, var(--led) 60%, var(--ground)),
+  color-mix(in srgb, var(--led) 85%, #000)); }
+.toggle:focus-visible { outline: 2px solid var(--ai); outline-offset: 4px; border-radius: 6px; }
+.toggle .k-name { color: var(--ink-dim); }
+
+/* rocker power + jewel */
+.power { display: flex; flex-direction: column; align-items: center; gap: 9px; cursor: pointer;
+  background: none; border: none; padding: 0; font: inherit; }
+.jewel { width: 16px; height: 16px; border-radius: 50%; margin-bottom: 2px;
+  background: color-mix(in srgb, var(--led) 18%, var(--well));
+  box-shadow: inset 2px 2px 4px var(--sh-darker); transition: all .2s; }
+.amp.on .jewel { background: radial-gradient(circle at 35% 30%, #FFD9CF, var(--led) 55%, #90170A);
+  box-shadow: 0 0 16px var(--led-glow), 0 0 5px var(--led-glow); }
+.rocker { width: 46px; height: 64px; border-radius: 12px; background: var(--cap-edge);
+  box-shadow: 5px 5px 12px var(--sh-dark), -4px -4px 10px var(--sh-light);
+  position: relative; overflow: hidden; }
+.rocker::before, .rocker::after {
+  content: ""; position: absolute; left: 6px; right: 6px; height: 24px; border-radius: 8px;
+  transition: all .15s; }
+.rocker::before { top: 6px; background: var(--cap);
+  box-shadow: inset 1px 2px 3px var(--sh-light), inset -1px -2px 4px var(--sh-darker); }
+.rocker::after { bottom: 6px; background: var(--well);
+  box-shadow: inset 3px 3px 6px var(--sh-darker); }
+.amp.on .rocker::before { background: var(--well); box-shadow: inset 3px 3px 6px var(--sh-darker); }
+.amp.on .rocker::after { background: var(--cap);
+  box-shadow: inset 1px 2px 3px var(--sh-light), inset -1px -2px 4px var(--sh-darker); }
+.power:focus-visible { outline: 2px solid var(--ai); outline-offset: 4px; border-radius: 6px; }

@@ -25,13 +25,14 @@ header.hero { position: relative; padding: 28px 0 8px; }
 .hint .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--led);
   box-shadow: 0 0 8px var(--led-glow); }
 
-/* rig stage: pedal beside the control desk */
+/* rig stage: pedal + amp side by side (top row), control desk below */
 .stage { position: relative; z-index: 1; margin-top: 36px; }
 .rig { display: flex; flex-wrap: wrap; gap: 44px; align-items: flex-start; }
+.desk-row { margin-top: 44px; }
 
 /* control desk — the secondary, restyled M3 controls (source/device/OS,
    transport, status). Molded panel, secondary to the pedal. */
-.desk { flex: 1; min-width: 320px; padding: 24px 26px 26px; border-radius: 26px; }
+.desk { flex: 1; min-width: 320px; max-width: 620px; padding: 24px 26px 26px; border-radius: 26px; }
 .desk h2 { font-family: Anton, "Arial Narrow", sans-serif; font-weight: 400; font-size: 22px;
   text-transform: uppercase; letter-spacing: .03em; margin: 0 0 4px; }
 .desk .sub { color: var(--ink-dim); font-size: 13px; margin: 0 0 20px; }

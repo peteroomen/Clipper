@@ -50,7 +50,18 @@ test('RAT worklet: high distortion yields odd harmonics; LEVEL scales RMS', asyn
         };
       });
 
-      for (const m of messages) node.port.postMessage(m);
+      // Post all setup messages, then a benign oversampling message whose
+      // `latency` echo we await: this flushes the port queue so every message is
+      // delivered+applied before the (synchronous) offline render starts.
+      // Without it, a just-posted message can lose the race and the render comes
+      // out unprocessed.
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') resolve();
+        };
+        for (const m of messages) node.port.postMessage(m);
+        node.port.postMessage({ type: 'oversampling', factor: 4 });
+      });
 
       const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
       osc.connect(node).connect(ctx.destination);
@@ -90,15 +101,20 @@ test('RAT worklet: high distortion yields odd harmonics; LEVEL scales RMS', asyn
       return Math.sqrt(sum / count);
     }
 
+    // Power the amp OFF (bypass amp+cab) so this stays a pure PEDAL DSP proof,
+    // exactly as in M3/M4 — the amp/cab path is exercised by its own tests below.
+    const ampOff = { type: 'bypass', unit: 'amp', on: true };
     const driven = await render([
-      { type: 'param', id: 0, value: 0.9 }, // distortion
-      { type: 'param', id: 1, value: 0.0 }, // filter (bright)
-      { type: 'param', id: 2, value: 1.0 }, // level
+      ampOff,
+      { type: 'param', unit: 'pedal', id: 0, value: 0.9 }, // distortion
+      { type: 'param', unit: 'pedal', id: 1, value: 0.0 }, // filter (bright)
+      { type: 'param', unit: 'pedal', id: 2, value: 1.0 }, // level
     ]);
     const halfLevel = await render([
-      { type: 'param', id: 0, value: 0.9 },
-      { type: 'param', id: 1, value: 0.0 },
-      { type: 'param', id: 2, value: 0.5 },
+      ampOff,
+      { type: 'param', unit: 'pedal', id: 0, value: 0.9 },
+      { type: 'param', unit: 'pedal', id: 1, value: 0.0 },
+      { type: 'param', unit: 'pedal', id: 2, value: 0.5 },
     ]);
 
     const f1 = goertzel(driven, sampleRate, 220);
@@ -151,10 +167,19 @@ test('RAT worklet: bypass passes input through untouched', async ({ page }) => {
           }
         };
       });
-      node.port.postMessage({ type: 'param', id: 0, value: 0.9 });
-      node.port.postMessage({ type: 'param', id: 1, value: 0.0 });
-      node.port.postMessage({ type: 'param', id: 2, value: 1.0 });
-      node.port.postMessage({ type: 'bypass', on: bypass });
+      // Power the amp off so this isolates the PEDAL bypass behavior (as in M4).
+      // Await the oversampling `latency` echo as a flush barrier (see test above).
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') resolve();
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true });
+        node.port.postMessage({ type: 'param', unit: 'pedal', id: 0, value: 0.9 });
+        node.port.postMessage({ type: 'param', unit: 'pedal', id: 1, value: 0.0 });
+        node.port.postMessage({ type: 'param', unit: 'pedal', id: 2, value: 1.0 });
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: bypass });
+        node.port.postMessage({ type: 'oversampling', factor: 4 });
+      });
 
       const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
       osc.connect(node).connect(ctx.destination);
@@ -209,6 +234,164 @@ test('RAT worklet: bypass passes input through untouched', async ({ page }) => {
   expect(result.processedH3).toBeGreaterThan(result.bypassH3 * 10);
 });
 
+// M5: amp tone is audibly measurable through the FULL chain (pedal -> amp ->
+// cab). Treble at max vs min changes the 5 kHz content (treble shelf @ 3.5 kHz).
+test('amp: treble knob changes 5 kHz content through the full chain', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.5;
+
+    async function render(trebleKnob: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') {
+            clearTimeout(t);
+            resolve();
+          } else if (e.data?.type === 'error') {
+            clearTimeout(t);
+            reject(new Error(e.data.message));
+          }
+        };
+      });
+      // Pedal bypassed (clean 5 kHz tone passes), amp ON, tone via treble knob.
+      // Await the worklet's `latency` echo (sent in reply to the cab param) so we
+      // KNOW every message above was delivered+applied before offline rendering
+      // starts — offline renders run synchronously and can otherwise finish
+      // before a just-posted message reaches the processor.
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') resolve();
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.8 }); // volume ~unity
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 3, value: trebleKnob }); // treble
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 }); // cab on -> echoes latency
+      });
+
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 5000 });
+      osc.connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+
+    function goertzel(data: Float32Array, sr: number, freq: number): number {
+      const start = Math.floor(sr * 0.15);
+      const N = data.length - start;
+      const k = (freq / sr) * N;
+      const w = (2 * Math.PI * k) / N;
+      const c = 2 * Math.cos(w);
+      let s0 = 0,
+        s1 = 0,
+        s2 = 0;
+      for (let i = start; i < data.length; i++) {
+        s0 = data[i] + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+      }
+      const re = s1 - s2 * Math.cos(w);
+      const im = s2 * Math.sin(w);
+      return (2 * Math.sqrt(re * re + im * im)) / N;
+    }
+
+    const hi = await render(1.0);
+    const lo = await render(0.0);
+    return {
+      trebleMax: goertzel(hi, sampleRate, 5000),
+      trebleMin: goertzel(lo, sampleRate, 5000),
+    };
+  });
+
+  // Treble at max should lift 5 kHz well above treble at min (the +/-12 dB shelf
+  // above 3.5 kHz => ~24 dB swing; > 4x amplitude even after the constant cab
+  // rolloff).
+  expect(result.trebleMax).toBeGreaterThan(result.trebleMin * 4);
+});
+
+// M5: amp power off = amp+cab bypassed (a true passthrough of the pedal output).
+test('amp: power off passes the pedal signal through untouched', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.5;
+
+    async function render(ampOn: boolean): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') {
+            clearTimeout(t);
+            resolve();
+          } else if (e.data?.type === 'error') {
+            clearTimeout(t);
+            reject(new Error(e.data.message));
+          }
+        };
+      });
+      // Pedal bypassed so the input reaches the amp stage untouched; toggle amp.
+      // Await the worklet's `latency` echo (sent in reply to the amp-bypass
+      // message) so the toggle is guaranteed applied before offline rendering.
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') resolve();
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: !ampOn }); // echoes latency
+      });
+
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      osc.connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+
+    function rms(data: Float32Array, sr: number): number {
+      const start = Math.floor(sr * 0.15);
+      let sum = 0,
+        count = 0;
+      for (let i = start; i < data.length; i++) {
+        sum += data[i] * data[i];
+        count++;
+      }
+      return Math.sqrt(sum / count);
+    }
+
+    const off = await render(false);
+    const on = await render(true);
+    return { offRms: rms(off, sampleRate), onRms: rms(on, sampleRate) };
+  });
+
+  // Power off: pure passthrough of the (bypassed-pedal) input == the raw
+  // oscillator, RMS ~0.707. Power on: the amp's default volume (~0.4 knob) and
+  // the cab clearly attenuate it, so the two are audibly different.
+  expect(result.offRms).toBeGreaterThan(0.6);
+  expect(result.offRms).toBeLessThan(0.8);
+  expect(result.onRms).toBeLessThan(result.offRms * 0.5);
+});
+
 test('UI exposes M4 controls: pedal, three knobs, footswitch, source, oversampling', async ({
   page,
 }) => {
@@ -231,16 +414,30 @@ test('UI exposes M4 controls: pedal, three knobs, footswitch, source, oversampli
   // Footswitch (bypass) + oversampling select render.
   await expect(page.getByTestId('footswitch')).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Oversampling' })).toBeVisible();
+
+  // M5 amp panel: Clean 120 with four knobs + bright/cab/power controls.
+  await expect(page.getByTestId('amp')).toBeVisible();
+  for (const name of ['Volume', 'Bass', 'Middle', 'Treble']) {
+    await expect(page.getByRole('slider', { name })).toBeVisible();
+  }
+  await expect(page.getByRole('switch', { name: 'Bright' })).toBeVisible();
+  await expect(page.getByRole('switch', { name: 'Cab' })).toBeVisible();
+  await expect(page.getByRole('switch', { name: 'Power' })).toBeVisible();
 });
 
 test('rig state: JSON round-trips exactly and restores from localStorage', async ({ page }) => {
   await page.goto('/');
 
-  // Pure serialize -> deserialize round-trip is exact for a valid rig.
+  // Pure serialize -> deserialize round-trip is exact for a valid rig (incl amp).
   const roundTrip = await page.evaluate(() => {
     const t = (window as any).__CLIPPER_TEST__;
     const rig = {
       pedal: { type: 'rat', engaged: false, params: { distortion: 0.42, filter: 0.13, level: 0.9 } },
+      amp: {
+        type: 'clean120',
+        engaged: false,
+        params: { volume: 0.33, bass: 0.6, middle: 0.4, treble: 0.7, bright: 1, cab: 0 },
+      },
       oversampling: 8,
       source: 'live',
     };
@@ -334,6 +531,34 @@ test('footswitch: toggles engaged/LED state and sends the bypass message', async
   expect(lastBypass).toBe(false);
 
   await page.getByRole('button', { name: 'Stop' }).click(); // release the AudioContext
+});
+
+// M5: an M4-shaped saved rig (no `amp`) migrates to amp defaults on load.
+test('rig migration: an M4 rig without an amp gets amp defaults', async ({ page }) => {
+  await page.goto('/');
+  // Seed localStorage with an old (M4) rig shape, then reload.
+  await page.evaluate(() => {
+    const m4 = {
+      pedal: { type: 'rat', engaged: true, params: { distortion: 0.5, filter: 0.5, level: 0.5 } },
+      oversampling: 4,
+      source: 'test',
+    };
+    localStorage.setItem('clipper.rig.v1', JSON.stringify(m4));
+  });
+  await page.reload();
+
+  // Amp panel present with default knob readouts (volume 0.4 -> 40, treble 0.6 -> 60).
+  await expect(page.getByTestId('amp')).toBeVisible();
+  await expect(page.getByRole('slider', { name: 'Volume' })).toHaveAttribute('aria-valuenow', '40');
+  await expect(page.getByRole('slider', { name: 'Treble' })).toHaveAttribute('aria-valuenow', '60');
+  // Amp powered by default (migrated engaged = true).
+  await expect(page.getByTestId('amp')).toHaveClass(/\bon\b/);
+  // Cab on by default.
+  await expect(page.getByRole('switch', { name: 'Cab' })).toHaveAttribute('aria-checked', 'true');
+  // The migrated rig is what the app now holds.
+  const rig = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig());
+  expect(rig.amp.params.volume).toBe(0.4);
+  expect(rig.amp.engaged).toBe(true);
 });
 
 // Live-input smoke test (Chromium fake media flags in playwright.config.ts).

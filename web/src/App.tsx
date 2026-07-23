@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { startEngine, listInputDevices, type Engine } from './audio';
-import { PARAM_ID, OVERSAMPLING_FACTORS } from './params';
+import { PARAM_ID, AMP_PARAM_ID, OVERSAMPLING_FACTORS } from './params';
 import {
   loadRig,
   saveRig,
@@ -8,13 +8,16 @@ import {
   deserializeRig,
   type RigState,
   type ParamName,
+  type AmpParamName,
   type SourceKind,
 } from './rig';
 import { Pedal } from './components/Pedal';
+import { Amp } from './components/Amp';
 
 import './styles/tokens.css';
 import './styles/base.css';
 import './styles/pedal.css';
+import './styles/amp.css';
 import './styles/app.css';
 
 type ThemeChoice = 'system' | 'light' | 'dark';
@@ -96,6 +99,29 @@ export default function App() {
     if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastBypass = !engaged;
   }
 
+  // ---- amp mutations ----
+
+  function setAmpParam(name: AmpParamName, value: number) {
+    setRig((r) => ({ ...r, amp: { ...r.amp, params: { ...r.amp.params, [name]: value } } }));
+    engineRef.current?.setAmpParam(AMP_PARAM_ID[name], value);
+    const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
+    if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastAmpParam = { id: AMP_PARAM_ID[name], value };
+  }
+
+  // Flip a 0/1 amp toggle (bright / cab).
+  function toggleAmp(name: 'bright' | 'cab') {
+    const next = rigRef.current.amp.params[name] >= 0.5 ? 0 : 1;
+    setAmpParam(name, next);
+  }
+
+  function toggleAmpPower() {
+    const engaged = !rigRef.current.amp.engaged;
+    engineRef.current?.setAmpBypass(!engaged); // amp bypass = power off
+    setRig((r) => ({ ...r, amp: { ...r.amp, engaged } }));
+    const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
+    if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastAmpBypass = !engaged;
+  }
+
   function setOversampling(factor: number) {
     setRig((r) => ({ ...r, oversampling: factor }));
     engineRef.current?.setOversampling(factor);
@@ -118,6 +144,8 @@ export default function App() {
         distortion: r.pedal.params.distortion,
         filter: r.pedal.params.filter,
         level: r.pedal.params.level,
+        amp: r.amp.params,
+        ampEngaged: r.amp.engaged,
         oversampling: r.oversampling,
         bypass: !r.pedal.engaged,
         onLatencySamples: setLatencySamples,
@@ -156,7 +184,7 @@ export default function App() {
         <header className="hero">
           <div className="topbar">
             <div className="eyebrow-row">
-              <span className="eyebrow">Clipper · RAT-type distortion</span>
+              <span className="eyebrow">Clipper · RAT pedal → Clean 120 amp + cab</span>
             </div>
             <div className="theme-seg" role="group" aria-label="Theme">
               {(['system', 'light', 'dark'] as ThemeChoice[]).map((t) => (
@@ -175,12 +203,13 @@ export default function App() {
           <div className="hero-head">
             <h1>Clipper</h1>
             <p>
-              A RAT-style diode-clipper pedal, modeled and played live in the browser. Drag the knobs,
-              stomp the switch — the whole rig is one serializable state, restored on reload.
+              A RAT-style diode-clipper pedal into a JC-120-inspired clean amp and 2×12 cab —
+              modeled and played live in the browser. Drag the knobs, stomp the switch, power the
+              amp; the whole rig is one serializable state, restored on reload.
             </p>
             <div className="hint">
               <span className="dot" />
-              drag the knobs · stomp to bypass · flip the theme
+              pedal → amp → cab · stomp / power to bypass · flip the theme
             </div>
           </div>
         </header>
@@ -188,7 +217,15 @@ export default function App() {
         <div className="stage">
           <div className="rig">
             <Pedal pedal={rig.pedal} onParam={setParam} onToggleEngaged={toggleEngaged} />
+            <Amp
+              amp={rig.amp}
+              onParam={setAmpParam}
+              onToggle={toggleAmp}
+              onTogglePower={toggleAmpPower}
+            />
+          </div>
 
+          <div className="rig desk-row">
             <section className="desk raised" aria-label="Control desk">
               <h2>Signal &amp; transport</h2>
               <p className="sub">Source, oversampling, and the audio engine.</p>
@@ -273,7 +310,7 @@ export default function App() {
                   <dd data-testid="status">{status}</dd>
                   <dt>Sample rate</dt>
                   <dd>{sampleRate ? `${sampleRate} Hz` : '—'}</dd>
-                  <dt>Latency · model</dt>
+                  <dt>Latency · model+cab</dt>
                   <dd>
                     {running ? `${modelLatencyMs.toFixed(1)} ms (${latencySamples} smp)` : '—'}
                   </dd>

@@ -77,6 +77,9 @@ emcc \
     "$CORE_DIR/src/Processor.cpp" \
     "$CORE_DIR/src/clipper_c_api.cpp" \
     "$CORE_DIR/src/dsp/RatModel.cpp" \
+    "$CORE_DIR/src/dsp/AmpModel.cpp" \
+    "$CORE_DIR/src/dsp/CabConvolver.cpp" \
+    "$CORE_DIR/src/dsp/CabIR.cpp" \
     -I "$CORE_DIR/include" \
     -isystem "$WDF_INC" \
     -O3 \
@@ -87,7 +90,7 @@ emcc \
     -s SINGLE_FILE=1 \
     -s ENVIRONMENT=web,worker \
     -s ALLOW_MEMORY_GROWTH=1 \
-    -s EXPORTED_FUNCTIONS='["_clipper_create","_clipper_destroy","_clipper_set_param","_clipper_process","_rat_create","_rat_destroy","_rat_set_param","_rat_set_oversampling","_rat_latency_samples","_rat_process","_malloc","_free"]' \
+    -s EXPORTED_FUNCTIONS='["_clipper_create","_clipper_destroy","_clipper_set_param","_clipper_process","_rat_create","_rat_destroy","_rat_set_param","_rat_set_oversampling","_rat_latency_samples","_rat_process","_amp_create","_amp_destroy","_amp_set_param","_amp_latency_samples","_amp_process","_malloc","_free"]' \
     -s EXPORTED_RUNTIME_METHODS='["HEAPF32","HEAPU8"]' \
     -o "$OUT_FILE"
 

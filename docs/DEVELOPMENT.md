@@ -660,6 +660,185 @@ Playwright (forcing `data-theme`) to `web/test-results/pedal-{light,dark}.png`
 visible and correct in light and dark; bypassed shows the dark LED and dimmed
 arcs.
 
+## 10. M5 — Clean amp + cab
+
+M5 adds a JC-120-inspired **clean amp** and a **cab IR convolver**, making the
+signal chain `input → RAT pedal → amp (volume + tone stack + bright) → cab IR →
+out`. The amp is modeled **LINEAR** (the roadmap's deliberate scope choice: a
+solid-state clean platform is honest to model linearly; drive comes from the
+pedal). The pedal (`rat_*`) and amp (`amp_*`) are **separate WASM instances**
+driven in sequence by the worklet; the cab is part of the amp instance.
+
+New source (all platform-free C++17, `-Wall -Wextra` clean, no allocation in
+`process()`):
+
+```
+core/include/clipper/dsp/Biquad.h        TDF2 biquad + RBJ cookbook designers (shelf/peak/HP/LP)
+core/include/clipper/dsp/FFT.h           hand-rolled radix-2 complex FFT (no deps)
+core/include/clipper/dsp/AmpModel.h      public API (pimpl)
+core/include/clipper/dsp/CabConvolver.h  partitioned FFT convolver API
+core/include/clipper/dsp/CabIR.h         default cab IR generator declaration
+core/src/dsp/AmpModel.cpp                linear tone stack + volume + bright
+core/src/dsp/CabConvolver.cpp            uniform-partitioned overlap-save convolution
+core/src/dsp/CabIR.cpp                   procedural 2x12 IR (seeded, deterministic)
+core/tests/test_amp_model.cpp            plain-assert amp+cab tests (44.1k + 96k)
+```
+
+### Amp model — tone-stack assumptions
+
+JC-120-informed, **not** a measured transfer function — a musically-sensible
+linear approximation (same spirit as the RAT model's circuit-informed comments).
+All params are normalized knob positions in `[0,1]`; the three tone controls are
+flat at `0.5`.
+
+| Param (id) | Type / center | Range | Notes |
+|---|---|---|---|
+| `PARAM_VOLUME` (0) | linear-in-dB | −40 … +6 dB | knob 0 = **true silence** (fades out below 3% knob); `db = −40 + 46·knob` above that |
+| `PARAM_BASS` (1) | low-shelf @ **100 Hz** | ±12 dB (S=0.8) | knob 0 = −12, 0.5 = 0, 1 = +12 |
+| `PARAM_MIDDLE` (2) | peaking @ **650 Hz** | ±9 dB (Q=0.7) | broad mid, JC-voiced |
+| `PARAM_TREBLE` (3) | high-shelf @ **3.5 kHz** | ±12 dB (S=0.8) | |
+| `PARAM_BRIGHT` (4) | high-shelf @ **3 kHz** | +5 dB (0/1 toggle) | fixed shelf; real bright switches scale with volume — simplified for M5 |
+| `AMP_PARAM_CAB` (5) | cab on/off (0/1) | — | **chain-level** id handled by the C ABI wrapper (bypasses the convolver for A/B), not by `AmpModel` |
+
+Signal order: bass → middle → treble → bright → volume. The stack is flat within
+~±0.5 dB at all knobs = 0.5 (tested). **Smoothing:** the tone gains (dB) and the
+volume (linear) are one-pole smoothed (~8 ms); the four biquads are recomputed
+from the smoothed dB values every **32 samples** (a control rate). Because the dB
+inputs move only a hair per control tick, the coefficient steps are tiny and
+there is no zipper noise on a knob sweep (verified: max per-sample delta stays
+below 1.5× the signal's own slope through an abrupt volume jump).
+
+### Cab IR generator — rationale + measured response
+
+`generateDefaultCab2x12IR(sampleRate)` builds a plausible closed-back 2×12 IR
+deterministically (a seeded LCG feeds a small diffuse tail — **no**
+`random_device`/Date, so tests rely on it). It is a documented **placeholder**
+until real IR upload lands. Recipe (see `CabIR.cpp`):
+
+- **1024 samples** @ 48 kHz (length scales with sample rate);
+- a direct hit + **two small early reflections** (amplitudes 0.10 / 0.06 — kept
+  low so their comb ripple stays < ~1 dB and the smooth filter response
+  dominates) + a **tiny seeded exponential-decay tail** (0.02);
+- **spectral shaping:** 2nd-order high-pass @ 95 Hz (low cut) → **four cascaded**
+  2nd-order low-passes @ 5 kHz (≈ 48 dB/oct speaker rolloff) → peaking +3.5 dB @
+  2.5 kHz (presence);
+- **normalized to unity passband** (`|H(1 kHz)| = 1`), *not* unit time-domain
+  peak — so the cab colors the tone rather than shoving the level ~+14 dB.
+
+Measured magnitude response, **raw DTFT of the IR** (dB relative to 1 kHz; the
+right tool for an IR — a Hann-windowed sinusoid-amplitude Goertzel gives
+meaningless low-frequency numbers here). The test asserts this shape at 44.1 k
+and 96 k:
+
+| Freq | 44.1 kHz | 96 kHz | Expectation |
+|---|---|---|---|
+| 60 Hz | −8.6 dB | −9.5 dB | sub-bass cut |
+| 100 Hz | −2.8 dB | −2.6 dB | low cut easing in |
+| 1 kHz | 0 dB | 0 dB | reference / passband |
+| 2.5 kHz | +2.5 dB | +6.2 dB | presence bump, not collapsed |
+| 5 kHz | −10.9 dB | −9.3 dB | into the speaker rolloff |
+| 8 kHz | −37.6 dB | −32.6 dB | far down the steep rolloff |
+
+### Convolver design (partition size, FFT, latency)
+
+Uniform-partitioned **overlap-save** convolution, "one partition behind":
+
+- **Partition P = 128** (matches the worklet render quantum), **FFT N = 2P =
+  256** (hand-rolled radix-2, `FFT.h`).
+- The IR is split into `K = ceil(irLen/P)` partitions, each forward-transformed
+  once at `prepare()`. Per block: FFT the `[prev P, current P]` window, push into
+  a frequency-domain delay line, `Y = Σ FDL[k+1]·H_k` (the `+1` defers the newest
+  block one cycle), inverse-FFT, take the last P samples.
+- **Latency = exactly one partition = 128 samples.** The `+1` offset realizes it;
+  an impulse comes out as the IR delayed by 128 samples (`latencySamples()`
+  matches the measured impulse delay; the impulse reproduces the IR to ~3e-17 —
+  the FFT partitioning is exact). If the IR sample rate ≠ engine rate it is
+  linearly resampled at load (fine for the smooth synthetic IR; a documented
+  compromise for future real IRs).
+- `process()` allocates nothing (all FFT scratch, the FDL, and the IR spectra are
+  sized in `prepare()`). The amp+cab chain processes 1 s of audio in ~6 ms (44.1
+  k) / ~12 ms (96 k) — far under real time.
+
+### Total chain latency (reported in the UI)
+
+`Latency · model+cab` in the status readout = **pedal oversampling latency + cab
+partition**. At the defaults (4× pedal, cab on): **72 + 128 = 200 base-rate
+samples** ≈ **4.5 ms @ 44.1 kHz** (~4.2 ms @ 48 k). Bypassing the cab (Cab off)
+or powering the amp off removes the 128; the worklet re-reports latency on those
+changes. This matches theory (M2's 72-sample 4× figure plus one 128-sample cab
+partition).
+
+### C ABI (`core/src/clipper_c_api.cpp`)
+
+Added beside the `rat_*` exports: `amp_create(sr)` / `amp_destroy` /
+`amp_set_param(h,id,v)` / `amp_latency_samples(h)` / `amp_process(h,in,out,n)`.
+The amp handle is a small `AmpChain { AmpModel amp; CabConvolver cab; bool cabOn; }`
+— `amp_process` runs amp → cab (in-place); `AMP_PARAM_CAB` (id 5) toggles the cab;
+`amp_latency_samples` returns the cab partition when engaged, else 0. The default
+IR is generated at the engine rate (no resampling).
+
+### Worklet + rig message shapes
+
+The worklet (`web/worklet/clipper-processor.js`) now owns **two** instances and
+runs `input → rat → amp+cab → out` with per-unit worklet-local bypass. Messages
+gained a `unit` field (back-compatible — a missing `unit` targets the pedal):
+
+```jsonc
+{ "type": "param",  "unit": "pedal"|"amp", "id": <int>, "value": <0..1> }
+{ "type": "bypass", "unit": "pedal"|"amp", "on": <bool> }   // pedal skip / amp power-off
+{ "type": "oversampling", "factor": 1|2|4|8 }                // pedal only
+```
+
+The worklet posts a `{type:'latency', latencySamples}` echo on oversampling,
+cab-toggle, and amp-bypass changes (the offline tests await this echo as a
+delivery/flush barrier before `startRendering`, since a synchronous offline
+render can otherwise finish before a just-posted message reaches the processor).
+
+### Rig state (`web/src/rig.ts`)
+
+`RigState` gained an `amp` block; `normalizeRig` fills it from defaults, so an
+**M4-shaped saved rig (no `amp`) migrates cleanly** (tested):
+
+```jsonc
+{
+  "pedal": { "type": "rat", "engaged": true, "params": { "distortion": 0.7, "filter": 0.4, "level": 0.8 } },
+  "amp": {
+    "type": "clean120",
+    "engaged": true,                 // false = amp+cab bypassed (jewel dark)
+    "params": {                      // 0..1; tone flat at 0.5; bright/cab are 0/1
+      "volume": 0.4, "bass": 0.5, "middle": 0.5, "treble": 0.6, "bright": 0, "cab": 1
+    }
+  },
+  "oversampling": 4,
+  "source": "test"
+}
+```
+
+### UI (`web/src/components/Amp.tsx`, `web/src/styles/amp.css`)
+
+The **CLEAN 120** panel per the approved design: Anton name, four small knobs
+(Vol/Bass/Mid/Treble, reusing `Knob`), a **Bright** lever, a **Cab** lever, and a
+**Power** rocker with a jewel lamp (lit when engaged; dark + arcs dimmed when
+off). `amp.css` is the artifact's `.amp` block (deliberately omitted in M4).
+Layout: pedal + amp side by side (`.rig`, wraps on narrow), control desk below.
+
+### Build and test (M5)
+
+```bash
+# Native core + all suites (M0/M1-M2/M5), at 44.1k and 96k where specified:
+cd core && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+./build/clipper_tests        # "All tests passed."
+./build/clipper_rat_tests    # "All RatModel tests passed."
+./build/clipper_amp_tests    # "All AmpModel + CabConvolver tests passed."
+ctest --test-dir build       # 3/3 pass
+
+# WASM (now compiles AmpModel/CabConvolver/CabIR, exports amp_*):
+cd .. && bash scripts/build-wasm.sh
+
+# Web build + headless Playwright suite (10 tests):
+cd web && npm install && npm run build && npm test   # 10 passed
+```
+
 ## Notes / conventions
 
 - `core/` must never include platform/OS/browser/Emscripten headers. The only
@@ -670,7 +849,11 @@ arcs.
 - Parameter ids are mirrored and must stay in sync. The **RAT** ids
   (`PARAM_DISTORTION=0`, `PARAM_FILTER=1`, `PARAM_LEVEL=2`) live in
   `core/include/clipper/dsp/RatModel.h` (`clipper::dsp::RatModel::ParamId`),
-  `web/src/params.ts`, and `web/worklet/clipper-processor.js`. The M0 gain id
+  `web/src/params.ts`, and `web/worklet/clipper-processor.js`. The **AMP** ids
+  (`PARAM_VOLUME=0`, `PARAM_BASS=1`, `PARAM_MIDDLE=2`, `PARAM_TREBLE=3`,
+  `PARAM_BRIGHT=4` in `clipper::dsp::AmpModel::ParamId`, plus the chain-level
+  `AMP_PARAM_CAB=5` handled by the C ABI wrapper) are likewise mirrored in
+  `web/src/params.ts` and the worklet. The M0 gain id
   (`clipper::ParamId::PARAM_GAIN=0` in `Processor.h`) still exists in the WASM
   module but the live app no longer uses it.
 ```

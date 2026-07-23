@@ -55,10 +55,17 @@ FetchContent_Declare(chowdsp_wdf
 )
 FetchContent_MakeAvailable(chowdsp_wdf)
 
-# Portable RAT model. Still platform-free C++17 (no OS/browser/Emscripten deps);
+# Portable DSP models. Still platform-free C++17 (no OS/browser/Emscripten deps);
 # chowdsp_wdf is likewise header-only and portable.
+#   - RatModel.cpp     : M1/M2 RAT pedal (WDF diode clipper, oversampled)
+#   - AmpModel.cpp     : M5 JC-120-style clean amp (linear tone stack)
+#   - CabConvolver.cpp : M5 partitioned FFT cab convolver
+#   - CabIR.cpp        : M5 procedural default 2x12 cab impulse response
 add_library(clipper_dsp STATIC
     src/dsp/RatModel.cpp
+    src/dsp/AmpModel.cpp
+    src/dsp/CabConvolver.cpp
+    src/dsp/CabIR.cpp
 )
 target_include_directories(clipper_dsp PUBLIC include)
 target_link_libraries(clipper_dsp PUBLIC chowdsp_wdf)
@@ -89,6 +96,15 @@ if(NOT EMSCRIPTEN)
         target_compile_options(clipper_rat_tests PRIVATE -Wall -Wextra -UNDEBUG)
     endif()
     add_test(NAME clipper_rat_tests COMMAND clipper_rat_tests)
+
+    # --- M5: amp + cab tests --------------------------------------------------
+    add_executable(clipper_amp_tests tests/test_amp_model.cpp)
+    target_link_libraries(clipper_amp_tests PRIVATE clipper_dsp)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_amp_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_amp_tests COMMAND clipper_amp_tests)
 
     # --- CLI render harness (native only, NOT part of the WASM build) ---------
     add_executable(clipper-render tools/render/main.cpp)

@@ -4,34 +4,46 @@ import {
   PARAM_DISTORTION,
   PARAM_FILTER,
   PARAM_LEVEL,
+  AMP_PARAM_VOLUME,
+  AMP_PARAM_BASS,
+  AMP_PARAM_MIDDLE,
+  AMP_PARAM_TREBLE,
+  AMP_PARAM_BRIGHT,
+  AMP_PARAM_CAB,
   WORKLET_URL,
 } from './params';
-import type { SourceKind } from './rig';
+import type { SourceKind, AmpParams } from './rig';
 
 export type { SourceKind };
+
+export type Unit = 'pedal' | 'amp';
 
 export interface StartOptions {
   source: SourceKind;
   deviceId?: string; // preferred audio input (live only)
-  distortion: number; // 0..1 knob
-  filter: number; // 0..1 knob
-  level: number; // 0..1 knob
+  distortion: number; // 0..1 knob (pedal)
+  filter: number; // 0..1 knob (pedal)
+  level: number; // 0..1 knob (pedal)
+  amp: AmpParams; // amp knob positions (0..1)
+  ampEngaged: boolean; // false = amp+cab bypassed
   oversampling: number; // 1 | 2 | 4 | 8
-  bypass: boolean;
+  bypass: boolean; // pedal bypass
   // Called whenever the model reports a new latency (e.g. after an oversampling
-  // change). samples are base-rate samples.
+  // or cab-toggle change). samples are base-rate samples.
   onLatencySamples?: (samples: number) => void;
 }
 
 export interface Engine {
   context: AudioContext;
   node: AudioWorkletNode;
-  // Model's own oversampling-filter latency, in base-rate samples (mutated in
-  // place when oversampling changes).
+  // Total model latency, in base-rate samples (pedal oversampling + cab
+  // partition). Mutated in place when oversampling / cab / amp-power change.
   latencySamples: number;
-  setParam(id: number, value: number): void;
+  setParam(id: number, value: number): void; // pedal param
+  setAmpParam(id: number, value: number): void; // amp param
   setOversampling(factor: number): void;
-  setBypass(on: boolean): void;
+  setBypass(on: boolean): void; // pedal bypass
+  setAmpBypass(on: boolean): void; // amp power off = bypass
   stop(): Promise<void>;
 }
 
@@ -81,13 +93,19 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
     node,
     latencySamples,
     setParam(id, value) {
-      node.port.postMessage({ type: 'param', id, value });
+      node.port.postMessage({ type: 'param', unit: 'pedal', id, value });
+    },
+    setAmpParam(id, value) {
+      node.port.postMessage({ type: 'param', unit: 'amp', id, value });
     },
     setOversampling(factor) {
       node.port.postMessage({ type: 'oversampling', factor });
     },
     setBypass(on) {
-      node.port.postMessage({ type: 'bypass', on });
+      node.port.postMessage({ type: 'bypass', unit: 'pedal', on });
+    },
+    setAmpBypass(on) {
+      node.port.postMessage({ type: 'bypass', unit: 'amp', on });
     },
     stop: async () => {}, // replaced below once the source is wired
   };
@@ -106,6 +124,13 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   engine.setParam(PARAM_FILTER, opts.filter);
   engine.setParam(PARAM_LEVEL, opts.level);
   engine.setBypass(opts.bypass);
+  engine.setAmpParam(AMP_PARAM_VOLUME, opts.amp.volume);
+  engine.setAmpParam(AMP_PARAM_BASS, opts.amp.bass);
+  engine.setAmpParam(AMP_PARAM_MIDDLE, opts.amp.middle);
+  engine.setAmpParam(AMP_PARAM_TREBLE, opts.amp.treble);
+  engine.setAmpParam(AMP_PARAM_BRIGHT, opts.amp.bright);
+  engine.setAmpParam(AMP_PARAM_CAB, opts.amp.cab);
+  engine.setAmpBypass(!opts.ampEngaged);
 
   // Build the source and connect the graph.
   let stream: MediaStream | null = null;
