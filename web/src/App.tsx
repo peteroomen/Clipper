@@ -403,7 +403,8 @@ export default function App() {
       setSwitch: (name, on) => {
         // bright/cab are 0/1 toggles; chorus/vibrato select the 3-way chorus mode
         // (turning one on selects it; turning it off returns to mode 0 = off).
-        if (name === 'chorus') setChorusMode(on ? 1 : 0);
+        // 'tremolo' is the Twin's trem on/off — the same chorusMode slot (0/1).
+        if (name === 'chorus' || name === 'tremolo') setChorusMode(on ? 1 : 0);
         else if (name === 'vibrato') setChorusMode(on ? 2 : 0);
         else setAmpParam(name as AmpParamName, on ? 1 : 0);
       },

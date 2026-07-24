@@ -223,6 +223,17 @@ public:
     // → kTopCutLoHz (dark, full cut). Inverted sense per the real control.
     static constexpr double kTopCutHiHz = 8000.0;
     static constexpr double kTopCutLoHz = 850.0;
+    // CUT knob TAPER skew (M10.2 "muddy-fix", docs §23). The corner is log-mapped from
+    // knob^kTopCutSkew, NOT the raw knob. Rationale: the AC30 reuses the SHARED
+    // 'presence' slot, which defaults to 0.5 — and with the bare log map, knob 0.5 sits
+    // at a ~2.6 kHz corner, i.e. the face opened with ~half the top-cut engaged and
+    // measured ~3 dB darker at 3 kHz than a real top-boost (whose CUT is usually run
+    // near minimum). Skewing the knob (>1) pushes the audible cut into the UPPER half of
+    // travel so the default 0.5 is a MILD cut, while the FULL range is preserved (knob 0
+    // → kTopCutHiHz, knob 1 → kTopCutLoHz). An analytic re-taper of the control law, not
+    // an ear-tuned fudge to the physics: the corner endpoints are unchanged. 0.5^2.3 ≈
+    // 0.20, so knob 0.5 → corner ≈ 5.1 kHz (a gentle top trim, not a mid-tame).
+    static constexpr double kTopCutSkew = 2.3;
     // Secondary volts that map to 1.0 full scale (calibrated, docs §23): fully
     // cranked a power sine peaks ~0.9 with headroom to 1.0 for transients.
     static constexpr double kFullScaleSecV = 7.5;

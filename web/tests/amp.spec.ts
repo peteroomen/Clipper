@@ -482,9 +482,12 @@ test('amp switch: twin renders a different tone than clean120, swap is click-fre
   expect(result.twinDelta).toBeLessThan(result.cleanDelta * 2.0 + 0.05);
 });
 
-// --- 7. The Twin's tremolo audibly modulates a render's ENVELOPE. -----------------
-// With INTENSITY up and a moderate SPEED, the opto tremolo pumps the output level up
-// and down — so the block-RMS envelope swings far more than with the tremolo off.
+// --- 7. The Twin's tremolo audibly modulates a render's ENVELOPE — and only when
+// the ON/OFF switch is ON. With the switch ON, INTENSITY up and a moderate SPEED,
+// the opto tremolo pumps the output level up and down — so the block-RMS envelope
+// swings far more than with the tremolo off. With the switch OFF (the default,
+// chorusMode slot = 0) the envelope stays flat EVEN AT FULL INTENSITY: off is a
+// bypass in the core (docs §20 amendment).
 test('amp twin: the optical tremolo modulates the output envelope', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
@@ -492,7 +495,7 @@ test('amp twin: the optical tremolo modulates the output envelope', async ({ pag
   const result = await page.evaluate(async () => {
     const sampleRate = 48000;
     const seconds = 1.5; // long enough for several tremolo cycles
-    async function render(intensity: number, speed: number): Promise<Float32Array> {
+    async function render(intensity: number, speed: number, enable: number): Promise<Float32Array> {
       const length = Math.floor(sampleRate * seconds);
       const ctx = new OfflineAudioContext(1, length, sampleRate);
       await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
@@ -514,6 +517,7 @@ test('amp twin: the optical tremolo modulates the output envelope', async ({ pag
         node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: 0.0 }); // reverb off (clean env)
         node.port.postMessage({ type: 'param', unit: 'amp', id: 6, value: speed }); // SPEED
         node.port.postMessage({ type: 'param', unit: 'amp', id: 7, value: intensity }); // INTENSITY
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 8, value: enable }); // TREM ON/OFF (chorusMode slot)
         node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 }); // cab on -> latency echo
       });
       const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
@@ -536,15 +540,19 @@ test('amp twin: the optical tremolo modulates the output envelope', async ({ pag
       const varr = env.reduce((a, b) => a + (b - mean) * (b - mean), 0) / env.length;
       return Math.sqrt(varr) / (mean + 1e-9);
     }
-    const off = await render(0.0, 0.6);
-    const on = await render(0.8, 0.6);
-    return { offCV: envCV(off), onCV: envCV(on) };
+    const off = await render(0.0, 0.6, 1);
+    const on = await render(0.8, 0.6, 1);
+    // SWITCH OFF at FULL intensity: the default (enable 0) must gate the trem out.
+    const disabled = await render(0.8, 0.6, 0);
+    return { offCV: envCV(off), onCV: envCV(on), disabledCV: envCV(disabled) };
   });
 
   // The steady tone's envelope is nearly flat; the tremolo pumps it hard.
   expect(result.offCV).toBeLessThan(0.05);
   expect(result.onCV).toBeGreaterThan(result.offCV * 4);
   expect(result.onCV).toBeGreaterThan(0.15);
+  // Switch-off is a bypass: flat envelope even with the intensity knob cranked.
+  expect(result.disabledCV).toBeLessThan(0.05);
 });
 
 // --- 8. Twin params reach the core: raising REVERB adds a wet tail. ----------------
@@ -664,6 +672,19 @@ test('amp UI: selecting twin swaps to Twin Sixty-Five and hints clean212 from a 
   await expect(page.getByTestId('knob-reverb')).toBeVisible();
   await expect(page.getByTestId('knob-gain')).toHaveCount(0);
   await expect(page.getByTestId('knob-master')).toHaveCount(0);
+  // TREM ON/OFF switch (docs §20 amendment): defaults OFF; clicking On drives the
+  // reused chorusMode slot to 1, Off back to 0.
+  await expect(page.getByTestId('trem-switch')).toBeVisible();
+  await expect(page.getByTestId('trem-off')).toHaveAttribute('aria-checked', 'true');
+  await page.getByTestId('trem-on').click();
+  await expect(page.getByTestId('trem-on')).toHaveAttribute('aria-checked', 'true');
+  expect(
+    await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().amp.params.chorusMode)
+  ).toBe(1);
+  await page.getByTestId('trem-off').click();
+  expect(
+    await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().amp.params.chorusMode)
+  ).toBe(0);
   // A one-line hint suggested the Clean 2x12 — but the cab was NOT auto-switched.
   await expect(page.getByTestId('cab-note')).toContainText('Clean 2×12');
   expect(amp.cabModel).toBe('brit412');

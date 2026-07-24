@@ -76,6 +76,9 @@ void ClipperEngine::applyParamsToModels() {
     twin_.setParameter(T::PARAM_REVERB, p.reverb);
     twin_.setParameter(T::PARAM_SPEED, p.chorusSpeed);
     twin_.setParameter(T::PARAM_INTENSITY, p.chorusDepth);
+    // The Twin has no chorus → the 'chorusMode' slot is reused as its TREMOLO ON/OFF
+    // (docs §20). 0 = off (bit-exact bypass), ≥1 = on. Matches the C-ABI routing.
+    twin_.setParameter(T::PARAM_TREMOLO_ENABLE, p.chorusMode >= 1 ? 1.0f : 0.0f);
 
     // AC30 (M10.2): kept current alongside the others. Reuses the shared knobs —
     // volume + bass/treble + reverb — and REUSES the presence field as its TOP CUT
@@ -151,8 +154,12 @@ void ClipperEngine::updateParams(const Params& p) {
         amp_.setParameter(AmpModel::PARAM_CHORUS_DEPTH, p.chorusDepth);
         twin_.setParameter(TwinAmp::PARAM_INTENSITY, p.chorusDepth);
     }
-    if (p.chorusMode != o.chorusMode)
+    if (p.chorusMode != o.chorusMode) {
         amp_.setParameter(AmpModel::PARAM_CHORUS_MODE, static_cast<float>(p.chorusMode));
+        // chorusMode reused as the Twin's TREMOLO ON/OFF (docs §20); live toggle is
+        // click-free (the OptoTremolo enable-ramp).
+        twin_.setParameter(TwinAmp::PARAM_TREMOLO_ENABLE, p.chorusMode >= 1 ? 1.0f : 0.0f);
+    }
     // REVERB feeds all four voices (clean120 + jcm + twin + ac30).
     if (p.reverb != o.reverb) {
         amp_.setParameter(AmpModel::PARAM_REVERB, p.reverb);

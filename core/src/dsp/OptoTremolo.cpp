@@ -28,6 +28,10 @@ void OptoTremolo::prepare(double sampleRate) {
     smoothA_ = tcCoeff(0.010, sampleRate_);
     attackA_ = tcCoeff(kAttackMs * 1e-3, sampleRate_);
     releaseA_ = tcCoeff(kReleaseMs * 1e-3, sampleRate_);
+    // Enable ramp: a ~10 ms LINEAR glide so the on/off toggle is click-free. Linear
+    // (not one-pole) so it reaches EXACTLY 0 — the settled-off gain is then exactly 1.0
+    // and the passthrough is bit-exact (a one-pole would only approach 0 asymptotically).
+    enableStep_ = 1.0 / std::max(1.0, 0.010 * sampleRate_);
     // Snap smoothers to their current knob targets.
     rateSmoothed_ = kMinHz * std::pow(kMaxHz / kMinHz, std::clamp(speed_, 0.0, 1.0));
     depthSmoothed_ = std::clamp(intensity_, 0.0, 1.0);
@@ -38,6 +42,7 @@ void OptoTremolo::reset() {
     phase_ = 0.0;
     cell_ = 0.0;
     lastGain_ = 1.0;
+    enableRamp_ = enabled_ ? 1.0 : 0.0;  // snap to the current enable state (no toggle ramp)
 }
 
 void OptoTremolo::setSpeed(float knob01) {
@@ -49,6 +54,12 @@ void OptoTremolo::setIntensity(float knob01) {
 }
 
 double OptoTremolo::tick() {
+    // Enable ramp toward the on/off target (linear; hits 0 or 1 exactly). The LFO +
+    // opto cell below keep running regardless, so re-enabling never jumps phase.
+    const double enTarget = enabled_ ? 1.0 : 0.0;
+    if (enableRamp_ < enTarget) enableRamp_ = std::min(enTarget, enableRamp_ + enableStep_);
+    else if (enableRamp_ > enTarget) enableRamp_ = std::max(enTarget, enableRamp_ - enableStep_);
+
     // Smooth the control targets toward the knobs.
     const double rateTarget = kMinHz * std::pow(kMaxHz / kMinHz, speed_);
     rateSmoothed_ += smoothA_ * (rateTarget - rateSmoothed_);
@@ -67,8 +78,10 @@ double OptoTremolo::tick() {
     const double a = (lamp > cell_) ? attackA_ : releaseA_;
     cell_ += a * (lamp - cell_);
 
-    // Bright lamp -> LDR conducts -> signal DIPS. Gain in [1-depth, 1].
-    const double gain = 1.0 - depthSmoothed_ * cell_;
+    // Bright lamp -> LDR conducts -> signal DIPS. Gain in [1-depth, 1]. The enable ramp
+    // gates the effective depth: at enableRamp_ == 0 the depth is EXACTLY 0 → gain 1.0 →
+    // bit-exact bypass; the ramp glides the toggle click-free.
+    const double gain = 1.0 - (depthSmoothed_ * enableRamp_) * cell_;
     lastGain_ = gain;
     return gain;
 }

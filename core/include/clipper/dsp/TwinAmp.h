@@ -49,7 +49,9 @@ public:
         PARAM_REVERB = 5,     // spring reverb wet mix (0 = dry, bit-exact)
         PARAM_SPEED = 6,      // tremolo SPEED (LFO rate, log map)
         PARAM_INTENSITY = 7,  // tremolo INTENSITY (modulation depth)
-        PARAM_COUNT = 8,
+        PARAM_TREMOLO_ENABLE = 8,  // tremolo ON/OFF (>=0.5 on). Default OFF; off is a
+                                   // bit-exact bypass, click-free toggle (docs §20).
+        PARAM_COUNT = 9,
     };
 
     TwinAmp();

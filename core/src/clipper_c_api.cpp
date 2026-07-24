@@ -452,7 +452,8 @@ void amp_set_param(void* handle, int param_id, float value) {
     //                                 the JCM 2204 has none.
     //   - CHORUS_SPEED/DEPTH (6/7) -> Clean 120 chorus AND Twin tremolo SPEED/INTENSITY
     //                                 (a per-model reuse of the two mod knobs).
-    //   - CHORUS_MODE (8)          -> Clean 120 only.
+    //   - CHORUS_MODE (8)          -> Clean 120 chorus mode AND Twin TREMOLO ON/OFF
+    //                                 (the Twin has no chorus — slot reused, docs §20).
     //   - REVERB (9)               -> ALL THREE (clean120 + jcm + twin all have springs;
     //                                 the JCM's is a usability add, docs §19 note).
     //   - GAIN/PRESENCE/MASTER (10/11/12) -> JCM only.
@@ -504,6 +505,11 @@ void amp_set_param(void* handle, int param_id, float value) {
             break;
         case A::PARAM_CHORUS_MODE:
             c->amp.setParameter(A::PARAM_CHORUS_MODE, value);
+            // M10.1 amendment (docs §20): the Twin has NO chorus, so the 'chorusMode'
+            // slot is REUSED as the Twin's TREMOLO ON/OFF (0 = off, ≥1 = on) — the same
+            // per-voice slot-reuse pattern as presence→CUT for the AC30. Default 0 (off),
+            // so old rigs (chorusMode 0) round-trip with the trem bypassed bit-exact.
+            c->twin.setParameter(T::PARAM_TREMOLO_ENABLE, value >= 0.5f ? 1.0f : 0.0f);
             break;
         case A::PARAM_REVERB:
             c->amp.setParameter(A::PARAM_REVERB, value);

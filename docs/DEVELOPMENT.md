@@ -2377,6 +2377,32 @@ Every number is asserted against an analytic target derived IN THE TEST.
 runs the clean212 2×12 with the shipped limiter. `--jcm-reverb R` engages the JCM's new
 spring reverb. Reuses `--os`.
 
+### §20 amendment — tremolo ON/OFF (the field-requested switch)
+
+Field report: *"the fender needs on/off for its trem."* The real amp has one (the
+vibrato channel is footswitchable); we shipped SPEED/INTENSITY only, so the sole way
+to kill the throb was dialing INTENSITY to zero — losing the player's setting.
+
+The switch lives in `OptoTremolo` itself (`setEnabled`), gating the **effective
+depth** through a ~10 ms **linear** enable-ramp: linear (not one-pole) so the ramp
+reaches **exactly 0/1** — a settled-off tremolo multiplies every sample by exactly
+1.0 and is a **bit-exact bypass**, while the ramp keeps the live toggle click-free.
+The LFO + opto cell keep running while disabled, so re-enabling never jumps phase
+(like the real circuit, where the footswitch grounds the oscillator's output, not
+its supply). Plumbing reuses the `chorusMode` slot (the Twin has no chorus) — the
+same per-voice slot-reuse pattern as presence→CUT on the AC30: C-ABI param 8 ≥ 0.5 →
+`TwinAmp::PARAM_TREMOLO_ENABLE`, native `ClipperEngine` mirrors it, and the web Twin
+face grows an Off/On `mode-switch` beside SPEED/INTENSITY (`trem-switch`). The
+assistant gets `set_switch 'tremolo'`. **Default OFF** — old rigs serialize
+`chorusMode: 0` and round-trip with the trem bypassed bit-exact.
+
+Tests (core `test_twin_amp` + Playwright): OFF at full intensity is a bit-exact
+passthrough (`out[i] == in[i]`, enable-ramp snapped to 0 by `reset()`); the mid-stream
+toggle is click-free (per-sample gain step bounded by the ramp); intensity=0 remains
+a unity escape hatch; the web envelope test renders switch-on (pumping, CV > 0.15)
+vs switch-off at full intensity (flat, CV < 0.05); the identical-core Twin case runs
+trem ON so the throb stays covered end-to-end.
+
 ## Built DSP artifacts are committed
 
 `web/public/generated/` (the Emscripten-built WASM engine + the worklet copy)
@@ -3707,6 +3733,28 @@ Every number is asserted against an analytic target derived IN THE TEST.
 `--ac30` renders the FULL composed amp (output normalized, 1.0 == full scale); `--ac30-cab`
 runs the clean212 2×12 with the shipped limiter. `--ac30-cut` is the TOP CUT (inverted:
 higher = darker). Reuses `--os`.
+
+### §23 amendment — the "muddy" report: CUT knob re-taper (control law, not circuit)
+
+Field report: *"the vox sounds a little muddy to my ear."* The ear was right, and the
+cause was a **control-law** bug, not a circuit one. The AC30's CUT reuses the shared
+`presence` slot, whose default is **0.5** — and the original bare log map put knob 0.5
+at a ~2.6 kHz corner, i.e. the face *opened* with roughly half the top-cut engaged:
+measured ≈ 3 dB darker at 3 kHz than the voice with the cut backed off. A real
+top-boost is normally played with CUT near minimum — the chime amp was defaulting
+into its dark half.
+
+Fix: the corner is now log-mapped from the **skewed** knob `knob^2.3`
+(`kTopCutSkew`), so knob 0.5 → corner ≈ 5.1 kHz (a gentle top trim) while the
+endpoints are untouched (knob 0 → 8 kHz, knob 1 → 850 Hz — the full dark range still
+lives at the top of the travel, where the real control does its work). An analytic
+re-taper of the knob law; the filter and its reachable range are unchanged.
+
+Guards added to `test_ac30_amp`: the default 0.5 knob must sit within 2 dB of no-cut
+at 3 kHz AND full cut must still be ≥ 5 dB darker than noon (range preserved); plus a
+**character guard** — at opening defaults the Thirty must measure ≥ 6 dB brighter at
+3 kHz (rel 1 kHz) than the Twin at its defaults (measured ≈ 19 vs 7 dB), so no future
+regression can let the chime king open muddier than the blackface clean.
 ## 24. v1.1 item 4 — Muff "Pi": the four-transistor fuzz + the reusable BjtStage
 
 ROADMAP v1.1's item 4, made real: a trademark-safe homage to the early-70s

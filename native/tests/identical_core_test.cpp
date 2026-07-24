@@ -116,7 +116,8 @@ Params twinParams() {
     p.ampModel = kAmpTwin;  // Twin
     p.ampOn = true;  p.volume = 0.55f; p.bass = 0.5f; p.middle = 0.55f; p.treble = 0.6f;
     p.bright = true; p.cab = true;
-    p.chorusMode = 0;            // no chorus on the Twin
+    p.chorusMode = 1;            // Twin: chorusMode slot reused as TREMOLO ON (docs §20)
+                                 // — ON here so this case still exercises the throb.
     p.chorusSpeed = 0.6f;        // → tremolo SPEED (~5 Hz)
     p.chorusDepth = 0.6f;        // → tremolo INTENSITY
     p.reverb = 0.35f;            // period-correct spring reverb
@@ -208,6 +209,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
         twinAmp.setParameter(TwinAmp::PARAM_REVERB, p.reverb);
         twinAmp.setParameter(TwinAmp::PARAM_SPEED, p.chorusSpeed);
         twinAmp.setParameter(TwinAmp::PARAM_INTENSITY, p.chorusDepth);
+        twinAmp.setParameter(TwinAmp::PARAM_TREMOLO_ENABLE, p.chorusMode >= 1 ? 1.0f : 0.0f);
     } else if (ac30) {
         // Mirror ClipperEngine::applyParams' AC30 routing exactly: volume/bass/treble
         // + reverb from the shared knobs, and the presence field reused as TOP CUT.

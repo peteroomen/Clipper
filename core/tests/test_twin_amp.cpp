@@ -279,12 +279,14 @@ void testNfb(double fs) {
 
 // ---------------------------------------------------------------------------
 // Test 4 — OptoTremolo: DEPTH grows with INTENSITY, RATE follows SPEED (log map),
-// and the opto gain-waveform is ASYMMETRIC (fast dip / slow recovery — NOT a sine).
+// the opto gain-waveform is ASYMMETRIC (fast dip / slow recovery — NOT a sine), AND
+// the ON/OFF ENABLE (M10.1 amendment, docs §20): OFF is a BIT-EXACT bypass, the
+// toggle is CLICK-FREE, and intensity=0 stays a unity escape hatch.
 // ---------------------------------------------------------------------------
 void testTremolo(double fs) {
-    // DEPTH vs INTENSITY: feed DC, measure the gain-envelope excursion.
+    // DEPTH vs INTENSITY: feed DC, measure the gain-envelope excursion. Trem ENABLED.
     auto envDepth = [&](float intensity) {
-        OptoTremolo tr; tr.prepare(fs); tr.setSpeed(0.4f); tr.setIntensity(intensity);
+        OptoTremolo tr; tr.prepare(fs); tr.setEnabled(true); tr.setSpeed(0.4f); tr.setIntensity(intensity);
         std::vector<float> in(static_cast<size_t>(fs * 2.0), 1.0f), out(in.size(), 0.0f);
         tr.process(in.data(), out.data(), static_cast<int>(in.size()));
         double mn = 1e9, mx = -1e9;
@@ -298,6 +300,41 @@ void testTremolo(double fs) {
     assert(d0 < 1e-4 && "intensity=0 not a bit-exact passthrough (gain not held at unity)");
     assert(d5 > d0 && d9 > d5 && "tremolo depth not monotonic with INTENSITY");
     assert(d9 > 0.4 && "tremolo depth at intensity 0.9 implausibly small");
+
+    // ENABLE = OFF is a BIT-EXACT bypass (the trem on/off report): even at full
+    // intensity, a settled-DISABLED trem passes the input through unchanged. The enable
+    // is snapped to 0 by prepare()/reset() (enabled_ default false), so there is no
+    // ramp — every sample multiplies by exactly 1.0.
+    {
+        OptoTremolo tr; tr.prepare(fs); tr.setSpeed(0.4f); tr.setIntensity(0.9f);  // NOT enabled
+        assert(tr.enableRamp() == 0.0 && "disabled trem did not snap the enable ramp to 0");
+        auto in = sine(220.0, 0.3f, 0.3, fs);
+        std::vector<float> out(in.size(), 0.0f);
+        tr.process(in.data(), out.data(), static_cast<int>(in.size()));
+        for (size_t i = 0; i < in.size(); ++i)
+            assert(out[i] == in[i] && "trem OFF not a BIT-EXACT bypass (gain not exactly 1.0)");
+    }
+
+    // CLICK-FREE toggle: enable mid-stream on a DC input; the gain must not JUMP — the
+    // linear enable-ramp bounds the per-sample step. (A hard switch would drop from 1.0
+    // to a mid-dip gain in one sample.) Also confirm it ends fully engaged (ramp → 1).
+    {
+        OptoTremolo tr; tr.prepare(fs); tr.setSpeed(0.4f); tr.setIntensity(0.9f);
+        const int n = static_cast<int>(0.2 * fs);
+        std::vector<float> in(static_cast<size_t>(n), 1.0f), out(static_cast<size_t>(n), 0.0f);
+        // Run a bit disabled, toggle ON, keep running.
+        const int half = n / 2;
+        tr.process(in.data(), out.data(), half);
+        tr.setEnabled(true);
+        tr.process(in.data() + half, out.data() + half, n - half);
+        double maxStep = 0.0;
+        for (int i = 1; i < n; ++i)
+            maxStep = std::max(maxStep, std::fabs(static_cast<double>(out[i]) - out[i - 1]));
+        // The enable ramp spans ~10 ms; on a unit DC input the largest legitimate
+        // per-sample change is tiny. A hard toggle would show a step ~depth·cell (0.1+).
+        assert(maxStep < 0.02 && "tremolo enable toggle is not click-free (gain jumped)");
+        assert(tr.enableRamp() > 0.99 && "enable ramp did not reach fully engaged");
+    }
 
     // RATE vs SPEED: log map kMinHz..kMaxHz.
     auto rateAt = [&](float speed) {
@@ -314,7 +351,7 @@ void testTremolo(double fs) {
     // ASYMMETRY: the LDR darkens fast, recovers slow — so the gain envelope FALLS
     // fast and RISES slow (more rising samples than falling per cycle). A pure sine
     // would give ~1.0; assert a clear asymmetry consistent with τ_attack < τ_release.
-    OptoTremolo tr; tr.prepare(fs); tr.setSpeed(0.4f); tr.setIntensity(0.9f);
+    OptoTremolo tr; tr.prepare(fs); tr.setEnabled(true); tr.setSpeed(0.4f); tr.setIntensity(0.9f);
     std::vector<float> in(static_cast<size_t>(fs * 2.0), 1.0f), out(in.size(), 0.0f);
     tr.process(in.data(), out.data(), static_cast<int>(in.size()));
     int rising = 0, falling = 0;
@@ -326,9 +363,53 @@ void testTremolo(double fs) {
     assert(ratio > 1.3 && "tremolo gain waveform not asymmetric (fast dip / slow recovery)");
     // Consistency with the constants: τ_release > τ_attack, so rising dominates.
     assert(OptoTremolo::kReleaseMs > OptoTremolo::kAttackMs && "attack/release constants inverted");
+
+    // COMPOSED TwinAmp on/off (the "fender needs on/off for its trem" report): with the
+    // trem OFF the output is INDEPENDENT of INTENSITY (the effect is truly bypassed —
+    // bit-exact), and turning it ON with a real intensity MODULATES the output (a moving
+    // envelope the off path does not have). Both amps set params BEFORE prepare so the
+    // enable snaps (no init ramp) — trem-off is bit-exact vs the no-trem reference chain.
+    auto twinRender = [&](bool tremOn, float intensity) {
+        TwinAmp a; a.setOversampling(4);
+        a.setParameter(TwinAmp::PARAM_VOLUME, 0.5f);
+        a.setParameter(TwinAmp::PARAM_BASS, 0.5f);
+        a.setParameter(TwinAmp::PARAM_MID, 0.5f);
+        a.setParameter(TwinAmp::PARAM_TREBLE, 0.6f);
+        a.setParameter(TwinAmp::PARAM_SPEED, 0.6f);
+        a.setParameter(TwinAmp::PARAM_INTENSITY, intensity);
+        a.setParameter(TwinAmp::PARAM_TREMOLO_ENABLE, tremOn ? 1.0f : 0.0f);
+        a.prepare(fs, 128);
+        auto in = sine(180.0, 0.1f, 0.4, fs);
+        std::vector<float> out(in.size(), 0.0f);
+        a.process(in.data(), out.data(), static_cast<int>(in.size()));
+        return out;
+    };
+    const auto offLo = twinRender(false, 0.0f);
+    const auto offHi = twinRender(false, 0.9f);  // intensity ignored when OFF
+    for (size_t i = 0; i < offLo.size(); ++i)
+        assert(offLo[i] == offHi[i] &&
+               "trem OFF is not intensity-invariant — the effect is not truly bypassed");
+    const auto onHi = twinRender(true, 0.9f);
+    double offEnvMin = 1e9, offEnvMax = -1e9, onEnvMin = 1e9, onEnvMax = -1e9;
+    // Compare the per-period peak envelope (steady window) off vs on.
+    const int per = static_cast<int>(fs / 180.0);
+    for (size_t i = static_cast<size_t>(0.15 * fs); i + per < offLo.size(); i += per) {
+        double poff = 0.0, pon = 0.0;
+        for (int j = 0; j < per; ++j) {
+            poff = std::max(poff, std::fabs(static_cast<double>(offLo[i + j])));
+            pon = std::max(pon, std::fabs(static_cast<double>(onHi[i + j])));
+        }
+        offEnvMin = std::min(offEnvMin, poff); offEnvMax = std::max(offEnvMax, poff);
+        onEnvMin = std::min(onEnvMin, pon);    onEnvMax = std::max(onEnvMax, pon);
+    }
+    const double offRipple = (offEnvMax - offEnvMin) / (offEnvMax + 1e-9);
+    const double onRipple = (onEnvMax - onEnvMin) / (onEnvMax + 1e-9);
+    assert(offRipple < 0.02 && "trem OFF still shows amplitude ripple (not bypassed)");
+    assert(onRipple > 0.2 && "trem ON did not modulate the output (throb missing)");
+
     std::printf("  [ok] tremolo @ %.0f Hz: depth %.3f/%.3f/%.3f (int 0/.5/.9), rate %.2f/%.2f/%.2f Hz "
-                "(speed 0/.5/1), rise/fall asymmetry %.2f (>1.3, fast dip/slow recover)\n",
-                fs, d0, d5, d9, r0, rMid, r1, ratio);
+                "(speed 0/.5/1), asymmetry %.2f; ON/OFF: off ripple %.3f (bypassed) vs on %.3f (throb)\n",
+                fs, d0, d5, d9, r0, rMid, r1, ratio, offRipple, onRipple);
 }
 
 // ---------------------------------------------------------------------------

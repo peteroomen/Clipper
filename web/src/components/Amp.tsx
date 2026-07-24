@@ -337,8 +337,12 @@ function Clean120Face({ amp, onParam, onToggle, onTogglePower, onChorusMode }: A
 // "vibrato"). Hidden: gain/master/presence (this amp makes no preamp gain) and the
 // chorus mode (its modulation is tremolo, not chorus). The panel stays light/bench-
 // style exactly like the Eight Hundred face — no new panel philosophy.
-function TwinFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
+function TwinFace({ amp, onParam, onToggle, onTogglePower, onChorusMode }: AmpProps) {
   const { params } = amp;
+  // The Twin has no chorus — the chorusMode slot is reused as its TREMOLO ON/OFF
+  // (0 = off, 1 = on; same per-voice slot-reuse pattern as presence→CUT on the
+  // Thirty). Off is a bit-exact bypass in the core; the toggle is click-free.
+  const tremOn = (params.chorusMode ?? 0) >= 1;
   return (
     <div
       className={`amp raised twin${amp.engaged ? ' on' : ''}`}
@@ -399,8 +403,10 @@ function TwinFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
       </div>
 
       {/* The famous "vibrato" (a misnomer — it is amplitude TREMOLO): SPEED +
-          INTENSITY. Reuses the shared speed/depth mod knobs, routed to the opto
-          tremolo (per-model routing in the C ABI). No mode switch. */}
+          INTENSITY, plus an ON/OFF switch (the real amp gates the circuit from a
+          footswitch/panel — and defaulting OFF keeps existing rigs untouched).
+          Reuses the shared speed/depth mod knobs + the chorusMode slot, routed to
+          the opto tremolo (per-model routing in the C ABI). */}
       <div className="amp-chorus" data-testid="tremolo">
         <div className="amp-chorus-label display">Tremolo</div>
         <div className="amp-chorus-controls">
@@ -420,6 +426,34 @@ function TwinFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
             onChange={(v) => onParam('depth', v)}
             testId="knob-depth"
           />
+
+          <div
+            className="mode-switch"
+            role="radiogroup"
+            aria-label="Tremolo on/off"
+            data-testid="trem-switch"
+          >
+            {[
+              { value: 0, label: 'Off' },
+              { value: 1, label: 'On' },
+            ].map((m) => (
+              <button
+                key={m.value}
+                type="button"
+                role="radio"
+                aria-checked={tremOn === (m.value === 1)}
+                className={`mode-opt${tremOn === (m.value === 1) ? ' on' : ''}`}
+                data-testid={`trem-${m.label.toLowerCase()}`}
+                onClick={() => {
+                  onChorusMode(m.value);
+                  thunk(false);
+                }}
+              >
+                {m.label}
+              </button>
+            ))}
+            <span className="k-name">Trem</span>
+          </div>
         </div>
       </div>
     </div>

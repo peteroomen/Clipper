@@ -57,6 +57,15 @@ public:
     void setSpeed(float knob01);      // 0..1, log map to kMinHz..kMaxHz
     void setIntensity(float knob01);  // 0..1, modulation depth
 
+    // TREMOLO ENABLE (M10.1 amendment — the Fender "trem on/off", docs §20). When
+    // DISABLED the effect gates OUT: a short linear enable-ramp carries the depth to
+    // EXACTLY 0, so a settled-off tremolo is a BIT-EXACT passthrough (gain held at 1.0,
+    // out == in), while the ramp keeps the toggle CLICK-FREE (no jump from a mid-dip
+    // gain to unity). The LFO + opto cell keep running while disabled so re-enabling
+    // does not jump phase. Default DISABLED (matches AMP_KNOB_DEFAULTS chorusMode 0).
+    void setEnabled(bool on) { enabled_ = on; }
+    bool enabled() const { return enabled_; }
+
     // Process numFrames of MONO audio, in -> out (may alias). With intensity == 0
     // this is a bit-exact copy of in into out (gain held at unity).
     void process(const float* in, float* out, int numFrames);
@@ -67,6 +76,8 @@ public:
     // The instantaneous opto gain multiplier applied to the LAST processed
     // sample (1.0 = no attenuation, dips toward 1-depth at a lamp peak).
     double lastGain() const { return lastGain_; }
+    // Enable-ramp state (measurement/tests): 0 = fully bypassed, 1 = fully engaged.
+    double enableRamp() const { return enableRamp_; }
 
 private:
     // Advance the LFO + opto cell one sample, returning the gain multiplier.
@@ -75,6 +86,9 @@ private:
     double sampleRate_ = 44100.0;
     double speed_ = 0.5;      // knob (smoothed target below)
     double intensity_ = 0.0;  // knob (smoothed target below)
+    bool enabled_ = false;    // trem on/off (default OFF — old rigs unaffected)
+    double enableRamp_ = 0.0; // 0 bypass .. 1 engaged (short LINEAR ramp, reaches 0/1 exactly)
+    double enableStep_ = 1.0; // per-sample ramp increment (set in prepare)
 
     // Smoothed control values (one-pole, per-sample) so knob moves never click.
     double rateSmoothed_ = 0.0;    // Hz

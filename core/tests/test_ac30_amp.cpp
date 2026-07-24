@@ -12,6 +12,7 @@
 #include "clipper/dsp/Ac30Preamp.h"
 #include "clipper/dsp/Ac30PowerAmp.h"
 #include "clipper/dsp/Jcm800PowerAmp.h"
+#include "clipper/dsp/TwinAmp.h"
 #include "clipper/dsp/TwinPowerAmp.h"
 
 #include "measure/AliasMetric.h"
@@ -32,6 +33,7 @@ using clipper::dsp::Ac30PowerAmp;
 using clipper::dsp::Ac30Preamp;
 using clipper::dsp::Jcm800PowerAmp;
 using clipper::dsp::TopBoostToneStack;
+using clipper::dsp::TwinAmp;
 using clipper::dsp::TwinPowerAmp;
 using clipper::measure::measureAliasing;
 
@@ -349,15 +351,25 @@ void testTopCut(double fs) {
     const double hfNoCut = hfLevel(0.0f, 3000.0);
     const double hfMidCut = hfLevel(0.5f, 3000.0);
     const double hfFullCut = hfLevel(1.0f, 3000.0);
-    assert(hfMidCut < hfNoCut - 0.5 && "TOP CUT at noon did not reduce the treble");
+    assert(hfMidCut < hfNoCut - 0.3 && "TOP CUT at noon did not reduce the treble");
     assert(hfFullCut < hfMidCut - 0.5 && "TOP CUT fully up did not reduce the treble further (inverted sense)");
+    // RE-TAPER GUARD (M10.2 muddy-fix, docs §23): the default 0.5 knob (the shared
+    // 'presence' default) must be a MILD cut — within ~2 dB of no-cut at 3 kHz — so the
+    // AC30 face no longer opens with ~half the top-cut engaged. AND the full range must
+    // stay reachable: full cut must be MUCH darker than noon (most of the cut lives in
+    // the upper half of travel, where a real AC30's CUT is rarely run).
+    assert(hfMidCut > hfNoCut - 2.0 &&
+           "TOP CUT default (0.5) is not a MILD cut — the muddy re-taper regressed");
+    assert(hfFullCut < hfMidCut - 5.0 &&
+           "TOP CUT full range collapsed — the deep cut must live in the upper half of travel");
     // The low end is barely touched by the cut.
     const double lfNoCut = hfLevel(0.0f, 150.0);
     const double lfFullCut = hfLevel(1.0f, 150.0);
     assert(std::fabs(lfFullCut - lfNoCut) < 1.5 && "TOP CUT should tame the TOP, not the low end");
-    std::printf("  [ok] TOP CUT @ %.0f Hz (inverted sense): 3 kHz %.1f→%.1f→%.1f dB (cut 0/.5/1, MORE cut = darker); "
-                "150 Hz Δ %.2f dB (low end untouched)\n",
-                fs, hfNoCut, hfMidCut, hfFullCut, std::fabs(lfFullCut - lfNoCut));
+    std::printf("  [ok] TOP CUT @ %.0f Hz (inverted, re-tapered): 3 kHz %.1f→%.1f→%.1f dB (cut 0/.5/1; "
+                "noon is a MILD %.1f dB cut, full %.1f dB); 150 Hz Δ %.2f dB (low end untouched)\n",
+                fs, hfNoCut, hfMidCut, hfFullCut, hfNoCut - hfMidCut, hfNoCut - hfFullCut,
+                std::fabs(lfFullCut - lfNoCut));
 }
 
 // ---------------------------------------------------------------------------
@@ -482,6 +494,57 @@ void testProduct(double fs) {
 }
 
 // ---------------------------------------------------------------------------
+// Test 10 — CHARACTER GUARD (the "muddy?" report, docs §23): the AC30 "top boost"
+// is the CHIME KING — at its OPENING DEFAULTS it must measure BRIGHTER at 3 kHz
+// (relative to 1 kHz) than the blackface Twin at ITS defaults, by a documented
+// margin. This pins the voice's character so a future change (a darker default CUT,
+// a stack/OT regression) cannot let the chime amp open muddier than the clean Fender.
+// Measured on the composed amp voices (no cab — the shared linear cab is identical to
+// both and cancels in a relative metric), small-signal so the tone shape dominates.
+// ---------------------------------------------------------------------------
+void testCharacterGuard(double fs) {
+    const float amp = 0.05f;  // small-signal: quasi-linear, the voice shape dominates
+    auto levelDb = [&](auto& a, double f) {
+        auto in = sine(f, amp, 0.5, fs);
+        std::vector<float> out(in.size(), 0.0f);
+        a.process(in.data(), out.data(), static_cast<int>(in.size()));
+        const size_t n = out.size(), w = n / 2, st = n - w;
+        return toDb(goertzelAmp(out, st, w, f, fs));
+    };
+
+    // AC30 at OPENING DEFAULTS (rig.ts AMP_KNOB_DEFAULTS: vol .4, bass .5, treble .6,
+    // CUT = the shared presence default .5, reverb 0).
+    Ac30Amp ac; ac.prepare(fs, 128); ac.setOversampling(4);
+    ac.setParameter(Ac30Amp::PARAM_VOLUME, 0.4f);
+    ac.setParameter(Ac30Amp::PARAM_BASS, 0.5f);
+    ac.setParameter(Ac30Amp::PARAM_TREBLE, 0.6f);
+    ac.setParameter(Ac30Amp::PARAM_TOPCUT, 0.5f);
+    ac.setParameter(Ac30Amp::PARAM_REVERB, 0.0f);
+    const double acBright = levelDb(ac, 3000.0) - levelDb(ac, 1000.0);
+
+    // Twin at OPENING DEFAULTS (vol .4, bass/mid .5, treble .6, bright off, reverb 0);
+    // tremolo OFF by default (chorusMode 0) → a clean, un-modulated response.
+    TwinAmp tw; tw.prepare(fs, 128); tw.setOversampling(4);
+    tw.setParameter(TwinAmp::PARAM_VOLUME, 0.4f);
+    tw.setParameter(TwinAmp::PARAM_BASS, 0.5f);
+    tw.setParameter(TwinAmp::PARAM_MID, 0.5f);
+    tw.setParameter(TwinAmp::PARAM_TREBLE, 0.6f);
+    tw.setParameter(TwinAmp::PARAM_BRIGHT, 0.0f);
+    tw.setParameter(TwinAmp::PARAM_TREMOLO_ENABLE, 0.0f);  // default off
+    tw.setParameter(TwinAmp::PARAM_REVERB, 0.0f);
+    const double twBright = levelDb(tw, 3000.0) - levelDb(tw, 1000.0);
+
+    // The documented margin: the chime king opens ≥ 6 dB brighter at 3 k (rel 1 k) than
+    // the Twin. (Measured ≈ 19 vs 7 dB — a wide, robust margin; 6 dB is the floor.)
+    assert(acBright > twBright + 6.0 &&
+           "CHARACTER GUARD: AC30 at defaults is not brighter at 3 kHz (rel 1 kHz) than the "
+           "Twin by ≥6 dB — the chime king opened muddy");
+    std::printf("  [ok] character guard @ %.0f Hz: AC30 3k-1k=%.1f dB vs Twin %.1f dB "
+                "(margin %.1f > 6 dB — the chime king opens bright)\n",
+                fs, acBright, twBright, acBright - twBright);
+}
+
+// ---------------------------------------------------------------------------
 // Test 9 — aliasing at MAX volume (M2 sweep): the shipped 4× clears the −60 dB bar;
 // 8× buys ~nothing beyond 4× → 4× ships (the M2 budget), same as M9/M10.1.
 // ---------------------------------------------------------------------------
@@ -520,6 +583,7 @@ int main() {
         testSag(fs);
         testChime(fs);
         testProduct(fs);
+        testCharacterGuard(fs);
     }
     testAliasing(44100.0);
     testAliasing(48000.0);
