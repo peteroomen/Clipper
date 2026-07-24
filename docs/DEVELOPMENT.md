@@ -2003,6 +2003,118 @@ Grid drive = input × `--jcm-drive`; `--jcm-gain/-master/-bass/-mid/-treble` are
 0..1 knobs; `--os` sets the per-stage oversampling (default 4). Output is the preamp
 voltage (tens of volts at high gain), peak-normalized to 0.9 for the WAV.
 
+## 18. M9.3 — JCM800 2204 power section + the full amp
+
+The 2204's 50 W push-pull EL34 **power section** (`core/src/dsp/Jcm800PowerAmp.{h,cpp}`)
+and the composed **full amp** `Jcm800Amp` (preamp → power). This is where a cranked
+Marshall's "responsive" character lives: the phase-inverter clip, the class-AB
+push-pull, the output transformer, global negative feedback + presence, and the B+
+supply **sag**. All from circuit physics and MEASURED, not vibed. Convention: real
+circuit VOLTS internally; `process()` output is normalized so **1.0 == full scale**.
+
+### The model (every simplification documented in the header)
+
+- **Phase inverter** — a 12AX7 **long-tailed pair** (`LtpInverter`), reusing the M9.1
+  Koren 12AX7 device law (no new fit). Shared 10 k tail, asymmetric 100 k/82 k plate
+  loads (large-signal balance). Solved per oversampled sample as a **3×3 nodal Newton**
+  (Va1, Va2, Vk_tail) with the analytic Koren Jacobian. At high drive one triode is
+  steered to cutoff → the PI's own asymmetric **soft clip**, part of the cranked sound.
+  PI grid-current blocking is deferred (the dominant PI clip is the tail-steering
+  cutoff, which the LTP solve already captures).
+- **EL34 push-pull, class AB** — **Koren pentode** law (Norman Koren, "Improved SPICE
+  models for vacuum-tube amplifiers", 1996). A widely-circulated EL34 fit (mu 11,
+  ex 1.35, kg1 650, kp 60, kvb 24, kg2 4200; pentode fits are looser than triodes →
+  the ±10 % validation band). Fixed bias −43 V (what THIS fit needs for the 2204's
+  operating point). Both tubes idle at ~38 mA → a measurable **crossover** at low
+  drive; the matched difference `Ip(+Vac) − Ip(−Vac)` is odd → **even harmonics
+  cancel**. EL34 grid conduction charges the PI→grid coupling caps → **blocking**
+  (τ = Rg·Cc) on overdrive. Plate-load saturation via a per-tube 1-D Newton
+  (Vp = rail − (Ip−Iq)·Raa/4).
+- **Output transformer** — LINEAR v1: Raa = 3.4 k reflected, turns ratio √(Raa/8) ≈
+  20.6, two documented one-pole corners (LF ~75 Hz magnetizing, HF ~12 kHz leakage).
+  Core saturation explicitly **deferred** (the nonlinearity lives in the tubes).
+- **NFB + presence** — global feedback from the OT secondary into the PI's V3B grid,
+  injected as **−β·V_secondary**. V3B's forward path to the secondary is NON-inverting
+  (V3A is the inverting input), so the loop **opposes** the output → true negative
+  feedback: **closed-loop gain is LOWER than open-loop**. β = the 2204 divider
+  5k/(5k+47k) = 0.0962; since β acts on the real secondary VOLTS the loop gain is
+  β·A_real (A_real ≈ 5), giving a **meaningful ~3.4 dB** of feedback. **Presence** (0..1)
+  low-passes the feedback (one-pole, ~1.5 kHz corner) so raising it REMOVES HF feedback
+  → **HF response RISES** (a shelf lift). *(This fixes the interrupted M9.3 run's
+  reported sign inversion — the shipped code and the `testFeedbackAndPresence`
+  inversion-catcher assert BOTH `gain(closed) < gain(open)` AND
+  `response(presence=1) > response(presence=0)` at 4 kHz, so a sign flip in either
+  cannot pass.)*
+- **Sag** — the B+ rail is a Thévenin source (Vsupply 480 V behind Rsupply 150 Ω) with
+  a 50 µF reservoir, plus a slower screen node (1 k / 22 µF). Both integrated backward-
+  Euler per oversampled sample from the total current draw; tube gain/headroom follow
+  the rail **and** (strongly) the screen. A loud burst blooms then compresses over one
+  reservoir RC (τ = 7.5 ms), recovering with the same RC — a deliberately **modest**
+  sag (the 2204 is a tight, solid-state-rectified amp).
+
+### Full-scale calibration
+
+`kFullScaleSecV = 26 V` maps the OT secondary to 1.0 full scale. Calibrated against the
+COMPOSED amp: **fully cranked** (GAIN 1, MASTER 1, hot input) a power sine peaks **~0.90**
+(measured 0.895–0.899 across 44.1/48/96 k), a normal full-send (MASTER 0.7) ~0.78 —
+headroom to 1.0 for transients. The NFB tap uses the real secondary volts, not the
+normalized output, so this constant is independent of the loop gain.
+
+### Validation — `clipper_jcm800_power_tests` (deterministic, 44.1 k / 48 k / 96 k)
+
+Every number is asserted against an analytic target **derived in the test** (the EL34
+bias fixed point from the Koren law, the matched-pair even-harmonic cancellation, the
+NFB reduction `1/(1+β·A_real)`, the presence one-pole shelf, the sag depth/RC).
+
+1. **EL34 quiescent** vs the analytic Koren fixed point (±10 %): **38.07 mA/tube**
+   (analytic 38.07), rail **467.4 V**, screen 459.7 V, plate dissipation 17.8 W (< 25 W
+   max). In the 33–42 mA / 460–472 V design window.
+2. **Push-pull even-harmonic suppression**: device-law reference — single-ended 2nd
+   harmonic **−16.5 dB**, matched push-pull 2nd **−240 dB** (a machine zero: even
+   harmonics cancel). Real amp 2nd **−26.8 dB** (well below the single tube; the LTP's
+   slight imbalance leaves the residual). Class-AB **crossover** THD present and
+   monotonic at low drive (0.42 / 0.84 / 1.66 %).
+3. **NFB sign + magnitude + presence (the inversion catcher)**: open-loop −14.2 dB →
+   **closed-loop −17.6 dB** = **−3.41 dB** of feedback (analytic −3.45, A_real 5.07) —
+   gain goes DOWN. Presence 0→1 **lifts** 4 kHz by **+3.1 dB** (analytic one-pole shelf
+   +2.1 dB, within the ±1.5 dB band) — highs go UP. A sign flip in either fails an assert.
+4. **Sag**: depth **3.4 dB** (in the 2–6 dB window), **bloom 10 ms** (5–20 ms), rail
+   467→432 V under the burst, **recovery 7.3–8.0 ms** vs the supply τ = 7.5 ms (±25 %).
+5. **Power compression** monotonic (output RMS rises, incremental gain falls, no
+   fold-back) and **±10 V slam** finite/bounded at both 4× and 8×, all three rates.
+6. **Aliasing** (max drive, M2 sweep): the **power section** clears the −60 dB bar by a
+   huge margin — 44.1/48/96 k **4× = −117 / −125 / −122 dB**, and 8× buys nothing (4× is
+   the requirement). The **composed full amp at max gain** is measured separately: its
+   power stage is fed the preamp's harmonically-dense output, so it hits a **compound
+   alias/IMD floor that 8× does NOT improve** — **4× = −74 / −58 / −69 dB** at 44.1/48/96 k.
+   It clears −60 dB at 44.1 k and 96 k and sits at the compound floor (~−58 dB) at 48 k,
+   at/near the audibility bar; raising OS does not help (measured), so **4× ships**.
+7. The **six existing ctest suites still pass**, incl. `clipper_triode_tests` (M9.1) and
+   `clipper_jcm800_tests` (M9.2) **unchanged**.
+
+**CPU** (single core, −O2, 4× at 48 k, cranked): the composed full amp runs ~**1.0×
+realtime** and the power section alone ~**2.0×** in the CI sandbox (which is CPU-throttled
+— the M9.2 preamp alone measures ~2× here too, so representative hardware is several ×
+faster). The per-sample nodal Newtons (LTP 3×3 + two grid + two plate solves × 4× OS) are
+the cost; an analytic plate-solve Jacobian is the obvious future optimization.
+
+### Render harness (`clipper-render --jcm` / `--jcm-cab`)
+
+```bash
+# Clean edge (low GAIN) through the full amp + brit412 4x12 cab:
+./build/clipper-render --gen pluck:110:2.5 --amp 0.22 --sr 48000 --jcm --jcm-cab \
+    --jcm-gain 0.3 --jcm-master 0.6 --jcm-treble 0.6 --jcm-presence 0.5 clean.wav
+# Full send (low E, cranked):
+./build/clipper-render --gen pluck:82:2.5 --amp 0.3 --sr 48000 --jcm --jcm-cab \
+    --jcm-drive 2.5 --jcm-gain 1.0 --jcm-master 0.7 --jcm-presence 0.6 fullsend.wav
+```
+
+`--jcm` renders the FULL 2204 (preamp → power); output is already normalized (1.0 ==
+full scale, NOT re-normalized). `--jcm-presence` is the power-amp presence knob;
+`--jcm-cab` runs it through the brit412 4×12 (shipped output limiter guarding the
+ceiling). Reuses `--jcm-drive/-gain/-master/-bass/-mid/-treble` and `--os`. `--jcm-pre`
+(M9.2 preamp alone) still works unchanged.
+
 ## Built DSP artifacts are committed
 
 `web/public/generated/` (the Emscripten-built WASM engine + the worklet copy)

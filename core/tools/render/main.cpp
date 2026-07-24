@@ -23,6 +23,8 @@
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/TriodeStage.h"
 #include "clipper/dsp/Jcm800Preamp.h"
+#include "clipper/dsp/Jcm800PowerAmp.h"
+#include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/SdModel.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/Biquad.h"
@@ -71,6 +73,9 @@ struct Args {
     float jcmGain = 0.5f;         // GAIN knob (preamp volume, audio taper)
     float jcmMaster = 0.5f;       // MASTER volume knob (audio taper)
     float jcmBass = 0.5f, jcmMid = 0.5f, jcmTreble = 0.5f;  // TMB tone knobs
+    bool jcm = false;             // M9.3: the FULL JCM800 2204 (preamp -> power section)
+    float jcmPresence = 0.5f;     // power-amp presence knob (HF feedback lift)
+    bool jcmCab = false;          // M9.3: run the full amp through the brit412 4x12 cab
 };
 
 // Output soft limiter, parameterized by threshold so the clean-path A/B can
@@ -161,7 +166,13 @@ struct OldSpringReverb {
         "          --jcm-drive D (input-gain into V1A's grid, default 1.0),\n"
         "          --jcm-gain G / --jcm-master M (0..1 audio-taper knobs),\n"
         "          --jcm-bass B / --jcm-mid MI / --jcm-treble T (0..1 tone stack),\n"
-        "          --os 1|2|4|8 selects the per-stage oversampling (default 4).\n",
+        "          --os 1|2|4|8 selects the per-stage oversampling (default 4).\n"
+        "M9.3:     --jcm (render the FULL JCM800 2204: preamp -> LTP PI -> push-pull EL34\n"
+        "          -> output transformer -> NFB/presence + B+ sag; output is normalized,\n"
+        "          1.0 == full scale, NO re-normalization),\n"
+        "          --jcm-presence P (0..1 power-amp presence: HF feedback lift),\n"
+        "          --jcm-cab (run the full amp through the brit412 4x12 cab),\n"
+        "          reuses --jcm-drive/-gain/-master/-bass/-mid/-treble and --os.\n",
         argv0, argv0, argv0, argv0);
     std::exit(2);
 }
@@ -335,6 +346,9 @@ int main(int argc, char** argv) {
         else if (s == "--jcm-bass") a.jcmBass = std::atof(need("--jcm-bass"));
         else if (s == "--jcm-mid") a.jcmMid = std::atof(need("--jcm-mid"));
         else if (s == "--jcm-treble") a.jcmTreble = std::atof(need("--jcm-treble"));
+        else if (s == "--jcm") a.jcm = true;
+        else if (s == "--jcm-presence") a.jcmPresence = std::atof(need("--jcm-presence"));
+        else if (s == "--jcm-cab") a.jcmCab = true;
         else if (s == "--alias-report") a.aliasReport = true;
         else if (s == "-h" || s == "--help") usage(argv[0]);
         else if (!s.empty() && s[0] == '-') {
@@ -424,7 +438,35 @@ int main(int argc, char** argv) {
     double triodePeakVolts = 0.0;  // reported for the --triode chain
     double jcmPeakVolts = 0.0;     // reported for the --jcm-pre chain
 
-    if (a.jcmPre) {
+    if (a.jcm) {
+        // M9.3: the FULL JCM800 2204 — preamp -> LTP phase inverter -> push-pull EL34
+        // -> output transformer -> global NFB + presence + B+ sag. The output is the
+        // power amp's NORMALIZED signal (1.0 == full scale), so — unlike --jcm-pre —
+        // it is NOT re-normalized. --jcm-cab runs it through the brit412 4x12 (with the
+        // shipped output limiter guarding the ceiling, matching the clean-chain stage).
+        clipper::dsp::Jcm800Amp amp;
+        amp.prepare(fs, 128);
+        amp.setOversampling(a.os);
+        amp.setParameter(clipper::dsp::Jcm800Amp::PARAM_GAIN, a.jcmGain);
+        amp.setParameter(clipper::dsp::Jcm800Amp::PARAM_MASTER, a.jcmMaster);
+        amp.setParameter(clipper::dsp::Jcm800Amp::PARAM_BASS, a.jcmBass);
+        amp.setParameter(clipper::dsp::Jcm800Amp::PARAM_MID, a.jcmMid);
+        amp.setParameter(clipper::dsp::Jcm800Amp::PARAM_TREBLE, a.jcmTreble);
+        amp.setParameter(clipper::dsp::Jcm800Amp::PARAM_PRESENCE, a.jcmPresence);
+        std::vector<float> grid(input.size());
+        for (size_t i = 0; i < input.size(); ++i) grid[i] = input[i] * a.jcmDrive;
+        if (!grid.empty())
+            amp.process(grid.data(), out.data(), static_cast<int>(grid.size()));
+        if (a.jcmCab && !out.empty()) {
+            auto ir = clipper::dsp::generateBrit4x12IR(fs);
+            clipper::dsp::CabConvolver cab;
+            cab.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
+            cab.process(out.data(), out.data(), static_cast<int>(out.size()));
+            clipper::dsp::OutputLimiter lim(0.97f);
+            lim.prepare(fs);
+            lim.processMono(out.data(), static_cast<int>(out.size()));
+        }
+    } else if (a.jcmPre) {
         // M9.2: the full JCM800 2204 preamp (4x 12AX7 + cathode follower + TMB tone
         // stack + master). The grid drive is the input scaled by --jcm-drive (a
         // bare DI barely moves V1A). Output is the preamp voltage (tens of volts at
@@ -558,7 +600,15 @@ int main(int argc, char** argv) {
         rms += static_cast<double>(v) * v;
     }
     rms = out.empty() ? 0.0 : std::sqrt(rms / out.size());
-    if (a.jcmPre) {
+    if (a.jcm) {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (chain=JCM800 FULL amp%s, drive=%.2f, "
+            "gain=%.2f master=%.2f bass=%.2f mid=%.2f treble=%.2f presence=%.2f, os=%dx)\n"
+            "  normalized peak=%.4f (1.0==full scale)  rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.jcmCab ? "+brit412 cab" : "", a.jcmDrive,
+            a.jcmGain, a.jcmMaster, a.jcmBass, a.jcmMid, a.jcmTreble, a.jcmPresence, a.os,
+            peak, rms);
+    } else if (a.jcmPre) {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (chain=JCM800 preamp, drive=%.2f, "
             "gain=%.2f master=%.2f bass=%.2f mid=%.2f treble=%.2f, os=%dx)\n"

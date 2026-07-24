@@ -64,6 +64,9 @@ FetchContent_MakeAvailable(chowdsp_wdf)
 #   - CabIR.cpp        : M5 procedural default 2x12 cab impulse response
 #   - TriodeStage.cpp  : M9.1 12AX7 common-cathode gain stage (Koren + nodal Newton)
 #   - Jcm800Preamp.cpp : M9.2 JCM800 2204 preamp (4x TriodeStage + TMB tone stack)
+#   - Jcm800PowerAmp.cpp: M9.3 JCM800 2204 power section (LTP PI + push-pull EL34 +
+#                        output transformer + NFB/presence + B+ sag)
+#   - Jcm800Amp.cpp    : M9.3 composed full 2204 (preamp -> power section)
 add_library(clipper_dsp STATIC
     src/dsp/RatModel.cpp
     src/dsp/SdModel.cpp
@@ -74,6 +77,8 @@ add_library(clipper_dsp STATIC
     src/dsp/CabIR.cpp
     src/dsp/TriodeStage.cpp
     src/dsp/Jcm800Preamp.cpp
+    src/dsp/Jcm800PowerAmp.cpp
+    src/dsp/Jcm800Amp.cpp
 )
 target_include_directories(clipper_dsp PUBLIC include)
 target_link_libraries(clipper_dsp PUBLIC chowdsp_wdf)
@@ -145,6 +150,17 @@ if(NOT EMSCRIPTEN)
         target_compile_options(clipper_jcm800_tests PRIVATE -Wall -Wextra -UNDEBUG)
     endif()
     add_test(NAME clipper_jcm800_tests COMMAND clipper_jcm800_tests)
+
+    # --- M9.3: JCM800 2204 power section + full amp tests ----------------------
+    add_executable(clipper_jcm800_power_tests tests/test_jcm800_power.cpp)
+    target_link_libraries(clipper_jcm800_power_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (aliasing metric) under tools/measure.
+    target_include_directories(clipper_jcm800_power_tests PRIVATE tools)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_jcm800_power_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_jcm800_power_tests COMMAND clipper_jcm800_power_tests)
 
     # --- CLI render harness (native only, NOT part of the WASM build) ---------
     add_executable(clipper-render tools/render/main.cpp)

@@ -243,9 +243,18 @@ is one of the most canonical pairings in rock.
    blocking recovery + ±10 V slam stability; **measured OS requirement 4×**
    (−73/−68 dB alias floor, clears the −60 dB M2 bar at max gain). Rendered via
    `clipper-render --jcm-pre`.
-3. **Power section — where "responsive" lives**: push-pull EL34 approximation,
-   negative feedback + presence control, and **sag** (supply droop under pick
-   attack) modeled explicitly and measured, not vibed.
+3. **Power section — where "responsive" lives** ✅ *(phase 3 done — see docs §18,
+   M9.3)* — the 2204's 50 W push-pull EL34 power stage, composed into the full amp
+   `Jcm800Amp` (preamp → power). A 12AX7 **long-tailed-pair** phase inverter (reusing
+   the M9.1 Koren law, 3×3 nodal Newton, its own soft clip), a **class-AB EL34 pair**
+   (Koren pentode; 38 mA/tube at a 467 V rail vs the analytic fixed point; even
+   harmonics cancel vs a single-ended reference; crossover measurable at low drive),
+   a linear **output transformer** v1, **global NFB** (−3.4 dB, sign-correct: closed
+   < open) with **presence** (HF lift, +3.1 dB at 4 kHz), and measured **B+ sag**
+   (3.4 dB depth, 10 ms bloom, recovery on the 7.5 ms supply RC). Validated
+   (`clipper_jcm800_power_tests`) with an explicit NFB-inversion catcher; the power
+   section clears the −60 dB M2 alias bar at 4× (composed max-gain floor ~−58 dB at
+   48 k, measured, 8× no better). Rendered via `clipper-render --jcm` / `--jcm-cab`.
 4. Amp-panel UI (preamp/master volume era-correct), oversampling per stage
    budgeted like M2, A/B render harness.
 
