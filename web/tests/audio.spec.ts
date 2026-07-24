@@ -234,12 +234,14 @@ test('RAT worklet: bypass passes input through untouched', async ({ page }) => {
   expect(result.processedH3).toBeGreaterThan(result.bypassH3 * 10);
 });
 
-// v1.1 item 4: the Muff "Pi" fuzz renders through the worklet and CHANGES THE
-// SOUND MASSIVELY — a fuzz, not an overdrive. Two proofs: (a) it generates a huge
-// 3rd harmonic (a near-square wave: h3 is a large fraction of the fundamental, far
-// beyond the RAT's already-hard clip), and (b) the wall-of-sustain COMPRESSION —
-// a 20 dB input drop yields almost no output-RMS change (the same wall regardless
-// of pick force), which a clean/bypass path does NOT do (it tracks the input 1:1).
+// v1.1 item 4 + field-fix (docs §24): the Muff "Pi" fuzz renders through the worklet
+// and CHANGES THE SOUND MASSIVELY — a fuzz, not an overdrive. Three proofs: (a) it
+// generates a huge 3rd harmonic (a near-square wave: h3 is a large fraction of the
+// fundamental, far beyond the RAT's hard clip); (b) the wall-of-sustain COMPRESSION at
+// HIGH sustain (0.8) — a 20 dB input drop yields almost no output-RMS change (the same
+// wall regardless of pick force), which a clean/bypass path does NOT do; and (c) THE FIX
+// — at MIN sustain the wall COLLAPSES: the same 20 dB input drop now DOES move the output
+// (dynamics return, so single-coil hum is no longer compressed up to playing level).
 test('muff worklet: fuzz makes massive harmonics + a compressed sustain wall', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
@@ -310,14 +312,18 @@ test('muff worklet: fuzz makes massive harmonics + a compressed sustain wall', a
       return Math.sqrt(sum / n);
     }
 
-    const muff = (a: number) =>
-      render([{ id: 'm', type: 'muff', engaged: true, params: { distortion: 1.0, filter: 0.5, level: 0.6 } }], a);
+    // HIGH sustain (0.8) — the wall-of-sustain territory (post field-fix the wall lives
+    // at sustain >= 0.6). MIN sustain (0.0) — the escape hatch where dynamics return.
+    const muffHi = (a: number) =>
+      render([{ id: 'm', type: 'muff', engaged: true, params: { distortion: 0.8, filter: 0.5, level: 0.6 } }], a);
+    const muffMin = (a: number) =>
+      render([{ id: 'm', type: 'muff', engaged: true, params: { distortion: 0.0, filter: 0.5, level: 0.6 } }], a);
     const bypass = (a: number) =>
-      render([{ id: 'm', type: 'muff', engaged: false, params: { distortion: 1.0, filter: 0.5, level: 0.6 } }], a);
+      render([{ id: 'm', type: 'muff', engaged: false, params: { distortion: 0.8, filter: 0.5, level: 0.6 } }], a);
 
-    const hot = await muff(0.3);       // hot pick
-    const soft = await muff(0.03);     // 20 dB softer pick
-    const clean = await bypass(0.3);   // true bypass (clean sine)
+    const hot = await muffHi(0.3);        // hot pick, high sustain
+    const soft = await muffHi(0.03);      // 20 dB softer pick, high sustain
+    const clean = await bypass(0.3);      // true bypass (clean sine)
 
     return {
       fuzzF1: goertzel(hot, sampleRate, 220),
@@ -328,6 +334,9 @@ test('muff worklet: fuzz makes massive harmonics + a compressed sustain wall', a
       softRms: rms(soft, sampleRate),
       cleanRms: rms(clean, sampleRate),
       cleanRmsSoft: rms(await bypass(0.03), sampleRate),
+      // Min-sustain dynamics: the same 20 dB input drop, wall collapsed.
+      minHotRms: rms(await muffMin(0.3), sampleRate),
+      minSoftRms: rms(await muffMin(0.03), sampleRate),
     };
   }, RENDER_SECONDS);
 
@@ -337,12 +346,18 @@ test('muff worklet: fuzz makes massive harmonics + a compressed sustain wall', a
   expect(result.fuzzH3).toBeGreaterThan(result.cleanH3 * 50);
   expect(result.fuzzH5).toBeGreaterThan(result.fuzzF1 * 0.05); // rich odd spectrum
 
-  // (b) the sustain WALL: a 20 dB input drop barely moves the fuzz output RMS
-  // (heavy compression), whereas the clean bypass path tracks the input ~1:1.
+  // (b) the sustain WALL at HIGH sustain: a 20 dB input drop barely moves the fuzz
+  // output RMS (heavy compression, ~1:1), whereas the clean bypass path tracks input.
   const fuzzRatio = result.hotRms / result.softRms;      // ~1 (compressed wall)
   const cleanRatio = result.cleanRms / result.cleanRmsSoft; // ~10 (tracks input)
   expect(fuzzRatio).toBeLessThan(2.0);
   expect(cleanRatio).toBeGreaterThan(5.0);
+
+  // (c) THE FIX: at MIN sustain the wall COLLAPSES — the same 20 dB input drop now moves
+  // the output by several dB (dynamics return), far more than the high-sustain wall does.
+  const minRatio = result.minHotRms / result.minSoftRms;  // ~5 (tracks input, dynamic)
+  expect(minRatio).toBeGreaterThan(3.0);
+  expect(minRatio).toBeGreaterThan(fuzzRatio * 2.0);
 });
 
 // M5: amp tone is audibly measurable through the FULL chain (pedal -> amp ->

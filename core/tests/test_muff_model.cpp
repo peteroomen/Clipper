@@ -230,43 +230,114 @@ void testMidScoop(double fs) {
         hiToneAtLf, loToneAtLf);
 }
 
-// --- Test 3: THD at max SUSTAIN is MASSIVE (fuzz, not overdrive). --------------
-void testMassiveThd(double fs) {
+// --- Test 3: THD now RANGES with SUSTAIN (the field-fix — a usable min setting). -
+// Pre-fix the Muff clipped hard at EVERY sustain (THD ~80–95% even at min — "no clean
+// setting"), because the input booster Q1 was overdriven (kInputDrive 12) and the pot
+// floored at a hot 0.06. Fixed: Q1 is a clean booster and the SUSTAIN pot is an honest
+// audio-taper full-range attenuator into the clippers, so THD RISES with sustain — min
+// sustain sheds the wall (dynamics return), max is the fuzz wall. See docs §24.
+void testSustainRange(double fs) {
     const double f0 = 220.0;
+    const double tLo = thd(render(sine(f0, 0.2f, 1.0, fs), {0.0f, 0.5f, 0.6f}, fs), f0, fs);
+    const double tMid = thd(render(sine(f0, 0.2f, 1.0, fs), {0.6f, 0.5f, 0.6f}, fs), f0, fs);
     const double tMax = thd(render(sine(f0, 0.2f, 1.0, fs), {1.0f, 0.5f, 0.6f}, fs), f0, fs);
-    const double tLo = thd(render(sine(f0, 0.2f, 1.0, fs), {0.1f, 0.5f, 0.6f}, fs), f0, fs);
-    // A fuzz, not an overdrive: THD is ENORMOUS at EVERY sustain setting — the Muff
-    // has no clean setting (the double diode clip slams even at low sustain). Both
-    // RAT/SD-1/TS top out ~20-30%; the Muff sits ~80-95%.
-    assert(tMax > 0.5 && tLo > 0.5 && "Muff THD not fuzz-huge (>50%) at both extremes");
-    std::printf("  [ok] massive THD @ %.0f Hz: SUSTAIN 0.1 -> %.1f%%, 1.0 -> %.1f%% (FUZZ, no clean setting)\n",
-                fs, tLo * 100.0, tMax * 100.0);
+    // Rising trend at the coarse points min -> default -> max (the low-drive cold-bias
+    // hump makes the FINE curve non-monotonic, so assert the endpoints/default).
+    assert(tLo < tMid && "SUSTAIN=0 not less saturated than the 0.6 default");
+    assert(tMid < tMax && "default not less saturated than max SUSTAIN");
+    // The wall at high sustain is still fuzz-huge (a fuzz, not an overdrive — RAT/SD-1/TS
+    // top out ~20–30%; the Muff wall is >80%). THD > 100% at max: the ~1 kHz tone scoop +
+    // double clip suppress the fundamental below the harmonic sum (canon fuzz behaviour).
+    assert(tMax > 0.8 && "max-SUSTAIN THD not fuzz-huge (>80%)");
+    // Min sustain is a GENUINE escape: clearly less saturated than the wall.
+    assert(tLo < 0.6 && tLo < 0.5 * tMax && "SUSTAIN=0 did not shed the wall");
+    std::printf(
+        "  [ok] SUSTAIN THD range @ %.0f Hz: min 0.0 -> %.1f%%, default 0.6 -> %.1f%%, "
+        "max 1.0 -> %.1f%% (RISES — min sustain sheds the wall)\n",
+        fs, tLo * 100.0, tMid * 100.0, tMax * 100.0);
 }
 
-// --- Test 4: the sustain/compression WALL. ------------------------------------
-// At high SUSTAIN the double diode clip compresses hard: output RMS stays ~flat as
-// the INPUT sweeps 20 dB (the wall-of-sustain signature — the pedal makes the same
-// wall whether you pick soft or hard). Contrast with a low-sustain setting, which
-// tracks the input far more.
+// --- Test 4: the sustain/compression WALL — and its COLLAPSE at min sustain. ---
+// At HIGH SUSTAIN the double diode clip compresses hard: output RMS stays ~flat as the
+// INPUT sweeps 20 dB (the wall-of-sustain signature). Post-fix the wall lives in the
+// SUSTAIN ≥ 0.6 territory (min sustain now sheds it — the field fix), so the wall assert
+// runs at 0.7. The test is STRENGTHENED with the contrast: at SUSTAIN=0 the same sweep
+// is DYNAMIC (output tracks input), proving the wall collapses and dynamics return.
 void testSustainWall(double fs) {
     const float amps[] = {0.05f, 0.10f, 0.20f, 0.35f, 0.50f};  // ~20 dB sweep
-    double hiMin = 1e9, hiMax = 0.0;
-    for (float a : amps) {
-        const double r = tailRms(render(sine(220.0, a, 0.6, fs), {1.0f, 0.5f, 0.6f}, fs), fs);
-        hiMin = std::min(hiMin, r); hiMax = std::max(hiMax, r);
-    }
-    const double hiSpreadDb = 20.0 * std::log10(hiMax / (hiMin + 1e-12));
-    // Wall: <= 4 dB output variation across a 20 dB input sweep (measured ~1 dB).
-    assert(hiSpreadDb < 4.0 && "no sustain wall: output not compressed across the input sweep");
-    // Sanity that it IS compression: a 20 dB input step yields far less than 20 dB out.
-    const double loR = tailRms(render(sine(220.0, 0.05f, 0.6, fs), {1.0f, 0.5f, 0.6f}, fs), fs);
-    const double hiR = tailRms(render(sine(220.0, 0.50f, 0.6, fs), {1.0f, 0.5f, 0.6f}, fs), fs);
-    const double outStepDb = 20.0 * std::log10(hiR / (loR + 1e-12));
-    assert(std::fabs(outStepDb) < 6.0 && "20 dB input step not heavily compressed at max sustain");
+    auto sweepSpread = [&](float sustain, double& stepDb) {
+        double mn = 1e9, mx = 0.0, r05 = 0.0, r50 = 0.0;
+        for (float a : amps) {
+            const double r = tailRms(render(sine(220.0, a, 0.6, fs), {sustain, 0.5f, 0.6f}, fs), fs);
+            if (a == 0.05f) r05 = r;
+            if (a == 0.50f) r50 = r;
+            mn = std::min(mn, r); mx = std::max(mx, r);
+        }
+        stepDb = 20.0 * std::log10(r50 / (r05 + 1e-12));
+        return 20.0 * std::log10(mx / (mn + 1e-12));
+    };
+    // The WALL at SUSTAIN 0.7 (≥ 0.6 territory): <= 4 dB output variation across a 20 dB
+    // input sweep, and the 20 dB step compresses to near nothing (measured ~2.4 / ~0.1 dB).
+    double wallStep = 0.0;
+    const double wallSpread = sweepSpread(0.7f, wallStep);
+    assert(wallSpread < 4.0 && "no sustain wall at 0.7: output not compressed across the sweep");
+    assert(std::fabs(wallStep) < 3.0 && "20 dB input step not heavily compressed at SUSTAIN 0.7");
+    // The COLLAPSE at SUSTAIN 0 (the fix): the wall is gone — output tracks input far more
+    // (the 20 dB step now yields several dB out, not ~0), so dynamics return.
+    double loStep = 0.0;
+    const double loSpread = sweepSpread(0.0f, loStep);
+    assert(loSpread > wallSpread + 2.0 && "SUSTAIN=0 not appreciably more dynamic than the wall");
+    assert(std::fabs(loStep) > 3.0 && "SUSTAIN=0 still compressed like a wall (dynamics not restored)");
     std::printf(
-        "  [ok] sustain wall @ %.0f Hz: outRMS spread %.2f dB across a 20 dB input sweep "
-        "(20 dB in -> %.2f dB out)\n",
-        fs, hiSpreadDb, outStepDb);
+        "  [ok] sustain wall @ %.0f Hz: SUSTAIN 0.7 spread %.2f dB (20 dB in -> %.2f dB out, "
+        "the WALL); SUSTAIN 0.0 spread %.2f dB (-> %.2f dB out, DYNAMIC — wall collapses)\n",
+        fs, wallSpread, wallStep, loSpread, loStep);
+}
+
+// --- Test 4b: single-coil HUM rejection at min sustain (the field complaint). --
+// Field report: "the Pi makes even just my single-coil hum blown out, even with minimum
+// sustain." Root cause (docs §24): the overdriven input booster + hot pot floor clipped
+// EVERYTHING, so the wall-of-sustain compression dragged a −40 dBFS hum up toward playing
+// level (a −40 dBFS hum came out near −10 dBFS, and min sustain didn't help). This is the
+// PERMANENT regression guard for the fix.
+//
+// Derived bar: at SUSTAIN=0 the pot attenuates to kClipDriveMax·10^(−54/20) ≈ 1.2% of max
+// drive, so a quiet hum stays in the near-linear region of the (clean) cascade and the
+// interstage coupling-cap HPFs (Cin=100 nF, ~−4.5 dB/stage at 60 Hz — canon, not a fantasy
+// filter) further tame it. So (a) with signal present the 60 Hz hum stays far below the
+// note, and (b) a hum-ALONE input is NOT amplified above its own level.
+void testHumRejection(double fs) {
+    const double fSig = 220.0, fHum = 60.0;
+    const float aSig = 0.3162f;  // −10 dBFS guitar-level note
+    const float aHum = 0.01f;    // −40 dBFS single-coil hum  (input hum/sig = −30 dB)
+    auto humToSig = [&](float sustain) {
+        std::vector<float> in = sine(fSig, aSig, 1.0, fs);
+        const std::vector<float> hum = sine(fHum, aHum, 1.0, fs);
+        for (size_t i = 0; i < in.size(); ++i) in[i] += hum[i];
+        const std::vector<float> o = render(in, {sustain, 0.5f, 0.6f}, fs);
+        const size_t n = o.size(), win = std::min(n, static_cast<size_t>(fs));
+        return toDb(goertzelAmp(o, n - win, win, fHum, fs)) -
+               toDb(goertzelAmp(o, n - win, win, fSig, fs));
+    };
+    // (1) With a note playing, the hum sits far below it at min sustain (bar ≤ −25 dB;
+    //     measured ~−51 dB, i.e. the hum is NOT compressed up to the note).
+    const double ratioMin = humToSig(0.0f);
+    const double ratioMax = humToSig(1.0f);
+    assert(ratioMin <= -25.0 && "hum compressed up to signal at min sustain (the field bug)");
+    // (2) Hum-ALONE (no note) — the literal complaint: a −40 dBFS hum must NOT come out
+    //     blown up. At min sustain it stays quiet; the min->max delta is large, so min
+    //     sustain is a real escape hatch (a fuzz at MAX does amplify hum — that is honest).
+    auto humAloneDb = [&](float sustain) {
+        return toDb(tailRms(render(sine(fHum, aHum, 0.6, fs), {sustain, 0.5f, 0.6f}, fs), fs));
+    };
+    const double humLo = humAloneDb(0.0f);
+    const double humHi = humAloneDb(1.0f);
+    assert(humLo < -40.0 && "hum-alone blown up at min sustain (field bug: was ~−10 dBFS)");
+    assert(humHi - humLo > 25.0 && "min sustain is not a large escape from the hum wall");
+    std::printf(
+        "  [ok] hum rejection @ %.0f Hz: with note, hum/sig min=%.1f dB (bar -25) max=%.1f dB; "
+        "hum-ALONE min=%.1f dBFS max=%.1f dBFS (delta %.1f dB — min sustain tames it)\n",
+        fs, ratioMin, ratioMax, humLo, humHi, humHi - humLo);
 }
 
 // --- Test 5: aliasing. Shipped 4× at max SUSTAIN below the M2 −60 dB bar. ------
@@ -342,9 +413,15 @@ int main() {
     testDcOperatingPoints(96000.0);
     testMidScoop(44100.0);
     testMidScoop(96000.0);
-    testMassiveThd(44100.0);
-    testMassiveThd(48000.0);
+    testSustainRange(44100.0);
+    testSustainRange(48000.0);
+    testSustainRange(96000.0);
+    testSustainWall(44100.0);
     testSustainWall(48000.0);
+    testSustainWall(96000.0);
+    testHumRejection(44100.0);
+    testHumRejection(48000.0);
+    testHumRejection(96000.0);
     testAliasing(44100.0);
     testAliasing(96000.0);
     testVolumeLinearity();

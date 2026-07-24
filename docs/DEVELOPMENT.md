@@ -3761,8 +3761,12 @@ stack** (`MuffToneStack`) blends a low-pass leg (`22 k / 0.01 µF`, 723 Hz) and 
 high-pass leg (`12 k / 0.01 µF`, 1326 Hz) by the TONE pot; at noon the two legs sum to a
 **notch ≈ 980 Hz** (the ~1 kHz scoop), TONE→0 goes dark (LP only), TONE→1 bright (HP
 only). Params: slot 0 = SUSTAIN, 1 = TONE, 2 = VOLUME (the real three knobs, the shared
-PedalParams shape). Output trim scales the loud recovery stage so the default (VOLUME 0.6)
-peaks ~1.4 V (the downstream limiter guards the ceiling).
+PedalParams shape). Output trim scales the loud recovery stage so the default (SUSTAIN 0.6
+/ VOLUME 0.6) peaks ~1.2 V (the downstream limiter guards the ceiling). **Q1 is a CLEAN
+input booster** (`kInputDrive 0.5`) and the SUSTAIN pot is a **full-range audio-taper
+attenuator into the first clipper** (`kClipDriveMax 6.0`, decibel-linear taper down to a
+−54 dB floor) — so the clipping/compression is developed by the high-gain Q2→Q3 cascade
+*after* the pot, and rolling SUSTAIN down genuinely cleans up (see the §24 postmortem).
 
 ### Validation (`clipper_muff_tests`, 44.1 / 48 / 96 kHz, assert-backed)
 
@@ -3775,15 +3779,25 @@ peaks ~1.4 V (the downstream limiter guards the ceiling).
   the noon notch sits at **980 Hz** (−9.05 dB, 2.8 dB below both shoulders); tilt
   extremes clear (TONE 1 is +16 dB brighter at 5 kHz, TONE 0 is +21 dB bassier at
   120 Hz).
-- **THD (MASSIVE — a fuzz, not an overdrive):** **~80–95%** at EVERY sustain setting
-  (SUSTAIN 0.1 → 83%, 1.0 → 81% at 44.1 k) — the Muff has no clean setting (RAT/SD-1/TS
-  top out ~20–30%).
-- **Wall of sustain:** at max SUSTAIN a **20 dB input sweep** yields **1.6 dB** of
-  output-RMS variation (20 dB in → 0.08 dB out) — the compression signature.
-- **Aliasing (M2 bar):** shipped **4× worst-alias −80.3 dB** (44.1 k) / −84.4 dB (96 k),
-  far under the −60 dB bar; naive (1×) −6.2 dB (2× is insufficient at −2 dB — the
-  double-clip is harsh, so 4× is the right default). VOLUME linear; ±10 V slam finite +
-  bounded at all rates; silence→silence; deterministic.
+- **THD RANGES with SUSTAIN (fixed — see the §24 field-fix postmortem below):** a fuzz,
+  not an overdrive, but SUSTAIN is now a full-range control: **min 0.0 → ~44%, default
+  0.6 → ~54%, max 1.0 → ~122%** THD (44.1/48/96 k). It RISES (min sustain sheds the wall;
+  the fine curve dips slightly near the cold-bias knee, so the test asserts the coarse
+  min→default→max trend). >100 % at max is canon fuzz: the ~1 kHz scoop + double clip
+  suppress the fundamental below the harmonic sum. (Pre-fix it was ~80–95 % at EVERY
+  setting — "no clean setting" — the bug.)
+- **Wall of sustain (moved to SUSTAIN ≥ 0.6 territory):** at **SUSTAIN 0.7** a **20 dB
+  input sweep** yields **2.4 dB** of output-RMS variation (20 dB in → 0.1 dB out) — the
+  compression signature. The test is STRENGTHENED with the collapse: at **SUSTAIN 0.0** the
+  same sweep spreads **6.2 dB** (20 dB in → 6.2 dB out) — dynamics return, the wall is gone.
+- **Single-coil HUM rejection (the field fix, permanent regression guard):** with a note
+  present the 60 Hz hum stays **−51 dB** below it at min sustain (bar ≤ −25 dB); a
+  **−40 dBFS hum-ALONE** comes out at **−61 dBFS** at min sustain vs **−10 dBFS** at max
+  (delta **51 dB** — min sustain is a real escape hatch). Pre-fix the hum-alone came out at
+  **−10 dBFS at EVERY sustain** (blown up to playing level — the reported bug).
+- **Aliasing (M2 bar):** shipped **4× worst-alias −103.8 dB** (44.1 k) / −104.4 dB (96 k),
+  far under the −60 dB bar; naive (1×) −18.1 dB. VOLUME linear; ±10 V slam finite +
+  bounded at all rates (peak ~4 V); silence→silence; deterministic.
 
 ### A/B render commands (listening pack → scratchpad)
 
@@ -3822,7 +3836,61 @@ clipper-render muff_pre.wav muff_into_twin.wav --twin --twin-volume 0.35 --twin-
   consolidated into ONE complete list (rat/sd/ts/muff/phaser + amp) so every pedal's
   exports actually ship. Similarly the render CLI's stray empty `else if (a.pedal=="sd1")`
   merge artifact was folded into the `sd1||ts` branch.
-- All 11 native suites green (`ctest`: M0 + RAT + SD-1 + TS + phaser + amp + triode +
-  JCM800 + JCM power + Twin + **Muff**); web tsc + vite build; Playwright +2 (`muff
-  worklet: fuzz makes massive harmonics + a compressed sustain wall` and `assistant:
-  add_pedal adds a Muff Pi fuzz (round-trip)`), 58 total green.
+- All 12 native suites green (`ctest`: M0 + RAT + SD-1 + TS + phaser + amp + triode +
+  JCM800 + JCM power + Twin + **Muff** + AC30); web tsc + vite build; Playwright (`muff
+  worklet: fuzz makes massive harmonics + a compressed sustain wall` — now also asserting
+  the min-sustain wall COLLAPSE — and `assistant: add_pedal adds a Muff Pi fuzz
+  (round-trip)`).
+
+### Field-fix postmortem — "the Pi blows out my single-coil hum, even at min sustain"
+
+**Report.** A player on a single-coil guitar: *"the Pi makes even just my single-coil hum
+blown out, even with minimum sustain."*
+
+**Diagnosis (measured).** Two compounding bugs, both in `MuffModel.cpp`'s level/knob
+mapping (the device models + tone stack were correct and are unchanged):
+
+1. **Input booster Q1 was overdriven.** `kInputDrive = 12.0` drove a guitar-level signal —
+   and even a −40 dBFS hum (0.007 V → 0.084 V at Q1's base) — into Q1's rail-clip region.
+   Q1 (no diodes, gain ≈ 19×, clean only below ~0.05 V in) put out a **7 V rail-clipped
+   square for essentially any input**. Because the SUSTAIN pot sits *after* Q1, no sustain
+   setting could undo that: the noise floor was already compressed up before the pot.
+   Measured Q1 THD: 15 % at −30 dBFS in, **116 % at −10 dBFS**.
+2. **SUSTAIN taper had a hot floor and the wrong law.** The pot was a **linear** map with a
+   **0.06 (−24 dB) floor** — so "min sustain" still passed −24 dB of a 7 V square into the
+   clippers. A real Big-Muff SUSTAIN is a 100 kA (audio) pot wired as a full-range input
+   attenuator that nearly grounds the clipper input at minimum.
+
+   Net effect (pre-fix, measured, 48 k): a **−40 dBFS hum-alone came out at −10.7 dBFS at
+   EVERY sustain** (min −10.7, max −11.8 — a **1 dB** difference; min sustain was useless),
+   and THD sat at ~80–95 % at all settings. **Hypothesis 3 (LF/hum filter) was checked and
+   REJECTED:** the canon `Cin = 100 nF` coupling already gives 60 Hz **−4.5 dB/stage** vs
+   midband (corner ~130 Hz), compounding across four stages — the hum was never
+   under-filtered, it was *clipped and compressed up*. No fantasy hum filter was added.
+
+**Fix (authentic gain structure).** Q1 is restored to a **clean booster** and the clipping
+drive is moved *after* the pot, so the SUSTAIN pot is a true full-range attenuator into the
+high-gain Q2→Q3 cascade (which is where a real Muff's compression is developed):
+
+| constant | was | now | why |
+|---|---|---|---|
+| `kInputDrive` (pre-Q1) | 12.0 | **0.5** | keep Q1 linear for hum/soft picking (clips only on loud playing) |
+| SUSTAIN taper | linear, `0.06 + 0.94·knob` | **decibel-linear audio** `kClipDriveMax·10^((−54/20)(1−knob))` | honest 100 kA pot; knob 0 ≈ −54 dB (≈0.012), knob 1 = `kClipDriveMax` |
+| clip drive @ max (`kClipDriveMax`) | — (was just ×1) | **6.0** | develop the wall in Q2→Q3 *after* the pot |
+| `kOutputTrim` | 0.32 | **0.40** | default (0.6/0.6) peaks ~1.2 V |
+
+**Per-stage drive @ SUSTAIN 0 (0.2 V hot input, 48 k):** Q1 out stays a clean ~2 V; the pot
+attenuates to ≈1.2 % of max, so Q2 sees only tens of mV and the Q2→Q3 cascade stays in its
+near-linear region → dynamics track the input. At SUSTAIN 1 the same cascade sees several
+volts and slams into the wall.
+
+**Result (measured, all rates).** THD now **ranges** 44 % (min) → 54 % (default) → 122 %
+(max). The wall lives at SUSTAIN ≥ 0.6 (0.7: 20 dB in → 0.1 dB out) and **collapses** at 0
+(20 dB in → 6.2 dB out). The **hum-alone drops from −10.7 dBFS to −61.1 dBFS at min sustain**
+(delta to max now **51 dB** — min sustain is the escape hatch); with a note present the
+60 Hz hum sits −51 dB below it. Aliasing at max improved to −103.8 dB. A/B renders in the
+listening pack confirm min-sustain hum-alone rms **0.293 → 0.001** (−50 dB) while the
+max-sustain fuzz keeps its thick, harmonic-dense sustaining character (H3/f1 ≈ 0.2 → 0.26,
+still a wall). The permanent guard is `testHumRejection` (the player's exact signal) plus
+the strengthened `testSustainRange` / `testSustainWall` and the web worklet spec's
+min-sustain collapse assertion.

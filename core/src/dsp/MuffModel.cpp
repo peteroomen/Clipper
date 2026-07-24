@@ -7,13 +7,17 @@
 // Signal path (all inside ONE Oversampler, so the four solves + the tone stack
 // stay sample-aligned at the oversampled rate):
 //
-//   x → ×inputDrive → [Q1] → ×sustain → [Q2 diodes] → [Q3 diodes] →
+//   x → ×inputDrive → [Q1 CLEAN boost] → ×sustainDrive → [Q2 diodes] → [Q3 diodes] →
 //     → toneStack → [Q4] → ×(outputTrim·volume) → downsample → out
 //
-// SUSTAIN is a level pot between the input boost and the clip stages (how hard the
-// diodes are slammed = how much fuzz + sustain). The two clip stages' diodes clip
-// near idle (BjtStage.h), so the pair compresses the signal into the wall of
-// sustain. VOLUME is a plain output gain (a Muff makes far more than unity).
+// SUSTAIN is a full-range audio-taper attenuator BETWEEN the clean input boost (Q1) and
+// the clip stages: it sets how hard the high-gain Q2→Q3 cascade is slammed = how much
+// fuzz + sustain + compression. The two clip stages' diodes clip near idle (BjtStage.h),
+// so the pair compresses into the wall of sustain WHEN driven — but because Q1 is clean
+// and the pot is a true full-range attenuator (down to a −54 dB floor), rolling SUSTAIN
+// down leaves the cascade near-linear: dynamics return and a quiet signal (single-coil
+// hum) is NOT compressed up. See the docs §24 field-fix postmortem. VOLUME is a plain
+// output gain (a Muff makes far more than unity).
 // ---------------------------------------------------------------------------
 
 #include "clipper/dsp/MuffModel.h"
@@ -39,17 +43,37 @@ float onePoleCoeff(double cutoffHz, double sampleRate) {
     return static_cast<float>(std::clamp(a, 0.0, 1.0));
 }
 
-// --- Level canon -----------------------------------------------------------
-// Fixed input-drive gain into Q1: a guitar DI (0.05–0.3 V) barely tickles a 9 V
-// stage, and the Muff has enormous front-end gain, so lift it hard. SUSTAIN then
-// sets how much of Q1's swing hits the clip stages.
-constexpr double kInputDrive = 12.0;
-// SUSTAIN pot: a level divider into Q2. Even at 0 the clip stages see enough to
-// grind (a Muff has no clean setting) — floor 0.06, up to 1.0 at max.
-constexpr float kSustainFloor = 0.06f;
-// Output trim: the recovery stage (Q4) collector AC is a few volts; scale so max
-// SUSTAIN peaks near ~1.0 with VOLUME at unity, then VOLUME (0..1) rides on top.
-constexpr double kOutputTrim = 0.32;
+// --- Level canon (see docs §24 field-fix postmortem) -----------------------
+// Q1 is a CLEAN input BOOSTER, not a clipper. A guitar DI (0.05–0.3 V) must leave
+// Q1 in its linear region (Q1 clips above ~0.05 V at its base) so that quiet input
+// — single-coil hum especially — passes Q1 undistorted and the SUSTAIN pot after it
+// genuinely governs the clipping. The pre-fix value (12.0) drove Q1 to a rail-clipped
+// square for ANY input including a −40 dBFS hum, so the pot could not clean anything
+// up: a −40 dBFS hum came out at −11 dBFS (the field report). 0.5 keeps Q1 clean for
+// hum/soft picking and only lets loud playing tickle it.
+constexpr double kInputDrive = 0.5;
+// SUSTAIN drive into Q2 AT MAX (knob = 1). The clipping/compression is developed
+// here, AFTER the pot, by the high-gain Q2→Q3 cascade — so the pot is a true
+// full-range attenuator into the first clipper. ~6× puts several volts into Q2 at
+// max for a healthy wall while Q1 stays clean.
+constexpr double kClipDriveMax = 6.0;
+// SUSTAIN taper: an honest audio (decibel-linear, ≈ log) pot, floor..max. A real
+// Big-Muff SUSTAIN is a 100 kA (audio) pot wired as a full-range input attenuator;
+// at minimum it nearly grounds the clipper input. We model that as a decibel-linear
+// law susGain(knob) = kClipDriveMax · 10^((kSustainFloorDb/20)·(1−knob)); knob 0 →
+// −54 dB below max (≈0.012, a near-off "escape hatch" that is quiet but not silent —
+// a real pot leaks), knob 1 → kClipDriveMax. The pre-fix taper was LINEAR with a
+// hot 0.06 (−24 dB) floor, so min sustain still slammed the clippers.
+constexpr double kSustainFloorDb = -54.0;
+// Output trim: the recovery stage (Q4) collector AC is a few volts; scale so the
+// default (SUSTAIN 0.6 / VOLUME 0.6) peaks ~1.2 V, then VOLUME (0..1) rides on top.
+constexpr double kOutputTrim = 0.40;
+
+// The SUSTAIN audio taper: knob (0..1) -> drive multiplier into Q2 (floor..max).
+double sustainDrive(float knob01) {
+    const double k = knob01 < 0.0f ? 0.0 : (knob01 > 1.0f ? 1.0 : knob01);
+    return kClipDriveMax * std::pow(10.0, (kSustainFloorDb / 20.0) * (1.0 - k));
+}
 }  // namespace
 
 // --- MuffToneStack ---------------------------------------------------------
@@ -129,10 +153,12 @@ struct MuffModel::Impl {
 
     void processChunk(const float* in, float* out, int numFrames) {
         // Sample control params once per chunk (5 ms glide makes it click-free),
-        // like the OverdriveEngine's control-rate sampling.
-        float sus = sustain.value();
+        // like the OverdriveEngine's control-rate sampling. The SUSTAIN smoother
+        // rides the raw knob (0..1); the audio taper is applied after smoothing.
+        float susKnob = sustain.value();
         float vol = volume.value();
-        for (int i = 0; i < numFrames; ++i) { sus = sustain.next(); vol = volume.next(); }
+        for (int i = 0; i < numFrames; ++i) { susKnob = sustain.next(); vol = volume.next(); }
+        const float susDrive = static_cast<float>(sustainDrive(susKnob));
         const float outGain = static_cast<float>(kOutputTrim) * vol;
 
         os.upsample(in, numFrames);
@@ -140,8 +166,8 @@ struct MuffModel::Impl {
         const int osN = os.bufferLength();
         for (int i = 0; i < osN; ++i) {
             float x = static_cast<float>(kInputDrive) * w[i];
-            x = q1.processSample(x);       // input boost
-            x *= sus;                      // SUSTAIN pot
+            x = q1.processSample(x);       // input boost (CLEAN — see kInputDrive)
+            x *= susDrive;                 // SUSTAIN pot: full-range attenuator into Q2
             x = q2.processSample(x);       // clip stage 1 (diodes)
             x = q3.processSample(x);       // clip stage 2 (diodes)
             x = tone.processSample(x);     // mid-scoop tone stack
@@ -184,7 +210,8 @@ void MuffModel::setParameter(int paramId, float value) {
     const float knob = clamp01(value);
     switch (paramId) {
         case PARAM_SUSTAIN:
-            impl_->sustain.setTarget(kSustainFloor + (1.0f - kSustainFloor) * knob);
+            // Smooth the raw knob; the audio taper (sustainDrive) is applied per chunk.
+            impl_->sustain.setTarget(knob);
             break;
         case PARAM_TONE:
             impl_->tone.setTone(knob);
