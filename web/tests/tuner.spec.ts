@@ -181,3 +181,57 @@ test('tuner: add from gear tray renders the tuner pedal (muted footswitch)', asy
   await page.getByTestId('tuner-footswitch').click();
   await expect(tuner).toHaveAttribute('data-engaged', 'true');
 });
+
+// ---- UI: the TC-style segmented face (M6.8) ----------------------------------
+//
+// Drives the tuner UI with synthetic readings through the additive test seam
+// (`__CLIPPER_TEST__.pushTunerReading`) and asserts the segmented meter: red wells
+// light on the FLAT (left) side for a flat note, on the SHARP (right) side for a
+// sharp note, and the GREEN center lights (after the lock hold) when in tune.
+test('tuner: segmented meter lights red flat/sharp and green in tune (M6.8)', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  await page.getByTestId('add-pedal').click();
+  await page.getByTestId('add-pedal-tuner').click();
+
+  const tuner = page.getByTestId('tuner');
+  await expect(tuner).toBeVisible();
+  // Engage so the meter reads (showReading requires engaged).
+  await page.getByTestId('tuner-footswitch').click();
+  await expect(tuner).toHaveAttribute('data-engaged', 'true');
+
+  await page.waitForFunction(() => {
+    const w = window as unknown as { __CLIPPER_TEST__?: { pushTunerReading?: unknown } };
+    return typeof w.__CLIPPER_TEST__?.pushTunerReading === 'function';
+  });
+  const push = (r: unknown) =>
+    page.evaluate((reading) => {
+      (window as unknown as { __CLIPPER_TEST__: { pushTunerReading: (r: unknown) => void } }).__CLIPPER_TEST__.pushTunerReading(
+        reading
+      );
+    }, r);
+
+  // The note screen renders the letter (A) — the a11y text carries it.
+  await push({ freq: 220, note: 'A', octave: 3, cents: -22, clarity: 1 });
+  await expect(page.getByTestId('tuner-note')).toHaveText('A');
+
+  // Flat (−22 c): red wells light on the LEFT (data-seg < 0), none on the right.
+  const litLeft = () => page.locator('.tuner-meter .seg[data-seg="-1"][data-on="true"]');
+  const litRight = () => page.locator('.tuner-meter .seg[data-seg="1"][data-on="true"]');
+  const green = () => page.locator('.tuner-meter .seg-green[data-on="true"]');
+  await expect(litLeft()).toHaveCount(1);
+  await expect(litRight()).toHaveCount(0);
+  await expect(green()).toHaveCount(0);
+
+  // Sharp (+22 c): red wells swap to the RIGHT side.
+  await push({ freq: 224, note: 'A', octave: 3, cents: 22, clarity: 1 });
+  await expect(litRight()).toHaveCount(1);
+  await expect(litLeft()).toHaveCount(0);
+
+  // In tune (0 c): after the lock hold, the green center lights and reds go dark.
+  await push({ freq: 220, note: 'A', octave: 3, cents: 0, clarity: 1 });
+  await expect(green()).toHaveCount(1, { timeout: 2000 });
+  await expect(litLeft()).toHaveCount(0);
+  await expect(litRight()).toHaveCount(0);
+});

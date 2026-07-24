@@ -158,6 +158,19 @@ Field feedback from real playing, prioritized ahead of new pedals:
   Validated at 44.1/48/96 k with the chirp-descent and mode-stretch assertions run
   against the OLD M6.7 as the A/B baseline (chirp **1.85× vs 1.04×**, mode stretch
   **3.3× vs 1.0×**). See docs §16.
+- **M6.8 — Pedal visual identity pass — SHIPPED.** *Shared chassis, distinct
+  souls.* One sculpted neumorphic chassis family, per-pedal identity on three
+  declared axes — full-body enclosure **tint** (desaturated into the palette,
+  both themes), referential face **geometry**, and model **typography** — homage,
+  never replica. The RAT stays the reference (tall charcoal box, centered 3-knob
+  trio, condensed logo, round stomp); the SD-1 becomes a Boss-compact homage
+  (warm-amber body, knob row over a wide flat hinged **treadle**), distinct from
+  the RAT even in grayscale. The tuner goes **TC-style**: a segmented LED meter
+  (recessed neumorphic wells — red flat/sharp bar from center, green center lock)
+  and a big **7-segment** note screen on a dark readout. A future pedal declares
+  its face in one `FACES` entry + tint tokens (docs §17). **No core/C-ABI/worklet
+  change** — a pure web visual pass.
+
 
 ### M7 — Tuner *(S)* — **SHIPPED**
 
