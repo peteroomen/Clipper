@@ -2913,6 +2913,40 @@ body of the same saturation flattens the light/shadow that *is* the neumorphism.
   No test asserts these strings (selectors use testids + aria labels), so they stay
   free to evolve.
 
+### M6.8.2 — chassis darkness in BOTH themes (orchestrator visual pass)
+
+M6.8.1 pinned one shared charcoal wash, but in **light** theme `--chassis-tint`
+is only ~16 % alpha over the light panel, so the pedals read as pale gray — the
+doctrine's "darker box against the lighter background" never actually happened.
+The rule, made explicit:
+
+> **The bench is light; the hardware is dark.** A pedal enclosure reads as genuine
+> dark charcoal in BOTH themes. The BOARD/bench and amp panel follow the page
+> theme (light in light, dark in dark); the pedal does NOT — it is dark either way.
+
+Mechanism (all in `pedal.css`, **no `tokens.css` change** — the shared tokens are
+left for the amp/bench and the M9.x work): the pedal is a **dark island**. Its
+interior neumorphic token context (`--panel-grad`, `--well`, `--ink*`, `--cap`,
+`--cap-edge`, `--arc-track`) is pinned to the **dark-theme values on `.pedal`
+unconditionally** — byte-for-byte the dark tokens, so it is a no-op in dark theme
+and cannot regress it, while in light theme it flips the knobs to dark metal, the
+labels to light ink, and lets the accent arcs glow. The interior **sculpting
+shadows** (`--sh-*`) are switched to the dark set only in effective-light theme,
+and the pedal's own outer drop shadow (`.pedal.raised`) is re-declared there so
+the dark enclosure still casts a real, bench-appropriate shadow on the light desk.
+
+Also in this pass: the RODENT/SUPER-DRIVE wordmarks lost their hard `1px 1px`
+white drop-shadow (read as a sticker) for a subtle engraved emboss on light
+lettering; the SD-1 treadle is now an **explicit black-rubber pad** (pebble
+texture + toe grip ribs, embossed light lettering) in both themes — the pad is
+the morphology cue; the tuner screen **centers the note-letter + accidental as a
+group** with the `♯` anchored at the letter's top-right shoulder and the octave as
+a bottom-right subscript, and the cents row shows the **live signed value**
+(`−18`, typographic minus) whenever a reading exists (bare `—` only for no
+reading); the unlit meter wells are **deepened** for unmistakable lit/unlit
+contrast; and the floating chain-chip toolbars were **lifted clear** of the
+enclosure top (`board.css`, `-16px → -34px` + head-room).
+
 ### The identity system — how a future pedal declares its face
 
 Every knob pedal's identity lives in one `PedalFace` entry in

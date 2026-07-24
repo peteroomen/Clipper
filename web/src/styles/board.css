@@ -48,7 +48,9 @@
   flex-wrap: wrap;
   align-items: flex-start;
   gap: 52px 40px;
-  padding-top: 24px;
+  /* Extra head-room so the floating drag/reorder chips (raised to -34px, call 6)
+     clear the enclosure top and never clip the row above. */
+  padding-top: 40px;
 }
 
 /* guitar-in source node */
@@ -121,9 +123,12 @@
 }
 
 /* ---- chain control rack (floats above each pedal; no layout shift) ---- */
+/* The chip toolbar floats fully ABOVE the enclosure (call 6). At -16px it
+   overlapped the pedal's top edge / model line; -34px lifts the whole pill clear
+   so there is air between the chips and the enclosure top. */
 .unit-rack {
   position: absolute;
-  top: -16px;
+  top: -34px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 6;
@@ -306,7 +311,7 @@
 /* ---- amp slot select (amp swap affordance) ---- */
 .amp-slot-head {
   position: absolute;
-  top: -16px;
+  top: -34px; /* level with the raised pedal chip toolbars (call 6) */
   left: 24px;
   z-index: 6;
 }

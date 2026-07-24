@@ -22,6 +22,63 @@
     var(--panel-grad);
 }
 
+/* ---- DARK CHASSIS IN BOTH THEMES (M6.8.2) ----
+   The doctrine: "the bench is light, the hardware is dark." In dark theme the
+   pedal already reads as dark charcoal; in LIGHT theme it used to go pale gray
+   (the shared --chassis-tint is only ~16% alpha over the light panel), so the
+   "dark RAT box on a light desk" never happened. Fix: make the pedal a DARK
+   ISLAND — its interior neumorphic token context (panel surface, wells, knob
+   caps, ink) is pinned to the dark-theme values on EVERY theme, so knobs read as
+   dark metal, labels flip to light ink, and the accent arcs glow. These values
+   are byte-for-byte the dark-theme tokens, so this is a no-op in dark theme and
+   never regresses it. The BOARD/bench + amp panel keep the page tokens and stay
+   light. See docs §17 (chassis-darkness rule). */
+.pedal {
+  --panel-grad: linear-gradient(160deg, #292c32, #222529);
+  --well: #1d2025;
+  --ink: #e8e9eb;
+  --ink-dim: #969ba3;
+  --ink-faint: #6a6f77;
+  --arc-track: rgba(255, 255, 255, 0.07);
+  --cap: linear-gradient(145deg, #2e3238, #212429);
+  --cap-edge: linear-gradient(145deg, #1e2126, #2c3036);
+}
+
+/* The interior SCULPTING shadows must also go dark so the knobs/wells read as
+   dark neumorphic hardware. This only fires in EFFECTIVE-LIGHT theme (explicit
+   light, or system-light with no override); in dark theme the page tokens are
+   already these values. Because it darkens --sh-*, the pedal's OWN outer drop
+   shadow (from .raised, which reads --sh-*) is re-declared just below so the dark
+   enclosure still casts a real, bench-appropriate shadow on the light desk. */
+:root[data-theme='light'] .pedal {
+  --sh-dark: rgba(9, 11, 14, 0.85);
+  --sh-darker: rgba(5, 6, 8, 0.6);
+  --sh-light: rgba(255, 255, 255, 0.055);
+}
+:root[data-theme='light'] .pedal.raised {
+  /* dark hardware on light porcelain: a soft warm cast shadow + a crisp dark
+     edge + a faint top bevel rim (light catching the top of the enclosure). */
+  box-shadow:
+    16px 18px 34px rgba(54, 50, 44, 0.3),
+    3px 4px 10px rgba(54, 50, 44, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.38);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .pedal {
+    --sh-dark: rgba(9, 11, 14, 0.85);
+    --sh-darker: rgba(5, 6, 8, 0.6);
+    --sh-light: rgba(255, 255, 255, 0.055);
+  }
+  :root:not([data-theme]) .pedal.raised {
+    box-shadow:
+      16px 18px 34px rgba(54, 50, 44, 0.3),
+      3px 4px 10px rgba(54, 50, 44, 0.22),
+      inset 0 1px 0 rgba(255, 255, 255, 0.07),
+      inset 0 0 0 1px rgba(0, 0, 0, 0.38);
+  }
+}
+
 .pedal-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .pedal-model { font-size: 10px; letter-spacing: .28em; color: var(--ink-faint); text-transform: uppercase;
   font-family: ui-monospace, Menlo, monospace; }
@@ -36,8 +93,12 @@
   font-family: Anton, "Arial Narrow", sans-serif;
   font-size: 58px; line-height: 1; text-transform: uppercase; letter-spacing: .015em;
   margin: 4px 0 22px;
+  /* Light lettering on the now-dark charcoal face (the original Clipper-on-
+     charcoal look). The old `1px 1px 0 white` read as a cheap sticker drop-shadow
+     in light theme; replaced with a subtle engraved emboss (dark below, faint
+     light above) that reads as printed-on-metal, not a decal. */
   color: var(--ink);
-  text-shadow: 1px 1px 0 var(--sh-light);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.45), 0 -1px 0 rgba(255, 255, 255, 0.04);
 }
 .knob-row { display: flex; justify-content: space-between; gap: 8px; }
 
@@ -120,35 +181,42 @@
 /* Treadle owns the lower body and sits at the BOTTOM (was riding too high). The
    compact face drops the "Stomp" caption entirely — nothing sits below the pad. */
 .treadle-zone { margin-top: 20px; margin-bottom: 0; }
-/* The wide flat treadle — a raised sculpted plate hinged at the top edge. */
+/* The wide flat treadle — BLACK RUBBER in both themes (M6.8.2). A real Boss
+   treadle is a black rubber pad; the pad IS the SD-1 morphology cue, so it gets
+   an EXPLICIT dark rubber surface (independent of theme) that reads distinctly
+   darker/mattes than the metal knobs, with a fine pebbled rubber texture and the
+   grip ribs at the toe. Embossed LIGHT "SUPER DRIVE" lettering (call 2/3). */
 .fsw-treadle {
   width: 100%;
   height: 150px;
   border-radius: 18px;
-  background: var(--cap-edge);
+  background: linear-gradient(160deg, #26282d, #17181c);
   box-shadow: 7px 9px 20px var(--sh-dark), -6px -6px 14px var(--sh-light),
-    inset 0 2px 0 var(--sh-light);
+    inset 0 2px 0 rgba(255, 255, 255, 0.05);
   display: flex; align-items: flex-end; justify-content: center;
   padding-bottom: 16px;
   overflow: hidden;
 }
-.fsw-treadle::before { /* the tread face — inset panel with a top-hinge highlight */
+.fsw-treadle::before { /* the rubber tread face — matte dark panel + pebble texture */
   content: ""; position: absolute; inset: 6px; border-radius: 13px;
-  background: var(--cap);
-  box-shadow: inset 1px 2px 3px var(--sh-light), inset 0 -3px 8px var(--sh-darker); }
-.fsw-treadle::after { /* grip ribs across the toe */
+  background:
+    radial-gradient(rgba(255, 255, 255, 0.022) 0.9px, transparent 1.4px) 0 0 / 5px 5px,
+    linear-gradient(160deg, #1f2125, #131417);
+  box-shadow: inset 1px 2px 4px rgba(255, 255, 255, 0.035), inset 0 -4px 10px rgba(0, 0, 0, 0.55); }
+.fsw-treadle::after { /* grip ribs across the toe — raised rubber ridges */
   content: ""; position: absolute; left: 22px; right: 22px; bottom: 14px; height: 18px;
   border-radius: 4px;
-  background: repeating-linear-gradient(90deg, var(--sh-darker) 0 2px, transparent 2px 8px);
-  opacity: .32; }
+  background: repeating-linear-gradient(90deg,
+    rgba(0, 0, 0, 0.55) 0 2px, rgba(255, 255, 255, 0.035) 2px 3px, transparent 3px 8px);
+  opacity: .55; }
 .fsw-treadle:active, .fsw-treadle.stomped {
   transform: translateY(2px);
   box-shadow: 3px 4px 10px var(--sh-dark), -3px -3px 8px var(--sh-light),
-    inset 2px 3px 7px var(--sh-darker); }
+    inset 2px 3px 7px rgba(0, 0, 0, 0.6); }
 .treadle-wordmark {
   position: relative; z-index: 1;
   font-family: "Avenir Next", Avenir, "Segoe UI", system-ui, sans-serif;
   font-weight: 700; font-size: 21px; letter-spacing: .04em;
-  color: var(--ink); text-transform: uppercase;
-  text-shadow: 1px 1px 0 var(--sh-light); opacity: .9; }
-.pedal[data-face="compact"]:not(.on) .treadle-wordmark { opacity: .5; }
+  color: #d9dbdf; text-transform: uppercase;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.6), 0 -1px 0 rgba(255, 255, 255, 0.05); opacity: .92; }
+.pedal[data-face="compact"]:not(.on) .treadle-wordmark { opacity: .55; }
