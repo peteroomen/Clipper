@@ -40,6 +40,7 @@ void TwinAmp::setParameter(int paramId, float value) {
         case PARAM_REVERB: reverb_->setMix(value); break;
         case PARAM_SPEED: tremolo_->setSpeed(value); break;
         case PARAM_INTENSITY: tremolo_->setIntensity(value); break;
+        case PARAM_TREMOLO_ENABLE: tremolo_->setEnabled(value >= 0.5f); break;
         default: break;
     }
 }

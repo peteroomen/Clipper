@@ -114,7 +114,8 @@ export function newPedalId(type: PedalType = 'rat'): string {
 // Amp params. volume/bass/middle/treble/speed/depth are continuous 0..1 knobs
 // (tone controls flat at 0.5); bright and cab are 0/1 toggles; chorusMode is a
 // 3-way integer switch (0=off, 1=chorus, 2=vibrato — the JC-120's stereo
-// chorus/vibrato, M6.3).
+// chorus/vibrato, M6.3). On the Twin the chorusMode slot is REUSED as the
+// TREMOLO ON/OFF (0=off, 1=on — the Twin has no chorus; docs §20 amendment).
 export interface AmpParams {
   volume: number;
   bass: number;
@@ -124,7 +125,7 @@ export interface AmpParams {
   cab: number; // 0/1 cab-convolver enable (1 = cab on)
   speed: number; // 0..1 chorus/vibrato LFO rate knob
   depth: number; // 0..1 chorus/vibrato sweep-depth knob
-  chorusMode: number; // 0 off | 1 chorus | 2 vibrato
+  chorusMode: number; // 0 off | 1 chorus | 2 vibrato (Twin: 0 trem off | 1 trem on)
   reverb: number; // 0..1 spring-reverb wet/dry mix (M6.7; 0 = dry)
   // M9.4 JCM800 knobs (additive; clean120 ignores these, jcm800 ignores
   // volume/bright/speed/depth/chorusMode/reverb). bass/middle/treble are SHARED —

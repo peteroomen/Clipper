@@ -12,7 +12,7 @@ import type { RigState } from '../rig';
 import type { TunerReading } from '../tuner';
 
 export type Unit = 'pedal' | 'amp' | 'input';
-export type SwitchName = 'bright' | 'cab' | 'chorus' | 'vibrato';
+export type SwitchName = 'bright' | 'cab' | 'chorus' | 'vibrato' | 'tremolo';
 
 // The seam between the assistant and the live rig. App implements this over its
 // existing setters; the tool executor only ever touches the rig through here.
@@ -156,12 +156,14 @@ export const TOOLS = [
       "fizzier, no speaker rolloff). 'chorus' and 'vibrato' select the JC-120's " +
       "modulation: turning 'chorus' on gives the lush dry-left / wet-right stereo " +
       "bloom, 'vibrato' on gives a true pitch wobble on both sides; these two are " +
-      "mutually exclusive (turning either off returns to no modulation). Use " +
-      "set_param 'speed'/'depth' to shape the movement once one is on.",
+      "mutually exclusive (turning either off returns to no modulation). " +
+      "'tremolo' is the Twin's on/off for its optical tremolo (default off; only " +
+      "meaningful when amp.type is 'twin'). Use set_param 'speed'/'depth' to " +
+      "shape the movement once one is on.",
     input_schema: {
       type: 'object',
       properties: {
-        name: { type: 'string', enum: ['bright', 'cab', 'chorus', 'vibrato'] },
+        name: { type: 'string', enum: ['bright', 'cab', 'chorus', 'vibrato', 'tremolo'] },
         on: { type: 'boolean' },
       },
       required: ['name', 'on'],
@@ -508,7 +510,7 @@ export function executeTool(
   }
 
   if (name === 'set_switch') {
-    const valid: SwitchName[] = ['bright', 'cab', 'chorus', 'vibrato'];
+    const valid: SwitchName[] = ['bright', 'cab', 'chorus', 'vibrato', 'tremolo'];
     const sw = (valid.includes(input.name as SwitchName) ? input.name : 'bright') as SwitchName;
     const on = Boolean(input.on);
     controller.setSwitch(sw, on);

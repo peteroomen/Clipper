@@ -73,8 +73,10 @@ void Ac30PowerAmp::setOversampling(int factor) {
     gSagAtk_ = 1.0 - std::exp(-2.0 * M_PI * kSagAtkHz / osRate_);
     gSagRel_ = 1.0 - std::exp(-2.0 * M_PI * kSagRelHz / osRate_);
 
-    // TOP CUT corner: log map kTopCutHiHz (knob 0) -> kTopCutLoHz (knob 1).
-    const double fc = kTopCutHiHz * std::pow(kTopCutLoHz / kTopCutHiHz, topCut_);
+    // TOP CUT corner: log map kTopCutHiHz (knob 0) -> kTopCutLoHz (knob 1), applied to
+    // the SKEWED knob (knob^kTopCutSkew) so the default 0.5 is a MILD cut (docs §23).
+    const double fc = kTopCutHiHz *
+                      std::pow(kTopCutLoHz / kTopCutHiHz, std::pow(topCut_, kTopCutSkew));
     topCutA_ = onePoleA(fc);
 
     ltp_.prepare();
@@ -140,7 +142,9 @@ void Ac30PowerAmp::setParameter(int paramId, float value) {
         case PARAM_DRIVE: drive_ = 2.0 * v; break;
         case PARAM_TOPCUT: {
             topCut_ = v;
-            const double fc = kTopCutHiHz * std::pow(kTopCutLoHz / kTopCutHiHz, topCut_);
+            // Skewed log map (docs §23): knob^kTopCutSkew so default 0.5 is a mild cut.
+            const double fc = kTopCutHiHz *
+                              std::pow(kTopCutLoHz / kTopCutHiHz, std::pow(topCut_, kTopCutSkew));
             const double g = std::tan(M_PI * fc / osRate_);
             topCutA_ = g / (1.0 + g);
             break;
