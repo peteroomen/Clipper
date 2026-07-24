@@ -235,8 +235,18 @@ public:
     // 0.20, so knob 0.5 → corner ≈ 5.1 kHz (a gentle top trim, not a mid-tame).
     static constexpr double kTopCutSkew = 2.3;
     // Secondary volts that map to 1.0 full scale (calibrated, docs §23): fully
-    // cranked a power sine peaks ~0.9 with headroom to 1.0 for transients.
-    static constexpr double kFullScaleSecV = 7.5;
+    // cranked a power sine peaks ~0.9 with headroom to 1.0 for transients. RE-DERIVED
+    // in the §23 second amendment: this constant FOLLOWS the measured swing (as the
+    // Twin's 24 V and the JCM's 26 V do), and the corrected PI operating point means
+    // the EL84s are finally driven to their real swing — cranked (VOLUME 1.0, a 0.5 V
+    // pickup) the secondary now reaches 11.8 V where the starved section reached 7.5 V,
+    // so leaving 7.5 here would have pushed the normalized output 1.4 dB PAST full
+    // scale. 10.0 V puts the cranked power sine back at peak 0.88 with headroom to 1.0
+    // for transients. NOTE this is a NORMALIZATION, not a power rating: 30 W into 8 Ω
+    // would be √(30·8) = 15.5 V RMS at the secondary, but our OT/sag model delivers a
+    // smaller absolute swing and every voice is normalized to its own cranked peak, so
+    // the amps stay level-comparable to each other rather than to a wattmeter.
+    static constexpr double kFullScaleSecV = 10.0;
 
     static double otTurnsRatio() { return 31.623; }  // √(Raa/8) = √1000
     double feedbackBeta() const { return kFeedbackBeta; }  // always 0

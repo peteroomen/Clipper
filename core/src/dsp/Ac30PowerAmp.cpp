@@ -42,7 +42,21 @@ Ac30PowerAmp::Ac30PowerAmp() {
     // part of the chime (the opposite intent from the Twin's clean, matched PI).
     c.tube.mu = 100.0; c.tube.ex = 1.4; c.tube.kg1 = 1060.0;
     c.tube.kp = 600.0; c.tube.kvb = 300.0;
-    c.bPlus = 300.0; c.Ra1 = 100.0e3; c.Ra2 = 110.0e3; c.Rtail = 22.0e3;
+    // Rtail = the OPERATING-POINT constant (M10.2 §23 second amendment — the "not
+    // enough gain/breakup" field report). Our LtpInverter is a TWO-TERMINAL tail:
+    // grids at 0 V DC, tail resistor straight to ground, so the standing current is
+    // set entirely by Rtail. With the original 22 k the pair self-biased at 83 µA per
+    // triode — plates parked at 291.7 V, i.e. 97 % of B+, essentially cut off — and
+    // measured only ×9.1 gain per leg. No real 12AX7 LTP idles there: a guitar-amp
+    // PI runs ~0.5–0.9 mA per triode with its plates at 70–85 % of B+ and ~×25–35 per
+    // leg (the real amps get there by returning the long tail to a negative reference
+    // our two-terminal tail cannot express, so the tail VALUE is that network's model
+    // equivalent, not a parts-bin resistor). 2.2 k lands the textbook point: 0.53 mA,
+    // plates 247.1/244.9 V (82 % of B+), gain ×32. This is what finally makes the
+    // header's "run HOT, clip early" TRUE rather than aspirational — the starved PI
+    // was the reason the VOLUME knob (which IS the AC30's overdrive) could not reach
+    // the EL84 grids. MEASURED before/after in docs §23.
+    c.bPlus = 300.0; c.Ra1 = 100.0e3; c.Ra2 = 110.0e3; c.Rtail = 2.2e3;
     ltp_.configure(c);
 }
 

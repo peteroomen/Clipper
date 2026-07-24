@@ -306,7 +306,18 @@ void testCathodeBias(double fs) {
     const double vkIdle = pa.cathodeIdle();
 
     // (b) Sustained drive → Vk rises (average cathode current grows, cap charges).
-    auto drive = sine(300.0, 8.0f, 0.20, fs);
+    //
+    // DRIVE LEVEL, §23 second amendment: this probe used to inject 8 V at the PI grid.
+    // That number encoded the OLD, starved PI operating point (83 µA/triode, ×9.1 per
+    // leg) — 8 V was "sustained loud" only because the inverter was ~11 dB deaf. With
+    // the corrected PI (0.53 mA, ×32) the amp's musical range moved: 0.15 V at the PI
+    // grid is now the EDGE-OF-BREAKUP drive (≈ VOLUME 0.34 with a −10 dBFS pickup),
+    // i.e. exactly where an AC30 is played and where the class-A bloom belongs. The
+    // MEASURED bloom peaks there (+0.44 V) and the amp crosses into grid-leak BLOCKING
+    // above ~0.22 V at the PI grid — the point where the EL84 grids start conducting
+    // (7 V swing vs the −9.5 V self-bias), after which the coupling caps charge and the
+    // bias shifts COLD instead. Both regimes are real; docs §23 tabulates the crossover.
+    auto drive = sine(300.0, 0.15f, 0.20, fs);
     std::vector<float> od(drive.size(), 0);
     pa.process(drive.data(), od.data(), static_cast<int>(drive.size()));
     const double vkDriven = pa.cathodeNow();
@@ -346,7 +357,14 @@ void testTopCut(double fs) {
         Ac30PowerAmp pa; pa.prepare(fs, 128); pa.setOversampling(4);
         pa.setParameter(Ac30PowerAmp::PARAM_DRIVE, 0.5f);
         pa.setParameter(Ac30PowerAmp::PARAM_TOPCUT, cut);
-        return toDb(powerAmpAt(pa, f, 0.5f, fs));
+        // SMALL-SIGNAL probe (§23 second amendment). TOP CUT is a LINEAR one-pole per
+        // PI leg, so its response can only be read at a quasi-linear operating point.
+        // The old 0.5 V probe was quasi-linear against the starved PI (×9.1); against
+        // the corrected PI (×32) 0.5 V is already deep power-amp saturation, where the
+        // clipped level is drive-independent and a treble cut barely moves the output —
+        // the probe would have been measuring the clipper, not the filter. 0.05 V puts
+        // the section back in its linear region (MEASURED THD 0.12 %).
+        return toDb(powerAmpAt(pa, f, 0.05f, fs));
     };
     const double hfNoCut = hfLevel(0.0f, 3000.0);
     const double hfMidCut = hfLevel(0.5f, 3000.0);
@@ -545,6 +563,108 @@ void testCharacterGuard(double fs) {
 }
 
 // ---------------------------------------------------------------------------
+// Test 11 — BREAKUP ORDERING (the field report behind the §23 second amendment:
+// "the ac30 doesn't have enough gain/breakup, it breaks up less easy than the
+// fender twin"). The reporter was right and the voicing was INVERTED: a 30 W
+// cathode-biased class-A combo is the EARLY-breakup amp — edge-of-breakup at
+// moderate volume IS the Vox sound — while an 85 W blackface Twin is the clean-
+// headroom king. This guard pins that ordering permanently, in two independent
+// ways, so no future gain-structure change can flip it back.
+//
+// Probe: 220 Hz at 0.316 V peak (−10 dBFS) — a hot-humbucker DI level, the level
+// at which the reporter heard it. Both voices at their opening tone knobs, no
+// reverb, no cab (the shared linear cab is identical to both and cancels).
+//
+// MEASURED 2026-07 @ 48 kHz (THD %, VOLUME 0.1 → 1.0):
+//   AC30  1.27  2.00  3.07  4.60  7.06 10.75 12.30 14.11 20.12 23.28
+//   Twin  4.11  4.18  4.29  4.45  4.67  4.90  4.99  4.60  5.98 14.13
+// Breakup onset (first 0.1 step at ≥ 5 % THD): AC30 0.5, Twin 0.9.
+// At the documented mid-volume 0.6: AC30 10.75 % vs Twin 4.90 % — 2.2×.
+//
+// TWO honest notes on the Twin's numbers, so a future reader is not misled:
+//  1. The Twin's ~4–5 dB THD FLOOR at this input is preamp clipping, and it is
+//     flat across the volume travel because TwinPreamp places its VOLUME pot
+//     AFTER both gain stages (V1 → stack → V2 → volume) — so the knob cannot
+//     back the clipping off. The real AB763 puts the volume right after V1. That
+//     is the mirror image of this amendment's bug and is ledgered as a separate
+//     field item; it is NOT touched here, which is why this guard compares at a
+//     mid-volume point and at a 5 % onset threshold rather than assuming the
+//     Twin is pristine.
+//  2. At the very TOP of the travel both voices are saturated and the THD metric
+//     stops discriminating (the AC30's GZ34 demand-sag compresses its own
+//     harmonics). The player-relevant claim — and the assertion — is about the
+//     MIDDLE of the knob, where a guitarist actually sets a volume.
+// ---------------------------------------------------------------------------
+void testBreakupOrdering(double fs) {
+    const float kHotPickup = 0.316f;  // −10 dBFS peak — a hot humbucker DI
+    const double f0 = 220.0;
+    const double kBreakupThd = 0.05;  // 5 % THD == audible breakup
+    const float kMidVolume = 0.6f;    // the documented mid-knob comparison point
+
+    auto ac30ThdAt = [&](float vol) {
+        auto a = std::make_unique<Ac30Amp>();
+        a->prepare(fs, 128); a->setOversampling(4);
+        a->setParameter(Ac30Amp::PARAM_VOLUME, vol);
+        a->setParameter(Ac30Amp::PARAM_BASS, 0.5f);
+        a->setParameter(Ac30Amp::PARAM_TREBLE, 0.6f);
+        a->setParameter(Ac30Amp::PARAM_TOPCUT, 0.5f);
+        a->setParameter(Ac30Amp::PARAM_REVERB, 0.0f);
+        auto in = sine(f0, kHotPickup, 0.25, fs);
+        std::vector<float> out(in.size(), 0.0f);
+        a->process(in.data(), out.data(), static_cast<int>(in.size()));
+        return thd(out, f0, fs);
+    };
+    auto twinThdAt = [&](float vol) {
+        auto a = std::make_unique<TwinAmp>();
+        a->prepare(fs, 128); a->setOversampling(4);
+        a->setParameter(TwinAmp::PARAM_VOLUME, vol);
+        a->setParameter(TwinAmp::PARAM_BASS, 0.5f);
+        a->setParameter(TwinAmp::PARAM_MID, 0.5f);
+        a->setParameter(TwinAmp::PARAM_TREBLE, 0.6f);
+        a->setParameter(TwinAmp::PARAM_BRIGHT, 0.0f);
+        a->setParameter(TwinAmp::PARAM_TREMOLO_ENABLE, 0.0f);
+        a->setParameter(TwinAmp::PARAM_REVERB, 0.0f);
+        auto in = sine(f0, kHotPickup, 0.25, fs);
+        std::vector<float> out(in.size(), 0.0f);
+        a->process(in.data(), out.data(), static_cast<int>(in.size()));
+        return thd(out, f0, fs);
+    };
+
+    // (a) BREAKUP-ONSET VOLUME: the first 0.1 knob step whose THD reaches 5 %.
+    // 1.1 == "never breaks up anywhere on its travel".
+    auto onsetOf = [&](auto&& thdAt) {
+        for (int i = 1; i <= 10; ++i) {
+            const float v = 0.1f * static_cast<float>(i);
+            if (thdAt(v) >= kBreakupThd) return static_cast<double>(v);
+        }
+        return 1.1;
+    };
+    const double acOnset = onsetOf(ac30ThdAt);
+    const double twOnset = onsetOf(twinThdAt);
+    assert(acOnset <= 0.65 &&
+           "BREAKUP ORDERING: the AC30 does not reach 5 % THD by VOLUME 0.6 at a hot-pickup "
+           "level — the class-A combo lost its early breakup (the original field report)");
+    assert(acOnset <= twOnset - 0.2 &&
+           "BREAKUP ORDERING: the AC30's breakup onset is not at least 0.2 of knob travel "
+           "BELOW the Twin's — the 30 W Vox must break up markedly earlier than the 85 W "
+           "blackface, not later");
+
+    // (b) MID-KNOB THD MARGIN at the documented comparison point.
+    const double acMid = ac30ThdAt(kMidVolume);
+    const double twMid = twinThdAt(kMidVolume);
+    assert(acMid > 0.08 &&
+           "BREAKUP ORDERING: AC30 THD at VOLUME 0.6 / hot pickup is under 8 % — not audible "
+           "breakup (measured 10.8 %)");
+    assert(acMid > 1.8 * twMid &&
+           "BREAKUP ORDERING: the AC30 is not at least 1.8× dirtier than the Twin at the "
+           "documented mid-volume — the voicing has re-inverted (measured 2.2×)");
+    std::printf("  [ok] breakup ordering @ %.0f Hz (hot pickup −10 dBFS): onset AC30 vol %.1f < "
+                "Twin %.1f; at vol %.1f AC30 %.1f%% vs Twin %.1f%% (%.1f×) — the Vox breaks up "
+                "first, the blackface keeps its headroom\n",
+                fs, acOnset, twOnset, kMidVolume, acMid * 100, twMid * 100, acMid / twMid);
+}
+
+// ---------------------------------------------------------------------------
 // Test 9 — aliasing at MAX volume (M2 sweep): the shipped 4× clears the −60 dB bar;
 // 8× buys ~nothing beyond 4× → 4× ships (the M2 budget), same as M9/M10.1.
 // ---------------------------------------------------------------------------
@@ -585,6 +705,11 @@ int main() {
         testProduct(fs);
         testCharacterGuard(fs);
     }
+    // The breakup-ordering guard is a VOICING claim, not a per-rate circuit claim
+    // (the per-rate circuit behavior is pinned by the nine tests above at all three
+    // rates), so it runs once at 48 kHz — the AudioWorklet rate the field report was
+    // heard at — and keeps the suite's runtime honest.
+    testBreakupOrdering(48000.0);
     testAliasing(44100.0);
     testAliasing(48000.0);
     testAliasing(96000.0);

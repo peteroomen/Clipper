@@ -62,9 +62,18 @@ public:
     Ac30PowerAmp& powerAmp() { return power_; }
     double lastOutputPeak() const { return power_.lastOutputPeak(); }
 
-    // The preamp-volts → PI-grid-drive trim (documented in the .cpp). Higher than the
-    // Twin's — the AC30 PI is meant to run HOT and clip early.
-    static constexpr double kInterstageScale = 0.30;
+    // The preamp-volts → PI-grid-drive handoff. This is a PASSIVE path in the real
+    // amp — the channel volume wiper reaches the PI grid through a coupling cap, a
+    // grid stopper and the channel MIXING resistors — so it can only ever be ≤ 1.
+    // 0.67 == the two-channel mixing division (each channel's wiper through its own
+    // 1 M mixing resistor into the shared PI grid node): the top-boost channel keeps
+    // two thirds of its volts. It is much higher than the Twin's 0.16 / the JCM's
+    // 0.25 for a structural reason — those preamps put TWO gain stages (and the JCM
+    // four) ahead of their volume pot, so their wipers carry tens of volts and the
+    // handoff has to trim them back, while the AC30 top boost has a SINGLE stage into
+    // a stack that loses ~13 dB. Raised from 0.30 in the §23 second amendment (the
+    // "not enough gain/breakup" report): 0.30 was an arbitrary trim, not a divider.
+    static constexpr double kInterstageScale = 0.67;
 
 private:
     double sampleRate_ = 44100.0;
