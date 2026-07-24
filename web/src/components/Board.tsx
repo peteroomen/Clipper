@@ -62,6 +62,7 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   rat: 'RAT-type distortion',
   sd1: 'SD-type overdrive',
   ts: 'Screamer overdrive (green)',
+  muff: 'Pi fuzz (violet, big box)',
   phaser: 'Script phaser',
   tuner: 'Chromatic tuner',
 };

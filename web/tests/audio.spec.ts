@@ -234,6 +234,117 @@ test('RAT worklet: bypass passes input through untouched', async ({ page }) => {
   expect(result.processedH3).toBeGreaterThan(result.bypassH3 * 10);
 });
 
+// v1.1 item 4: the Muff "Pi" fuzz renders through the worklet and CHANGES THE
+// SOUND MASSIVELY — a fuzz, not an overdrive. Two proofs: (a) it generates a huge
+// 3rd harmonic (a near-square wave: h3 is a large fraction of the fundamental, far
+// beyond the RAT's already-hard clip), and (b) the wall-of-sustain COMPRESSION —
+// a 20 dB input drop yields almost no output-RMS change (the same wall regardless
+// of pick force), which a clean/bypass path does NOT do (it tracks the input 1:1).
+test('muff worklet: fuzz makes massive harmonics + a compressed sustain wall', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async (seconds) => {
+    const sampleRate = 48000;
+
+    async function render(chain: Array<Record<string, unknown>>, amp: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      let ctx: OfflineAudioContext | null = null;
+      for (let attempt = 0; attempt < 4 && !ctx; attempt++) {
+        const c = new OfflineAudioContext(1, length, sampleRate);
+        try {
+          await Promise.race([
+            c.audioWorklet.addModule('/generated/clipper-processor.js'),
+            new Promise((_r, rej) => setTimeout(() => rej(new Error('addModule timeout')), 6000)),
+          ]);
+          ctx = c;
+        } catch {
+          /* fresh context, retry */
+        }
+      }
+      if (!ctx) throw new Error('addModule failed after retries');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 6000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') { clearTimeout(t); resolve(); }
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true }); // pure pedal proof
+        node.port.postMessage({ type: 'chain', pedals: chain });
+        node.port.postMessage({ type: 'oversampling', factor: 4 });
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: amp });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+
+    function goertzel(data: Float32Array, sr: number, freq: number): number {
+      const start = Math.floor(sr * 0.12);
+      const N = data.length - start;
+      const k = (freq / sr) * N;
+      const w = (2 * Math.PI * k) / N;
+      const c = 2 * Math.cos(w);
+      let s1 = 0, s2 = 0;
+      for (let i = start; i < data.length; i++) { const s0 = data[i] + c * s1 - s2; s2 = s1; s1 = s0; }
+      const re = s1 - s2 * Math.cos(w), im = s2 * Math.sin(w);
+      return (2 * Math.sqrt(re * re + im * im)) / N;
+    }
+    function rms(data: Float32Array, sr: number): number {
+      const start = Math.floor(sr * 0.12);
+      let sum = 0, n = 0;
+      for (let i = start; i < data.length; i++) { sum += data[i] * data[i]; n++; }
+      return Math.sqrt(sum / n);
+    }
+
+    const muff = (a: number) =>
+      render([{ id: 'm', type: 'muff', engaged: true, params: { distortion: 1.0, filter: 0.5, level: 0.6 } }], a);
+    const bypass = (a: number) =>
+      render([{ id: 'm', type: 'muff', engaged: false, params: { distortion: 1.0, filter: 0.5, level: 0.6 } }], a);
+
+    const hot = await muff(0.3);       // hot pick
+    const soft = await muff(0.03);     // 20 dB softer pick
+    const clean = await bypass(0.3);   // true bypass (clean sine)
+
+    return {
+      fuzzF1: goertzel(hot, sampleRate, 220),
+      fuzzH3: goertzel(hot, sampleRate, 660),
+      fuzzH5: goertzel(hot, sampleRate, 1100),
+      cleanH3: goertzel(clean, sampleRate, 660),
+      hotRms: rms(hot, sampleRate),
+      softRms: rms(soft, sampleRate),
+      cleanRms: rms(clean, sampleRate),
+      cleanRmsSoft: rms(await bypass(0.03), sampleRate),
+    };
+  }, RENDER_SECONDS);
+
+  // (a) MASSIVE harmonics: the 3rd harmonic is a large fraction of the fundamental
+  // (a near-square fuzz wave), and DRAMATICALLY more than the clean sine makes.
+  expect(result.fuzzH3).toBeGreaterThan(result.fuzzF1 * 0.2);
+  expect(result.fuzzH3).toBeGreaterThan(result.cleanH3 * 50);
+  expect(result.fuzzH5).toBeGreaterThan(result.fuzzF1 * 0.05); // rich odd spectrum
+
+  // (b) the sustain WALL: a 20 dB input drop barely moves the fuzz output RMS
+  // (heavy compression), whereas the clean bypass path tracks the input ~1:1.
+  const fuzzRatio = result.hotRms / result.softRms;      // ~1 (compressed wall)
+  const cleanRatio = result.cleanRms / result.cleanRmsSoft; // ~10 (tracks input)
+  expect(fuzzRatio).toBeLessThan(2.0);
+  expect(cleanRatio).toBeGreaterThan(5.0);
+});
+
 // M5: amp tone is audibly measurable through the FULL chain (pedal -> amp ->
 // cab). Treble at max vs min changes the 5 kHz content (treble shelf @ 3.5 kHz).
 test('amp: treble knob changes 5 kHz content through the full chain', async ({ page }) => {

@@ -90,6 +90,7 @@ export const TOOLS = [
           enum: [
             'dist',
             'drive',
+            'sustain',
             'filter',
             'tone',
             'level',
@@ -223,6 +224,11 @@ export const TOOLS = [
       'box: soft, SYMMETRIC clipping with the same ~720 Hz mid-hump but a smoother, ' +
       'glassier grind and less top-end gain; THE stacking pedal — low drive + high ' +
       'level as a mid-forward clean boost into a pushed amp), ' +
+      "'muff' (a big-box FUZZ, the violet 'Pi' — a four-transistor wall of sustain: " +
+      'MASSIVE, thick, endlessly-sustaining saturation from cascaded diode clipping, ' +
+      'with a signature mid-SCOOP tone control; this is FUZZ, not overdrive, and far ' +
+      'more compressed/saturated than the RAT/SD-1/TS — its knobs are SUSTAIN, TONE, ' +
+      'VOLUME. Sounds best into a CLEAN amp with headroom, e.g. the Twin), ' +
       "'phaser' (a script-era 4-stage phaser — the classic swirling/whooshing " +
       'modulation with ONE knob, SPEED: placed AFTER the dirt it gives the vocal ' +
       'EVH swoosh, before the dirt it is subtler; slow = tape-warble, fast = ' +
@@ -233,7 +239,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'phaser', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'phaser', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -274,9 +280,11 @@ const PEDAL_PARAM: Record<string, string> = {
   dist: 'distortion',
   drive: 'distortion', // SD-1 Drive shares the distortion slot (id 0)
   speed: 'distortion', // phaser SPEED is the one knob — also slot 0
+  sustain: 'distortion', // Muff SUSTAIN shares the distortion slot (id 0)
   filter: 'filter',
-  tone: 'filter', // SD-1 Tone shares the filter slot (id 1)
+  tone: 'filter', // SD-1/Muff Tone shares the filter slot (id 1)
   level: 'level',
+  volume: 'level', // Muff VOLUME shares the level slot (id 2)
 };
 const AMP_PARAM: Record<string, string> = {
   volume: 'volume',
@@ -299,6 +307,7 @@ const INPUT_PARAM: Record<string, string> = {
 const PARAM_LABEL: Record<string, string> = {
   dist: 'Dist',
   drive: 'Drive',
+  sustain: 'Sustain',
   filter: 'Filter',
   tone: 'Tone',
   level: 'Level',
@@ -400,10 +409,11 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'ts' | 'phaser' | 'tuner' =
+    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'phaser' | 'tuner' =
       input.type === 'tuner' ? 'tuner'
       : input.type === 'sd1' ? 'sd1'
       : input.type === 'ts' ? 'ts'
+      : input.type === 'muff' ? 'muff'
       : input.type === 'phaser' ? 'phaser'
       : 'rat';
     const rawPos = input.position;
@@ -414,8 +424,9 @@ export function executeTool(
       type === 'tuner' ? 'Tuner'
         : type === 'sd1' ? 'SD-1'
           : type === 'ts' ? 'Screamer'
-            : type === 'phaser' ? 'Phaser'
-              : 'RAT';
+            : type === 'muff' ? 'Pi Fuzz'
+              : type === 'phaser' ? 'Phaser'
+                : 'RAT';
     return {
       content: JSON.stringify({ applied: { added: type, index } }),
       chip: `+ ${label} #${index + 1}`,

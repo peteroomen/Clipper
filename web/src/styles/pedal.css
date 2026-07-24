@@ -16,6 +16,7 @@
 .pedal[data-pedal-type="rat"]   { --pedal-accent: var(--accent-rat);   --pedal-accent-glow: var(--accent-rat-glow); }
 .pedal[data-pedal-type="sd1"]   { --pedal-accent: var(--accent-sd);    --pedal-accent-glow: var(--accent-sd-glow); }
 .pedal[data-pedal-type="ts"]    { --pedal-accent: var(--accent-ts);    --pedal-accent-glow: var(--accent-ts-glow); }
+.pedal[data-pedal-type="muff"]  { --pedal-accent: var(--accent-muff);  --pedal-accent-glow: var(--accent-muff-glow); }
 .pedal[data-pedal-type="tuner"] { --pedal-accent: var(--accent-tuner); --pedal-accent-glow: var(--accent-tuner-glow); }
 .pedal[data-pedal-type="phaser"] { --pedal-accent: var(--accent-phaser); --pedal-accent-glow: var(--accent-phaser-glow); }
 .pedal.raised {
@@ -290,3 +291,36 @@
 /* A subtle orange sweep arc etched around the hero knob's zone, echoing the LFO
    motion — small-area accent, neumorphic-safe. */
 .pedal[data-face="single"] .pedal-logo { margin-bottom: 14px; }
+
+/* ---- Muff "Pi" 'wide' face: the physically HUGE fuzz (v1.1 item 4) ----
+   The Muff is a big box — that's its morphology cue. A BROADER enclosure with the
+   three knobs in the classic TRIANGLE (SUSTAIN top-left, VOLUME top-right, TONE
+   centered below) and a BIG round stomp low-center. Hero "Pi" wordmark large and
+   central; VIOLET accent (the "violet era" wink). Shares the vertical 'stack'
+   skeleton (hero wordmark → knobs → round stomp) — only the width + knob grid +
+   stomp size change. Trademark-safe: "Pi" only, no EHX/Big Muff text. */
+.pedal[data-face="wide"] {
+  width: 360px; /* broader than the RAT (320) — the Muff's big-box morphology */
+  padding-top: 24px;
+}
+.pedal[data-face="wide"] .pedal-logo {
+  font-size: 82px; /* "Pi" large and central */
+  text-align: center;
+  letter-spacing: .02em;
+  margin: 6px 0 20px;
+}
+/* The three knobs in a TRIANGLE via a 2-col grid: child 1 (Sustain) top-left,
+   child 2 (Volume) top-right, child 3 (Tone) spans both columns, centered below. */
+.pedal[data-face="wide"] .knob-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px 44px;
+  justify-items: center;
+  align-items: start;
+  margin: 8px 12px 26px;
+}
+.pedal[data-face="wide"] .knob-row > :nth-child(3) { grid-column: 1 / 3; }
+.pedal[data-face="wide"] .k-name { letter-spacing: .18em; }
+/* The big round stomp low-center — larger than the standard RAT stomp. */
+.pedal[data-face="wide"] .fsw-zone { margin-top: 22px; }
+.pedal[data-face="wide"] .fsw { width: 104px; height: 104px; }

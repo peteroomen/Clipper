@@ -3527,3 +3527,123 @@ A clean strummed E-major chord (`make_chord.py`) rendered at `phaser_slow.wav`
 (speed 0.12 ≈ 0.11 Hz), `phaser_medium.wav` (0.42 ≈ 0.47 Hz), `phaser_fast.wav`
 (0.85 ≈ 3.84 Hz), and `phaser_post_rodent.wav` (through the RAT first — the post-dirt
 swoosh). All peak-safe (linear pedal, no clipping).
+
+## 24. v1.1 item 4 — Muff "Pi": the four-transistor fuzz + the reusable BjtStage
+
+ROADMAP v1.1's item 4, made real: a trademark-safe homage to the early-70s
+"ram's head"-family **Big Muff Pi**, shipped as the `muff` pedal **"Pi"**. Its REAL
+product is the **reusable BJT gain-stage machinery** — the Fuzz Face (item 5) and the
+RG100 (an M10 solid-state amp) both need it. Files: `core/include/clipper/dsp/BjtStage.h`
++ `core/src/dsp/BjtStage.cpp` (the device), `core/include/clipper/dsp/MuffModel.h` +
+`core/src/dsp/MuffModel.cpp` (the pedal), tests `core/tests/test_muff_model.cpp`
+(`clipper_muff_tests`); C ABI `muff_*` in `clipper_c_api.cpp`; `--pedal muff` in the
+render CLI; worklet `muff` dispatch; `rig.ts` / Pedal / gear-tray / assistant wiring.
+Trademark-safe throughout (wordmark "Pi", model line `FUZZ Nº5 · PI`; no EHX / Big
+Muff text on any user surface — docs §17 doctrine).
+
+### BjtStage — the first BJT (Ebers-Moll) device model (the reusable product)
+
+The BJT sibling of the M9.1 TriodeStage: same nodal-Newton house style, a transistor
+instead of a valve. **Device:** transport-form **Ebers-Moll NPN** (2N5088-class:
+`Is = 1e-14 A`, `βF = 400`, `βR = 4`, `Vt = 25.85 mV` at 300 K — the high β is why a
+Muff has so much gain). The reverse (`Ir`) term is kept, so the transistor SATURATES
+on the clip peaks — part of the compression, not a nicety. **Circuit:** a
+collector-feedback-biased common emitter (`Vcc 9 V`, `Rc 10 k`, feedback `Rf 470 k`,
+emitter degeneration `Re 390 Ω`, input coupling `Cin 100 nF`, feedback cap
+`Cf 470 pF`), optionally with an **antiparallel 1N4148 pair** across base↔collector
+(the clip stages). Because `Rf` is large and β high, a clip stage's idle collector-base
+voltage exceeds the diode knee, so **the clipping diodes conduct near idle** and pin the
+collector barely above the base — a stage with almost no clean headroom that clips
+essentially always. That is the root of the wall-of-sustain compression, and the DC
+solve therefore includes the diodes. **Solver:** per-sample 3×3 nodal Newton (`Vb`,
+`Vc`, `Ve`) with an analytic Jacobian, backward-Euler companions for `Cin`/`Cf`, and —
+crucially — a **backtracking line search** (Armijo-ish descent on the residual ∞-norm).
+A bare Newton oscillates and stalls on the STIFF diode-in-feedback system (the pre-fix
+cascade blew up to hundreds of volts from non-convergence); the line search + tangent-
+limited `exp`/diode currents make it converge in 6–9 iterations and stay finite/bounded
+on a ±10 V slam at every rate. BjtStage owns NO oversampler — MuffModel drives four of
+them per oversampled sample through ONE shared `Oversampler`, so the stages compose in a
+cascade (unlike TriodeStage, which oversamples itself).
+
+**Reuse notes (what item 5 / the RG100 inherit):** the whole Ebers-Moll device + solver
+is behind a `Config` (device params, the R/C bias network, an optional diode pair). The
+**Fuzz Face** is two of these with a germanium-ish `Config` (lower β, higher `Is`) and
+its 2-transistor direct-coupled feedback bias — plus the pickup-loading source-impedance
+model the roadmap flags. The **RG100** solid-state preamp is a BjtStage/op-amp clipping
+cascade. Nothing about MuffModel is special-cased into BjtStage; it is a clean building
+block, exactly like TriodeStage became for the JCM800 / Twin.
+
+### MuffModel — the 4-stage cascade
+
+`in → ×inputDrive → [Q1 boost] → SUSTAIN pot → [Q2 clip] → [Q3 clip] → mid-scoop TONE
+stack → [Q4 recovery] → VOLUME`, the whole nonlinear chain inside one 4× `Oversampler`
+so the four solves + the tone stack stay sample-aligned. **The famous mid-scoop tone
+stack** (`MuffToneStack`) blends a low-pass leg (`22 k / 0.01 µF`, 723 Hz) and a
+high-pass leg (`12 k / 0.01 µF`, 1326 Hz) by the TONE pot; at noon the two legs sum to a
+**notch ≈ 980 Hz** (the ~1 kHz scoop), TONE→0 goes dark (LP only), TONE→1 bright (HP
+only). Params: slot 0 = SUSTAIN, 1 = TONE, 2 = VOLUME (the real three knobs, the shared
+PedalParams shape). Output trim scales the loud recovery stage so the default (VOLUME 0.6)
+peaks ~1.4 V (the downstream limiter guards the ceiling).
+
+### Validation (`clipper_muff_tests`, 44.1 / 48 / 96 kHz, assert-backed)
+
+- **Per-stage DC vs an INDEPENDENT analytic bias solve (±10% bar):** all four stages
+  match to **<0.1%** — Q1/Q4 (no diodes) `Vc = 1.775 V` (`Ic 0.72 mA`), Q2/Q3 (clip)
+  `Vc = 1.213 V` (`Ic 0.78 mA`, diodes lightly conducting — the cold Muff bias). The
+  test re-derives the operating point with fresh code (numerical-Jacobian Newton), so
+  agreement genuinely cross-validates the device model + solver.
+- **Mid-scoop:** rendered response matches the analytic `H(s)` to **0.09 dB worst**;
+  the noon notch sits at **980 Hz** (−9.05 dB, 2.8 dB below both shoulders); tilt
+  extremes clear (TONE 1 is +16 dB brighter at 5 kHz, TONE 0 is +21 dB bassier at
+  120 Hz).
+- **THD (MASSIVE — a fuzz, not an overdrive):** **~80–95%** at EVERY sustain setting
+  (SUSTAIN 0.1 → 83%, 1.0 → 81% at 44.1 k) — the Muff has no clean setting (RAT/SD-1/TS
+  top out ~20–30%).
+- **Wall of sustain:** at max SUSTAIN a **20 dB input sweep** yields **1.6 dB** of
+  output-RMS variation (20 dB in → 0.08 dB out) — the compression signature.
+- **Aliasing (M2 bar):** shipped **4× worst-alias −80.3 dB** (44.1 k) / −84.4 dB (96 k),
+  far under the −60 dB bar; naive (1×) −6.2 dB (2× is insufficient at −2 dB — the
+  double-clip is harsh, so 4× is the right default). VOLUME linear; ±10 V slam finite +
+  bounded at all rates; silence→silence; deterministic.
+
+### A/B render commands (listening pack → scratchpad)
+
+```
+# Muff (fuzz-WALL) vs RAT (hard clip), matched knobs, plucked low A:
+clipper-render --gen pluck:110:2.0 muff_A.wav --pedal muff --distortion 0.7 --filter 0.5 --level 0.6 --sr 48000
+clipper-render --gen pluck:110:2.0 rat_A.wav  --pedal rat  --distortion 0.7 --filter 0.5 --level 0.6 --sr 48000
+#   -> Muff peak 1.39 / rms 0.38 (compressed, sustaining wall);
+#      RAT  peak 0.24 / rms 0.13 (hard clip pins near the knee, decays with the pluck).
+# TONE scoop sweep (rms drops at the noon scoop as the ~1 kHz notch removes energy):
+#   tone 0 -> rms 0.76 (dark) ; tone 0.5 -> rms 0.46 (SCOOPED) ; tone 1 -> rms 0.59 (bright).
+# The Gilmour move — Muff into a CLEAN Twin with headroom (two-step: muff, then --twin):
+clipper-render --gen pluck:110:2.5 muff_pre.wav --pedal muff --distortion 0.75 --filter 0.55 --level 0.6 --sr 48000
+clipper-render muff_pre.wav muff_into_twin.wav --twin --twin-volume 0.35 --twin-reverb 0.25 --twin-cab --sr 48000
+```
+
+### Integration (additive everywhere)
+
+- **One param shape, additive registries.** SUSTAIN/TONE/VOLUME ride the shared
+  `PedalParams {distortion, filter, level}`; each shared registry gains exactly one entry
+  (`rig.ts` `PedalType` + gear tray + `MUFF_KNOB_DEFAULTS` sustain 0.6 / tone 0.5 /
+  volume 0.6; worklet `_muff` prefix; C ABI `muff_*`; `add_pedal` enum + coaching;
+  `Pedal.tsx` FACES + a NEW `wide` layout; `tokens.css` `--accent-muff`). The worklet
+  routes per node by C-ABI prefix (`_rat`/`_sd`/`_ts`/`_muff`/`_phaser`).
+- **Visual identity (doctrine §17).** Dark chassis (both themes), **VIOLET accent** (the
+  "violet era" wink). Its own **`wide` face** — the Muff is physically HUGE, so a broader
+  enclosure with the three knobs in the classic TRIANGLE (SUSTAIN top-left, VOLUME
+  top-right, TONE centered below) and a big round stomp low-center. Hero wordmark **"Pi"**
+  large and central, model line `FUZZ Nº5 · PI`. No trademarks.
+- **Assistant.** `add_pedal` gains `'muff'`; the coach knows it is FUZZ not overdrive
+  (thick, saturated, endlessly-sustaining), that the TONE knob is a mid-SCOOP (band-mix
+  caveat: add mids elsewhere if it gets buried), and the classic move — a Muff into a
+  CLEAN amp with headroom, e.g. the Twin.
+- **Build note.** `build-wasm.sh` compiles `BjtStage.cpp` + `MuffModel.cpp` and exports
+  `_muff_*`; the two duplicate `EXPORTED_FUNCTIONS` lines left by the phaser/ts merge were
+  consolidated into ONE complete list (rat/sd/ts/muff/phaser + amp) so every pedal's
+  exports actually ship. Similarly the render CLI's stray empty `else if (a.pedal=="sd1")`
+  merge artifact was folded into the `sd1||ts` branch.
+- All 11 native suites green (`ctest`: M0 + RAT + SD-1 + TS + phaser + amp + triode +
+  JCM800 + JCM power + Twin + **Muff**); web tsc + vite build; Playwright +2 (`muff
+  worklet: fuzz makes massive harmonics + a compressed sustain wall` and `assistant:
+  add_pedal adds a Muff Pi fuzz (round-trip)`), 58 total green.

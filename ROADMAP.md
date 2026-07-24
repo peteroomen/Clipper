@@ -362,8 +362,20 @@ how much existing machinery each reuses:
    coefficients (no zipper). Notch positions match the analytic 4-stage response
    to 0.00%, depth 48–94 dB, HF floor −130 dB. Single-knob orange face, assistant
    add_pedal + placement/speed coaching.)*
-4. **Big Muff Pi** *(M)* — first BJT (Ebers-Moll) device model: 4-stage
-   cascade, 2 clipping stages, mid-scoop stack. Iconic fuzz contrast.
+4. ~~**Big Muff Pi** *(M)* — first BJT (Ebers-Moll) device model: 4-stage
+   cascade, 2 clipping stages, mid-scoop stack. Iconic fuzz contrast.~~ ✅
+   *(shipped as the 'muff' pedal "Pi" — see docs §24. The REAL product is the
+   reusable **BjtStage**: an Ebers-Moll NPN (2N5088-class, β 400) common-emitter
+   gain stage with collector-feedback bias, solved per-sample with damped nodal
+   Newton (analytic Jacobian + backtracking line search, slam-proof) — the BJT
+   sibling of the M9.1 TriodeStage that the Fuzz Face / RG100 will inherit.
+   MuffModel cascades 4× BjtStage (Q1 boost → SUSTAIN → 2 diode-clip stages →
+   mid-scoop tone stack → Q4 recovery → VOLUME). Per-stage DC ops match the
+   analytic bias to <0.1%; scoop notch ~980 Hz matches the analytic H(s) to
+   0.1 dB; THD ~80% (a FUZZ, no clean setting); wall-of-sustain compresses a
+   20 dB input sweep into ~1.6 dB out; 4× oversampling holds aliasing to −80 dB.
+   Wide violet "Pi" face (triangle knobs), assistant add_pedal + fuzz-vs-drive /
+   into-a-clean-Twin coaching.)*
 5. **Fuzz Face (silicon)** *(M)* — 2-transistor minimalism, but its soul is
    PICKUP LOADING (cleans up with guitar volume): requires adding a source-
    impedance model to the chain input — design that first or don't bother.

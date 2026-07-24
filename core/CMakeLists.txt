@@ -86,6 +86,8 @@ add_library(clipper_dsp STATIC
     src/dsp/TwinPreamp.cpp
     src/dsp/TwinPowerAmp.cpp
     src/dsp/TwinAmp.cpp
+    src/dsp/BjtStage.cpp
+    src/dsp/MuffModel.cpp
 )
 target_include_directories(clipper_dsp PUBLIC include)
 target_link_libraries(clipper_dsp PUBLIC chowdsp_wdf)
@@ -197,6 +199,17 @@ if(NOT EMSCRIPTEN)
         target_compile_options(clipper_twin_tests PRIVATE -Wall -Wextra -UNDEBUG)
     endif()
     add_test(NAME clipper_twin_tests COMMAND clipper_twin_tests)
+
+    # --- v1.1 item 4: Muff fuzz + reusable BjtStage (Ebers-Moll BJT) tests -----
+    add_executable(clipper_muff_tests tests/test_muff_model.cpp)
+    target_link_libraries(clipper_muff_tests PRIVATE clipper_dsp)
+    # Shares the tools/measure aliasing metric with the RAT/SD-1/TS tests.
+    target_include_directories(clipper_muff_tests PRIVATE tools)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_muff_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_muff_tests COMMAND clipper_muff_tests)
 
     # --- CLI render harness (native only, NOT part of the WASM build) ---------
     add_executable(clipper-render tools/render/main.cpp)

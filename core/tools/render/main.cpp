@@ -28,6 +28,7 @@
 #include "clipper/dsp/TwinAmp.h"
 #include "clipper/dsp/SdModel.h"
 #include "clipper/dsp/TsModel.h"
+#include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/Biquad.h"
@@ -164,9 +165,10 @@ struct OldSpringReverb {
         "M2 flags: --os 1|2|4|8 (oversampling, default 4), --stage2 wdf|adaa (default wdf),\n"
         "          --alias-report (print the aliasing metric table for os=1/2/4/8 and exit).\n"
         "M6.5:     --ideal-opamp (bypass the op-amp model: ideal op-amp A/B),\n"
-        "M8/v1.1:  --pedal rat|sd1|ts|phaser (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
-        "          ts = TS808 Screamer soft/SYMMETRIC; phaser = script 4-stage phaser\n"
-        "          (--distortion = SPEED 0..1); for sd1/ts the knob flags map\n"
+        "M8/v1.1:  --pedal rat|sd1|ts|muff|phaser (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
+        "          ts = TS808 Screamer soft/SYMMETRIC; muff = 4-transistor Muff fuzz\n"
+        "          (--distortion=SUSTAIN, --filter=TONE, --level=VOLUME); phaser = script\n"
+        "          4-stage phaser (--distortion = SPEED 0..1); for sd1/ts the knob flags map\n"
         "          positionally: --distortion=DRIVE, --filter=TONE),\n"
         "          --chain rat|clean (clean = amp+cab+limiter, pedal-bypassed path),\n"
         "          --cab clean212|brit412 (clean-chain cab; brit412 = the darker 4x12),\n"
@@ -651,6 +653,17 @@ int main(int argc, char** argv) {
         model.setParameter(clipper::dsp::TsModel::PARAM_LEVEL, a.level);
         if (!input.empty())
             model.process(input.data(), out.data(), static_cast<int>(input.size()));
+    } else if (a.pedal == "muff") {
+        // v1.1 item 4: the four-transistor Muff fuzz. Knob flags map positionally:
+        // --distortion -> SUSTAIN, --filter -> TONE (the mid-scoop), --level -> VOLUME.
+        clipper::dsp::MuffModel model;
+        model.prepare(fs, 128);
+        model.setOversampling(a.os);
+        model.setParameter(clipper::dsp::MuffModel::PARAM_SUSTAIN, a.distortion);
+        model.setParameter(clipper::dsp::MuffModel::PARAM_TONE, a.filter);
+        model.setParameter(clipper::dsp::MuffModel::PARAM_VOLUME, a.level);
+        if (!input.empty())
+            model.process(input.data(), out.data(), static_cast<int>(input.size()));
     } else {
         // Process through the RAT pedal model.
         clipper::dsp::RatModel model;
@@ -738,7 +751,12 @@ int main(int argc, char** argv) {
             "  peak=%.4f  rms=%.4f\n",
             out.size(), fs, a.outFile.c_str(), a.distortion,
             clipper::dsp::PhaserModel::speedKnobToHz(a.distortion), peak, rms);
-    } else if (a.pedal == "sd1") {
+    } else if (a.pedal == "muff") {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (pedal=muff sustain=%.2f tone=%.2f "
+            "volume=%.2f os=%dx)\n  peak=%.4f  rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.distortion, a.filter, a.level, a.os,
+            peak, rms);
     } else if (a.pedal == "sd1" || a.pedal == "ts") {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (pedal=%s drive=%.2f tone=%.2f level=%.2f "

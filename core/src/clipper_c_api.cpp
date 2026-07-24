@@ -12,6 +12,7 @@
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/TwinAmp.h"
 #include "clipper/dsp/PhaserModel.h"
+#include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/SdModel.h"
 #include "clipper/dsp/TsModel.h"
@@ -234,6 +235,52 @@ void phaser_process(void* handle, const float* in_ptr, float* out_ptr,
     if (!handle) return;
     static_cast<clipper::dsp::PhaserModel*>(handle)->process(in_ptr, out_ptr,
                                                              num_frames);
+}
+
+// --- v1.1 item 4: Muff fuzz ("Pi") exports -----------------------------------
+//
+// Additive alongside rat_*/sd_*/ts_*/phaser_*, byte-for-byte the same opaque-handle
+// ABI so the worklet drives the fuzz exactly like any other dirt pedal (param slots
+// 0=SUSTAIN, 1=TONE, 2=VOLUME; oversampling + latency shared). A chain can mix any
+// of rat_*, sd_*, ts_*, muff_*, phaser_*. Under the hood it is the FIRST BJT voice
+// (MuffModel -> 4× BjtStage, Ebers-Moll), but the ABI is identical.
+
+EMSCRIPTEN_KEEPALIVE
+void* muff_create(float sample_rate) {
+    auto* m = new clipper::dsp::MuffModel();
+    m->prepare(static_cast<double>(sample_rate), 128);
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void muff_destroy(void* handle) {
+    delete static_cast<clipper::dsp::MuffModel*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void muff_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    static_cast<clipper::dsp::MuffModel*>(handle)->setParameter(param_id, value);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void muff_set_oversampling(void* handle, int factor) {
+    if (!handle) return;
+    static_cast<clipper::dsp::MuffModel*>(handle)->setOversampling(factor);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int muff_latency_samples(void* handle) {
+    if (!handle) return 0;
+    return static_cast<clipper::dsp::MuffModel*>(handle)->latencySamples();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void muff_process(void* handle, const float* in_ptr, float* out_ptr,
+                  int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::MuffModel*>(handle)->process(in_ptr, out_ptr,
+                                                           num_frames);
 }
 
 // --- M5: clean amp + cab exports ---------------------------------------------

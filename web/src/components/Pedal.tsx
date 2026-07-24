@@ -43,7 +43,7 @@ interface KnobSpec {
   param: ParamName;
   testId: string;
 }
-type FaceLayout = 'stack' | 'compact' | 'slim' | 'single';
+type FaceLayout = 'stack' | 'compact' | 'slim' | 'single' | 'wide';
 interface PedalFace {
   layout: FaceLayout;
   model: string; // small model line (top eyebrow)
@@ -93,6 +93,23 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Drive', aria: 'Drive', param: 'distortion', testId: 'knob-drive' },
       { name: 'Tone', aria: 'Tone', param: 'filter', testId: 'knob-tone' },
       { name: 'Level', aria: 'Level', param: 'level', testId: 'knob-level' },
+    ],
+  },
+  // v1.1 item 4 Muff "Pi": the physically HUGE fuzz — its morphology cue is a
+  // 'wide' face (broader enclosure) with the three knobs in the classic TRIANGLE
+  // (SUSTAIN top-left, VOLUME top-right, TONE centered below) and a big round stomp
+  // low-center. VIOLET accent (the "violet era" wink). Hero wordmark "Pi" (the
+  // π-era graphics wink without trade dress); model line names the type. No EHX/Big
+  // Muff text anywhere. Knob array order is the triangle placement (grid in CSS):
+  // 1=Sustain (top-left), 2=Volume (top-right), 3=Tone (bottom-center).
+  muff: {
+    layout: 'wide',
+    model: 'FUZZ Nº5 · PI',
+    wordmark: 'Pi',
+    knobs: [
+      { name: 'Sustain', aria: 'Sustain', param: 'distortion', testId: 'knob-sustain' },
+      { name: 'Volume', aria: 'Volume', param: 'level', testId: 'knob-volume' },
+      { name: 'Tone', aria: 'Tone', param: 'filter', testId: 'knob-tone' },
     ],
   },
   phaser: {
