@@ -11,12 +11,16 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <atomic>
+#include <vector>
+
 #include "ClipperEngine.h"
 
 namespace clipper::native {
 
 // Parameter identifiers (APVTS). Stable strings — the saved state keys off these,
-// so do not rename without a migration.
+// so do not rename without a migration. NATIVE PARITY added the ts*/muff*/phaser*
+// ids; every pre-existing id is untouched, so old sessions still load.
 namespace pid {
 inline constexpr const char* inputTrim   = "inputTrim";
 inline constexpr const char* ratOn       = "ratOn";
@@ -27,6 +31,18 @@ inline constexpr const char* sdOn        = "sdOn";
 inline constexpr const char* sdDrive     = "sdDrive";
 inline constexpr const char* sdTone      = "sdTone";
 inline constexpr const char* sdLevel     = "sdLevel";
+// Native parity: the three pedals the fixed chain never had. Same 0..1 knob shape;
+// names/defaults mirror web PEDAL_KNOB_DEFAULTS.
+inline constexpr const char* tsOn        = "tsOn";
+inline constexpr const char* tsDrive     = "tsDrive";
+inline constexpr const char* tsTone      = "tsTone";
+inline constexpr const char* tsLevel     = "tsLevel";
+inline constexpr const char* muffOn      = "muffOn";
+inline constexpr const char* muffSustain = "muffSustain";
+inline constexpr const char* muffTone    = "muffTone";
+inline constexpr const char* muffVolume  = "muffVolume";
+inline constexpr const char* phaserOn    = "phaserOn";
+inline constexpr const char* phaserSpeed = "phaserSpeed";
 inline constexpr const char* ampOn       = "ampOn";
 inline constexpr const char* volume      = "volume";
 inline constexpr const char* bass        = "bass";
@@ -80,14 +96,45 @@ public:
     // and reusable by the editor / tests).
     Params snapshotParams() const;
 
+    // ---- THE BOARD (chain order + membership) --------------------------------
+    // Which pedal types are on the board, in signal order. This is deliberately
+    // NOT an automatable parameter: it is a topology, not a continuous control, and
+    // hosts have no sane way to automate "the RAT moved after the Muff". It lives
+    // as a child node of the APVTS state tree, so it round-trips through the DAW
+    // session with everything else (getStateInformation is the whole tree).
+    //
+    // The audio thread never reads the ValueTree: setChainOrder also publishes a
+    // PACKED snapshot into an atomic (3 bits of length + 5 × 3 bits of type), which
+    // snapshotParams() unpacks lock-free.
+    std::vector<int> chainOrder() const;
+    void setChainOrder(const std::vector<int>& types);
+    // Bumped on every board change (including a host state load), so the editor can
+    // notice an external edit and rebuild its cards.
+    int chainVersion() const { return chainVersion_.load(); }
+
+    // The board a FRESH instance opens with — the web app's DEFAULT_RIG: one RAT.
+    static std::vector<int> defaultChain() { return {PEDAL_RAT}; }
+    // The board a PRE-PARITY saved session migrates to: the old fixed pair, so a
+    // session saved by the two-pedal build reloads sounding exactly the same (its
+    // ratOn/sdOn flags still say which of the two were engaged).
+    static std::vector<int> legacyChain() { return {PEDAL_RAT, PEDAL_SD}; }
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout makeLayout();
 
     // Recompute + publish latency to the host from the current param snapshot.
     void updateLatency(const Params& p);
 
+    // Re-read the board out of the state tree into the packed atomic (after a host
+    // state load), creating/repairing the node if it is missing or malformed.
+    void syncChainFromState(bool legacyFallback);
+
     ClipperEngine engine_;
     int lastReportedLatency_ = -1;
+
+    // Packed board snapshot for the audio thread (see chainOrder above).
+    std::atomic<juce::uint32> packedChain_{0};
+    std::atomic<int> chainVersion_{0};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ClipperAudioProcessor)
 };

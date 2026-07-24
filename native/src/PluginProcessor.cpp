@@ -21,6 +21,47 @@ std::unique_ptr<juce::AudioParameterFloat> knob(const char* id, const char* name
         juce::ParameterID{id, 1}, name, juce::NormalisableRange<float>(0.0f, 1.0f),
         def);
 }
+
+// The APVTS state child holding the board (chain order + membership).
+const juce::Identifier kBoardNode{"board"};
+const juce::Identifier kBoardOrder{"order"};
+
+// Pack a chain into a uint32 the audio thread can read atomically: bits 0..2 hold
+// the length, then five 3-bit type slots. 5 slots × 3 bits + 3 = 18 bits.
+juce::uint32 packChain(const std::vector<int>& types) {
+    juce::uint32 v = static_cast<juce::uint32>(
+        juce::jlimit<int>(0, kMaxChain, static_cast<int>(types.size())));
+    for (int i = 0; i < static_cast<int>(types.size()) && i < kMaxChain; ++i) {
+        const juce::uint32 t = static_cast<juce::uint32>(
+            juce::jlimit(0, PEDAL_TYPE_COUNT - 1, types[static_cast<size_t>(i)]));
+        v |= t << (3 + 3 * i);
+    }
+    return v;
+}
+
+// "rat,muff,phaser" <-> the type list. Unknown keys and duplicates are dropped
+// (each type is instantiable once), so malformed state degrades to a valid board.
+std::vector<int> parseChain(const juce::String& csv) {
+    std::vector<int> out;
+    juce::StringArray parts = juce::StringArray::fromTokens(csv, ",", "");
+    for (auto& raw : parts) {
+        const juce::String key = raw.trim();
+        if (key.isEmpty()) continue;
+        const int t = pedalTypeFromKey(key.toRawUTF8());
+        if (t < 0) continue;
+        bool dup = false;
+        for (int have : out) dup = dup || have == t;
+        if (!dup && static_cast<int>(out.size()) < kMaxChain) out.push_back(t);
+    }
+    return out;
+}
+
+juce::String chainToString(const std::vector<int>& types) {
+    juce::StringArray keys;
+    for (int t : types)
+        if (const char* k = pedalTypeKey(t)) keys.add(k);
+    return keys.joinIntoString(",");
+}
 }  // namespace
 
 juce::AudioProcessorValueTreeState::ParameterLayout
@@ -41,6 +82,29 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::sdDrive, "SD-1 Drive", 0.5f));
     layout.add(knob(pid::sdTone, "SD-1 Tone", 0.5f));
     layout.add(knob(pid::sdLevel, "SD-1 Level", 0.7f));
+
+    // Native parity: the pedals the fixed chain never had. Every knob set is FULLY
+    // automatable and always present (APVTS layouts are static — a parameter cannot
+    // appear when a pedal is added to the board), so a pedal that is off the board
+    // simply has its params ignored by the engine. Defaults mirror the web's
+    // TS_KNOB_DEFAULTS / MUFF_KNOB_DEFAULTS / PHASER_KNOB_DEFAULTS, and each
+    // engaged-flag defaults TRUE because web makePedal() drops a pedal on the board
+    // already engaged (the SD-1's legacy `false` default is left untouched).
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::tsOn, 1}, "Screamer On", true));
+    layout.add(knob(pid::tsDrive, "Screamer Drive", 0.5f));
+    layout.add(knob(pid::tsTone, "Screamer Tone", 0.5f));
+    layout.add(knob(pid::tsLevel, "Screamer Level", 0.75f));
+
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::muffOn, 1}, "Pi On", true));
+    layout.add(knob(pid::muffSustain, "Pi Sustain", 0.6f));
+    layout.add(knob(pid::muffTone, "Pi Tone", 0.5f));
+    layout.add(knob(pid::muffVolume, "Pi Volume", 0.6f));
+
+    // The phaser has exactly ONE real control (SPEED). The web carries two unused
+    // slots for its shared pedal shape; exposing them as host parameters would be
+    // lying about what the pedal does, so they are simply not here.
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::phaserOn, 1}, "Ninety On", true));
+    layout.add(knob(pid::phaserSpeed, "Ninety Speed", 0.35f));
 
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::ampOn, 1}, "Amp Power", true));
     // M9.4 amp voice (default index 0 == Clean 120).
@@ -77,7 +141,39 @@ ClipperAudioProcessor::ClipperAudioProcessor()
                                .withInput("Input", juce::AudioChannelSet::mono(), true)
                                .withOutput("Output", juce::AudioChannelSet::stereo(),
                                            true)),
-      apvts(*this, nullptr, "state", makeLayout()) {}
+      apvts(*this, nullptr, "state", makeLayout()) {
+    // A fresh instance opens on the web app's default rig: one RAT on the board.
+    setChainOrder(defaultChain());
+}
+
+std::vector<int> ClipperAudioProcessor::chainOrder() const {
+    auto node = apvts.state.getChildWithName(kBoardNode);
+    if (!node.isValid()) return defaultChain();
+    return parseChain(node.getProperty(kBoardOrder).toString());
+}
+
+void ClipperAudioProcessor::setChainOrder(const std::vector<int>& types) {
+    // Normalize (drop unknowns/duplicates/overflow) by round-tripping through the
+    // string form, so the tree and the packed atomic can never disagree.
+    const std::vector<int> clean = parseChain(chainToString(types));
+    auto node = apvts.state.getOrCreateChildWithName(kBoardNode, nullptr);
+    node.setProperty(kBoardOrder, chainToString(clean), nullptr);
+    packedChain_.store(packChain(clean));
+    chainVersion_.fetch_add(1);
+}
+
+void ClipperAudioProcessor::syncChainFromState(bool legacyFallback) {
+    auto node = apvts.state.getChildWithName(kBoardNode);
+    if (!node.isValid()) {
+        // No board node: this state was written by the PRE-PARITY build, whose
+        // chain was the hard-wired RAT → SD-1 pair. Restore that pair so the
+        // session sounds exactly as it did (its ratOn/sdOn flags do the rest).
+        setChainOrder(legacyFallback ? legacyChain() : defaultChain());
+        return;
+    }
+    std::vector<int> types = parseChain(node.getProperty(kBoardOrder).toString());
+    setChainOrder(types);  // re-publishes the atomic + bumps the version
+}
 
 Params ClipperAudioProcessor::snapshotParams() const {
     Params p;
@@ -93,6 +189,29 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.sdDrive = f(pid::sdDrive);
     p.sdTone = f(pid::sdTone);
     p.sdLevel = f(pid::sdLevel);
+    p.tsOn = f(pid::tsOn) >= 0.5f;
+    p.tsDrive = f(pid::tsDrive);
+    p.tsTone = f(pid::tsTone);
+    p.tsLevel = f(pid::tsLevel);
+    p.muffOn = f(pid::muffOn) >= 0.5f;
+    p.muffSustain = f(pid::muffSustain);
+    p.muffTone = f(pid::muffTone);
+    p.muffVolume = f(pid::muffVolume);
+    p.phaserOn = f(pid::phaserOn) >= 0.5f;
+    p.phaserSpeed = f(pid::phaserSpeed);
+
+    // The board: unpack the lock-free snapshot the message thread published (never
+    // touch the ValueTree here — this runs on the audio thread).
+    {
+        const juce::uint32 v = packedChain_.load();
+        const int len = juce::jlimit(0, kMaxChain, static_cast<int>(v & 0x7u));
+        p.chainLength = len;
+        for (int i = 0; i < kMaxChain; ++i)
+            p.chain[i] = i < len
+                             ? juce::jlimit(0, PEDAL_TYPE_COUNT - 1,
+                                            static_cast<int>((v >> (3 + 3 * i)) & 0x7u))
+                             : 0;
+    }
     p.ampOn = f(pid::ampOn) >= 0.5f;
     p.ampModel = static_cast<int>(f(pid::ampModel));  // choice index == model id
     p.volume = f(pid::volume);
@@ -181,8 +300,13 @@ void ClipperAudioProcessor::getStateInformation(juce::MemoryBlock& destData) {
 
 void ClipperAudioProcessor::setStateInformation(const void* data, int sizeInBytes) {
     if (auto xml = getXmlFromBinary(data, sizeInBytes)) {
-        if (xml->hasTagName(apvts.state.getType()))
+        if (xml->hasTagName(apvts.state.getType())) {
             apvts.replaceState(juce::ValueTree::fromXml(*xml));
+            // replaceState swapped in the saved tree wholesale — republish the board
+            // to the audio thread (and migrate a pre-parity session, which has no
+            // board node, back onto its old fixed RAT → SD-1 pair).
+            syncChainFromState(/*legacyFallback=*/true);
+        }
     }
 }
 
