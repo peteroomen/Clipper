@@ -309,6 +309,15 @@ independent slices that can interleave anywhere:
   H(jω), anti-NFB identity, cathode-bias shift + RC recovery, TOP CUT, sag ordering,
   the class-A chime (2nd harmonic > the Twin's), monotonic THD, aliasing (4× ships).
   Identical-core bit-exact across all four voices.
+  *(Field fixes since: the CUT re-taper — "muddy" — and the §23 **second amendment**,
+  "it breaks up less easy than the fender twin". The second one was a genuinely
+  inverted voicing: the AC30's phase inverter was biased near cutoff (83 µA/triode,
+  ×9.1 per leg), so the VOLUME knob — which on an AC30 IS the overdrive — never
+  reached the EL84 grids and the class-A power section was never driven. Fixed in the
+  gain structure (PI operating point + a passive interstage divider + the output
+  normalization); breakup onset now VOLUME 0.5 vs the Twin's 0.9, 2.2× its THD at
+  mid-knob, guarded permanently by `testBreakupOrdering`. ts_ac30 golden regenerated
+  deliberately.)*
 - **M10.3 — Orange tube-head style** *(S–M)* — heavy EL34/JCM800 machinery
   reuse with Orange voicing; quick win after 10.1–10.2.
 - **M10.4 — Mesa high-gain style** *(L)* — hardest, last: 5+ cascaded stages

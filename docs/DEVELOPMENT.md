@@ -3828,6 +3828,252 @@ at 3 kHz AND full cut must still be ≥ 5 dB darker than noon (range preserved);
 **character guard** — at opening defaults the Thirty must measure ≥ 6 dB brighter at
 3 kHz (rel 1 kHz) than the Twin at its defaults (measured ≈ 19 vs 7 dB), so no future
 regression can let the chime king open muddier than the blackface clean.
+
+### §23 second amendment — the "not enough breakup" report: the starved phase inverter
+
+Field report: *"I'm fairly sure the ac30 doesn't have enough gain/breakup, it breaks
+up less easy than the fender twin."* Measured first, and the ear was right again — but
+this time it was not a control law. **The voicing was INVERTED.** A 30 W cathode-biased
+class-A combo is the EARLY-breakup amp of the lineup (edge-of-breakup at moderate
+volume *is* the Vox sound); an 85 W blackface Twin is the clean-headroom king. Ours had
+them the wrong way round.
+
+#### The measurement that opened the case
+
+THD vs the VOLUME knob, 220 Hz, 48 kHz, composed voices at their opening tone knobs,
+no cab (it is linear and identical to both, so it cancels). JCM800 shown as the
+reference dirt voice (its GAIN knob swept, MASTER 0.5):
+
+**BEFORE** — hot-pickup level (0.316 V peak = −10 dBFS):
+
+| VOLUME | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 | 0.9 | 1.0 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **AC30** THD % | 0.80 | 0.78 | 0.76 | 0.74 | 0.74 | 0.83 | 1.18 | 2.18 | 4.40 | 8.74 |
+| **Twin** THD % | 4.11 | 4.18 | 4.29 | 4.45 | 4.67 | 4.90 | 4.99 | 4.60 | 5.98 | 14.13 |
+| **JCM800** THD % | 5.36 | 9.82 | 13.5 | 24.5 | 34.1 | 40.4 | 43.9 | 43.6 | 36.2 | 30.4 |
+
+The Thirty was **cleaner than the Twin at every knob position on its travel**, and only
+crossed 5 % THD wide open. At the standard −20 dBFS pluck level it was flatter still
+(0.25 % from VOLUME 0.1 all the way to 0.6). That is not an AC30; that is a very
+polite hi-fi amp with a Vox tone stack in front of it.
+
+#### The diagnosis, in circuit terms
+
+Stage-by-stage voltages told the story immediately (0.3 V peak in, VOLUME 1.0):
+
+| node | AC30 (before) | Twin |
+|---|---|---|
+| volts at the volume node | 3.65 V | 54.3 V |
+| × interstage handoff → PI grid | **1.10 V** | 8.68 V |
+| PI gain per leg | **×9.1** | ×7.4 (12AT7) |
+| PI idle current / plate | **83 µA, 291.7 V (97 % of B+)** | 232 µA, 386.8 V |
+
+**The AC30's phase inverter was biased nearly to cutoff.** `LtpInverter` is a
+TWO-TERMINAL long tail — grids at 0 V DC, tail resistor straight to ground — so the
+standing current is set entirely by `Rtail`, and at the configured 22 k the pair
+self-biased at **83 µA per triode with its plates parked 8 V below B+**. No real
+guitar-amp LTP idles there: a 12AX7 PI runs **0.5–0.9 mA per triode, plates at 70–85 %
+of B+, ~×25–35 per leg** (real circuits get there by returning the long tail to a
+negative reference, which a two-terminal tail cannot express). Ours measured ×9.1.
+
+That single number explains the whole field report. On an AC30 **the VOLUME knob IS
+the overdrive** — its only job is to drive the phase inverter hard enough to slam the
+EL84 grids (which sit at −9.5 V self-bias and need ~9.5 V of swing). With a PI that
+deaf, wide open with a hot pickup the model handed the power section 1.8 V when the
+section needs ~1.2 V just to *start* moving and ~2 V for 20 % THD. The class-A power
+amp — the cathode bias, the EL84 quad, the GZ34 sag, the entire reason M10.2 exists —
+was never being driven. The header's claim that the PI "runs HOT and clips early" was
+aspiration, contradicted by its own operating point.
+
+Two more constants were compensating for it downstream:
+
+- `Ac30Amp::kInterstageScale = 0.30`, documented as *"higher than the Twin's — the
+  AC30 PI is meant to run HOT"*. But that path is **passive** in the real amp (volume
+  wiper → coupling cap → grid stopper → channel mixing resistors → PI grid), so it can
+  only ever be a divider, and the AC30's wiper carries a single stage's volts where
+  the Twin's carries two stages'. 0.30 was an arbitrary trim, not a divider.
+- `Ac30PowerAmp::kFullScaleSecV = 7.5` — the output normalization. Because the tubes
+  were barely moving, the model needed a small divisor to reach a respectable level:
+  the calibration was **hiding the missing drive**.
+
+**Suspects checked and cleared** (recorded so nobody re-opens them):
+
+- *The preamp is one gain stage short of a real top-boost channel* — TRUE, and
+  measured: the real board is two ECC83 gain stages plus a cathode follower around the
+  treble/bass network; ours is one stage into a stack driven from that stage's plate.
+  But a second common-cathode 12AX7 in this configuration MEASURES **×59.3
+  (+35.5 dB)** on its own, and folding that into the corrected structure lands the
+  OPENING defaults (VOLUME 0.4, standard −20 dBFS pluck → 0.070 V at the PI grid
+  today) at **≈ 4.1 V** of PI drive — which the power section's measured sensitivity
+  curve puts at **> 20 % THD before the player has touched anything**. Permanently
+  saturated, no jangle left. The model therefore keeps the single stage; ledgered below.
+- *The cathode follower would recover the stack's loss* — measured, and it does not:
+  dropping the stack's source impedance from 33.4 kΩ (plate) to 700 Ω (a follower)
+  recovers only **1.8 dB at 220 Hz**. The Vox stack's ~13.8 dB loss is the network,
+  not the source. Not worth the extra triode solve.
+- *`kFullScaleSecV` should be the physical 15.5 V (√(30 W · 8 Ω))* — rejected. Every
+  voice is normalized to its own cranked peak (Twin 24 V, JCM 26 V) so the amps stay
+  level-comparable to each other; forcing the AC30 to a wattmeter would have made it
+  unable to reach full scale at all. It is a normalization, and it follows the
+  measured swing.
+- *The volume taper is starving the knob* — no: the shared `audioTaper` (k = 4) is the
+  same law the Twin and clean120 use, and it matches a real audio pot. The taper was
+  not the problem; what it was scaling was.
+
+#### The fix (gain structure — three constants, no waveshaper, no drive knob)
+
+| constant | before | after | why |
+|---|---|---|---|
+| `Ac30PowerAmp` PI `Rtail` | 22 kΩ | **2.2 kΩ** | lands the textbook 12AX7 LTP point: **0.53 mA/triode, plates 247.1/244.9 V (82 % of B+), gain ×32**. The model equivalent of the real long tail's negative reference. |
+| `Ac30Amp::kInterstageScale` | 0.30 | **0.67** | the wiper→PI-grid path is passive, so it can only be a divider: 0.67 is the two-channel mixing division (each wiper through its own 1 M into the shared PI grid). |
+| `Ac30PowerAmp::kFullScaleSecV` | 7.5 V | **10.0 V** | the normalization follows the measured swing, as the Twin's and JCM's do. Properly driven the secondary reaches 11.8 V cranked; 7.5 would have pushed the output 1.4 dB PAST full scale. Cranked power sine is back at peak **0.88**. |
+
+Nothing was added to the signal path: no distortion stage, no waveshaper, no hidden
+drive. The circuit is the same circuit — its phase inverter is now biased where a
+phase inverter is biased.
+
+Power-section **input sensitivity** after the fix (`Ac30PowerAmp` alone, 220 Hz, volts
+peak at the PI grid) — the curve the numbers above are read against, and the reason
+the amp is no longer deaf:
+
+| PI grid (V pk) | 0.05 | 0.10 | 0.20 | 0.30 | 0.50 | 0.80 | 1.20 | 2.00 | 5.00 | 8.00 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| THD % (after) | 1.05 | 2.09 | 4.07 | 6.23 | 10.4 | 11.9 | 14.6 | 22.1 | 24.2 | 30.5 |
+| THD % (before) | 0.12 | 0.25 | 0.58 | 1.00 | 2.21 | 4.87 | 9.48 | 18.9 | 35.7 | 40.4 |
+
+Same tubes, same EL84 fit, same sag: **the section always could break up — nothing was
+ever reaching it.**
+
+#### AFTER — the same sweeps
+
+Hot-pickup level (0.316 V peak = −10 dBFS):
+
+| VOLUME | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 | 0.9 | 1.0 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **AC30** THD % | 1.27 | 2.00 | 3.07 | 4.60 | 7.06 | **10.75** | 12.30 | 14.11 | 20.12 | 23.28 |
+| **Twin** THD % | 4.11 | 4.18 | 4.29 | 4.45 | 4.67 | **4.90** | 4.99 | 4.60 | 5.98 | 14.13 |
+| **JCM800** THD % | 5.36 | 9.82 | 13.5 | 24.5 | 34.1 | 40.4 | 43.9 | 43.6 | 36.2 | 30.4 |
+
+Standard pluck level (0.1 V peak = −20 dBFS) — the jangle side must survive:
+
+| VOLUME | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 | 0.9 | 1.0 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **AC30** THD % | 0.40 | 0.63 | 0.98 | 1.49 | 2.26 | 3.38 | 4.95 | 7.88 | 11.03 | 12.09 |
+| **Twin** THD % | 1.27 | 1.30 | 1.33 | 1.39 | 1.47 | 1.60 | 1.78 | 2.02 | 2.27 | 2.34 |
+
+Breakup onset (first 0.1 step reaching 5 % THD, hot pickup): **AC30 0.5, Twin 0.9**.
+At the documented mid-knob 0.6 the Thirty is **2.2× dirtier** than the blackface, and
+wide open it sits in saturated class-A crunch (23 % on a sine, 34 % on the suite's
+110 Hz / 0.5 V crank case) with the sag envelope holding a long, flat, compressed
+sustain — measured on the listening renders as a decay that moves only 0.1 dB over
+half a second, the cranked-Vox squash, with no gating or dropout.
+
+At its opening defaults the voice now sits **at** the edge of breakup instead of 15 dB
+below it, which is what a real AC30 at "4" does — and it is 13.3 dB louder at defaults
+than before (player-expectations RMS delta **−11.7 → +1.6 dB**, level with the JCM's
++1.7). That level move is the honest consequence of a knob that finally reaches the
+power tubes, and the per-gear window in `test_player_expectations.cpp` was re-centred
+to match.
+
+#### Honesty about the calibration
+
+The absolute gain is calibrated, not transcribed. A literal AC30 top-boost channel has
+far more preamp gain than this model (see the cleared suspect above) and a real one
+with a humbucker is crunching by "3" on the dial. Our target — audible breakup by
+VOLUME 0.5–0.6 at a hot-pickup level, clean jangle below it, saturation above — sits
+between our old model (~18 dB too clean) and a literal transcription (~17 dB too
+dirty), and it is chosen so the knob's *usable travel* spans clean → edge → crunch the
+way the real amp's does. What is NOT calibrated is the phase-inverter operating point:
+that is a plain circuit correction, and it is where the fix lives.
+
+One more honest note, recorded rather than fixed: **the Twin's 4–5 % THD floor** in
+these tables is preamp clipping, and it is flat across its volume travel because
+`TwinPreamp` places its VOLUME pot AFTER both gain stages (V1 → stack → V2 → volume)
+where the real AB763 puts it right after V1 — so the knob cannot back the clipping
+off. That is the mirror image of this amendment's bug and is **ledgered as a separate
+field item**; it is deliberately untouched here (it would move the Twin's goldens and
+its own suite), which is why the new guard below compares at a mid-volume point and a
+5 % onset threshold rather than assuming the Twin is pristine.
+
+#### The new permanent guard
+
+`test_ac30_amp.cpp` → `testBreakupOrdering` (48 kHz, the AudioWorklet rate the report
+was heard at; the voicing claim is rate-independent and the per-rate circuit behavior
+is already pinned by the nine tests above at 44.1/48/96 k):
+
+1. the AC30's **breakup-onset volume** (first 0.1 step at ≥ 5 % THD, hot pickup) must
+   be **≤ 0.65** — it must actually break up in the usable half of the knob; and
+2. it must be **≥ 0.2 of knob travel BELOW the Twin's** onset (measured 0.5 vs 0.9); and
+3. at the documented mid-volume **0.6** it must measure **≥ 8 % THD** and **≥ 1.8× the
+   Twin's** (measured 10.75 % vs 4.90 %, 2.2×).
+
+Character is guarded in the other direction by the §23 chime/character guard, which
+still passes with an **11.6 dB** margin, plus the class-A chime margin (now **9.0 dBc**
+of 2nd harmonic over the Twin, was 3.8), the sag ordering and its 4–8 dB window (now
+**5.8 dB**), the anti-NFB bit-exactness, the top-boost stack vs analytic H(jω), and
+every DC operating point.
+
+#### Two test probes retuned (they encoded the bug, not the physics)
+
+- **Cathode-bias bloom** (`testCathodeBias`): the probe injected **8 V** at the PI
+  grid. That was "sustained loud" only against a PI that was 11 dB deaf. With the
+  corrected inverter the musical range moved: **0.15 V** at the PI grid is now the
+  edge-of-breakup drive (≈ VOLUME 0.34 with a −10 dBFS pickup), and the bloom is
+  measured there (**Vk +0.44 V**, recovery τ ≈ 1.3 ms against Rk·Ck = 2.5 ms). Newly
+  MEASURED and documented: above ~0.22 V at the PI grid the EL84 grids start
+  conducting (7 V of swing against the −9.5 V self-bias), the coupling caps charge and
+  the bias shifts **COLD** instead — grid-leak blocking. Both regimes are real; the
+  crossover is now a documented property of the model rather than an accident:
+
+  | PI grid drive (V pk) | 0.05 | 0.10 | 0.15 | 0.20 | 0.25 | 0.30 | 0.50 | 1.0 | 8.0 | 45 |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | ΔVk (V) | +0.14 | +0.37 | **+0.44** | +0.25 | −0.10 | −0.51 | −1.65 | −2.39 | +0.14 | +0.56 |
+
+- **TOP CUT** (`testTopCut`): the probe drove the power amp at **0.5 V**, which against
+  the corrected PI is deep saturation — where the clipped level is drive-independent
+  and a treble cut barely moves the output, i.e. the test would have been measuring the
+  clipper instead of the filter. TOP CUT is a LINEAR one-pole per leg, so the probe is
+  now **0.05 V** (MEASURED THD 0.12 %), back in the section's linear region. The
+  re-taper guards from the first amendment are unchanged and still pass (noon is a
+  **0.7 dB** cut at 3 kHz, full cut **10.0 dB**, 150 Hz untouched at 0.12 dB).
+
+#### Golden regenerated — deliberately
+
+`core/tests/goldens/ts_ac30.wav` was regenerated with `scripts/update-goldens.sh`. This
+is exactly the conscious-drift decision the golden gate exists to force: the Thirty's
+voice changed on purpose. **Only that golden moved** — the other four "first five
+minutes" rigs re-render byte-identical, which is itself a useful check that the change
+is confined to the AC30 voice.
+
+#### Ledger additions (M10.2 simplifications)
+
+- The preamp remains **ONE 12AX7 gain stage** into the top-boost stack, where the real
+  top-boost board has two ECC83 gain stages and a cathode follower. Measured cost of
+  literal transcription: +30…+35 dB, which our volume taper cannot spend without
+  saturating the voice at its opening defaults. The absolute gain is therefore
+  calibrated at the (passive, ≤ 1) interstage handoff; the *shape* of the travel —
+  clean → edge → crunch — is what the model reproduces.
+- `LtpInverter` is a **two-terminal tail** (grids at 0 V, tail to ground), so a PI's
+  standing current is set solely by `Rtail`. The AC30's 2.2 kΩ is that network's model
+  equivalent, not a parts-bin value. (The JCM's 10 kΩ / Twin's 22 kΩ are untouched —
+  their voices and goldens are bit-identical.)
+
+#### A/B listening pack
+
+```bash
+# BEFORE/AFTER, same pluck, same knobs — the breakup arrives ~2 knob positions earlier:
+./build/clipper-render --gen pluck:110:3.0 --amp 0.3 --sr 48000 --ac30 --ac30-cab \
+    --ac30-volume 0.5 --ac30-treble 0.6 --ac30-cut 0.5 ac30_breakup_after_vol50.wav
+#   (repeat at --ac30-volume 0.7 / 1.0; the Twin reference for the ordering claim:)
+./build/clipper-render --gen pluck:110:3.0 --amp 0.3 --sr 48000 --twin --twin-cab \
+    --twin-volume 0.7 --twin-treble 0.6 twin_vol70.wav
+```
+
+Rendered peaks (normalized, 1.0 == full scale): AC30 vol 0.5 **0.144 → 0.557**,
+vol 0.7 **0.283 → 0.714**, vol 1.0 **0.561 → 0.781**; the Twin at vol 0.7 sits at
+0.300 and stays glassy. The post-fix VOLUME 0.5 render is now level-matched with the
+pre-fix VOLUME 1.0 render — the same amp, two knob positions of breakup recovered.
+
 ## 24. v1.1 item 4 — Muff "Pi": the four-transistor fuzz + the reusable BjtStage
 
 ROADMAP v1.1's item 4, made real: a trademark-safe homage to the early-70s
