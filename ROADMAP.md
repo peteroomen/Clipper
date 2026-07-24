@@ -469,17 +469,28 @@ how much existing machinery each reuses:
   JUCE; a dev-only `xvfb` snapshot target renders one PNG per amp voice as proof.
   See `docs/DEVELOPMENT.md` → "Native app (JUCE)" → **Editor (neumorphic visual
   pass)**. **PEDAL-BOARD PARITY is now DONE too** ✅ — the fixed RAT → SD-1 pair
-  became the web app's board: all five AUDIO pedal types (RAT, SD-1, TS, Muff,
-  Phaser), any order, add / remove / swap / drag-reorder, each edit bracketed by
-  the worklet's declick fade, with the board saved as non-automatable APVTS state
+  became the web app's board: all six AUDIO pedal types (RAT, SD-1, TS, Muff,
+  Phaser, **Gold** — the v1.1 item 6 "Myth" transparent overdrive, whose native
+  card translates the web 'plate' face: an engraved milled nameplate, gold accent,
+  round stomp), any order, add / remove / swap / drag-reorder, each edit bracketed
+  by the worklet's declick fade, with the board saved as non-automatable APVTS state
   (every existing param id untouched; a pre-parity session migrates back onto its
   old pair). The board keeps the left-to-right layout and gained patch cables, the
   web's four footswitch morphologies, and visible LEDs; the identical-core test now
-  covers multi-pedal chains and a new chain-edit test bounds the seam. The TUNER
-  stays web-only (display-only pedal: it needs a pitch tap + needle widget, and a
-  fake one would be worse than none). See `docs/DEVELOPMENT.md` → **Native
-  pedal-board parity**. Remaining phase-2 native work (the **tuner**, a **dark
-  theme** for the native editor, CLAP) stays parked here.
+  covers multi-pedal chains (including a gold-box board) and a chain-edit test bounds
+  the seam. The board **SCROLLS** ✅ — a horizontal viewport with the input card and
+  amp face pinned outside it, a skeuomorphic rail (a channel milled into the bench
+  carrying a ribbed mat) under the pedals, drag-to-edge auto-scroll, and boundary
+  cables that track the scroll and clamp to a grommet at the viewport edge. This
+  **supersedes** the parity pass's grow-the-window rule: the window minimum is a flat
+  1040 px again however long the chain gets. The TUNER stays web-only (display-only
+  pedal: it needs a pitch tap + needle widget, and a fake one would be worse than
+  none), and **duplicate instances of one pedal type** stay web-only for now — the
+  native engine is one-instance-per-type; the options and a recommendation are
+  written up in `docs/DEVELOPMENT.md` → **Duplicate pedal instances**. See
+  `docs/DEVELOPMENT.md` → **Native pedal-board parity**. Remaining phase-2 native
+  work (the **tuner**, **duplicate instances**, a **dark theme** for the native
+  editor, CLAP) stays parked here.
 - **Riff integration** — Clipper's rig as Riff's practice-tone engine; the
   assistant patterns already converge (both grew an "applied chip" chat UI).
 

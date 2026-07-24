@@ -3144,12 +3144,14 @@ can't test them all"* — along with four visual faults, and one instruction: **
 the left-to-right layout.** This section is what parity now means, and what the
 four visual bugs actually were.
 
-**What the board is now.** Any of the five AUDIO pedal types — RAT, SD-1, TS, Muff,
-Phaser — in any order, each engaged or true-bypassed independently, edited live.
-Each type is instantiable **once**, so the board is a subset and permutation of the
-five. That single constraint is what keeps the engine simple: every model stays a
-plain member of `ClipperEngine`, a reorder is a copy of five ints, and no audio-thread
-allocation, handle table or free is involved anywhere.
+**What the board is now.** Any of the six AUDIO pedal types — RAT, SD-1, TS, Muff,
+Phaser, **Gold** — in any order, each engaged or true-bypassed independently, edited
+live. Each type is instantiable **once**, so the board is a subset and permutation of
+the six. That single constraint is what keeps the engine simple: every model stays a
+plain member of `ClipperEngine`, a reorder is a copy of six ints, and no audio-thread
+allocation, handle table or free is involved anywhere. (What it costs is duplicate
+instances — two Screamers in a row, which the web *can* express. See **Duplicate pedal
+instances** below for what lifting that would take.)
 
 **The tuner is deliberately absent.** It is display-only — no audio DSP; it mutes the
 chain and drives a needle from a pitch-detection tap. Shipping a native tuner means a
@@ -3181,6 +3183,7 @@ New ids, all additive — **every pre-existing id is untouched**:
 | `tsOn` / `tsDrive` / `tsTone` / `tsLevel` | bool, float ×3 | true, 0.5 / 0.5 / 0.75 | `TS_KNOB_DEFAULTS` |
 | `muffOn` / `muffSustain` / `muffTone` / `muffVolume` | bool, float ×3 | true, 0.6 / 0.5 / 0.6 | `MUFF_KNOB_DEFAULTS` |
 | `phaserOn` / `phaserSpeed` | bool, float | true, 0.35 | `PHASER_KNOB_DEFAULTS` |
+| `goldOn` / `goldGain` / `goldTreble` / `goldLevel` | bool, float ×3 | true, 0.35 / 0.5 / 0.7 | `GOLD_KNOB_DEFAULTS` |
 
 The phaser gets **one** knob. The web carries two unused slots so every pedal shares
 one param shape; exposing those to a host would advertise controls that do nothing.
@@ -3188,9 +3191,12 @@ one param shape; exposing those to a host would advertise controls that do nothi
 The board node stores a comma-separated key list (`"rat,muff,phaser"` — the same
 strings `web/src/rig.ts` uses). Parsing drops unknown keys, duplicates and overflow,
 so malformed state degrades to a valid board rather than failing. **The audio thread
-never reads the ValueTree**: `setChainOrder` also publishes a packed snapshot — 3 bits
-of length plus five 3-bit type slots — into an atomic that `snapshotParams()` unpacks
-lock-free.
+never reads the ValueTree**: `setChainOrder` also publishes a packed snapshot into an
+atomic that `snapshotParams()` unpacks lock-free. That snapshot was 3 bits of length
+plus five 3-bit type slots; the gold pedal made the board six deep, which 3-bit slots
+would still have held — but only just, and a seventh type would have aliased into a
+neighbour with no warning. It is now a 4-bit length plus six 4-bit slots, 28 bits,
+with `static_assert`s holding the invariants. Still one `uint32`, so still one store.
 
 Two different defaults, on purpose:
 
@@ -3247,19 +3253,137 @@ Two implementation notes worth keeping:
 - a **move** only permutes the cards, never destroys them, because a live drag calls
   it from inside a card's own mouse handler; add/remove/swap *do* rebuild, so they
   defer to the message loop rather than deleting the chip mid-click;
-- the window's **minimum width tracks the board**. Five pedals cannot be drawn
-  legibly in 1040 px; the first attempt squeezed them into 64 px slivers and pushed
-  the amp off its own card. The editor now asks for the bench it needs (1622 px for a
-  full five-pedal board) instead.
+- ~~the window's **minimum width tracks the board**~~ — **superseded**, see below.
+
+#### The board scrolls (superseding "grow the window")
+
+The parity pass had a third implementation note: the window's minimum width tracked
+the board, so five pedals raised the floor to 1622 px. The reasoning was sound as far
+as it went — squeezing five cards into 1040 px had produced 64 px slivers and pushed
+the amp off its own card, and a legible board is worth asking for room. What it got
+wrong was **whose room it is**. The window belongs to the user; a plugin that widens
+itself because you added a fuzz is a plugin taking a decision that was never its own.
+And it does not scale: the answer to "what happens at eight pedals" was, embarrassingly,
+"a wider monitor".
+
+The field instruction was exact: *"let's do a scrollable pedal board, amp and input can
+stay, that way we can have n pedals."* So:
+
+- the pedal strip lives in a horizontal **`juce::Viewport`**. The **INPUT** card and the
+  **AMP** face stay pinned outside it — the two things you always want on screen are the
+  two ends of the signal path, and they are also the two that never move;
+- the window minimum is a flat **1040 × 560** again, whatever the chain holds;
+- cards **no longer squeeze**. They take their full width and the board overflows. The
+  squeeze law existed only to postpone the grow; with scrolling there is nothing to
+  postpone;
+- a plain **vertical wheel scrolls the board**. JUCE routes `deltaY` to the x axis when x
+  is the only scrollable one, so a mouse works, not just a trackpad. (A wheel over a
+  *knob* still moves the knob — that is the host-wide convention and the web behaves the
+  same; scroll over the chassis or the rail instead.)
+
+Two affordances, because overflow has to be *visible* before anyone thinks to scroll: a
+slim neumorphic **scrollbar** (`ClipperLookAndFeel::drawScrollbar` — a carved track and a
+soft capsule, so it belongs to the bench rather than arriving as a stock grey OS bar
+across the pedalboard), and a soft **edge veil** on whichever side still has board hidden
+past it.
+
+**Drag still works, and now auto-scrolls.** Drag a card within 56 px of either viewport
+edge and a 24 ms pump slides the board under a stationary pointer, re-evaluating the drop
+target each tick — so a pedal can be dragged to a position that is currently off screen.
+The card's grip reports in *content* coordinates; the editor keeps the pointer's
+*viewport* x separately, because during an auto-scroll the pointer is the thing standing
+still.
+
+#### The rail
+
+The pedals stand on something. A **channel milled into the porcelain bench** — the same
+inset recipe `board.css` uses for `.board-source`, scaled up to a plank — carrying a
+**ribbed rubber mat**. Nothing is photographed: the ribs are strokes (a light edge and a
+dark valley each, the way moulded matting catches a lamp) and the depth is shadow, per
+doctrine §17. The mat is deliberately a *warm* dark grey rather than the chassis's cool
+charcoal, so a pedal never dissolves into the thing it is standing on.
+
+It rides up behind the enclosures and leaves a lip in front, so only the slivers between
+pedals and that lip are ever seen — which is exactly what a loaded board looks like. And
+it spans the **whole scrolled content**, so on a long chain it runs off both edges of the
+viewport: the clearest possible statement that there is more board out there.
+
+#### Cables across the scroll seam
+
+Cables *between* pedals live inside the viewport and scroll for free — they are drawn by
+the component the cards live in, in the same coordinate space.
+
+The two **boundary** cables (input → first pedal, last pedal → amp) have one end on the
+fixed bench and one end inside the scrolling content. They **track the scroll**: the
+board-side jack is pushed through the viewport transform on every repaint, so the span and
+the sag follow the board as it moves. When that jack scrolls out past the viewport edge
+the end is **clamped to the edge** and a jack plate is drawn there — the cable then reads
+as entering a grommet on the side of the board, which is what a real board does with a
+lead that leaves it. Clamping is not a cosmetic nicety: an unclamped transform draws the
+input cable *backwards over the input card* the moment you scroll right.
+
+The cost is a full editor repaint per scroll step, which is what `BoardViewport::onScroll`
+is for. At this component count it is not close to a problem.
+
+#### Duplicate pedal instances (assessed, not built)
+
+"n pedals" has a second reading the native app does **not** yet satisfy. The web can host
+two of the *same* type — `createPedalId` mints a fresh id each time, so two Screamers in
+a row is a legal rig — where native is one-instance-per-type. Scrolling makes the gap
+newly obvious: the board can now be as long as you like, and yet it still tops out at six
+pedals because it tops out at six *types*.
+
+What it would actually take, in ascending order of awkwardness:
+
+1. **DSP state — easy.** Each type becomes a small pool rather than a member: e.g.
+   `std::array<TsModel, kMaxDup>` prepared up front, or an `OwnedArray` sized on the
+   message thread and swapped in at the declick zero. Either keeps the audio thread
+   allocation-free, which is the property worth defending. The chain becomes a list of
+   `(type, slot)` rather than a list of types, and the packed snapshot widens again —
+   at 4 bits of type plus 2-3 bits of slot per entry, eight entries no longer fit a
+   `uint32`, so the publish becomes a small double-buffered struct with a sequence
+   counter (still lock-free, no longer a single word).
+
+2. **Parameter model — the real cost.** APVTS layouts are **static**. Today's design
+   leans on that: every type's knobs exist always, and the engine ignores off-board
+   pedals. Duplicates break the one-knob-set-per-type assumption, and there are only
+   three honest options:
+   - **pre-declare N slots per type** (`ts1Drive`, `ts2Drive`, …). Automatable and
+     round-trips for free, but it multiplies the host's parameter list by N for a
+     feature most rigs never use, and picking N is picking an arbitrary ceiling —
+     which is the grow-the-window mistake wearing a different hat;
+   - **pre-declare a flat pool of generic slots** (`slot1Knob1…`, N × 3 floats + a
+     bool), with the board node saying which type occupies which slot. Bounded and
+     honest about being a pool, but host automation lanes read as `Slot 3 Knob 2` and
+     the mapping shifts when the board is edited — automation would silently re-point,
+     which is worse than not automating;
+   - **take duplicates out of the parameter system entirely** and store per-instance
+     knobs in the board node alongside the order. Clean, unbounded, round-trips with
+     the session — and gives up host automation for duplicated pedals, which for a
+     second Screamer used as a fixed boost is a genuinely reasonable trade.
+
+3. **Session round-trip — easy either way**, since the board node already carries
+   arbitrary state and already degrades malformed input to a valid board. A pre-duplicate
+   session has one entry per type and migrates untouched.
+
+**Recommendation: option 3 (per-instance knobs in the board node), and not yet.** It is
+the only one that delivers what "n pedals" actually means without inventing a ceiling,
+and it isolates the change to the state tree plus a pooled-DSP swap rather than doubling
+the automatable surface for everyone. But it also means two classes of pedal — automatable
+"first of type", non-automatable duplicates — which is a real wart, and worth confirming
+against a user who has actually wanted two of something before it is built. The identical-
+core test extends to it directly: a board with two Screamers at different drive settings,
+hand-composed against two `TsModel`s.
 
 #### Verification
 
 | Check | Result |
 |---|---|
-| `clipper_identical_core` — 4 amp voices + **3 multi-pedal boards** | ✅ max abs(plugin−ref) = 0.000e+00 (L and R), latency matches the composed models |
+| `clipper_identical_core` — 4 amp voices + **4 multi-pedal boards** (one carrying the GOLD box) | ✅ max abs(plugin−ref) = 0.000e+00 (L and R), latency matches the composed models |
 | `clipper_chain_edit` — reorder / bypass / add / remove mid-signal | ✅ seam step inside the envelope bound; settles at the new board's own level; a knob move never arms the fade; the hard-splice control proves the bound can fail (15×) |
-| Full native `ctest` (2 native + 15 core suites) | ✅ 17/17 |
+| Full native `ctest` (2 native + 16 core suites) | ✅ 18/18 |
 | Editor snapshots, `native_parity_*.png` | ✅ default board, four- and five-pedal boards with cables + LEDs, a reorder, a bypassed pedal, the chorus row at min/default/max window, the Twin tremolo row, all four amp faces |
+| Editor snapshots, `native_scroll_*.png` | ✅ a **six**-pedal board at both scroll extremes and mid-scroll (rail overflowing, boundary cables clamped and tracking), the default board with no scrollbar, the minimum window with the board scrolled and input/amp still pinned, and the GOLD plate face lit and bypassed. The tool *asserts* the six-pedal board overflows, so the scene cannot quietly stop proving anything |
 
 ### Build targets
 
