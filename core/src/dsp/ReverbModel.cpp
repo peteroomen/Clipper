@@ -26,7 +26,7 @@
 //      ─► [ spring 1 ]  +  [ spring 2 ]   (0.5·sum; two detuned springs)
 //      ─► transducer band-limit (HP 150 Hz + LP 5.2 kHz)  ─► ×wetGain  ─► wet
 //
-//   out = cos(mix·π/2)·dry + sin(mix·π/2)·wet     [equal-power mix]
+//   out = cos(mix²·π/2)·dry + sin(mix²·π/2)·wet   [equal-power, squared taper]
 //
 //   Each spring is a FEEDBACK LOOP:
 //
@@ -72,7 +72,10 @@
 //     Gentler (2nd-order) and higher (5.2 vs 4.5 kHz) than M6.7's 4th-order lid, so
 //     the tail keeps some air (>6 kHz is down but NOT dead) instead of sounding dull.
 //
-// EQUAL-POWER MIX. dryGain = cos(mix·π/2), wetGain = sin(mix·π/2). At mix == 0,
+// EQUAL-POWER MIX with a SQUARED KNOB TAPER: dryGain = cos(mix²·π/2), wetGain =
+//   sin(mix²·π/2). The raw equal-power curve reached 38% wet gain at a quarter
+//   turn (field feedback: "saturates a little fast"); squaring the knob keeps the
+//   lower half gradual while the endpoints are untouched. At mix == 0,
 //   cos(0)==1 and sin(0)==0 EXACTLY (IEEE), and the whole network is SKIPPED (fast
 //   path), so reverb == 0 is a BIT-EXACT dry passthrough.
 //
@@ -289,8 +292,13 @@ void ReverbModel::process(const float* in, float* out, int numFrames) {
         const float dry = in[i];
         const float m = d.mix.next();
         const float wet = d.processSample(dry);
-        const float wg = static_cast<float>(std::sin(m * kHalfPi));
-        const float dg = static_cast<float>(std::cos(m * kHalfPi));
+        // Squared knob taper UNDER the equal-power law (field feedback: the raw
+        // equal-power curve "saturates a little fast" — 38% wet gain at a quarter
+        // turn). m^2 keeps the knob gradual and controllable in its lower half
+        // while 0 stays exactly 0 (bit-exact dry) and 1 stays exactly full wet.
+        const float m2 = m * m;
+        const float wg = static_cast<float>(std::sin(m2 * kHalfPi));
+        const float dg = static_cast<float>(std::cos(m2 * kHalfPi));
         out[i] = dg * dry + wg * wet;
     }
 
