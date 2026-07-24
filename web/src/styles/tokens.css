@@ -66,6 +66,12 @@
   --accent-muff-glow: rgba(150, 90, 220, 0.5);
   --accent-phaser: #C4611A; /* phaser — burnt ORANGE (the orange script box) */
   --accent-phaser-glow: rgba(210, 110, 40, 0.5);
+  /* GOLD overdrive (v1.1 item 6) — antique/metallic GOLD, the one colour everyone
+     names when they name that pedal. Deliberately warmer and less lemon than
+     --accent-sd (the SD-1's yellow) and browner than --accent-jcm's brass, so the
+     three read apart at a glance; the 'plate' face carries the rest of the identity. */
+  --accent-gold: #8F6A22;
+  --accent-gold-glow: rgba(190, 145, 55, 0.5);
   --accent-tuner: var(--seg-green); /* tuner — its green lock color */
   --accent-tuner-glow: var(--seg-green-glow);
   /* M9.4 JCM800 amp — GOLD/BRASS accent (the Marshall gold-plexi wink), a readable
@@ -137,6 +143,8 @@
     --accent-muff-glow: rgba(176, 123, 232, 0.6);
     --accent-phaser: #FF8C3A; /* bright orange, glows on the dark board */
     --accent-phaser-glow: rgba(255, 140, 58, 0.55);
+    --accent-gold: #D9B36B; /* antique champagne gold, glows on the dark board */
+    --accent-gold-glow: rgba(217, 179, 107, 0.55);
     --accent-tuner: var(--seg-green);
     --accent-tuner-glow: var(--seg-green-glow);
     /* M9.4 JCM800 — brighter brass gold, glows on the dark board */
@@ -177,6 +185,7 @@
   --accent-ts: #1E9E5A; --accent-ts-glow: rgba(46,200,120,.55);
   --accent-muff: #7A3FBF; --accent-muff-glow: rgba(150,90,220,.5);
   --accent-phaser: #C4611A; --accent-phaser-glow: rgba(210,110,40,.5);
+  --accent-gold: #8F6A22; --accent-gold-glow: rgba(190,145,55,.5);
   --accent-jcm: #A87A18; --accent-jcm-glow: rgba(198,148,30,.5);
   --accent-twin: #4E7BA8; --accent-twin-glow: rgba(78,123,168,.5);
   --accent-ac30: #B4612C; --accent-ac30-glow: rgba(180,97,44,.5);
@@ -203,6 +212,7 @@
   --accent-ts: #2FD07A; --accent-ts-glow: rgba(60,220,135,.6);
   --accent-muff: #B98CEE; --accent-muff-glow: rgba(176,123,232,.6);
   --accent-phaser: #FF8C3A; --accent-phaser-glow: rgba(255,140,58,.55);
+  --accent-gold: #D9B36B; --accent-gold-glow: rgba(217,179,107,.55);
   --accent-jcm: #E8B84B; --accent-jcm-glow: rgba(232,184,75,.55);
   --accent-twin: #7FB4E8; --accent-twin-glow: rgba(127,180,232,.55);
   --accent-ac30: #E08A4A; --accent-ac30-glow: rgba(224,138,74,.55);

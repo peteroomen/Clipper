@@ -29,7 +29,12 @@ export type SourceKind = 'test' | 'live';
 // of sustain): SAME three-knob shape/ABI, its slots reading as SUSTAIN / TONE /
 // VOLUME (distortion==Sustain, filter==Tone, level==Volume). It is the first BJT
 // (Ebers-Moll) voice; the ABI stays pedal-agnostic.
-export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'phaser' | 'tuner';
+// v1.1 item 6 adds 'gold' (the GOLD "transparent" overdrive — the gold-box legend):
+// SAME three-knob shape/ABI, its slots reading as GAIN / TREBLE / OUTPUT
+// (distortion==Gain, filter==Treble, level==Output). Its architecture is the odd one
+// out: a PARALLEL clean/dirt blend cross-faded by a dual-ganged gain pot, with
+// germanium clippers — so at GAIN 0 it is a genuinely clean buffer/boost.
+export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'phaser' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
@@ -60,7 +65,7 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412', number> = {
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'phaser', 'tuner'];
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'phaser', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = ['clean120', 'jcm800', 'twin', 'ac30'];
@@ -201,6 +206,17 @@ export const MUFF_KNOB_DEFAULTS: PedalParams = {
   level: 0.6,
 };
 
+// GOLD (v1.1 item 6) opening state. Same param slots, reading as GAIN / TREBLE /
+// OUTPUT: GAIN 0.35 (the way the pedal is actually used — a mostly-clean blend with
+// a little grit riding on top, the "always-on" setting), TREBLE 0.5 (flat — the tilt
+// is exactly unity at noon), OUTPUT 0.7 (above the unity point at 0.5, so it opens
+// as a modest boost, which is what this box is for).
+export const GOLD_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.35,
+  filter: 0.5,
+  level: 0.7,
+};
+
 // Phaser ("Ninety", v1.1) opening state. ONE real knob: slot 0 (distortion) is
 // SPEED — opens at a slow/medium ~0.35 (a classic gentle sweep, ~0.7 Hz on the
 // log map). Slots 1/2 are carried but unused (fixed script-authentic depth, no
@@ -217,6 +233,7 @@ export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   sd1: SD1_KNOB_DEFAULTS,
   ts: TS_KNOB_DEFAULTS,
   muff: MUFF_KNOB_DEFAULTS,
+  gold: GOLD_KNOB_DEFAULTS,
   phaser: PHASER_KNOB_DEFAULTS,
   // The tuner has no knobs; params are unused but keep the shared shape.
   tuner: KNOB_DEFAULTS,
@@ -321,6 +338,7 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
     : p.type === 'sd1' ? 'sd1'
     : p.type === 'ts' ? 'ts'
     : p.type === 'muff' ? 'muff'
+    : p.type === 'gold' ? 'gold'
     : p.type === 'phaser' ? 'phaser'
     : 'rat';
   return {

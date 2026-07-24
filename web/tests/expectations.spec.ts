@@ -27,6 +27,7 @@ const DIRT_PEDALS = [
   { type: 'sd1', params: { distortion: 0.5, filter: 0.5, level: 0.7 } },
   { type: 'ts', params: { distortion: 0.5, filter: 0.5, level: 0.75 } },
   { type: 'muff', params: { distortion: 0.6, filter: 0.5, level: 0.6 } },
+  { type: 'gold', params: { distortion: 0.35, filter: 0.5, level: 0.7 } },
 ] as const;
 
 // Documented sanity windows (dBFS RMS over the settled window), derived from the
@@ -34,6 +35,8 @@ const DIRT_PEDALS = [
 // (vol 0.4) + cab + limiter stage this spec renders through:
 //   dirt pedal into the default clean rig, −20 dBFS 220 Hz source:
 //     measured 2026-07: rat −17.5, sd1 −14.3, ts −16.4, muff −10.5 dBFS
+//     (v1.1 item 6) gold −22.8 dBFS, peak 0.106 — the quietest of the dirt boxes at
+//     its defaults, as a mostly-clean blend should be; still 9 dB inside the window
 //   amp voices alone (pedal bypassed), −16.5 dBFS 220 Hz source:
 //     measured 2026-07: clean120 −21.7, jcm800 −14.5, twin −28.7, ac30 −26.5 dBFS
 // Windows are the measured spread ± ~8 dB — the next "no balls" (−20 dB) or

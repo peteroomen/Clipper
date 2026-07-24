@@ -465,6 +465,56 @@ test('assistant: add_pedal adds a Muff Pi fuzz (round-trip)', async ({ page }) =
   expect(pedals[1].params).toEqual({ distortion: 0.6, filter: 0.5, level: 0.6 });
 });
 
+// v1.1 item 6: the coach can ADD the GOLD "Myth" overdrive (add_pedal type:'gold').
+// A canned tool_use appends the gold box; verify the chip, that it renders on the
+// board with its 'plate' (engraved-nameplate) face and GAIN/TREBLE/OUTPUT knobs, and
+// that the rig round-trips a 'gold' pedal with its defaults (0.35 / 0.5 / 0.7).
+const ADD_GOLD_TURN = sse([
+  { type: 'message_start', message: { id: 'msg_gd', type: 'message', role: 'assistant', content: [] } },
+  { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+  { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Adding the gold box — low gain, output up, always on.' } },
+  { type: 'content_block_stop', index: 0 },
+  { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_gd', name: 'add_pedal', input: {} } },
+  { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"type":"gold"}' } },
+  { type: 'content_block_stop', index: 1 },
+  { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 12 } },
+  { type: 'message_stop' },
+]);
+
+test('assistant: add_pedal adds the GOLD transparent overdrive (round-trip)', async ({ page }) => {
+  let call = 0;
+  await page.route('**/api/health', mockHealthOk);
+  await page.route('**/api/chat', async (route) => {
+    call += 1;
+    if (call === 1) {
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: ADD_GOLD_TURN });
+    } else {
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: FOLLOWUP });
+    }
+  });
+
+  await page.goto('/');
+  await page.getByTestId('chat-input').fill('I want a transparent always-on boost');
+  await page.getByTestId('chat-send').click();
+
+  // The chip renders and a second board unit appears with the gold 'plate' face.
+  await expect(page.getByTestId('tool-chips')).toContainText('Myth');
+  await expect(page.getByTestId('board-unit-1')).toBeVisible();
+  const gold = page.getByTestId('board-unit-1').getByTestId('pedal');
+  await expect(gold).toHaveAttribute('data-pedal-type', 'gold');
+  await expect(gold).toHaveAttribute('data-face', 'plate');
+  // The real panel's trio (Gain / Treble / Output).
+  await expect(gold.getByTestId('knob-gain')).toBeVisible();
+  await expect(gold.getByTestId('knob-treble')).toBeVisible();
+  await expect(gold.getByTestId('knob-output')).toBeVisible();
+
+  // Rig state round-trips: a second pedal of type 'gold' with the GOLD defaults.
+  const pedals = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().pedals);
+  expect(pedals.length).toBe(2);
+  expect(pedals[1].type).toBe('gold');
+  expect(pedals[1].params).toEqual({ distortion: 0.35, filter: 0.5, level: 0.7 });
+});
+
 // v1.1: the coach can ADD a phaser (add_pedal type:'phaser'). A canned tool_use
 // appends one; verify the chip, the rig state, and that its one-knob face renders.
 const ADD_PHASER_TURN = sse([

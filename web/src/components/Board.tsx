@@ -63,6 +63,7 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   sd1: 'SD-type overdrive',
   ts: 'Screamer overdrive (green)',
   muff: 'Pi fuzz (violet, big box)',
+  gold: 'Myth overdrive (gold, transparent)',
   phaser: 'Script phaser',
   tuner: 'Chromatic tuner',
 };

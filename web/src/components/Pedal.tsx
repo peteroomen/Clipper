@@ -14,6 +14,9 @@
 // slots so distortion==Drive, filter==Tone):
 //   rat  — 'stack'   : tall box, big centered 3-knob trio, condensed "Rodent"
 //                      logo, round stomp, red accent. It IS the reference.
+//   gold — 'plate'   : the gold-box legend — knob row over an ENGRAVED NAMEPLATE
+//                      band, round stomp, GOLD accent. Type only on the plate: the
+//                      original's engraved figure IS its trademark.
 //   sd1  — 'compact' : Boss-compact HOMAGE — a knob row with clear air across the
 //                      top over a wide flat hinged TREADLE that owns the LOWER
 //                      body (the footswitch is the treadle), yellow accent.
@@ -43,7 +46,7 @@ interface KnobSpec {
   param: ParamName;
   testId: string;
 }
-type FaceLayout = 'stack' | 'compact' | 'slim' | 'single' | 'wide';
+type FaceLayout = 'stack' | 'compact' | 'slim' | 'single' | 'wide' | 'plate';
 interface PedalFace {
   layout: FaceLayout;
   model: string; // small model line (top eyebrow)
@@ -110,6 +113,24 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Sustain', aria: 'Sustain', param: 'distortion', testId: 'knob-sustain' },
       { name: 'Volume', aria: 'Volume', param: 'level', testId: 'knob-volume' },
       { name: 'Tone', aria: 'Tone', param: 'filter', testId: 'knob-tone' },
+    ],
+  },
+  // v1.1 item 6 GOLD: the hoarded gold-box overdrive. Its morphology cue is the
+  // 'plate' face — an ENGRAVED NAMEPLATE band across the mid body (the original is
+  // known for its engraved enclosure art; we take the ENGRAVING IDEA, never the
+  // artwork), knob row above it, round stomp below. GOLD accent (the one colour
+  // everyone names when they name this pedal — a colour is fair game). "Myth" is the
+  // wink: the pedal that became a legend, hoarded and flipped for absurd money. No
+  // Klon/Centaur/KTR text and emphatically NO centaur/horse graphic — that figure is
+  // the trademark, so the plate carries type only.
+  gold: {
+    layout: 'plate',
+    model: 'DRIVE Nº6 · GOLD',
+    wordmark: 'Myth',
+    knobs: [
+      { name: 'Gain', aria: 'Gain', param: 'distortion', testId: 'knob-gain' },
+      { name: 'Treble', aria: 'Treble', param: 'filter', testId: 'knob-treble' },
+      { name: 'Output', aria: 'Output', param: 'level', testId: 'knob-output' },
     ],
   },
   phaser: {
@@ -205,6 +226,20 @@ export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
           {knobs}
           <div className="slim-wordmark display">{face.wordmark}</div>
           <div className="fsw-zone pad-zone">{footswitch}</div>
+        </>
+      ) : face.layout === 'plate' ? (
+        // 'plate' (the GOLD box): knob row on top, an ENGRAVED NAMEPLATE band across
+        // the mid body carrying the wordmark, round stomp below. Type only — the
+        // original's engraved figure is its trademark and is deliberately absent.
+        <>
+          {knobs}
+          <div className="name-plate" aria-hidden="true">
+            <span className="name-plate-text">{face.wordmark}</span>
+          </div>
+          <div className="fsw-zone">
+            {footswitch}
+            <span className="fsw-label">Stomp</span>
+          </div>
         </>
       ) : (
         // 'stack' (RAT three-knob trio) and 'single' (phaser one-knob face) share

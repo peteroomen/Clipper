@@ -360,6 +360,136 @@ test('muff worklet: fuzz makes massive harmonics + a compressed sustain wall', a
   expect(minRatio).toBeGreaterThan(fuzzRatio * 2.0);
 });
 
+// v1.1 item 6 (docs §27): the GOLD "Myth" overdrive renders through the worklet and
+// proves its two defining behaviours end-to-end. (a) TRANSPARENT at GAIN 0: the
+// clipped half of the ganged blend is switched OUT, so the output is the input —
+// same level (OUTPUT at noon is exactly unity) and essentially no new harmonics, a
+// thing no other dirt pedal here can do. (b) At high GAIN it clearly distorts (a big
+// 3rd harmonic). (c) The clean blend keeps it TOUCH-SENSITIVE even when pushed: a
+// 20 dB softer pick still moves the output a lot (contrast the Muff's wall, whose
+// output barely moves at all).
+test('gold worklet: transparent at min gain, harmonics + touch response when pushed', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async (seconds) => {
+    const sampleRate = 48000;
+
+    async function render(chain: Array<Record<string, unknown>>, amp: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      let ctx: OfflineAudioContext | null = null;
+      for (let attempt = 0; attempt < 4 && !ctx; attempt++) {
+        const c = new OfflineAudioContext(1, length, sampleRate);
+        try {
+          await Promise.race([
+            c.audioWorklet.addModule('/generated/clipper-processor.js'),
+            new Promise((_r, rej) => setTimeout(() => rej(new Error('addModule timeout')), 6000)),
+          ]);
+          ctx = c;
+        } catch {
+          /* fresh context, retry */
+        }
+      }
+      if (!ctx) throw new Error('addModule failed after retries');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 6000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') { clearTimeout(t); resolve(); }
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true }); // pure pedal proof
+        node.port.postMessage({ type: 'chain', pedals: chain });
+        node.port.postMessage({ type: 'oversampling', factor: 4 });
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: amp });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+
+    function goertzel(data: Float32Array, sr: number, freq: number): number {
+      const start = Math.floor(sr * 0.12);
+      const N = data.length - start;
+      const k = (freq / sr) * N;
+      const w = (2 * Math.PI * k) / N;
+      const c = 2 * Math.cos(w);
+      let s1 = 0, s2 = 0;
+      for (let i = start; i < data.length; i++) { const s0 = data[i] + c * s1 - s2; s2 = s1; s1 = s0; }
+      const re = s1 - s2 * Math.cos(w), im = s2 * Math.sin(w);
+      return (2 * Math.sqrt(re * re + im * im)) / N;
+    }
+    function rms(data: Float32Array, sr: number): number {
+      const start = Math.floor(sr * 0.12);
+      let sum = 0, n = 0;
+      for (let i = start; i < data.length; i++) { sum += data[i] * data[i]; n++; }
+      return Math.sqrt(sum / n);
+    }
+
+    // GAIN 0 with OUTPUT at noon: the pedal's documented unity/clean calibration.
+    const goldClean = (a: number) =>
+      render([{ id: 'g', type: 'gold', engaged: true, params: { distortion: 0.0, filter: 0.5, level: 0.5 } }], a);
+    // GAIN 0.9: pushed, but the clean core is still in the mix.
+    const goldPushed = (a: number) =>
+      render([{ id: 'g', type: 'gold', engaged: true, params: { distortion: 0.9, filter: 0.5, level: 0.5 } }], a);
+    // GAIN 0.35: the shipped default — the "always-on" setting the pedal is famous
+    // for, where the clean core dominates and the playing dynamics survive.
+    const goldDefault = (a: number) =>
+      render([{ id: 'g', type: 'gold', engaged: true, params: { distortion: 0.35, filter: 0.5, level: 0.5 } }], a);
+    const bypass = (a: number) =>
+      render([{ id: 'g', type: 'gold', engaged: false, params: { distortion: 0.9, filter: 0.5, level: 0.5 } }], a);
+
+    const clean = await goldClean(0.3);
+    const pushed = await goldPushed(0.3);
+    const defHot = await goldDefault(0.3);
+    const defSoft = await goldDefault(0.03); // 20 dB softer pick
+    const dry = await bypass(0.3);
+
+    return {
+      cleanF1: goertzel(clean, sampleRate, 220),
+      cleanH3: goertzel(clean, sampleRate, 660),
+      cleanRms: rms(clean, sampleRate),
+      dryF1: goertzel(dry, sampleRate, 220),
+      dryH3: goertzel(dry, sampleRate, 660),
+      dryRms: rms(dry, sampleRate),
+      pushedF1: goertzel(pushed, sampleRate, 220),
+      pushedH3: goertzel(pushed, sampleRate, 660),
+      defHotRms: rms(defHot, sampleRate),
+      defSoftRms: rms(defSoft, sampleRate),
+    };
+  }, RENDER_SECONDS);
+
+  // (a) TRANSPARENT at GAIN 0: same level as the bypassed (dry) path within ~1 dB,
+  // and the 3rd harmonic stays down at the dry path's own noise level.
+  const levelRatio = result.cleanRms / result.dryRms;
+  expect(levelRatio).toBeGreaterThan(0.9);
+  expect(levelRatio).toBeLessThan(1.1);
+  expect(result.cleanH3).toBeLessThan(result.cleanF1 * 0.01);
+
+  // (b) PUSHED: a big 3rd harmonic that the transparent setting simply does not make.
+  expect(result.pushedH3).toBeGreaterThan(result.pushedF1 * 0.1);
+  expect(result.pushedH3).toBeGreaterThan(result.cleanH3 * 20);
+
+  // (c) TOUCH RESPONSE survives at the shipped GAIN default: 20 dB softer picking
+  // still drops the output ~10 dB (measured ratio 3.13 — the parallel clean path is
+  // never compressed), where a fuzz's wall barely moves at all (< 2.0, see the Muff
+  // test above).
+  const dynamics = result.defHotRms / result.defSoftRms;
+  expect(dynamics).toBeGreaterThan(2.5);
+});
+
 // M5: amp tone is audibly measurable through the FULL chain (pedal -> amp ->
 // cab). Treble at max vs min changes the 5 kHz content (treble shelf @ 3.5 kHz).
 test('amp: treble knob changes 5 kHz content through the full chain', async ({ page }) => {

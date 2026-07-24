@@ -19,6 +19,7 @@
 .pedal[data-pedal-type="muff"]  { --pedal-accent: var(--accent-muff);  --pedal-accent-glow: var(--accent-muff-glow); }
 .pedal[data-pedal-type="tuner"] { --pedal-accent: var(--accent-tuner); --pedal-accent-glow: var(--accent-tuner-glow); }
 .pedal[data-pedal-type="phaser"] { --pedal-accent: var(--accent-phaser); --pedal-accent-glow: var(--accent-phaser-glow); }
+.pedal[data-pedal-type="gold"]  { --pedal-accent: var(--accent-gold);  --pedal-accent-glow: var(--accent-gold-glow); }
 .pedal.raised {
   background:
     linear-gradient(160deg, var(--chassis-tint, transparent), var(--chassis-tint, transparent)),
@@ -291,6 +292,52 @@
 /* A subtle orange sweep arc etched around the hero knob's zone, echoing the LFO
    motion — small-area accent, neumorphic-safe. */
 .pedal[data-face="single"] .pedal-logo { margin-bottom: 14px; }
+
+/* ---- GOLD 'plate' face: the engraved gold box (v1.1 item 6) ----
+   The original is remembered for two things: the colour, and the fact that its
+   enclosure is ENGRAVED rather than printed. We take the colour (fair game) and the
+   IDEA of an engraved nameplate — never the artwork, and emphatically not the
+   figure that is the actual trademark. Morphology cue: a milled NAMEPLATE band
+   across the mid body between the knob row and a round stomp, with a hairline gold
+   rule above and below. Slightly wider than the RAT stack, squarer than the
+   Ibanez-format 'slim'. GOLD accent (arcs / readouts / LED). */
+.pedal[data-face="plate"] {
+  width: 344px;
+  padding-top: 22px;
+}
+.pedal[data-face="plate"] .knob-row {
+  --kd: 60px; /* three knobs ride the top row with air */
+  gap: 26px;
+  justify-content: center;
+  margin: 12px 0 20px;
+}
+.pedal[data-face="plate"] .k-name { letter-spacing: .16em; }
+/* The milled plate: a recessed band with engraved (not printed) lettering — the
+   text is cut INTO the surface (dark shadow above, faint light below), the inverse
+   of the RAT logo's raised emboss. */
+.name-plate {
+  margin: 2px 0 18px;
+  padding: 13px 0 12px;
+  border-radius: 6px;
+  text-align: center;
+  background: linear-gradient(160deg, #23262b, #1b1e22);
+  box-shadow:
+    inset 2px 3px 6px var(--sh-darker),
+    inset -1px -1px 3px var(--sh-light),
+    0 1px 0 rgba(255, 255, 255, 0.04);
+  border-top: 1px solid color-mix(in srgb, var(--pedal-accent, #b9932f) 55%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--pedal-accent, #b9932f) 40%, transparent);
+}
+.name-plate-text {
+  font-family: "Optima", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 27px; line-height: 1;
+  text-transform: uppercase; letter-spacing: .42em; text-indent: .42em;
+  color: color-mix(in srgb, var(--pedal-accent, #b9932f) 78%, var(--ink));
+  /* engraved: cut in from above, catching light on the lower lip */
+  text-shadow: 0 -1px 1px rgba(0, 0, 0, 0.75), 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+.pedal[data-face="plate"]:not(.on) .name-plate-text { opacity: .55; }
+.pedal[data-face="plate"] .fsw-zone { margin-top: 18px; }
 
 /* ---- Muff "Pi" 'wide' face: the physically HUGE fuzz (v1.1 item 4) ----
    The Muff is a big box — that's its morphology cue. A BROADER enclosure with the
