@@ -2222,7 +2222,10 @@ new UI bound to an old engine — trim knobs that do nothing, etc.).
 
 ## Mac app (Electron)
 
-**One-shot build & launch (on the Mac):** `bash scripts/mac.sh` — builds the
+**One-shot build & launch (on the Mac):** `bash scripts/mac.sh` (Electron) or
+`bash scripts/native.sh` (JUCE Standalone — the LOW-LATENCY path; prefer it for
+playing, especially the tube amps: WASM runs the JCM800 near the realtime
+edge, native has ample headroom; `--plugins` also builds VST3 + AU for Logic) — builds the
 web app, packages the arm64 .app, and opens it. `--dmg` also produces the
 installer; `--dev` skips packaging for the fastest loop. Refuses to run under
 Rosetta Node.
