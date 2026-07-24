@@ -96,6 +96,9 @@ emcc \
     "$CORE_DIR/src/dsp/TwinPreamp.cpp" \
     "$CORE_DIR/src/dsp/TwinPowerAmp.cpp" \
     "$CORE_DIR/src/dsp/TwinAmp.cpp" \
+    "$CORE_DIR/src/dsp/Ac30Preamp.cpp" \
+    "$CORE_DIR/src/dsp/Ac30PowerAmp.cpp" \
+    "$CORE_DIR/src/dsp/Ac30Amp.cpp" \
     -I "$CORE_DIR/include" \
     -isystem "$WDF_INC" \
     -O3 \

@@ -34,8 +34,8 @@ export interface RigController {
   // Cab expansion: switch between the BUILT-IN cabs ('clean212' | 'brit412').
   // Never selects 'custom' (that needs a user file upload).
   setCab: (cab: 'clean212' | 'brit412') => void;
-  // M9.4/M10.1: swap the amp voice ('clean120' | 'jcm800' | 'twin').
-  setAmp: (type: 'clean120' | 'jcm800' | 'twin') => void;
+  // M9.4/M10.1/v1.1: swap the amp voice ('clean120' | 'jcm800' | 'twin' | 'ac30').
+  setAmp: (type: 'clean120' | 'jcm800' | 'twin' | 'ac30') => void;
   // Chain edits (M6.4). addPedal returns the new instance's chain index.
   addPedal: (type: string, position?: number) => number;
   removePedal: (index: number) => void;
@@ -76,6 +76,12 @@ export const TOOLS = [
       "it). The JCM also uses 'bass'/'middle'/'treble' (its Marshall tone stack) but " +
       "IGNORES volume/speed/depth/reverb (a real 2204 has no chorus, reverb, or " +
       "separate volume). " +
+      "AC30 'top boost' amp params (only when the AC30 is the active amp — see set_amp): " +
+      "it uses 'volume' (which IS its overdrive — crank for class-A grind), 'bass'/" +
+      "'treble' (the top-boost tone stack; NO 'middle'), 'reverb', and REUSES the " +
+      "'presence' param as its top CUT control — INVERTED, so HIGHER 'presence' = " +
+      "DARKER/smoother (tames the top without losing chime). It IGNORES middle/gain/" +
+      "master/bright/chorus. " +
       "Input params: 'trim' — the rig-level INPUT gain BEFORE the pedal " +
       "(0..1 maps to -12..+24 dB, 1/3 = 0 dB). Raise it when the input peak is " +
       "weak (below ~-12 dBFS) so the guitar actually drives the diodes; lower it " +
@@ -185,7 +191,7 @@ export const TOOLS = [
   {
     name: 'set_amp',
     description:
-      'Choose the AMP head. Three voices: ' +
+      'Choose the AMP head. Four voices: ' +
       "'clean120' — the JC-120-style solid-state CLEAN platform (linear; all the " +
       'dirt comes from the pedals in front; has the bright switch, stereo chorus/' +
       'vibrato, and spring reverb). ' +
@@ -202,11 +208,19 @@ export const TOOLS = [
       'the panel but really amplitude tremolo). Reach for the Twin for pristine cleans, ' +
       'shimmer, surf, and the classic reverb-and-tremolo combo; the BRIGHT switch bites ' +
       'at low volume. A real Twin is a 2×12, so it pairs best with the Clean 2×12 cab. ' +
-      'Switching is click-free; the cab and pedals carry over.',
+      "'ac30' — a 'top boost' class-A combo: the CHIME/JANGLE voice (bright, glassy, " +
+      'harmonically rich). A valve amp whose VOLUME knob IS the overdrive — crank the ' +
+      'volume for the class-A grind and shimmer (it is not a clean-only amp and there is ' +
+      'no separate gain knob). It has VOLUME + a bass/treble TOP-BOOST stack + a CUT ' +
+      'control + a spring REVERB. CUT tames the top WITHOUT losing the chime the way ' +
+      'pulling treble down would — and it is INVERTED: higher CUT = darker. No middle/' +
+      'gain/master/bright/chorus. The chime-and-jangle of a Rickenbacker into a top-boost ' +
+      'combo, from the Beatles through Britpop to Radiohead. Switching is click-free; the ' +
+      'cab and pedals carry over.',
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['clean120', 'jcm800', 'twin'] },
+        type: { type: 'string', enum: ['clean120', 'jcm800', 'twin', 'ac30'] },
       },
       required: ['type'],
       additionalProperties: false,
@@ -477,9 +491,16 @@ export function executeTool(
 
   if (name === 'set_amp') {
     const type =
-      input.type === 'jcm800' ? 'jcm800' : input.type === 'twin' ? 'twin' : 'clean120';
+      input.type === 'jcm800' ? 'jcm800'
+      : input.type === 'twin' ? 'twin'
+      : input.type === 'ac30' ? 'ac30'
+      : 'clean120';
     controller.setAmp(type);
-    const chipName = type === 'jcm800' ? 'JCM800' : type === 'twin' ? 'Twin Sixty-Five' : 'Clean 120';
+    const chipName =
+      type === 'jcm800' ? 'JCM800'
+      : type === 'twin' ? 'Twin Sixty-Five'
+      : type === 'ac30' ? 'Thirty'
+      : 'Clean 120';
     return {
       content: JSON.stringify({ applied: { amp: type } }),
       chip: `Amp ${chipName}`,

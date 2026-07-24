@@ -26,6 +26,7 @@
 #include "clipper/dsp/Jcm800PowerAmp.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/TwinAmp.h"
+#include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/SdModel.h"
 #include "clipper/dsp/TsModel.h"
 #include "clipper/dsp/MuffModel.h"
@@ -91,6 +92,14 @@ struct Args {
     float twinSpeed = 0.5f;       // tremolo SPEED (0..1, log map ~1..10 Hz)
     float twinIntensity = 0.0f;   // tremolo INTENSITY (0..1, modulation depth)
     bool twinCab = false;         // run the amp through the clean212 2x12 cab
+    // M10.2: the FULL Vox AC30 "top boost" amp (the class-A chime).
+    bool ac30 = false;            // run the composed Ac30Amp (preamp->power->reverb)
+    float ac30Drive = 1.0f;       // input-gain multiplier into V1's grid (volts)
+    float ac30Volume = 0.5f;      // channel VOLUME knob (audio taper — the overdrive)
+    float ac30Bass = 0.5f, ac30Treble = 0.6f;  // top-boost tone knobs (NO mid)
+    float ac30Cut = 0.3f;         // TOP CUT (0..1, inverted sense: higher = darker)
+    float ac30Reverb = 0.0f;      // spring reverb wet mix (0..1)
+    bool ac30Cab = false;         // run the amp through the clean212 2x12 cab
 };
 
 // Output soft limiter, parameterized by threshold so the clean-path A/B can
@@ -197,7 +206,13 @@ struct OldSpringReverb {
         "          -> 12AT7 LTP PI -> 6L6GC quad -> OT -> flat NFB -> light sag),\n"
         "          --twin-drive D, --twin-volume V, --twin-bass/-mid/-treble (0..1),\n"
         "          --twin-bright, --twin-reverb R, --twin-speed S, --twin-intensity I,\n"
-        "          --twin-cab (clean212 2x12), reuses --os.\n",
+        "          --twin-cab (clean212 2x12), reuses --os.\n"
+        "M10.2:    --ac30 (the FULL Vox AC30 'top boost' class-A chime: 12AX7 + top-boost\n"
+        "          stack -> hot LTP PI -> TOP CUT -> cathode-biased EL84 quad -> NO NFB ->\n"
+        "          GZ34 sag -> spring reverb), output NORMALIZED (1.0 == full scale);\n"
+        "          --ac30-drive D, --ac30-volume V, --ac30-bass/-treble (0..1, NO mid),\n"
+        "          --ac30-cut C (TOP CUT, inverted: higher = darker), --ac30-reverb R,\n"
+        "          --ac30-cab (clean212 2x12), reuses --os.\n",
         argv0, argv0, argv0, argv0);
     std::exit(2);
 }
@@ -386,6 +401,14 @@ int main(int argc, char** argv) {
         else if (s == "--twin-speed") a.twinSpeed = std::atof(need("--twin-speed"));
         else if (s == "--twin-intensity") a.twinIntensity = std::atof(need("--twin-intensity"));
         else if (s == "--twin-cab") a.twinCab = true;
+        else if (s == "--ac30") a.ac30 = true;
+        else if (s == "--ac30-drive") a.ac30Drive = std::atof(need("--ac30-drive"));
+        else if (s == "--ac30-volume") a.ac30Volume = std::atof(need("--ac30-volume"));
+        else if (s == "--ac30-bass") a.ac30Bass = std::atof(need("--ac30-bass"));
+        else if (s == "--ac30-treble") a.ac30Treble = std::atof(need("--ac30-treble"));
+        else if (s == "--ac30-cut") a.ac30Cut = std::atof(need("--ac30-cut"));
+        else if (s == "--ac30-reverb") a.ac30Reverb = std::atof(need("--ac30-reverb"));
+        else if (s == "--ac30-cab") a.ac30Cab = true;
         else if (s == "--alias-report") a.aliasReport = true;
         else if (s == "-h" || s == "--help") usage(argv[0]);
         else if (!s.empty() && s[0] == '-') {
@@ -498,6 +521,33 @@ int main(int argc, char** argv) {
         if (!grid.empty())
             amp.process(grid.data(), out.data(), static_cast<int>(grid.size()));
         if (a.twinCab && !out.empty()) {
+            auto ir = clipper::dsp::generateDefaultCab2x12IR(fs);
+            clipper::dsp::CabConvolver cab;
+            cab.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
+            cab.process(out.data(), out.data(), static_cast<int>(out.size()));
+            clipper::dsp::OutputLimiter lim(0.97f);
+            lim.prepare(fs);
+            lim.processMono(out.data(), static_cast<int>(out.size()));
+        }
+    } else if (a.ac30) {
+        // M10.2: the FULL Vox AC30 "top boost" — 12AX7 + top-boost stack -> hot LTP PI
+        // -> TOP CUT -> cathode-biased EL84 quad -> OT -> NO NFB -> GZ34 sag -> spring
+        // reverb. Output is NORMALIZED (1.0 == full scale), NOT re-normalized.
+        // --ac30-cab runs it through the clean212 2x12 (closest 2x12 platform; a future
+        // alnico 2x12 IR is ledgered) with the shipped output limiter.
+        clipper::dsp::Ac30Amp amp;
+        amp.prepare(fs, 128);
+        amp.setOversampling(a.os);
+        amp.setParameter(clipper::dsp::Ac30Amp::PARAM_VOLUME, a.ac30Volume);
+        amp.setParameter(clipper::dsp::Ac30Amp::PARAM_BASS, a.ac30Bass);
+        amp.setParameter(clipper::dsp::Ac30Amp::PARAM_TREBLE, a.ac30Treble);
+        amp.setParameter(clipper::dsp::Ac30Amp::PARAM_TOPCUT, a.ac30Cut);
+        amp.setParameter(clipper::dsp::Ac30Amp::PARAM_REVERB, a.ac30Reverb);
+        std::vector<float> grid(input.size());
+        for (size_t i = 0; i < input.size(); ++i) grid[i] = input[i] * a.ac30Drive;
+        if (!grid.empty())
+            amp.process(grid.data(), out.data(), static_cast<int>(grid.size()));
+        if (a.ac30Cab && !out.empty()) {
             auto ir = clipper::dsp::generateDefaultCab2x12IR(fs);
             clipper::dsp::CabConvolver cab;
             cab.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
@@ -700,7 +750,14 @@ int main(int argc, char** argv) {
         rms += static_cast<double>(v) * v;
     }
     rms = out.empty() ? 0.0 : std::sqrt(rms / out.size());
-    if (a.twin) {
+    if (a.ac30) {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (chain=AC30 FULL amp%s, drive=%.2f, "
+            "volume=%.2f bass=%.2f treble=%.2f cut=%.2f reverb=%.2f, os=%dx)\n"
+            "  normalized peak=%.4f (1.0==full scale)  rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.ac30Cab ? "+clean212 cab" : "", a.ac30Drive,
+            a.ac30Volume, a.ac30Bass, a.ac30Treble, a.ac30Cut, a.ac30Reverb, a.os, peak, rms);
+    } else if (a.twin) {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (chain=Twin FULL amp%s, drive=%.2f, "
             "volume=%.2f bass=%.2f mid=%.2f treble=%.2f bright=%d reverb=%.2f speed=%.2f "

@@ -14,8 +14,10 @@ constexpr int   kCabPartition = 128;  // == worklet render quantum / cab partiti
 // 8× buys nothing at the composed max-gain floor). Independent of the pedal OS.
 constexpr int   kJcmOversampling = 4;
 constexpr int   kTwinOversampling = 4;  // matches the C ABI (docs §20: 4× ships)
+constexpr int   kAc30Oversampling = 4;  // matches the C ABI (docs §23: 4× ships)
 constexpr int   kAmpJcm800 = 1;  // Params::ampModel value for the JCM
 constexpr int   kAmpTwin = 2;    // Params::ampModel value for the Twin
+constexpr int   kAmpAc30 = 3;    // Params::ampModel value for the AC30
 }  // namespace
 
 float trimKnobToGain(float knob01) {
@@ -74,6 +76,16 @@ void ClipperEngine::applyParamsToModels() {
     twin_.setParameter(T::PARAM_REVERB, p.reverb);
     twin_.setParameter(T::PARAM_SPEED, p.chorusSpeed);
     twin_.setParameter(T::PARAM_INTENSITY, p.chorusDepth);
+
+    // AC30 (M10.2): kept current alongside the others. Reuses the shared knobs —
+    // volume + bass/treble + reverb — and REUSES the presence field as its TOP CUT
+    // (docs §23). The AC30 top-boost has NO mid control, so 'middle' never routes here.
+    using X = clipper::dsp::Ac30Amp;
+    ac30_.setParameter(X::PARAM_VOLUME, p.volume);
+    ac30_.setParameter(X::PARAM_BASS, p.bass);
+    ac30_.setParameter(X::PARAM_TREBLE, p.treble);
+    ac30_.setParameter(X::PARAM_TOPCUT, p.jcmPresence);  // presence slot reused as TOP CUT
+    ac30_.setParameter(X::PARAM_REVERB, p.reverb);
 }
 
 void ClipperEngine::setParams(const Params& p) {
@@ -82,6 +94,7 @@ void ClipperEngine::setParams(const Params& p) {
 }
 
 void ClipperEngine::updateParams(const Params& p) {
+    using clipper::dsp::Ac30Amp;
     using clipper::dsp::AmpModel;
     using clipper::dsp::Jcm800Amp;
     using clipper::dsp::RatModel;
@@ -97,27 +110,32 @@ void ClipperEngine::updateParams(const Params& p) {
     if (p.sdTone != o.sdTone)       sd_.setParameter(SdModel::PARAM_TONE, p.sdTone);
     if (p.sdLevel != o.sdLevel)     sd_.setParameter(SdModel::PARAM_LEVEL, p.sdLevel);
 
-    // Amp knobs + toggles. VOLUME feeds clean120 + twin.
+    // Amp knobs + toggles. VOLUME feeds clean120 + twin + ac30.
     if (p.volume != o.volume) {
         amp_.setParameter(AmpModel::PARAM_VOLUME, p.volume);
         twin_.setParameter(TwinAmp::PARAM_VOLUME, p.volume);
+        ac30_.setParameter(Ac30Amp::PARAM_VOLUME, p.volume);
     }
-    // bass/middle/treble are SHARED across ALL THREE amp voices — update every tone
-    // stack so the inactive voices are already correct at a live switch.
+    // bass/treble are SHARED across ALL FOUR amp voices; middle feeds all but the AC30
+    // (top-boost has no mid) — update every tone stack so the inactive voices are
+    // already correct at a live switch.
     if (p.bass != o.bass) {
         amp_.setParameter(AmpModel::PARAM_BASS, p.bass);
         jcm_.setParameter(Jcm800Amp::PARAM_BASS, p.bass);
         twin_.setParameter(TwinAmp::PARAM_BASS, p.bass);
+        ac30_.setParameter(Ac30Amp::PARAM_BASS, p.bass);
     }
     if (p.middle != o.middle) {
         amp_.setParameter(AmpModel::PARAM_MIDDLE, p.middle);
         jcm_.setParameter(Jcm800Amp::PARAM_MID, p.middle);
         twin_.setParameter(TwinAmp::PARAM_MID, p.middle);
+        // AC30 top-boost has NO mid control — 'middle' never reaches it.
     }
     if (p.treble != o.treble) {
         amp_.setParameter(AmpModel::PARAM_TREBLE, p.treble);
         jcm_.setParameter(Jcm800Amp::PARAM_TREBLE, p.treble);
         twin_.setParameter(TwinAmp::PARAM_TREBLE, p.treble);
+        ac30_.setParameter(Ac30Amp::PARAM_TREBLE, p.treble);
     }
     // BRIGHT feeds clean120 + twin.
     if (p.bright != o.bright) {
@@ -135,17 +153,22 @@ void ClipperEngine::updateParams(const Params& p) {
     }
     if (p.chorusMode != o.chorusMode)
         amp_.setParameter(AmpModel::PARAM_CHORUS_MODE, static_cast<float>(p.chorusMode));
-    // REVERB feeds all three voices (clean120 + jcm + twin).
+    // REVERB feeds all four voices (clean120 + jcm + twin + ac30).
     if (p.reverb != o.reverb) {
         amp_.setParameter(AmpModel::PARAM_REVERB, p.reverb);
         jcm_.setParameter(Jcm800Amp::PARAM_REVERB, p.reverb);
         twin_.setParameter(TwinAmp::PARAM_REVERB, p.reverb);
+        ac30_.setParameter(Ac30Amp::PARAM_REVERB, p.reverb);
     }
 
-    // JCM800-only knobs.
+    // JCM800-only knobs. The presence field is SHARED: it is the JCM's presence AND
+    // the AC30's TOP CUT (both are power-amp HF controls, docs §23).
     if (p.jcmGain != o.jcmGain)         jcm_.setParameter(Jcm800Amp::PARAM_GAIN, p.jcmGain);
     if (p.jcmMaster != o.jcmMaster)     jcm_.setParameter(Jcm800Amp::PARAM_MASTER, p.jcmMaster);
-    if (p.jcmPresence != o.jcmPresence) jcm_.setParameter(Jcm800Amp::PARAM_PRESENCE, p.jcmPresence);
+    if (p.jcmPresence != o.jcmPresence) {
+        jcm_.setParameter(Jcm800Amp::PARAM_PRESENCE, p.jcmPresence);
+        ac30_.setParameter(Ac30Amp::PARAM_TOPCUT, p.jcmPresence);  // reused as TOP CUT
+    }
 
     // Oversampling change: reset only the pedals' OS filter state (like the web
     // worklet's per-node setOversampling), not a full re-prepare.
@@ -177,6 +200,10 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     // the pedal OS selector — matches the C ABI.
     twin_.setOversampling(kTwinOversampling);
     twin_.prepare(sampleRate_, maxBlock_);
+    // The AC30 likewise runs at its fixed 4× internally (docs §23), independent of
+    // the pedal OS selector — matches the C ABI.
+    ac30_.setOversampling(kAc30Oversampling);
+    ac30_.prepare(sampleRate_, maxBlock_);
 
     rat_.setOversampling(params_.oversampling);
     sd_.setOversampling(params_.oversampling);
@@ -244,6 +271,10 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
             // The Twin is a mono combo head → dual-mono into the identical cab pair.
             twin_.process(cur, outL, numFrames);
             for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
+        } else if (p.ampModel == kAmpAc30) {
+            // The AC30 is a mono combo head → dual-mono into the identical cab pair.
+            ac30_.process(cur, outL, numFrames);
+            for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
         } else {
             amp_.processStereo(cur, outL, outR, numFrames);
         }
@@ -266,6 +297,7 @@ int ClipperEngine::latencySamples() const {
     // the linear Clean 120 adds nothing.
     if (p.ampOn && p.ampModel == kAmpJcm800) n += jcm_.latencySamples();
     if (p.ampOn && p.ampModel == kAmpTwin) n += twin_.latencySamples();
+    if (p.ampOn && p.ampModel == kAmpAc30) n += ac30_.latencySamples();
     if (p.ampOn && p.cab) n += kCabPartition;      // cab adds one partition (128)
     n += limiter_.latencySamples();                // lookahead (64)
     return n;

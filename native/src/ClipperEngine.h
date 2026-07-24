@@ -31,6 +31,7 @@
 
 #include <vector>
 
+#include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
@@ -62,8 +63,9 @@ struct Params {
     float sdTone = 0.5f;
     float sdLevel = 0.7f;
 
-    // Amp voice (M9.4/M10.1): 0 = Clean 120, 1 = JCM800, 2 = Twin. Selects which head
-    // process() drives; all are always kept current so a live switch is instant.
+    // Amp voice (M9.4/M10.1/M10.2): 0 = Clean 120, 1 = JCM800, 2 = Twin, 3 = AC30.
+    // Selects which head process() drives; all are always kept current so a live
+    // switch is instant.
     int   ampModel = 0;
 
     // Clean 120 / Twin shared amp knobs. volume/bright feed clean120 + twin;
@@ -82,7 +84,9 @@ struct Params {
     float reverb = 0.0f;   // spring reverb wet/dry mix — clean120 + jcm + twin
 
     // JCM800 (M9.4) knobs — gain = preamp drive, master = power-amp drive,
-    // presence = power-amp HF lift. bass/middle/treble above are shared.
+    // presence = power-amp HF lift. bass/middle/treble above are shared. The AC30
+    // (M10.2) reuses volume/bass/treble/reverb from the shared fields and REUSES the
+    // presence field as its TOP CUT (both are power-amp HF controls) — no new fields.
     float jcmGain = 0.5f;
     float jcmMaster = 0.4f;
     float jcmPresence = 0.5f;
@@ -143,6 +147,7 @@ private:
     clipper::dsp::AmpModel amp_;      // Clean 120
     clipper::dsp::Jcm800Amp jcm_;     // JCM800 2204 (mono head, M9.4)
     clipper::dsp::TwinAmp twin_;      // Fender blackface Twin (mono combo, M10.1)
+    clipper::dsp::Ac30Amp ac30_;      // Vox AC30 top boost (mono combo, M10.2)
     clipper::dsp::CabConvolver cabL_, cabR_;
     clipper::dsp::OutputLimiter limiter_;
 

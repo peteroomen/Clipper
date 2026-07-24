@@ -294,6 +294,8 @@ export default function App() {
       setCabNote('JCM800 loaded — try the Brit 4×12 cab for a thicker, darker rock voicing.');
     } else if (type === 'twin' && rigRef.current.amp.cabModel === 'brit412') {
       setCabNote('Twin Sixty-Five loaded — try the Clean 2×12 (a real Twin is a 2×12 combo).');
+    } else if (type === 'ac30' && rigRef.current.amp.cabModel === 'brit412') {
+      setCabNote('Thirty loaded — try the Clean 2×12 (the closest 2×12 platform for its chime).');
     } else {
       setCabNote(null);
     }
@@ -410,9 +412,10 @@ export default function App() {
       setCab: (cab) => {
         if (cab === 'clean212' || cab === 'brit412') setCabModel(cab);
       },
-      // M9.4/M10.1: the coach may swap the amp voice (clean120 | jcm800 | twin).
+      // M9.4/M10.1/v1.1: the coach may swap the amp voice (clean120 | jcm800 | twin | ac30).
       setAmp: (type) => {
-        if (type === 'clean120' || type === 'jcm800' || type === 'twin') setAmpType(type);
+        if (type === 'clean120' || type === 'jcm800' || type === 'twin' || type === 'ac30')
+          setAmpType(type);
       },
       addPedal: (type, position) => addPedal((type as PedalType) ?? 'rat', position),
       removePedal: (index) => {

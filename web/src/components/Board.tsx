@@ -70,6 +70,7 @@ const AMP_TYPE_LABEL: Record<string, string> = {
   clean120: 'Clean 120 (JC-120 style)',
   jcm800: 'JCM800 (Marshall style)',
   twin: 'Twin Sixty-Five (Fender style)',
+  ac30: 'AC30 (Vox top boost)',
 };
 const CAB_LABEL: Record<'clean212' | 'brit412', string> = {
   clean212: 'Clean 2×12 (JC platform)',

@@ -736,3 +736,280 @@ test('perf smoke: twin offline-render wall-time ratio is within a generous bound
   expect(perf.twin).toBeGreaterThan(0);
   expect(perf.ratio).toBeLessThan(150);
 });
+
+// ============================================================================
+// v1.1 AC30 "top boost" tests (voice 3) — mirror the Twin blocks above. The AC30
+// reuses the STABLE amp_* exports and the shared 'presence' id (11) routed as its
+// top CUT. Model index 3, data-amp-type='ac30', testid 'amp-ac30'.
+// ============================================================================
+const AMP_AC30_MODEL = 3; // the worklet model index (mirrors the twin AMP_TWIN_MODEL); posted inline below
+
+// --- AC30 (a): switching to the AC30 changes the sound AND does not pop (declick). --
+// The AC30 is a class-A valve voice with its own top-boost voicing, so the SAME clean
+// tone through it differs audibly from the linear Clean 120 — and the mid-signal swap
+// is declick-bracketed (no pop, no NaN).
+test('amp switch: ac30 renders a different tone than clean120, swap is click-free', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.5;
+    async function render(ac30: boolean): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.5 }); // volume
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: 0.0 }); // reverb off (isolate voicing)
+        if (ac30) node.port.postMessage({ type: 'ampModel', model: 3 });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 }); // cab on -> latency echo
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: 0.5 });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+    function rms(d: Float32Array): number {
+      const s0 = Math.floor(sampleRate * 0.2); let s = 0;
+      for (let i = s0; i < d.length; i++) s += d[i] * d[i];
+      return Math.sqrt(s / (d.length - s0));
+    }
+    function maxAbsDiff(a: Float32Array, b: Float32Array): number {
+      const s0 = Math.floor(a.length * 0.4); let m = 0;
+      for (let i = s0; i < a.length; i++) { const dd = Math.abs(a[i] - b[i]); if (dd > m) m = dd; }
+      return m;
+    }
+    function maxDelta(d: Float32Array): number {
+      let m = 0; for (let i = 1; i < d.length; i++) { const a = Math.abs(d[i] - d[i - 1]); if (a > m) m = a; }
+      return m;
+    }
+    function anyNaN(d: Float32Array): boolean {
+      for (let i = 0; i < d.length; i++) if (!Number.isFinite(d[i])) return true;
+      return false;
+    }
+    const clean = await render(false);
+    const ac30 = await render(true);
+    return {
+      cleanRms: rms(clean), ac30Rms: rms(ac30),
+      diff: maxAbsDiff(clean, ac30),
+      cleanDelta: maxDelta(clean), ac30Delta: maxDelta(ac30),
+      nan: anyNaN(ac30),
+    };
+  });
+
+  expect(result.cleanRms).toBeGreaterThan(0.01);
+  expect(result.ac30Rms).toBeGreaterThan(0.01);
+  expect(result.diff).toBeGreaterThan(0.02); // audibly different voicing
+  expect(result.nan).toBe(false);
+  // The swap's largest sample step stays in the same ballpark — the declick fade
+  // means the topology change does not pop.
+  expect(result.ac30Delta).toBeLessThan(result.cleanDelta * 2.0 + 0.05);
+});
+
+// --- AC30 (b): params reach the core — raising REVERB adds a wet tail. --------------
+test('amp ac30: raising the reverb adds a wet tail (params reach the core)', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.9;
+    async function render(reverb: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'ampModel', model: 3 }); // AC30 active
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.5 }); // volume
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: reverb }); // REVERB
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 });
+      });
+      // A short pluck then SILENCE, so the tail is pure reverb.
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 330 });
+      const g = new GainNode(ctx, { gain: 0.0 });
+      g.gain.setValueAtTime(0.6, 0);
+      g.gain.setValueAtTime(0.6, 0.15);
+      g.gain.linearRampToValueAtTime(0.0, 0.16); // note off at 160 ms
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+    function tailRms(d: Float32Array): number {
+      const s0 = Math.floor(sampleRate * 0.45); // well after the note stops
+      let s = 0; for (let i = s0; i < d.length; i++) s += d[i] * d[i];
+      return Math.sqrt(s / (d.length - s0));
+    }
+    const dry = await render(0.0);
+    const wet = await render(0.6);
+    return { dryTail: tailRms(dry), wetTail: tailRms(wet) };
+  });
+
+  // The spring tail persists after the note stops only when reverb is up.
+  expect(result.wetTail).toBeGreaterThan(result.dryTail * 3);
+});
+
+// --- AC30 (c): an ac30 rig round-trips through JSON exactly (no new params). --------
+test('amp ac30: an ac30 rig round-trips through JSON literally', async ({ page }) => {
+  await page.goto('/');
+  const rt = await page.evaluate(() => {
+    const t = (window as any).__CLIPPER_TEST__;
+    const rig = {
+      input: { trim: 0.4 },
+      pedals: [
+        { id: 'rat-1', type: 'rat', engaged: true, params: { distortion: 0.3, filter: 0.5, level: 0.8 } },
+      ],
+      amp: {
+        type: 'ac30',
+        engaged: true,
+        cabModel: 'clean212',
+        params: {
+          volume: 0.7, bass: 0.5, middle: 0.5, treble: 0.6, bright: 0, cab: 1,
+          speed: 0.3, depth: 0.5, chorusMode: 0, reverb: 0.2,
+          // presence is REUSED as the AC30's top CUT (a distinct value pins the round-trip).
+          gain: 0.5, presence: 0.35, master: 0.4,
+        },
+      },
+      oversampling: 4,
+      source: 'test',
+    };
+    const back = t.deserializeRig(t.serializeRig(rig));
+    return { equal: JSON.stringify(rig) === JSON.stringify(back), back };
+  });
+  expect(rt.equal).toBe(true);
+  expect(rt.back.amp.type).toBe('ac30');
+});
+
+// --- AC30 (UI): selecting the AC30 swaps the face + hints clean212 (never auto-switch). -
+test('amp UI: selecting ac30 swaps to Thirty (CUT labeled, middle/gain/master/bright hidden)', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByTestId('board-amp')).toBeVisible();
+  await expect(page.getByTestId('amp-name')).toContainText('Clean 120');
+
+  // Load the Brit 4x12 first so switching to the AC30 triggers the clean212 hint.
+  await page.getByTestId('amp-select').click();
+  await expect(page.getByTestId('amp-menu')).toBeVisible();
+  await page.getByTestId('cab-brit412').click();
+  const cabAfter = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().amp.cabModel);
+  expect(cabAfter).toBe('brit412');
+
+  await page.getByTestId('amp-select').click();
+  await expect(page.getByTestId('amp-menu')).toBeVisible();
+  await page.getByTestId('amp-ac30').click();
+
+  const amp = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().amp);
+  expect(amp.type).toBe('ac30');
+  await expect(page.getByTestId('amp-name')).toContainText('Thirty');
+  await expect(page.getByTestId('amp')).toHaveAttribute('data-amp-type', 'ac30');
+  // The AC30 face shows Volume · Bass · Treble · CUT (bound to knob-presence) · Reverb.
+  await expect(page.getByTestId('knob-volume')).toBeVisible();
+  await expect(page.getByTestId('knob-treble')).toBeVisible();
+  await expect(page.getByTestId('knob-presence')).toBeVisible(); // the CUT knob
+  await expect(page.getByTestId('knob-presence')).toContainText('Cut');
+  await expect(page.getByTestId('knob-reverb')).toBeVisible();
+  // Hidden on the AC30 face: middle, gain, master, bright switch, chorus/tremolo.
+  await expect(page.getByTestId('knob-middle')).toHaveCount(0);
+  await expect(page.getByTestId('knob-gain')).toHaveCount(0);
+  await expect(page.getByTestId('knob-master')).toHaveCount(0);
+  await expect(page.getByTestId('bright-toggle')).toHaveCount(0);
+  // A one-line hint suggested the Clean 2x12 — but the cab was NOT auto-switched.
+  await expect(page.getByTestId('cab-note')).toContainText('Clean 2×12');
+  expect(amp.cabModel).toBe('brit412');
+});
+
+// --- AC30 (e): PERF SMOKE — report the AC30 WASM offline-render wall-time ratio. -----
+test('perf smoke: ac30 offline-render wall-time ratio is within a generous bound', async ({
+  page,
+}, testInfo) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const perf = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 2.0;
+    async function timedRender(ac30: boolean): Promise<number> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.5 });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: 0.3 }); // reverb
+        if (ac30) node.port.postMessage({ type: 'ampModel', model: 3 });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 });
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: 0.5 });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const t0 = performance.now();
+      await ctx.startRendering();
+      return performance.now() - t0;
+    }
+    await timedRender(false);
+    await timedRender(true);
+    const cleanTimes: number[] = [];
+    const ac30Times: number[] = [];
+    for (let i = 0; i < 3; i++) { cleanTimes.push(await timedRender(false)); ac30Times.push(await timedRender(true)); }
+    const clean = Math.min(...cleanTimes);
+    const ac30 = Math.min(...ac30Times);
+    return { clean, ac30, ratio: ac30 / clean, rtFactor: ac30 / (seconds * 1000), seconds };
+  });
+
+  const line =
+    `\n[v1.1 PERF SMOKE] ac30 vs clean120 WASM offline render (${perf.seconds}s @ 48kHz, headless Chromium):\n` +
+    `  clean120        : ${perf.clean.toFixed(1)} ms\n` +
+    `  ac30            : ${perf.ac30.toFixed(1)} ms\n` +
+    `  RATIO (ac30/clean): ${perf.ratio.toFixed(2)}x\n` +
+    `  ac30 real-time  : ${perf.rtFactor.toFixed(2)}x  (render wall-time / audio seconds)\n`;
+  // eslint-disable-next-line no-console
+  console.log(line);
+  await testInfo.attach('ac30-perf-ratio', { body: line, contentType: 'text/plain' });
+
+  // Guard against pathological regressions (an accidental 8x OS, a lost fast-path).
+  expect(perf.clean).toBeGreaterThan(0);
+  expect(perf.ac30).toBeGreaterThan(0);
+  expect(perf.ratio).toBeLessThan(150);
+});

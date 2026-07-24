@@ -297,9 +297,18 @@ independent slices that can interleave anywhere:
   tremolo asymmetry, reverb placement, clean-headroom + monotonic THD, sag < JCM,
   aliasing. Identical-core bit-exact across all three voices. *(Bonus this milestone:
   the JCM800 also gained a spring REVERB knob — usability over authenticity, docs §19.)*
-- **M10.2 — Vox AC30-style top boost** *(M–L)* — new power-amp physics:
-  EL84s (new fit), CATHODE bias (bias shifts dynamically with signal — the
-  class-A compression/chime), NO negative feedback, top-cut control post-PI.
+- **M10.2 — Vox AC30-style top boost** ✅ *(shipped — docs §23)* — new power-amp
+  physics, wired in end-to-end as the FOURTH amp voice `ac30`. New devices: a new
+  EL84 Koren fit and CATHODE bias with real dynamics (the shared Rk∥Ck network — the
+  bias cools under sustained drive → the class-A bloom, recovering on Rk·Ck), NO
+  negative feedback (asserted open==closed bit-exact — the anti-NFB catcher), the
+  interactive top-boost tone stack (gain loss + treble/bass interaction, MNA vs analytic
+  H(s)), the post-PI TOP CUT (inverted sense, reuses the presence control slot), and a
+  deep GZ34 tube-rectifier sag (ordering Twin < JCM < AC30, 4–8 dB window). Validated
+  (`clipper_ac30_tests`) at 44.1/48/96 k: DC op points + cathode fixed point, top-boost
+  H(jω), anti-NFB identity, cathode-bias shift + RC recovery, TOP CUT, sag ordering,
+  the class-A chime (2nd harmonic > the Twin's), monotonic THD, aliasing (4× ships).
+  Identical-core bit-exact across all four voices.
 - **M10.3 — Orange tube-head style** *(S–M)* — heavy EL34/JCM800 machinery
   reuse with Orange voicing; quick win after 10.1–10.2.
 - **M10.4 — Mesa high-gain style** *(L)* — hardest, last: 5+ cascaded stages
