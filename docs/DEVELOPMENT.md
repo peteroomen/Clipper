@@ -2847,6 +2847,17 @@ device I/O for a quick check without a host.
 
 ## 17. M6.8 / M6.8.1 — Pedal visual identity: dark chassis for all, reference via accent
 
+**Doctrine amendment (copyright safety, by construction):** every reference
+must be TRADEMARK-SAFE from day one — knowing fantasy names only (Rodent,
+Super Drive, In-Tune, Eight Hundred), never a real mark, model number, or
+company name on any user-facing surface (UI text, menus, marketing); real
+gear names may appear only in code comments/docs as descriptive references.
+Trade dress: homage never replica — silhouette cues, never exact layouts,
+logos, or liveries. This is not just aesthetics; it is the pre-
+commercialization posture (see ROADMAP checklist). Known debt: the amp menu's
+"JC-120 style" wording and the "Super Drive" name (close to a real mark) are
+flagged for rename.
+
 ### M6.8.1 — the doctrine revision (current)
 
 M6.8 shipped "shared chassis, distinct souls" with **full-body enclosure tints**

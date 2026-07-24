@@ -264,6 +264,37 @@ is one of the most canonical pairings in rock.
 4. Amp-panel UI (preamp/master volume era-correct), oversampling per stage
    budgeted like M2, A/B render harness.
 
+### M10 — Amp expansion (ordered by machinery reuse)
+
+The tube toolbox (TriodeStage, pentode push-pull, NFB/presence, measured sag,
+MNA tone stacks, spring reverb) now covers most classic amps. Order chosen so
+each amp adds ONE new piece of machinery:
+
+1. **Fender Twin-style** *(M)* — the clean benchmark. Reuses nearly
+   everything: triode preamp, Fender-values TMB stack (pre-gain position),
+   6L6GC push-pull (new Koren fit — the only new device), NFB. Bonus: our
+   spring reverb is period-correct here, and the "vibrato" channel's
+   tremolo (actual amplitude modulation — the famous Fender misnomer) is a
+   cheap LFO block we should build anyway.
+2. **Vox AC30-style top boost** *(M–L)* — expands the power-amp vocabulary:
+   EL84s (new fit), CATHODE bias (bias shifts dynamically with signal — new
+   behavior, the source of the class-A compression/chime), and NO negative
+   feedback (its rawness is the point). Top-cut control post-PI.
+3. **Orange tube head style** *(S–M)* — heavy reuse of the EL34/JCM800
+   machinery with different voicing; quick win after 1-2.
+4. **Mesa high-gain style** *(L)* — hardest, last: 5+ cascaded stages with
+   heavy interstage voicing, selectable TUBE-rectifier sag (our sag model
+   parameterizes for this), loose/tight modes. The Mark-series graphic EQ
+   (5 biquads) is cheap charm.
+
+**Solid-state additions (validated suggestions):**
+- **Crush-style practice amp** *(S)* — the user OWNS one: personal ground
+  truth, like the RAT was. Op-amp clipping stages = machinery we already
+  have (LM308Stage/ADAA). High sentiment-per-effort.
+- **Iconic SS pick** *(M)* — Lab Series L5-style (the jazz/BB King SS
+  legend) or RG100-style (the metal SS legend). Both are op-amp+BJT
+  designs well within the toolbox; pick by which tone matters to the user.
+
 ### Pre-commercialization checklist (if that day comes)
 
 Circuit modeling itself is legally safe (topologies aren't copyrightable;
