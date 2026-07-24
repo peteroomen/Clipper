@@ -2942,10 +2942,16 @@ mono in ──► × input trim (−12..+24 dB) ──► RAT (if on) ──► 
   `AudioProcessorValueTreeState` (the param store + state save/restore) and one
   `ClipperEngine`. Pure host glue: no DSP. Mono-in → stereo-out bus layout (also
   accepts a stereo track and takes channel 0 as the mono source).
-- **`native/src/PluginEditor.{h,cpp}`** — a tidy **flat** custom editor (dark
-  panels, JUCE sliders/toggles grouped **Pedals | Amp | Chorus | Output**, no
-  image assets). The neumorphic web design is a later native pass. The **build
-  git hash** is shown bottom-right (configured via CMake as `CLIPPER_GIT_HASH`).
+- **`native/src/PluginEditor.{h,cpp}`** — the **neumorphic** custom editor (visual
+  pass): dark-chassis "island" cards on a light porcelain bench, sculpted rotary
+  knobs with colour value arcs + readouts, per-section accents, LEDs/jewels, lever
+  toggles and a face-switching amp card — the native translation of the web design
+  language (see **Editor (neumorphic visual pass)** below). All controls stay
+  APVTS-attached; the **build git hash** is shown bottom-right (`CLIPPER_GIT_HASH`).
+- **`native/src/ClipperLookAndFeel.{h,cpp}`** — the `LookAndFeel` + a small custom
+  **widget kit** (knob, footswitch, lever, power rocker, mode switch) implementing
+  that language. This is where the CSS box-shadow/gradient recipes are translated to
+  JUCE drawing.
 
 **Fixed two-pedal chain (v1):** RAT then SD-1, both default off **except** RAT.
 Drag-reorder / arbitrary-length chains remain a web/UI feature for now; the native
@@ -3012,6 +3018,71 @@ mirroring the web select. A change routes to each pedal's `setOversampling`
 (resets only the oversampling filter state), never a full re-prepare, so it is
 realtime-safe.
 
+### Editor (neumorphic visual pass)
+
+The v1 editor was a tidy **flat** panel; this pass rebuilds it as the native sibling
+of the web UI — the roadmapped "native neumorphic UI" debt. The doctrine is the web's
+(docs §17): **dark chassis for all, reference via a small-area accent + one morphology
+cue + a knowing name**. It ships the **light-bench look only**; a dark theme is future
+work (the CSS already carries dark-theme tokens, so it is a token-swap when wanted).
+
+**`ClipperLookAndFeel` — how the CSS recipes translate.** Every value is lifted
+verbatim from `web/src/styles/{tokens,pedal,amp,board}.css` into the `skin::` palette,
+then the box-shadow/gradient recipes become JUCE draws:
+
+| Web (CSS) | Native (JUCE) |
+|---|---|
+| bench `--ground #E5E3DE` | `g.fillAll` + a soft vertical `ColourGradient` |
+| `.pedal.raised` dark island (`--panel-grad` 160°) + dual warm cast shadow + inset light top rim + inset dark edge | `skin::drawChassisCard`: two `juce::DropShadow` passes (16/18/34 @.30 and 3/4/10 @.22) → diagonal body gradient → top-edge light line + dark inner stroke |
+| recessed **well** (inset dark TL + light BR) | `skin::drawWell`: fill `--well` + offset inset strokes under a clip |
+| `.knob` anatomy: `--cap-edge` body w/ dual shadow, knurled skirt, `--cap` dome w/ inset rim, ink pointer, the floating **270° value arc** (`conic from 225deg`) + readout | `ClipperLookAndFeel::drawRotarySlider` (body shadow → cap-edge gradient → knurl ticks → cap dome + rims → pointer → `Path::addCentredArc` track+accent). Rotary range pinned to `1.25π…2.75π`; readout `= round(value*100)` in the accent, both dim when the section is bypassed (`.pedal:not(.on)` → `Slider::setEnabled(false)`) |
+| lit `.led` / `.jewel` (accent + `0 0 14px` glow) | `skin::drawJewel`: layered alpha glow rings + specular radial fill |
+| `.toggle` lever, `.rocker` power, `.mode-switch` | custom `LeverToggle` / `PowerControl` / `ModeSwitch` components |
+| Anton condensed hero wordmarks | `skin::wordmarkFont` — a **boldened, 0.82× horizontally-compressed** system sans (no font-file asset to bundle/decompress) |
+
+Accent tokens are the **light-theme root** values: RAT `#F03B24`, SD-1 `#B58900`, JCM
+`#A87A18`, Twin `#4E7BA8`, AC30 `#B4612C`, Clean red.
+
+**Layout.** Left→right cards on the bench: **INPUT** (trim) · **RAT "Rodent"** (red;
+Dist/Filter/Level + round stomp) · **SD-1 "Super Drive"** (yellow; Drive/Tone/Level +
+stomp) · **AMP** (a single card whose **face switches** with the amp-voice choice).
+An amp-voice + oversampling selector pill pair sits top-right; the build stamp bottom-
+right. Resizable 1000×540 … 1560×900.
+
+**The amp card mirrors the web faces exactly** (per-voice control visibility + accent),
+driven by `updateAmpFace()` off the `ampModel` APVTS choice:
+
+| Voice | Accent | Controls shown |
+|---|---|---|
+| **Clean 120** | red | Vol · Bass · Mid · Treble · Reverb · Bright · Cab · Power · Chorus row (Speed/Depth + Off/Chorus/Vibrato mode) |
+| **Eight Hundred** (JCM800) | gold | Presence · Bass · Mid · Treble · Master · Gain · Reverb · Cab · Power (no bright/chorus) |
+| **Twin Sixty-Five** | silver-blue | Vol · Bass · Mid · Treble · Reverb · Bright · Cab · Power · Tremolo row (Speed/Intensity, no mode) |
+| **Thirty** (AC30) | copper | Vol · Bass · Treble · **Cut** · Reverb · Cab · Power (no mid/bright/chorus) |
+
+`presence`/`jcmMaster`/`jcmGain` etc. are the same APVTS ids the web uses; the AC30
+"Cut" knob is the reused `jcmPresence` param, relabelled — no behaviour change.
+
+**Adding a future native pedal/amp face.** It mirrors the web's `FACES`/`Amp.tsx`
+tables. For an **amp voice**: add the `AudioParameterChoice` entry (already done in the
+processor), add a `case` in `updateAmpFace()` that sets the wordmark/eyebrow/accent and
+pushes the visible `NeuKnob*`s into `ampPrimaryKnobs_`/`ampModKnobs_`, and add the voice
+name to the `ampVoiceBox_` item list. For a **pedal**: add a card (a `Footswitch` + its
+`NeuKnob`s bound to the new params) and a `drawCard(...)` call in `paint()`. New chrome
+(a new knob/toggle morphology) is a new widget in `ClipperLookAndFeel`; the palette and
+`drawChassisCard`/`drawWell`/`drawRotarySlider` primitives are reused as-is.
+
+**Screenshots (headless).** A dev-only console target `clipper_editor_snap` (guarded by
+the CMake option `CLIPPER_BUILD_SNAPSHOT_TOOL`, default **OFF** — never in a release
+plugin build) opens the real editor, drives all four amp voices, and writes a
+`Component::createComponentSnapshot` PNG per voice. Run headless under Xvfb:
+
+```bash
+cmake -B build -DCLIPPER_BUILD_SNAPSHOT_TOOL=ON
+cmake --build build --target clipper_editor_snap
+xvfb-run -a build/clipper_editor_snap_artefacts/Release/clipper_editor_snap <out-dir>
+# → clipper_native_{clean120,eight_hundred,twin,thirty}.png
+```
+
 ### Build targets
 
 `juce_add_plugin(Clipper …)` with `FORMATS Standalone VST3` and — guarded by
@@ -3028,8 +3099,10 @@ is set in `native/CMakeLists.txt` *before* adding `core/` so the static
 | FetchContent JUCE 8.0.4 (clone through proxy) | ✅ works |
 | Configure + build **Standalone** (Linux) | ✅ |
 | Configure + build **VST3** (Linux) | ✅ |
-| **Identical-core** console test (bit-exact) | ✅ 0.0 diff L+R, latency 336=336 |
-| Core ctest (5 suites) still green | ✅ unchanged |
+| **Identical-core** console test (bit-exact) | ✅ 0.0 diff L+R, latency 336=336 (all four voices) |
+| Core ctest (all suites) still green | ✅ unchanged |
+| Neumorphic editor builds (LookAndFeel + widget kit), zero new warnings | ✅ |
+| Headless `clipper_editor_snap` PNGs (one per amp voice) under `xvfb-run` | ✅ four faces render + switch correctly |
 | Headless Standalone launch under `xvfb-run` | ✅ starts, no crash (no audio HW in container — ALSA device warnings are expected) |
 | **AU** build + `auval` + Logic load | ⏳ mac-only, deferred |
 | VST3 in a real host (Reaper/Live) | ⏳ not run here |

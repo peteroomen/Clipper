@@ -82,6 +82,7 @@ juce_add_plugin(Clipper
 target_sources(Clipper PRIVATE
     src/ClipperEngine.cpp
     src/PluginProcessor.cpp
+    src/ClipperLookAndFeel.cpp
     src/PluginEditor.cpp)
 
 target_compile_definitions(Clipper PUBLIC
@@ -116,3 +117,27 @@ target_include_directories(clipper_identical_test PRIVATE src)
 
 enable_testing()
 add_test(NAME clipper_identical_core COMMAND clipper_identical_test)
+
+# --- Dev-only editor SNAPSHOT tool (NOT shipped) -----------------------------
+# A headless console app that opens the real editor and writes a
+# Component::createComponentSnapshot PNG per amp voice — the visual-pass
+# deliverable. Guarded behind CLIPPER_BUILD_SNAPSHOT_TOOL (default OFF) so it never
+# links into a release plugin/standalone build. Build + run headless under xvfb:
+#   cmake -B build -DCLIPPER_BUILD_SNAPSHOT_TOOL=ON && cmake --build build --target clipper_editor_snap
+#   xvfb-run -a build/.../clipper_editor_snap <out-dir>
+option(CLIPPER_BUILD_SNAPSHOT_TOOL "Build the dev-only headless editor snapshot tool" OFF)
+if(CLIPPER_BUILD_SNAPSHOT_TOOL)
+    juce_add_console_app(clipper_editor_snap PRODUCT_NAME clipper_editor_snap)
+    target_sources(clipper_editor_snap PRIVATE tools/editor_snapshot.cpp)
+    target_compile_definitions(clipper_editor_snap PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        CLIPPER_GIT_HASH="${CLIPPER_GIT_HASH}")
+    target_link_libraries(clipper_editor_snap PRIVATE
+        Clipper
+        clipper_dsp
+        juce::juce_audio_utils
+        juce::juce_gui_basics
+        juce::juce_recommended_config_flags)
+    target_include_directories(clipper_editor_snap PRIVATE src)
+endif()

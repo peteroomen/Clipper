@@ -411,11 +411,16 @@ how much existing machinery each reuses:
   `web/src/rig.ts`. It is a re-wrap, not a rewrite: a console test renders the
   M2-style 220 Hz sine + pluck through the real PluginProcessor and through the
   core classes directly and asserts **bit-exact** (0.0) output on both channels,
-  plus matching host latency. Verified on Linux (Standalone + VST3); AU + Logic
-  are the mac follow-up. The native **neumorphic UI is still deferred** — the
-  shipped editor is a tidy flat panel. See `docs/DEVELOPMENT.md` → "Native app
-  (JUCE)". Remaining phase-2 native work (drag-reorderable chain, neumorphic UI,
-  CLAP) stays parked here.
+  plus matching host latency (all four amp voices). Verified on Linux (Standalone
+  + VST3); AU + Logic are the mac follow-up. The native **neumorphic UI is now
+  DONE** ✅ — the editor was rebuilt as the light-bench sibling of the web UI
+  (dark-chassis island cards, sculpted value-arc knobs, per-gear accents, a
+  face-switching amp card that mirrors the web's per-voice control visibility),
+  via a `ClipperLookAndFeel` + widget kit that translates the web CSS recipes to
+  JUCE; a dev-only `xvfb` snapshot target renders one PNG per amp voice as proof.
+  See `docs/DEVELOPMENT.md` → "Native app (JUCE)" → **Editor (neumorphic visual
+  pass)**. Remaining phase-2 native work (drag-reorderable chain, a **dark theme**
+  for the native editor, CLAP) stays parked here.
 - **Riff integration** — Clipper's rig as Riff's practice-tone engine; the
   assistant patterns already converge (both grew an "applied chip" chat UI).
 
