@@ -7,11 +7,13 @@
 // settings, then asserts the plugin's LEFT-channel output matches the reference
 // sample-for-sample (within a tight float tolerance).
 //
-// M9.4: the check now runs for BOTH amp voices. The Clean 120 case exercises the
-// linear stereo-chorus platform; the JCM800 case exercises the mono valve head
-// (preamp cascade + power section) rendered dual-mono into the same cab pair. Both
-// paths must be bit-exact, proving the amp-model switch + JCM param routing are
-// wrapped identically in the plugin and the raw engine.
+// M9.4/M10.1: the check now runs for ALL THREE amp voices. The Clean 120 case
+// exercises the linear stereo-chorus platform; the JCM800 case exercises the mono
+// valve head (preamp cascade + power section) rendered dual-mono, now WITH its M10.1
+// spring reverb engaged; the Twin case exercises the Fender-blackface mono combo
+// with its full AB763 chain (spring reverb + optical tremolo) dual-mono into the same
+// cab pair. All paths must be bit-exact, proving the amp-model switch + per-voice
+// param routing are wrapped identically in the plugin and the raw engine.
 //
 // Both paths use the SAME core code and the SAME internal delays (JCM oversampling
 // group delay + cab 128 + limiter 64), so their outputs are time-aligned — no
@@ -40,6 +42,7 @@
 #include "clipper/dsp/OutputLimiter.h"
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/SdModel.h"
+#include "clipper/dsp/TwinAmp.h"
 
 using clipper::native::Params;
 
@@ -49,7 +52,9 @@ constexpr double kFs = 48000.0;
 constexpr int kBlock = 128;
 constexpr int kNumFrames = 48000;  // 1.0 s
 constexpr int kJcmOversampling = 4;  // matches ClipperEngine/C ABI (docs §18)
+constexpr int kTwinOversampling = 4; // matches ClipperEngine/C ABI (docs §20)
 constexpr int kAmpJcm800 = 1;        // Params::ampModel value for the JCM head
+constexpr int kAmpTwin = 2;          // Params::ampModel value for the Twin combo
 
 // The CLEAN 120 parameter set (both pedals on, cab + bright, stereo chorus + spring
 // reverb, 4x OS) — the linear clean-platform path.
@@ -83,10 +88,32 @@ Params jcmParams() {
     p.ampOn = true;
     p.bass = 0.55f; p.middle = 0.45f; p.treble = 0.65f;  // shared tone stack
     p.bright = false; p.cab = true;
-    p.chorusMode = 0; p.reverb = 0.0f;  // ignored by the JCM anyway
+    p.chorusMode = 0;
+    p.reverb = 0.4f;       // M10.1: exercise the JCM's spring reverb (usability add)
     p.jcmGain = 0.7f;      // cranked preamp
     p.jcmMaster = 0.5f;    // power-amp pushed
     p.jcmPresence = 0.6f;  // HF lift
+    p.oversampling = 4;
+    return p;
+}
+
+// The TWIN parameter set (M10.1) — the clean benchmark, exercising the full AB763
+// chain: spring reverb + optical tremolo. RAT on as a light pedal in front (the Twin
+// itself stays clean); the Twin makes NO preamp gain, so this is a glassy clean voice
+// with a moving throb and a spring tail. Reuses the shared knobs — volume/bright,
+// bass/mid/treble, reverb, and speed/depth (routed to the tremolo SPEED/INTENSITY).
+Params twinParams() {
+    Params p;
+    p.inputTrim = 0.5f;
+    p.ratOn = true;  p.ratDist = 0.3f; p.ratFilter = 0.5f; p.ratLevel = 0.8f;  // light edge
+    p.sdOn = false;  p.sdDrive = 0.5f; p.sdTone = 0.5f;    p.sdLevel = 0.7f;
+    p.ampModel = kAmpTwin;  // Twin
+    p.ampOn = true;  p.volume = 0.55f; p.bass = 0.5f; p.middle = 0.55f; p.treble = 0.6f;
+    p.bright = true; p.cab = true;
+    p.chorusMode = 0;            // no chorus on the Twin
+    p.chorusSpeed = 0.6f;        // → tremolo SPEED (~5 Hz)
+    p.chorusDepth = 0.6f;        // → tremolo INTENSITY
+    p.reverb = 0.35f;            // period-correct spring reverb
     p.oversampling = 4;
     return p;
 }
@@ -116,11 +143,13 @@ void renderReference(const Params& p, const std::vector<float>& in,
                      int& latencyOut) {
     using namespace clipper::dsp;
     const bool jcm800 = p.ampModel == kAmpJcm800;
+    const bool twin = p.ampModel == kAmpTwin;
 
     RatModel rat;
     SdModel sd;
     AmpModel amp;        // Clean 120
     Jcm800Amp jcm;       // JCM800 head
+    TwinAmp twinAmp;     // Twin combo
     CabConvolver cabL, cabR;
     OutputLimiter limiter;
 
@@ -139,6 +168,17 @@ void renderReference(const Params& p, const std::vector<float>& in,
         jcm.setParameter(Jcm800Amp::PARAM_MID, p.middle);
         jcm.setParameter(Jcm800Amp::PARAM_TREBLE, p.treble);
         jcm.setParameter(Jcm800Amp::PARAM_PRESENCE, p.jcmPresence);
+        jcm.setParameter(Jcm800Amp::PARAM_REVERB, p.reverb);  // M10.1 usability add
+    } else if (twin) {
+        // Mirror ClipperEngine::applyParams' Twin routing exactly.
+        twinAmp.setParameter(TwinAmp::PARAM_VOLUME, p.volume);
+        twinAmp.setParameter(TwinAmp::PARAM_BASS, p.bass);
+        twinAmp.setParameter(TwinAmp::PARAM_MID, p.middle);
+        twinAmp.setParameter(TwinAmp::PARAM_TREBLE, p.treble);
+        twinAmp.setParameter(TwinAmp::PARAM_BRIGHT, p.bright ? 1.0f : 0.0f);
+        twinAmp.setParameter(TwinAmp::PARAM_REVERB, p.reverb);
+        twinAmp.setParameter(TwinAmp::PARAM_SPEED, p.chorusSpeed);
+        twinAmp.setParameter(TwinAmp::PARAM_INTENSITY, p.chorusDepth);
     } else {
         amp.setParameter(AmpModel::PARAM_VOLUME, p.volume);
         amp.setParameter(AmpModel::PARAM_BASS, p.bass);
@@ -158,6 +198,8 @@ void renderReference(const Params& p, const std::vector<float>& in,
     // to it), independent of the pedal OS selector — matches ClipperEngine.
     jcm.setOversampling(kJcmOversampling);
     jcm.prepare(kFs, kBlock);
+    twinAmp.setOversampling(kTwinOversampling);
+    twinAmp.prepare(kFs, kBlock);
     rat.setOversampling(p.oversampling);
     sd.setOversampling(p.oversampling);
 
@@ -186,6 +228,9 @@ void renderReference(const Params& p, const std::vector<float>& in,
             if (jcm800) {
                 jcm.process(cur, l.data(), n);                   // mono head
                 for (int i = 0; i < n; ++i) r[static_cast<size_t>(i)] = l[static_cast<size_t>(i)];  // dual-mono
+            } else if (twin) {
+                twinAmp.process(cur, l.data(), n);               // mono combo
+                for (int i = 0; i < n; ++i) r[static_cast<size_t>(i)] = l[static_cast<size_t>(i)];  // dual-mono
             } else {
                 amp.processStereo(cur, l.data(), r.data(), n);   // stereo split
             }
@@ -205,6 +250,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     latencyOut = (p.ratOn ? rat.latencySamples() : 0) +
                  (p.sdOn ? sd.latencySamples() : 0) +
                  (p.ampOn && jcm800 ? jcm.latencySamples() : 0) +
+                 (p.ampOn && twin ? twinAmp.latencySamples() : 0) +
                  (p.ampOn && p.cab ? cabL.latencySamples() : 0) +
                  limiter.latencySamples();
 }
@@ -347,9 +393,10 @@ int main() {
     bool ok = true;
     ok &= runCase("Clean 120", cleanParams(), in);
     ok &= runCase("JCM800", jcmParams(), in);
+    ok &= runCase("Twin", twinParams(), in);
 
     if (ok) {
-        std::printf("\nPASS: both amp voices are sample-identical across plugin + engine + core.\n");
+        std::printf("\nPASS: all three amp voices are sample-identical across plugin + engine + core.\n");
         return 0;
     }
     std::printf("\nFAIL: identical-core mismatch (see cases above).\n");

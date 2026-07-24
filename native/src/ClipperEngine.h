@@ -38,6 +38,7 @@
 #include "clipper/dsp/OutputLimiter.h"
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/SdModel.h"
+#include "clipper/dsp/TwinAmp.h"
 
 namespace clipper::native {
 
@@ -61,22 +62,24 @@ struct Params {
     float sdTone = 0.5f;
     float sdLevel = 0.7f;
 
-    // Amp voice (M9.4): 0 = Clean 120, 1 = JCM800. Selects which head process()
-    // drives; both are always kept current so a live switch is instant.
+    // Amp voice (M9.4/M10.1): 0 = Clean 120, 1 = JCM800, 2 = Twin. Selects which head
+    // process() drives; all are always kept current so a live switch is instant.
     int   ampModel = 0;
 
-    // Clean 120 amp.
+    // Clean 120 / Twin shared amp knobs. volume/bright feed clean120 + twin;
+    // bass/middle/treble feed all three; reverb feeds all three; chorusSpeed/Depth
+    // feed clean120's chorus AND the twin's tremolo SPEED/INTENSITY.
     bool  ampOn = true;   // power
-    float volume = 0.4f;
-    float bass = 0.5f;    // SHARED with the JCM tone stack (both amps use it)
+    float volume = 0.4f;  // clean120 volume + twin channel volume
+    float bass = 0.5f;    // SHARED across all three tone stacks
     float middle = 0.5f;  // SHARED
     float treble = 0.6f;  // SHARED
-    bool  bright = false;
+    bool  bright = false; // clean120 + twin
     bool  cab = true;
-    int   chorusMode = 0;  // 0 off | 1 chorus | 2 vibrato
-    float chorusSpeed = 0.3f;
-    float chorusDepth = 0.5f;
-    float reverb = 0.0f;   // M6.7 spring reverb wet/dry mix (0 = dry)
+    int   chorusMode = 0;  // 0 off | 1 chorus | 2 vibrato (clean120 only)
+    float chorusSpeed = 0.3f;  // clean120 chorus speed + twin tremolo SPEED
+    float chorusDepth = 0.5f;  // clean120 chorus depth + twin tremolo INTENSITY
+    float reverb = 0.0f;   // spring reverb wet/dry mix — clean120 + jcm + twin
 
     // JCM800 (M9.4) knobs — gain = preamp drive, master = power-amp drive,
     // presence = power-amp HF lift. bass/middle/treble above are shared.
@@ -139,6 +142,7 @@ private:
     clipper::dsp::SdModel  sd_;
     clipper::dsp::AmpModel amp_;      // Clean 120
     clipper::dsp::Jcm800Amp jcm_;     // JCM800 2204 (mono head, M9.4)
+    clipper::dsp::TwinAmp twin_;      // Fender blackface Twin (mono combo, M10.1)
     clipper::dsp::CabConvolver cabL_, cabR_;
     clipper::dsp::OutputLimiter limiter_;
 
