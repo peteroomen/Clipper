@@ -33,10 +33,22 @@
 // the worklet's 6 ms raised-cosine output fade: the output ramps to zero, the
 // topology swap happens exactly at that zero (mid-block, in process()), then it
 // ramps back up. Because the discontinuity always lands at output-zero there is no
-// step and no zipper. Plain knob moves are NOT bracketed — the core's ~5 ms one-
-// pole smoothing already declicks those, and bracketing them would break the
-// identical-core bit-exactness contract. When no edit is in flight the envelope is
-// bypassed ENTIRELY (not multiplied by 1.0), so a steady chain stays bit-exact.
+// step and no zipper.
+//
+// One addition to the worklet's recipe: a short ZERO HOLD between the swap and the
+// fade back in. Pedals KEEP their internal state across a reorder (as they do in
+// the web, which reuses each handle), so after the swap a pedal is suddenly fed a
+// differently-phased signal and rings while its filters and oversampler settle.
+// That settling peaks a few ms AFTER the swap — i.e. underneath the worklet's
+// immediate fade-in, where it is plainly measurable (a ~70x jump over the steady
+// slew; see native/tests/chain_edit_test.cpp). Holding the output at zero for the
+// settling window and only then fading in costs about 6 ms of extra gap, which no
+// one can hear as latency, and removes the tick entirely.
+//
+// Plain knob moves are NOT bracketed — the core's ~5 ms one-pole smoothing already
+// declicks those, and bracketing them would break the identical-core bit-exactness
+// contract. When no edit is in flight the envelope is bypassed ENTIRELY (not
+// multiplied by 1.0), so a steady chain stays bit-exact.
 //
 // The TUNER is deliberately absent: it is a display-only pedal (no audio DSP — it
 // mutes the chain and drives a needle), and the native shell has no pitch-detection
@@ -253,10 +265,12 @@ private:
 
     // Declick state machine (mirrors the worklet's): a linear ramp position in
     // [0,1] mapped through a raised cosine, ~6 ms each way.
-    enum class Declick { Idle, Out, In };
+    enum class Declick { Idle, Out, Hold, In };
     Declick declickPhase_ = Declick::Idle;
     float   declickGain_ = 1.0f;  // linear ramp position (1 = fully open)
     float   declickStep_ = 1.0f;  // per-sample delta (set in prepare)
+    int     declickHold_ = 0;     // samples left of the post-swap zero hold
+    int     declickHoldLen_ = 0;  // its length at this sample rate
 
     clipper::dsp::RatModel rat_;
     clipper::dsp::SdModel  sd_;

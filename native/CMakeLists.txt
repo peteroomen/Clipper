@@ -116,8 +116,22 @@ target_link_libraries(clipper_identical_test PRIVATE
     juce::juce_recommended_config_flags)
 target_include_directories(clipper_identical_test PRIVATE src)
 
+# --- Chain-edit (declick) console test ---------------------------------------
+# Drives ClipperEngine directly (no JUCE needed for the engine itself) and asserts
+# that reordering / bypassing / adding / removing a pedal MID-SIGNAL never steps the
+# output beyond the 6 ms declick envelope — and that a knob move never arms it.
+juce_add_console_app(clipper_chain_edit_test PRODUCT_NAME clipper_chain_edit_test)
+target_sources(clipper_chain_edit_test PRIVATE
+    tests/chain_edit_test.cpp
+    src/ClipperEngine.cpp)
+target_link_libraries(clipper_chain_edit_test PRIVATE
+    clipper_dsp
+    juce::juce_recommended_config_flags)
+target_include_directories(clipper_chain_edit_test PRIVATE src)
+
 enable_testing()
 add_test(NAME clipper_identical_core COMMAND clipper_identical_test)
+add_test(NAME clipper_chain_edit COMMAND clipper_chain_edit_test)
 
 # --- Dev-only editor SNAPSHOT tool (NOT shipped) -----------------------------
 # A headless console app that opens the real editor and writes a

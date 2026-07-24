@@ -14,6 +14,11 @@ constexpr float kTrimMaxDb = 24.0f;
 // web/worklet/clipper-processor.js — long enough to be inaudible as a transient,
 // short enough that a reorder feels instant.
 constexpr double kDeclickSeconds = 0.006;
+// The zero HOLD between the topology swap and the fade back in, during which the
+// reordered pedals settle into their new input with the output muted (see the
+// ClipperEngine.h note). Six milliseconds covers the allpass/oversampler ring-out
+// the chain-edit test measures.
+constexpr double kDeclickHoldSeconds = 0.006;
 constexpr float  kPi = 3.14159265358979323846f;
 // The stable serialization keys, indexed by PedalType.
 const char* const kPedalKeys[PEDAL_TYPE_COUNT] = {"rat", "sd1", "ts", "muff", "phaser"};
@@ -144,6 +149,7 @@ void ClipperEngine::setParams(const Params& p) {
     commitChain();
     declickPhase_ = Declick::Idle;
     declickGain_ = 1.0f;
+    declickHold_ = 0;
 }
 
 void ClipperEngine::commitChain() {
@@ -327,8 +333,10 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     // Declick step: one full fade takes ~6 ms, exactly like the worklet.
     declickStep_ = 1.0f / static_cast<float>(std::max(
                               1L, std::lround(kDeclickSeconds * sampleRate_)));
+    declickHoldLen_ = static_cast<int>(std::lround(kDeclickHoldSeconds * sampleRate_));
     declickPhase_ = Declick::Idle;
     declickGain_ = 1.0f;
+    declickHold_ = 0;
     commitChain();  // prepare() adopts the requested board with no fade
 
     const std::vector<float> ir = clipper::dsp::generateDefaultCab2x12IR(sampleRate_);
@@ -420,8 +428,13 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
                 if (dg <= 0.0f) {
                     dg = 0.0f;
                     commitChain();  // the topology swap happens exactly at zero
-                    declickPhase_ = Declick::In;
+                    declickHold_ = declickHoldLen_;
+                    declickPhase_ = Declick::Hold;
                 }
+            } else if (declickPhase_ == Declick::Hold) {
+                // Output stays at zero while the just-reordered pedals settle into
+                // their new input; they are still being PROCESSED, just not heard.
+                if (--declickHold_ <= 0) declickPhase_ = Declick::In;
             } else if (declickPhase_ == Declick::In) {
                 dg += declickStep_;
                 if (dg >= 1.0f) {

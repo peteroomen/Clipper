@@ -7,6 +7,11 @@
 // settings, then asserts the plugin's LEFT-channel output matches the reference
 // sample-for-sample (within a tight float tolerance).
 //
+// NATIVE PARITY: the reference chain now walks the SAME user-ordered board the
+// engine walks — every pedal type (RAT, SD-1, TS, Muff, Phaser) composed by hand
+// from the core classes, in the order the Params carry — so an arbitrary chain must
+// still come out bit-exact. Three board cases join the four amp-voice cases below.
+//
 // M9.4/M10.1/M10.2: the check now runs for ALL FOUR amp voices. The Clean 120 case
 // exercises the linear stereo-chorus platform; the JCM800 case exercises the mono
 // valve head (preamp cascade + power section) rendered dual-mono, now WITH its M10.1
@@ -43,9 +48,12 @@
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/Jcm800Amp.h"
+#include "clipper/dsp/MuffModel.h"
+#include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/OutputLimiter.h"
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/SdModel.h"
+#include "clipper/dsp/TsModel.h"
 #include "clipper/dsp/TwinAmp.h"
 
 using clipper::native::Params;
@@ -146,6 +154,81 @@ Params ac30Params() {
     return p;
 }
 
+// NATIVE PARITY case 1 — a MULTI-PEDAL board: RAT -> Muff -> Twin. Two very
+// different nonlinearities in series (the LM308 diode clipper into the four-
+// transistor fuzz) ahead of the blackface clean platform, in a chain order the old
+// fixed RAT/SD-1 pair could not express at all. The SD-1 is deliberately left ON
+// but OFF the board, so this also proves an off-board pedal contributes nothing to
+// either the audio or the reported latency.
+Params ratMuffTwinParams() {
+    Params p;
+    p.inputTrim = 0.5f;
+    p.chain[0] = clipper::native::PEDAL_RAT;
+    p.chain[1] = clipper::native::PEDAL_MUFF;
+    p.chainLength = 2;
+    p.ratOn = true;  p.ratDist = 0.55f; p.ratFilter = 0.45f; p.ratLevel = 0.7f;
+    p.sdOn = true;   // ON, but NOT on the board — must be inaudible
+    p.muffOn = true; p.muffSustain = 0.6f; p.muffTone = 0.5f; p.muffVolume = 0.55f;
+    p.ampModel = kAmpTwin;
+    p.ampOn = true;  p.volume = 0.5f; p.bass = 0.5f; p.middle = 0.55f; p.treble = 0.6f;
+    p.bright = false; p.cab = true;
+    p.chorusMode = 1;      // Twin: the slot is TREMOLO ON
+    p.chorusSpeed = 0.45f; p.chorusDepth = 0.5f;
+    p.reverb = 0.3f;
+    p.oversampling = 4;
+    return p;
+}
+
+// NATIVE PARITY case 2 — TS -> Phaser -> JCM800. A screamer boost into the LINEAR
+// phaser (no oversampling, no group delay) into the cranked Marshall head: it
+// exercises a three-unit board, a pedal type with no latency contribution, and a
+// chain whose ORDER matters (phasing the overdrive, not overdriving the phase).
+Params tsPhaserJcmParams() {
+    Params p;
+    p.inputTrim = 0.5f;
+    p.chain[0] = clipper::native::PEDAL_TS;
+    p.chain[1] = clipper::native::PEDAL_PHASER;
+    p.chainLength = 2;
+    p.ratOn = false;
+    p.sdOn = false;
+    p.tsOn = true;     p.tsDrive = 0.4f; p.tsTone = 0.55f; p.tsLevel = 0.8f;
+    p.phaserOn = true; p.phaserSpeed = 0.35f;
+    p.ampModel = kAmpJcm800;
+    p.ampOn = true;
+    p.bass = 0.55f; p.middle = 0.45f; p.treble = 0.65f;
+    p.bright = false; p.cab = true;
+    p.chorusMode = 0;
+    p.reverb = 0.35f;
+    p.jcmGain = 0.65f; p.jcmMaster = 0.5f; p.jcmPresence = 0.55f;
+    p.oversampling = 4;
+    return p;
+}
+
+// NATIVE PARITY case 3 — the same three pedals with the MUFF added and the order
+// reversed, on the Clean 120: phaser first, then muff, then TS. Proves the routing
+// is genuinely order-driven rather than a fixed sequence that happens to be
+// re-labelled, and exercises a four-deep board.
+Params reorderedBoardParams() {
+    Params p;
+    p.inputTrim = 0.4f;
+    p.chain[0] = clipper::native::PEDAL_PHASER;
+    p.chain[1] = clipper::native::PEDAL_MUFF;
+    p.chain[2] = clipper::native::PEDAL_TS;
+    p.chain[3] = clipper::native::PEDAL_RAT;
+    p.chainLength = 4;
+    p.phaserOn = true; p.phaserSpeed = 0.5f;
+    p.muffOn = true;   p.muffSustain = 0.45f; p.muffTone = 0.6f; p.muffVolume = 0.5f;
+    p.tsOn = true;     p.tsDrive = 0.3f; p.tsTone = 0.5f; p.tsLevel = 0.6f;
+    p.ratOn = false;   // on the board but BYPASSED — a true pass-through
+    p.ampModel = 0;    // Clean 120
+    p.ampOn = true;    p.volume = 0.45f; p.bass = 0.5f; p.middle = 0.5f; p.treble = 0.6f;
+    p.bright = true;   p.cab = true;
+    p.chorusMode = 1;  p.chorusSpeed = 0.3f; p.chorusDepth = 0.5f;
+    p.reverb = 0.2f;
+    p.oversampling = 4;
+    return p;
+}
+
 // M2-style 220 Hz sine * exponential pluck envelope.
 std::vector<float> makeSignal() {
     std::vector<float> x(static_cast<size_t>(kNumFrames));
@@ -176,6 +259,9 @@ void renderReference(const Params& p, const std::vector<float>& in,
 
     RatModel rat;
     SdModel sd;
+    TsModel ts;
+    MuffModel muff;
+    PhaserModel phaser;
     AmpModel amp;        // Clean 120
     Jcm800Amp jcm;       // JCM800 head
     TwinAmp twinAmp;     // Twin combo
@@ -189,6 +275,14 @@ void renderReference(const Params& p, const std::vector<float>& in,
     sd.setParameter(SdModel::PARAM_DRIVE, p.sdDrive);
     sd.setParameter(SdModel::PARAM_TONE, p.sdTone);
     sd.setParameter(SdModel::PARAM_LEVEL, p.sdLevel);
+    // The parity pedals, in ClipperEngine::applyParamsToModels' exact order.
+    ts.setParameter(TsModel::PARAM_DRIVE, p.tsDrive);
+    ts.setParameter(TsModel::PARAM_TONE, p.tsTone);
+    ts.setParameter(TsModel::PARAM_LEVEL, p.tsLevel);
+    muff.setParameter(MuffModel::PARAM_SUSTAIN, p.muffSustain);
+    muff.setParameter(MuffModel::PARAM_TONE, p.muffTone);
+    muff.setParameter(MuffModel::PARAM_VOLUME, p.muffVolume);
+    phaser.setParameter(PhaserModel::PARAM_SPEED, p.phaserSpeed);
 
     if (jcm800) {
         // Mirror ClipperEngine::applyParams' JCM order exactly.
@@ -233,6 +327,9 @@ void renderReference(const Params& p, const std::vector<float>& in,
 
     rat.prepare(kFs, kBlock);
     sd.prepare(kFs, kBlock);
+    ts.prepare(kFs, kBlock);
+    muff.prepare(kFs, kBlock);
+    phaser.prepare(kFs);   // linear: no block-size scratch
     amp.prepare(kFs, kBlock);
     // The JCM runs at its fixed 4x internally (set BEFORE prepare so its stages size
     // to it), independent of the pedal OS selector — matches ClipperEngine.
@@ -244,6 +341,9 @@ void renderReference(const Params& p, const std::vector<float>& in,
     ac30Amp.prepare(kFs, kBlock);
     rat.setOversampling(p.oversampling);
     sd.setOversampling(p.oversampling);
+    ts.setOversampling(p.oversampling);
+    muff.setOversampling(p.oversampling);
+    // (the phaser has no oversampler — it is linear)
 
     const std::vector<float> ir = generateDefaultCab2x12IR(kFs);
     cabL.prepare(kFs, ir.data(), static_cast<int>(ir.size()), kFs, 128);
@@ -262,8 +362,21 @@ void renderReference(const Params& p, const std::vector<float>& in,
         for (int i = 0; i < n; ++i) a[static_cast<size_t>(i)] = in[static_cast<size_t>(off + i)] * g;
         float* cur = a.data();
         float* other = b.data();
-        if (p.ratOn) { rat.process(cur, other, n); std::swap(cur, other); }
-        if (p.sdOn)  { sd.process(cur, other, n);  std::swap(cur, other); }
+        // Walk the BOARD in order, running each engaged pedal — the routing the
+        // engine performs, composed here by hand from the core models.
+        for (int c = 0; c < p.chainLength; ++c) {
+            const int type = p.chain[c];
+            if (!p.pedalOn(type)) continue;
+            switch (type) {
+                case clipper::native::PEDAL_RAT:    rat.process(cur, other, n); break;
+                case clipper::native::PEDAL_SD:     sd.process(cur, other, n); break;
+                case clipper::native::PEDAL_TS:     ts.process(cur, other, n); break;
+                case clipper::native::PEDAL_MUFF:   muff.process(cur, other, n); break;
+                case clipper::native::PEDAL_PHASER: phaser.process(cur, other, n); break;
+                default: continue;
+            }
+            std::swap(cur, other);
+        }
         if (!p.ampOn) {
             for (int i = 0; i < n; ++i) { l[static_cast<size_t>(i)] = cur[i]; r[static_cast<size_t>(i)] = cur[i]; }
         } else {
@@ -292,8 +405,19 @@ void renderReference(const Params& p, const std::vector<float>& in,
         off += n;
     }
 
-    latencyOut = (p.ratOn ? rat.latencySamples() : 0) +
-                 (p.sdOn ? sd.latencySamples() : 0) +
+    int pedalLatency = 0;
+    for (int c = 0; c < p.chainLength; ++c) {
+        const int type = p.chain[c];
+        if (!p.pedalOn(type)) continue;
+        switch (type) {
+            case clipper::native::PEDAL_RAT:  pedalLatency += rat.latencySamples(); break;
+            case clipper::native::PEDAL_SD:   pedalLatency += sd.latencySamples(); break;
+            case clipper::native::PEDAL_TS:   pedalLatency += ts.latencySamples(); break;
+            case clipper::native::PEDAL_MUFF: pedalLatency += muff.latencySamples(); break;
+            default: break;  // the phaser is linear — no group delay
+        }
+    }
+    latencyOut = pedalLatency +
                  (p.ampOn && jcm800 ? jcm.latencySamples() : 0) +
                  (p.ampOn && twin ? twinAmp.latencySamples() : 0) +
                  (p.ampOn && ac30 ? ac30Amp.latencySamples() : 0) +
@@ -319,6 +443,17 @@ void renderPlugin(const Params& p, const std::vector<float>& in,
     set(inputTrim, p.inputTrim);
     set(ratOn, p.ratOn ? 1.0f : 0.0f); set(ratDist, p.ratDist); set(ratFilter, p.ratFilter); set(ratLevel, p.ratLevel);
     set(sdOn, p.sdOn ? 1.0f : 0.0f);   set(sdDrive, p.sdDrive); set(sdTone, p.sdTone); set(sdLevel, p.sdLevel);
+    set(tsOn, p.tsOn ? 1.0f : 0.0f);   set(tsDrive, p.tsDrive); set(tsTone, p.tsTone); set(tsLevel, p.tsLevel);
+    set(muffOn, p.muffOn ? 1.0f : 0.0f);
+    set(muffSustain, p.muffSustain); set(muffTone, p.muffTone); set(muffVolume, p.muffVolume);
+    set(phaserOn, p.phaserOn ? 1.0f : 0.0f); set(phaserSpeed, p.phaserSpeed);
+    // The BOARD is state, not a parameter: push it through the processor's chain API
+    // (which also publishes the packed snapshot the audio thread reads).
+    {
+        std::vector<int> board;
+        for (int c = 0; c < p.chainLength; ++c) board.push_back(p.chain[c]);
+        proc.setChainOrder(board);
+    }
     set(ampOn, p.ampOn ? 1.0f : 0.0f);
     set(ampModel, static_cast<float>(p.ampModel));  // choice index == model id
     set(volume, p.volume); set(bass, p.bass); set(middle, p.middle); set(treble, p.treble);
@@ -441,9 +576,16 @@ int main() {
     ok &= runCase("JCM800", jcmParams(), in);
     ok &= runCase("Twin", twinParams(), in);
     ok &= runCase("AC30", ac30Params(), in);
+    // Native parity: multi-pedal BOARDS, in user-chosen order.
+    ok &= runCase("Board: RAT -> Muff -> Twin", ratMuffTwinParams(), in);
+    ok &= runCase("Board: TS -> Phaser -> JCM800", tsPhaserJcmParams(), in);
+    ok &= runCase("Board: Phaser -> Muff -> TS -> (RAT bypassed) -> Clean 120",
+                  reorderedBoardParams(), in);
 
     if (ok) {
-        std::printf("\nPASS: all four amp voices are sample-identical across plugin + engine + core.\n");
+        std::printf(
+            "\nPASS: all four amp voices AND every multi-pedal board are sample-identical "
+            "across plugin + engine + core.\n");
         return 0;
     }
     std::printf("\nFAIL: identical-core mismatch (see cases above).\n");
