@@ -8,6 +8,8 @@
 
 #include "clipper/dsp/Ac30PowerAmp.h"
 
+#include "clipper/dsp/TubeSolverMode.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -87,6 +89,7 @@ void Ac30PowerAmp::setOversampling(int factor) {
     iSagEnv_ = iIdleTotal_;
     vCcUp_ = ltp_.quiescentPlate1();   // grid DC-referenced to GROUND (0), so the
     vCcDown_ = ltp_.quiescentPlate2(); // idle coupling-cap voltage = the PI plate V.
+    vgUp_ = vgDown_ = 0.0;             // grid warm starts at idle (leak to ground)
     otHpS_ = 0.0; otLpS_ = 0.0;
     topCutS1_ = 0.0; topCutS2_ = 0.0;
     lastOutPeak_ = 0.0;
@@ -149,34 +152,39 @@ void Ac30PowerAmp::setParameter(int paramId, float value) {
     }
 }
 
+// Plate-load Newton with the hoisted Koren base and exact dIp/dVp (see the JCM's
+// solveTubePlate; §25, regression-gated): one atan per iteration, same root.
 inline double Ac30PowerAmp::solveTubePlate(double vg1k, double vg2, double rail,
-                                           double& vpOut) const {
+                                           double& vpOut, double& baseOut) const {
+    const double tol = 1e-4 * tubeSolverTolScale();
+    const double base = el34PlateBase(vg1k, vg2, tubeEl84_);
+    const double kvb = tubeEl84_.kvb;
     double Vp = rail;
     for (int it = 0; it < 40; ++it) {
-        const double i = el34PlateCurrent(Vp, vg1k, vg2, tubeEl84_);
+        const double u = Vp / kvb;
+        const double i = base * std::atan(u);
         const double f = Vp - (rail - (i - iqTube_) * kRppReflected);
-        const double h = 1e-2;
-        const double di = (el34PlateCurrent(Vp + h, vg1k, vg2, tubeEl84_) -
-                           el34PlateCurrent(Vp - h, vg1k, vg2, tubeEl84_)) / (2.0 * h);
-        const double df = 1.0 + di * kRppReflected;
+        const double df = 1.0 + (base / (kvb * (1.0 + u * u))) * kRppReflected;
         double dv = -f / df;
         dv = std::clamp(dv, -120.0, 120.0);
         Vp += dv;
         if (Vp < 0.0) Vp = 0.01;
-        if (std::fabs(dv) < 1e-4) break;
+        if (std::fabs(dv) < tol) break;
     }
     vpOut = Vp;
-    return el34PlateCurrent(Vp, vg1k, vg2, tubeEl84_);
+    baseOut = base;
+    return base * std::atan(Vp / kvb);
 }
 
 // EL84 grid node: PI plate AC through the coupling cap into the grid leak (to
 // GROUND — cathode bias has no fixed negative supply) + grid conduction (relative
 // to the shared cathode vk). Returns the grid voltage Vg (absolute, ref. ground).
 inline double Ac30PowerAmp::solveTubeGrid(double vpPlateAC, double vpPlateQ,
-                                          double& vCc) const {
+                                          double& vCc, double& vgWarm) const {
     const double vp = vpPlateQ + vpPlateAC;
     const double ig0 = gridVgn_ / gridRgk_;
-    double Vg = 0.0;
+    const double tol = 1e-7 * tubeSolverTolScale();
+    double Vg = vgWarm;  // warm start from the previous sample's solution (§25)
     for (int it = 0; it < 40; ++it) {
         const double u = (Vg - vk_) / gridVgn_;       // conduction when Vg > Vk
         const double Igk = ig0 * softplus(u);
@@ -186,9 +194,10 @@ inline double Ac30PowerAmp::solveTubeGrid(double vpPlateAC, double vpPlateQ,
         double dVg = -r / dr;
         dVg = std::clamp(dVg, -100.0, 100.0);
         Vg += dVg;
-        if (std::fabs(dVg) < 1e-7) break;
+        if (std::fabs(dVg) < tol) break;
     }
     vCc = (vp - Vg);
+    vgWarm = Vg;
     return Vg;
 }
 
@@ -214,19 +223,21 @@ inline float Ac30PowerAmp::processSampleOS(float xf) {
     }
 
     // 3. PI plates → EL84 grids (coupling + blocking, grid leak to ground).
-    const double vgUp = solveTubeGrid(va1AC, ltp_.quiescentPlate1(), vCcUp_);
-    const double vgDown = solveTubeGrid(va2AC, ltp_.quiescentPlate2(), vCcDown_);
+    const double vgUp = solveTubeGrid(va1AC, ltp_.quiescentPlate1(), vCcUp_, vgUp_);
+    const double vgDown = solveTubeGrid(va2AC, ltp_.quiescentPlate2(), vCcDown_, vgDown_);
 
     // 4. EL84 pair at the sagged rail. Grid-cathode bias rides on the DYNAMIC shared
     //    cathode (previous sample's vk_ — decoupled like the rail/screen). This is
     //    where the class-A bias-shift compression comes from.
     const double vg1kUp = vgUp - vk_;
     const double vg1kDown = vgDown - vk_;
-    double vpUp = 0.0, vpDown = 0.0;
-    const double ipUp = solveTubePlate(vg1kUp, vScreen_, vRail_, vpUp);
-    const double ipDown = solveTubePlate(vg1kDown, vScreen_, vRail_, vpDown);
-    const double ig2Up = el34ScreenCurrent(vg1kUp, vScreen_, tubeEl84_);
-    const double ig2Down = el34ScreenCurrent(vg1kDown, vScreen_, tubeEl84_);
+    //    Screen currents reuse the plate solve's hoisted base: Ig2 = base·kg1/kg2.
+    double vpUp = 0.0, vpDown = 0.0, baseUp = 0.0, baseDown = 0.0;
+    const double ipUp = solveTubePlate(vg1kUp, vScreen_, vRail_, vpUp, baseUp);
+    const double ipDown = solveTubePlate(vg1kDown, vScreen_, vRail_, vpDown, baseDown);
+    const double kScr = tubeEl84_.kg1 / tubeEl84_.kg2;
+    const double ig2Up = baseUp * kScr;
+    const double ig2Down = baseDown * kScr;
 
     // 5. Output transformer (linear): differential primary → secondary.
     const double vPriDiff = (ipUp - ipDown) * kRppReflected;

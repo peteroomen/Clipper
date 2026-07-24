@@ -173,21 +173,30 @@ int dampedNewton(const Sys& sys, double& Vb, double& Vc, double& Ve, int maxIter
         for (double& v : dx) v = std::clamp(v, -10.0, 10.0);
         const double cur = infNorm3(r);
         // Backtrack: halve the step until the residual norm drops (Armijo-ish).
-        double lam = 1.0, rt[3];
+        // Each trial evaluates the JACOBIAN alongside the residual — given the
+        // Ebers-Moll/diode exponentials the J entries are a handful of extra adds
+        // and multiplies, and carrying them out of the accepted trial removes the
+        // separate refresh eval that used to re-run the exponentials at the new
+        // point every iteration (~2x fewer evals; §25 solver-perf pass; the Newton
+        // path — every iterate, every accepted step — is unchanged bit for bit).
+        double lam = 1.0, rt[3], Jt[3][3];
         double Vb2 = Vb, Vc2 = Vc, Ve2 = Ve;
         for (int bt = 0; bt < 30; ++bt) {
             Vb2 = Vb + lam * dx[0];
             Vc2 = Vc + lam * dx[1];
             Ve2 = Ve + lam * dx[2];
-            sys.eval(Vb2, Vc2, Ve2, rt, nullptr);
+            sys.eval(Vb2, Vc2, Ve2, rt, Jt);
             if (infNorm3(rt) < cur * (1.0 - 1e-4 * lam)) break;
             lam *= 0.5;
         }
         Vb = Vb2; Vc = Vc2; Ve = Ve2;
+        // Adopt the accepted trial's residual + Jacobian for the next iteration.
+        r[0] = rt[0]; r[1] = rt[1]; r[2] = rt[2];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j) J[i][j] = Jt[i][j];
         if (std::fabs(lam * dx[0]) < 1e-9 && std::fabs(lam * dx[1]) < 1e-9 &&
             std::fabs(lam * dx[2]) < 1e-9)
             break;
-        sys.eval(Vb, Vc, Ve, r, J);  // refresh residual + Jacobian at the new point
     }
     return it + 1;
 }

@@ -33,6 +33,8 @@
 
 #include "clipper/dsp/TriodeStage.h"
 
+#include "clipper/dsp/TubeSolverMode.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -80,7 +82,10 @@ KorenEval korenEval(double Va, double Vgk, const TriodeStage::KorenParams& p) {
     if (E1 <= 0.0) return {0.0, 0.0, 0.0};
     const double C = 2.0 / p.kg1;
     const double Ip = C * std::pow(E1, p.ex);
-    const double dIp_dE1 = C * p.ex * std::pow(E1, p.ex - 1.0);
+    // dIp/dE1 = C*ex*E1^(ex-1) == ex*Ip/E1 — algebraically identical, one pow
+    // instead of two (the solver-perf pass, docs §25; Newton converges to the
+    // same root, the Jacobian only steers the iterates).
+    const double dIp_dE1 = p.ex * Ip / E1;
     // dE1/dVgk = Va*sig/S ;  dE1/dVa = L/kp - Va^2*Vgk*sig/S^3
     const double dE1_dVgk = Va * sig / S;
     const double dE1_dVa = L / p.kp - (Va * Va * Vgk * sig) / (S * S * S);
@@ -97,28 +102,24 @@ GridEval gridEval(double Vgk, const TriodeStage::Config& c) {
     return {Ig, dIg};
 }
 
-// Solve the 3x3 system J*x = b in place (Cramer's rule). Returns false if J is
-// singular (the caller then damps / bails).
+// Solve the stage's 3x3 Newton system J*x = b, exploiting the FIXED sparsity of
+// the nodal Jacobian: J[2][0] == 0 always (the grid-node residual r3 does not
+// depend on Va). Two elimination steps + a 2x2 back-solve — same solution as the
+// general Cramer it replaces (the solver-perf pass, docs §25), ~3x fewer flops
+// and no 3x3 copies in the per-sample hot loop. Returns false if singular.
 bool solve3x3(const double J[3][3], const double b[3], double x[3]) {
-    const double det =
-        J[0][0] * (J[1][1] * J[2][2] - J[1][2] * J[2][1]) -
-        J[0][1] * (J[1][0] * J[2][2] - J[1][2] * J[2][0]) +
-        J[0][2] * (J[1][0] * J[2][1] - J[1][1] * J[2][0]);
+    // Row 0 eliminates d0 (Va) from row 1:  d0 = (b0 - J01*d1 - J02*d2)/J00.
+    if (std::fabs(J[0][0]) < 1e-30) return false;
+    const double m = J[1][0] / J[0][0];
+    const double a11 = J[1][1] - m * J[0][1];
+    const double a12 = J[1][2] - m * J[0][2];
+    const double b1 = b[1] - m * b[0];
+    // Remaining 2x2 in (d1, d2) with row 2 (J[2][0] == 0 by construction).
+    const double det = a11 * J[2][2] - a12 * J[2][1];
     if (std::fabs(det) < 1e-30) return false;
-    const double inv = 1.0 / det;
-    // Cramer: replace column k with b.
-    double c[3][3];
-    for (int col = 0; col < 3; ++col) {
-        for (int r = 0; r < 3; ++r) {
-            c[r][0] = J[r][0]; c[r][1] = J[r][1]; c[r][2] = J[r][2];
-        }
-        for (int r = 0; r < 3; ++r) c[r][col] = b[r];
-        const double d =
-            c[0][0] * (c[1][1] * c[2][2] - c[1][2] * c[2][1]) -
-            c[0][1] * (c[1][0] * c[2][2] - c[1][2] * c[2][0]) +
-            c[0][2] * (c[1][0] * c[2][1] - c[1][1] * c[2][0]);
-        x[col] = d * inv;
-    }
+    x[1] = (b1 * J[2][2] - a12 * b[2]) / det;
+    x[2] = (a11 * b[2] - b1 * J[2][1]) / det;
+    x[0] = (b[0] - J[0][1] * x[1] - J[0][2] * x[2]) / J[0][0];
     return true;
 }
 
@@ -275,6 +276,7 @@ void TriodeStage::solveFollowerOperatingPoint() {
 inline float TriodeStage::processSampleFollowerOS(float xf) {
     const double Vsrc = cfg_.gridBias + static_cast<double>(xf);
     const double gRg = 1.0 / cfg_.Rg, gRk = 1.0 / cfg_.Rk;
+    const double tol = 1e-7 * tubeSolverTolScale();  // docs §25, regression-gated
     double Vg = vg_, Vk = vk_;  // warm start
     int it = 0;
     for (; it < kMaxNewtonIter; ++it) {
@@ -296,7 +298,7 @@ inline float TriodeStage::processSampleFollowerOS(float xf) {
         dVk = std::clamp(dVk, -30.0, 30.0);
         Vg += dVg;
         Vk += dVk;
-        if (std::fabs(dVg) < 1e-7 && std::fabs(dVk) < 1e-7) break;
+        if (std::fabs(dVg) < tol && std::fabs(dVk) < tol) break;
     }
     lastMaxIters_ = std::max(lastMaxIters_, it + 1);
     vg_ = Vg;
@@ -315,6 +317,7 @@ inline float TriodeStage::processSampleOS(float xf) {
     const double rth = 1.0 / (gCc_ + gRgl_) + cfg_.Rg;
     const double gThev = 1.0 / rth;
 
+    const double tol = 1e-7 * tubeSolverTolScale();  // docs §25, regression-gated
     double Va = va_, Vg = vg_, Vk = vk_;  // warm start
     int it = 0;
     for (; it < kMaxNewtonIter; ++it) {
@@ -340,8 +343,8 @@ inline float TriodeStage::processSampleOS(float xf) {
         d[1] = std::clamp(d[1], -20.0, 20.0);   // Vg
         d[2] = std::clamp(d[2], -20.0, 20.0);   // Vk
         Va += d[0]; Vg += d[1]; Vk += d[2];
-        if (std::fabs(d[0]) < 1e-7 && std::fabs(d[1]) < 1e-7 &&
-            std::fabs(d[2]) < 1e-7)
+        if (std::fabs(d[0]) < tol && std::fabs(d[1]) < tol &&
+            std::fabs(d[2]) < tol)
             break;
     }
     lastMaxIters_ = std::max(lastMaxIters_, it + 1);
