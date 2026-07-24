@@ -29,6 +29,19 @@ export type { TunerReading };
 
 export type Unit = 'pedal' | 'amp';
 
+// Minimal shapes for the non-standard AudioRenderCapacity API (not yet in the DOM
+// lib typings). Only the members we use; feature-detected at runtime.
+interface RenderCapacityEventLike {
+  averageLoad?: number;
+  peakLoad?: number;
+  underrunRatio?: number;
+}
+interface RenderCapacityLike {
+  start(options?: { updateInterval?: number }): void;
+  stop(): void;
+  onupdate: ((ev: RenderCapacityEventLike) => void) | null;
+}
+
 // A compact pedal descriptor sent to the worklet's `chain` message: enough for it
 // to create/reuse the DSP handle and apply the knobs.
 export interface ChainPedal {
@@ -76,6 +89,27 @@ export interface StartOptions {
   // quiet / unclear to read) while an engaged tuner is tapping the input. Fires
   // only when a tuner is engaged; silent otherwise.
   onTuner?: (reading: TunerReading | null) => void;
+  // ENGINE LOAD METER (perf visibility, field-lag report). Chromium exposes
+  // AudioContext.renderCapacity (an AudioRenderCapacity) that fires 'update' events
+  // carrying averageLoad / peakLoad / underrunRatio in [0,1] — the fraction of each
+  // render quantum's deadline the audio thread actually spent. This is GROUND TRUTH
+  // on the user's own machine: a rising load / any underrun is the objective signal
+  // behind "lag". Fires at `renderLoadInterval` cadence (default 1 s) when the API
+  // is present; never fires (and the UI shows a fallback) when it is not. See §25.
+  onRenderLoad?: (load: RenderLoad) => void;
+  // Update cadence in seconds for the render-capacity meter (default 1 s). Kept
+  // slow on purpose so the meter's own state updates never add to UI churn.
+  renderLoadInterval?: number;
+}
+
+// A render-capacity sample. Loads are fractions in [0,1] (0.23 == "DSP 23%").
+// `supported` is false when the browser lacks AudioContext.renderCapacity, so the
+// UI can show a fallback ("DSP n/a") rather than a misleading 0%.
+export interface RenderLoad {
+  supported: boolean;
+  averageLoad: number;
+  peakLoad: number;
+  underrunRatio: number;
 }
 
 export interface Engine {
@@ -219,6 +253,49 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
     }
   };
 
+  // ENGINE LOAD METER (Deliverable 1). Wire AudioContext.renderCapacity if the
+  // browser exposes it (Chromium 116+/Electron). Each 'update' carries the audio
+  // thread's load over the last interval; forward it to the UI and log a compact
+  // diagnostic. Feature-detected so non-Chromium browsers degrade to a fallback.
+  let renderCapacity: RenderCapacityLike | null = null;
+  const rcHost = context as unknown as { renderCapacity?: RenderCapacityLike };
+  if (opts.onRenderLoad && rcHost.renderCapacity) {
+    renderCapacity = rcHost.renderCapacity;
+    const onUpdate = (ev: RenderCapacityEventLike) => {
+      const load: RenderLoad = {
+        supported: true,
+        averageLoad: ev.averageLoad ?? 0,
+        peakLoad: ev.peakLoad ?? 0,
+        underrunRatio: ev.underrunRatio ?? 0,
+      };
+      opts.onRenderLoad?.(load);
+      // Console diagnostics: quiet when healthy, LOUD on any underrun (a dropout —
+      // the objective face of "crackle/lag"), so the field can copy-paste it back.
+      const pct = (x: number) => `${Math.round(x * 100)}%`;
+      if (load.underrunRatio > 0) {
+        console.warn(
+          `[clipper] DSP avg ${pct(load.averageLoad)} peak ${pct(load.peakLoad)} ` +
+            `UNDERRUN ${pct(load.underrunRatio)} — audio thread missed its deadline (dropout)`
+        );
+      } else {
+        console.debug(
+          `[clipper] DSP avg ${pct(load.averageLoad)} peak ${pct(load.peakLoad)}`
+        );
+      }
+    };
+    renderCapacity.onupdate = onUpdate;
+    try {
+      renderCapacity.start({ updateInterval: opts.renderLoadInterval ?? 1 });
+    } catch (err) {
+      console.warn('[clipper] renderCapacity.start failed:', err);
+      renderCapacity = null;
+    }
+  } else if (opts.onRenderLoad) {
+    // No API here — tell the UI once so it can render the fallback state.
+    opts.onRenderLoad({ supported: false, averageLoad: 0, peakLoad: 0, underrunRatio: 0 });
+    console.info('[clipper] AudioContext.renderCapacity unavailable; DSP load meter shows n/a');
+  }
+
   // Apply the initial configuration. Oversampling first (so chain handles are
   // created at the right factor), then the whole chain (which carries per-pedal
   // params + engaged), then input/amp.
@@ -298,6 +375,15 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   sourceNode.connect(node).connect(context.destination);
 
   engine.stop = async () => {
+    if (renderCapacity) {
+      renderCapacity.onupdate = null;
+      try {
+        renderCapacity.stop();
+      } catch {
+        /* already stopped / context closing */
+      }
+      renderCapacity = null;
+    }
     if (osc) {
       osc.stop();
       osc.disconnect();

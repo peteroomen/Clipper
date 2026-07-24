@@ -3826,3 +3826,168 @@ clipper-render muff_pre.wav muff_into_twin.wav --twin --twin-volume 0.35 --twin-
   JCM800 + JCM power + Twin + **Muff**); web tsc + vite build; Playwright +2 (`muff
   worklet: fuzz makes massive harmonics + a compressed sustain wall` and `assistant:
   add_pedal adds a Muff Pi fuzz (round-trip)`), 58 total green.
+
+## 25. Performance — denormal guard, tube-solver pass, per-gear cost, load meter
+
+The field report behind this milestone: **audio lag/crackle on the web app (and the
+Mac build), even on the clean JC-120 path** — "random", periodic, independent of
+which amp or pedal is loaded. Two real causes were found and fixed, and the
+milestone adds the instrumentation to keep perf honest from here on: a per-unit
+cost benchmark (`clipper-bench`), a permanent solver-accuracy regression test, and
+a DSP load meter in the web UI.
+
+### 25.1 The denormal cliff (the amp-independent crackle)
+
+**Diagnosis.** A recursive float filter state fed a signal that decays to silence
+rings down through the **subnormal** float range (magnitudes below ~1.18e-38).
+Arithmetic on subnormals takes a microcoded slow path on real CPUs — and while
+native code *could* enable hardware flush-to-zero (FTZ/DAZ), we never did, and
+**WASM has no FTZ at all** (the runtime cannot be asked to flush). So every
+decaying note tail turned into thousands of slow-path ops on the audio thread.
+Worse, a one-pole smoother approaching a **zero** target (bright switch off,
+chorus depth 0) never *leaves* the subnormal range — it asymptotes and sticks
+there, a **permanent** denormal generator. Every amp and pedal shares these
+primitives (`Biquad`, `OnePoleSmoother`), which is exactly why the lag was
+independent of the loaded gear.
+
+Measured on the dev container (x86-64, which honors subnormals the same way a
+browser's WASM JIT must): an **unguarded** TDF2 biquad running a silent tail is
+**24.6× slower** in the default FP environment than with hardware FTZ forced on
+(`scripts/denormal_bench.cpp` pattern; 40×10 s tails). That is the cliff the web
+app was falling off.
+
+**Fix.** `core/include/clipper/dsp/Denormal.h` — a branchless
+`flushDenormal(v)` (float + double overloads): any recursive state whose
+magnitude falls below **1e-30 (−600 dB)** is snapped to exactly 0. The floor is
+~8 orders of magnitude above the largest subnormal and ~10 below the reverb
+loop's long-standing `1e-20` anti-denormal offset (zero interaction), and −456 dB
+below the 24-bit noise floor — bit-irrelevant to audio. Applied after **every**
+decaying recursive update in the core (audited module by module):
+
+- `Biquad` z1/z2 (every tone stack / shelf / peak in every amp),
+- `OnePoleSmoother` (snaps to the target once the residual is sub-floor — kills
+  the stuck-at-zero-target generator),
+- `PhaserModel` allpass memory (double), `RatModel` shape/LP one-poles,
+  `OverdriveEngine` mid/tone one-poles (SD-1 + Screamer), `MuffToneStack` legs,
+  `LM308Stage` closed-loop LP, `OptoTremolo` depth smoother (double).
+
+Not guarded, by analysis: `ReverbModel` (its 1e-20 loop offset already prevents
+subnormals), chorus delay lines / halfband FIRs / convolver overlap-add (input
+history, no feedback — state dies with the input), tube-stage companion caps
+(doubles parked at nonzero DC operating points), `OutputLimiter` gain (double
+near 1.0).
+
+**Proof.** `clipper_denormal_tests` (ctest #13): the flush invariant; silent-tail
+runs over the exact AmpModel voicing filters asserting **no output sample is ever
+subnormal and the tail reaches exactly 0**; smoother snap/converge cases; and
+**bit-transparency** — the guarded `Biquad`/`OnePoleSmoother` are compared
+sample-for-sample against verbatim *unguarded* recurrences over 2 s of
+program-level audio and must match **bit-for-bit** (the guard only acts below
+−600 dB). With the guard in place `denormal_bench` shows the default FP
+environment reaching the hardware-FTZ ceiling (ratio 1.0–1.1×) — the cliff is
+gone *in code*, which is the only fix available under WASM.
+
+### 25.2 The tube-solver pass (same equations, same roots, fewer evaluations)
+
+The valve amps dominate CPU: per-sample Newton solves at 4× oversampling. The
+pass speeds them up **without touching the circuit equations or the converged
+solutions** — no lookup tables, no waveshaper stand-ins:
+
+- **Pentode plate-load Newton** (EL34 / 6L6 / EL84): the Koren law factors as
+  `Ip = base·atan(Vp/kvb)` with `base = (2/kg1)·E1^ex` depending only on the
+  grids — which are **fixed** during the plate solve. `base` (the softplus+pow)
+  is hoisted out of the loop and `dIp/dVp = base/(kvb·(1+(Vp/kvb)²))` is exact,
+  so each iteration costs **one `atan`** where it used to cost **three full
+  pentode evaluations** (the central-difference derivative is gone). Same
+  residual, same exit tolerance, same root.
+- **Screen currents reuse the hoisted base**: `Ig2 = base·(kg1/kg2)` — one more
+  softplus+pow gone per output-tube leg per oversampled sample.
+- **Grid-node solves warm-start** from the previous sample's solution (they used
+  to restart from the idle bias every sample).
+- **Triode/LTP Koren evals**: `dIp/dE1 = ex·Ip/E1` — algebraically identical to
+  the second `pow`, computed from the first.
+- **Sparse 3×3 solves**: the TriodeStage and LTP Jacobians have fixed zero
+  entries (the grid row doesn't see the plate; each PI plate row couples only
+  its own plate + the shared tail), so both systems solve by direct elimination
+  instead of general Cramer with column copies.
+- **BjtStage (Muff) line search**: trial evaluations now fill the Jacobian too —
+  nearly free once the Ebers-Moll/diode exponentials are computed — removing the
+  separate refresh evaluation per damped-Newton iteration. The Newton path
+  (every iterate, every accepted step) is **bit-identical** to before.
+
+**The accuracy gate is permanent.** `TubeSolverMode.h` exposes a test-only
+tolerance scale; `clipper_tube_solver_tests` (ctest #14) renders a riff (plucked
+fundamentals + harmonics, attacks, clipping, decaying tails) through each valve
+voice at production tolerances and at **1000×-tighter reference tolerances** and
+asserts the two renders agree below **−120 dBFS**. Measured residuals: jcm800
+**−258.9 dBFS**, twin **−258.9 dBFS**, ac30 **−162.6 dBFS**. A 3 s sweep render
+per amp before/after the whole pass agrees to −252.9 / −186.6 / −258.5 dBFS
+(jcm/twin/ac30) — inaudible by ~10 orders of magnitude, honestly *not* bit-exact
+(the roots are approached along different iterates), which is why the JUCE
+identical-core test still passes: plugin and raw engine share the same updated
+core, so both sides moved identically.
+
+**Measured speedup** (native `clipper-bench`, 8 s riff, 48 kHz / 128-frame
+blocks, one Linux x86-64 container — treat as relative):
+
+| valve unit | before | after | speedup |
+|---|---|---|---|
+| jcm800 | 1.45× RT (68.8 % CPU) | 1.96× RT (51.1 %) | **1.35×** |
+| twin   | 2.04× RT (49.0 %)     | 2.90× RT (34.5 %) | **1.42×** |
+| ac30   | 2.25× RT (44.4 %)     | 3.80× RT (26.3 %) | **1.69×** |
+| muff   | 3.41× RT (29.4 %)     | 4.10× RT (24.4 %) | **1.20×** |
+
+WASM runs the same source ~1.4–2× slower than native, so the pre-pass WASM
+margin of ~1.1–1.4× realtime on the valve amps is what made every scheduling
+hiccup audible; the pass converts that into real headroom.
+
+### 25.3 Per-gear CPU cost (the honest table)
+
+`core/tools/bench/main.cpp` (`clipper-bench`, native-only target): every unit
+processes the same deterministic riff at 48 kHz in 128-frame blocks after a
+warm-up pass; the table reports audio-seconds-per-wall-second (× realtime) and
+the share of one realtime stream. Native numbers are a **proxy** for WASM (same
+core source); the *ranking* is the point. Post-pass numbers:
+
+| unit | × realtime | % of one 48 k stream |
+|---|---|---|
+| jcm800 (valve amp) | 1.96× | 51.1 % |
+| twin (valve amp) | 2.90× | 34.5 % |
+| ac30 (valve amp) | 3.80× | 26.3 % |
+| muff (BJT fuzz) | 4.10× | 24.4 % |
+| rat (dist pedal) | 35.2× | 2.8 % |
+| sd1 / screamer (overdrive) | ~43× | 2.3 % |
+| clean amp + chorus + reverb (stereo) | 89.4× | 1.1 % |
+| spring reverb alone (mix 0.5) | 114.6× | 0.9 % |
+| ninety (phaser) | 298.7× | 0.3 % |
+| cab convolver (either IR) | ~460× | 0.2 % |
+| clean amp alone (JC-120, mono) | 1403.6× | 0.07 % |
+| output limiter | 1677.3× | 0.06 % |
+
+Reading it: the **valve amps are the budget** — a valve head plus a dirt pedal,
+cab, and reverb is dominated by the head alone; everything linear is noise. The
+denormal guard is invisible here by design (it costs a compare+select per state
+update) — its payoff is the *absence* of the tail-triggered spikes that no
+steady-state benchmark shows.
+
+### 25.4 The web DSP load meter (ground truth on the user's machine)
+
+The web app now reports the audio thread's real headroom instead of guessing:
+`audio.ts` wires **`AudioContext.renderCapacity`** (Chromium 116+) and forwards
+its ~1 Hz `update` events — `averageLoad` / `peakLoad` / `underrunRatio`, the
+fraction of each render quantum's deadline actually spent — to a new **Engine
+load** row in the status panel (`DSP 23% · peak 41%`). States: normal ink;
+**warn** (amber) above 80 % average — headroom running out, the pre-glitch
+signal; **underrun** (red LED glow) when `underrunRatio > 0` — a real dropout,
+the objective face of "crackle/lag", also logged loudly to the console so field
+reports can paste it back. Feature-detected: browsers without the API get an
+honest `n/a (needs Chromium)` rather than a fake 0 %; the meter stops with the
+engine and never adds render churn (1 Hz state updates only). The readout lives
+in the existing neumorphic status card (`.status` dl), styled through the stock
+`--led*` tokens — no new visual language.
+
+- Verification for the milestone: core ctest **14/14** (12 prior + denormal +
+  tube-solver regression); the JUCE **identical-core** test green across all
+  four amp voices; `web` tsc + vite build green; WASM rebuilt via
+  `scripts/build-wasm.sh` with the single consolidated `EXPORTED_FUNCTIONS`
+  list intact.
