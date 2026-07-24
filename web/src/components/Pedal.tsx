@@ -1,20 +1,22 @@
-// Pedal — the CLIPPER pedal faces (M6.8 identity pass).
+// Pedal — the CLIPPER pedal faces (M6.8.1 doctrine revision).
 //
-// SHARED CHASSIS, DISTINCT SOULS. Every knob pedal is sculpted from the same
-// neumorphic chassis (the `.pedal raised` shell), but each TYPE declares a FACE
-// DEFINITION that gives it a soul on three axes:
-//   1. enclosure tint  — a desaturated full-body wash (--rat-tint / --sd1-tint,
-//      layered over the neumorphic base in pedal.css so BOTH themes work),
-//   2. face LAYOUT      — a referential geometry ('stack' vs 'compact'),
-//   3. typography       — the hero wordmark treatment (condensed vs Boss-plate).
+// DARK CHASSIS FOR ALL, REFERENCE VIA ACCENT. Every pedal is sculpted from the
+// SAME neumorphic chassis in ONE shared charcoal wash (the RAT's colour, which
+// reads well against the lighter board). A full-body hue per pedal broke the
+// neumorphism, so identity is now carried by three SUBTLE cues declared per TYPE:
+//   1. ACCENT colour — a small-area, saturated colour on the dark chassis (knob
+//      value arcs + value readouts + LED). RAT: red/orange · SD-1: yellow ·
+//      tuner: green (its lock colour). Set as --pedal-accent in pedal.css.
+//   2. one MORPHOLOGY cue — the SD-1's wide treadle vs the RAT's round stomp.
+//   3. a knowing NAME — a wink a pedal-lover gets, no trademarks/exact names.
 //
-// Two dirt variants today (M8 shared the SAME three params; the SD-1 relabels the
+// Two dirt variants today (they share the SAME three params; the SD-1 relabels the
 // slots so distortion==Drive, filter==Tone):
-//   rat  — 'stack'   : tall charcoal box, big centered 3-knob trio, stark condensed
-//                      "Clipper" logo, round stomp. It IS the reference.
-//   sd1  — 'compact' : warm-amber Boss-compact HOMAGE — a compact knob row across
-//                      the top over a wide flat hinged TREADLE pad (the footswitch
-//                      is the treadle, not a round button), small model line.
+//   rat  — 'stack'   : tall box, big centered 3-knob trio, condensed "Rodent"
+//                      logo, round stomp, red accent. It IS the reference.
+//   sd1  — 'compact' : Boss-compact HOMAGE — a knob row with clear air across the
+//                      top over a wide flat hinged TREADLE that owns the LOWER
+//                      body (the footswitch is the treadle), yellow accent.
 //
 // Homage, never replica: no real trademarks/logos/exact trade dress. The knob's
 // onChange still writes the underlying ParamName while its label differs, so
@@ -54,8 +56,10 @@ interface PedalFace {
 const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
   rat: {
     layout: 'stack',
-    model: 'DIRT Nº1 · RAT-TYPE',
-    wordmark: 'Clipper',
+    // "Rodent" is the wink (the famous dirt box); "Clipper" is the app brand, not
+    // this pedal. Model line references the type without the trademark.
+    model: 'DIRT Nº1 · RODENT-TYPE',
+    wordmark: 'Rodent',
     knobs: [
       { name: 'Dist', aria: 'Distortion', param: 'distortion', testId: 'knob-distortion' },
       { name: 'Filter', aria: 'Filter', param: 'filter', testId: 'knob-filter' },
@@ -64,7 +68,9 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
   },
   sd1: {
     layout: 'compact',
-    model: 'DRIVE Nº2 · SD-TYPE',
+    // "Super Drive" + "YELLOW" wink at the classic yellow overdrive (and the new
+    // yellow accent) without the trademark.
+    model: 'DRIVE Nº2 · YELLOW',
     wordmark: 'Super Drive',
     knobs: [
       { name: 'Drive', aria: 'Drive', param: 'distortion', testId: 'knob-drive' },
@@ -142,13 +148,12 @@ export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
           </div>
         </>
       ) : (
-        // Boss-compact homage: knobs ride the top edge; the treadle owns the body.
+        // Boss-compact homage: knobs ride the top edge with air; the treadle owns
+        // the LOWER body and sits at the bottom — nothing below it (no caption;
+        // the wordmark is embossed on the treadle itself).
         <>
           {knobs}
-          <div className="fsw-zone treadle-zone">
-            {footswitch}
-            <span className="fsw-label">Stomp</span>
-          </div>
+          <div className="fsw-zone treadle-zone">{footswitch}</div>
         </>
       )}
     </div>

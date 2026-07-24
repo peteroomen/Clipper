@@ -9,6 +9,18 @@
   align-items: center;
 }
 
+/* M6.8.1 spacing fix — the header row must span the full width so the model line
+   and the lock LED sit at opposite edges (before, the centered flex column let the
+   row shrink to content and the LED landed right after the text). The rest of the
+   face keeps an even vertical rhythm: header → screen → strip → cents → footswitch. */
+.pedal.tuner .pedal-top {
+  width: 100%;
+  margin-bottom: 16px;
+}
+.pedal.tuner .pedal-model {
+  letter-spacing: 0.18em; /* fits "IN-TUNE Nº0 · CHROMATIC" with air before the LED */
+}
+
 /* Lock LED (top-right): green in tune / red off-pitch / dim when no signal.
    Overrides the default red .pedal.on .led (higher specificity so it wins). */
 .pedal.tuner .tuner-led {
@@ -31,7 +43,7 @@
 .tuner-screen {
   position: relative;
   width: 100%;
-  margin: 12px 0 14px;
+  margin: 0 0 16px;
   padding: 14px 18px;
   border-radius: 16px;
   background: var(--seg-face);
@@ -102,7 +114,7 @@
   justify-content: center;
   gap: 5px;
   width: 100%;
-  margin: 2px 0 12px;
+  margin: 0 0 16px;
 }
 .seg {
   flex: 1 1 0;
@@ -132,7 +144,11 @@
   display: flex;
   align-items: baseline;
   gap: 5px;
-  margin-bottom: 4px;
+  margin: 0 0 16px;
+}
+/* Even rhythm to the footswitch (the shared .fsw-zone default is a large 30px). */
+.pedal.tuner .fsw-zone {
+  margin-top: 4px;
 }
 .tuner-cents {
   font-size: 20px;
