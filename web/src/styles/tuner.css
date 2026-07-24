@@ -49,10 +49,12 @@
   background: var(--seg-face);
   box-shadow: inset 4px 4px 12px rgba(0, 0, 0, 0.5), inset -3px -3px 8px rgba(255, 255, 255, 0.04),
     0 1px 0 var(--sh-light);
+  /* Center the note-letter + accidental as a GROUP (call 4). The octave is taken
+     out of flow (absolute, bottom-right subscript) so the big letter sits dead
+     center instead of being pushed left by the octave's width. */
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
   min-height: 96px;
 }
 .tuner-note-display {
@@ -61,7 +63,7 @@
   align-items: center;
 }
 .seg7 {
-  width: 62px;
+  width: 64px;
   height: auto;
   display: block;
   overflow: visible;
@@ -79,18 +81,22 @@
   fill: var(--seg-dim);
   filter: none;
 }
+/* The sharp is ANCHORED at the letter's top-right shoulder (call 4) — absolutely
+   positioned against the note-display so it hugs the glyph's upper-right corner
+   instead of floating vertically-centered mid-screen. */
 .seg-sharp {
-  position: relative;
-  width: 14px;
-  height: 46px;
-  margin-left: 3px;
+  position: absolute;
+  top: 3px;
+  left: calc(100% - 3px);
+  width: 16px;
+  height: 30px;
 }
 .seg-sharp::after {
   content: '♯';
   position: absolute;
   top: 0;
   left: 0;
-  font-size: 26px;
+  font-size: 23px;
   line-height: 1;
   color: var(--seg-dim);
 }
@@ -98,10 +104,17 @@
   color: var(--seg-lit);
   text-shadow: 0 0 6px var(--seg-lit-glow);
 }
+/* Octave — small subscript pinned to the bottom-right corner of the screen so it
+   never competes with the centered note group. */
 .tuner-oct {
-  font-size: 20px;
+  position: absolute;
+  right: 16px;
+  bottom: 11px;
+  font-size: 18px;
+  line-height: 1;
   color: color-mix(in srgb, var(--seg-lit) 55%, transparent);
   min-width: 1ch;
+  text-align: right;
 }
 .pedal.tuner:not(.on) .tuner-oct {
   color: var(--seg-dim);
@@ -121,9 +134,12 @@
   height: 16px;
   max-width: 22px;
   border-radius: 5px;
-  /* unlit = recessed neumorphic well */
-  background: var(--well);
-  box-shadow: inset 2px 2px 4px var(--sh-darker), inset -1px -1px 2px var(--sh-light);
+  /* unlit = DEEP recessed neumorphic well (call 5) — a darker floor + deeper
+     inner shadow so an unlit well reads as an empty socket and the lit-vs-unlit
+     contrast is unmistakable against the now-dark chassis, in both themes. */
+  background: color-mix(in srgb, var(--well) 82%, #000);
+  box-shadow: inset 3px 3px 6px var(--sh-darker), inset -1px -1px 2px var(--sh-light),
+    inset 0 0 3px rgba(0, 0, 0, 0.5);
   transition: background 0.1s, box-shadow 0.1s;
 }
 .seg-green {

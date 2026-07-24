@@ -128,7 +128,9 @@ export function Tuner({ reading, engaged, onToggleEngaged }: TunerProps) {
   const hasSharp = showReading && reading!.note.includes('#');
   const octText = showReading ? String(reading!.octave) : '';
   const cents = showReading ? reading!.cents : 0;
-  const centsLabel = showReading ? `${cents > 0 ? '+' : ''}${cents}` : '––';
+  // Live signed value while a reading exists (e.g. "−18"); the bare dash is kept
+  // only for the no-reading state (call 4). Uses the typographic minus (U+2212).
+  const centsLabel = showReading ? `${cents > 0 ? '+' : cents < 0 ? '−' : ''}${Math.abs(cents)}` : '—';
   const flatSharp = !showReading || cents === 0 ? '' : cents < 0 ? 'flat' : 'sharp';
   // Text carried for the a11y/test seam (this element must read '—' with no pitch).
   const noteText = showReading ? reading!.note : '—';
