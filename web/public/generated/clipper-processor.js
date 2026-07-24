@@ -250,15 +250,17 @@ class ClipperProcessor extends AudioWorkletProcessor {
       return { id, type: 'tuner', handle: 0, engaged: !!engaged };
     }
     const mod = this._module;
-    // Each dirt type binds to a C-ABI export prefix; every dirt pedal shares the
+    // Each pedal type binds to a C-ABI export prefix; every pedal shares the
     // identical opaque-handle ABI (create / set_param 0/1/2 / set_oversampling /
     // latency / process), so routing is by prefix. 'sd1'=SD-1, 'ts'=TS Screamer
-    // (both the SD-1 engine family), anything else = RAT.
-    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : 'rat';
-    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : '_rat';
+    // (both the SD-1 engine family), 'phaser'=Ninety (linear allpass sweep:
+    // set_oversampling is a no-op, latency 0), anything else = RAT.
+    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'phaser' ? 'phaser' : 'rat';
+    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'phaser' ? '_phaser' : '_rat';
     const handle = mod[P + '_create'](this._sr);
     mod[P + '_set_oversampling'](handle, this._oversampling | 0);
     if (params) {
+      // Slot 0/1/2 are pedal-agnostic; for a phaser slot 0 = SPEED, 1/2 unused.
       mod[P + '_set_param'](handle, 0, +params.distortion);
       mod[P + '_set_param'](handle, 1, +params.filter);
       mod[P + '_set_param'](handle, 2, +params.level);
@@ -266,9 +268,9 @@ class ClipperProcessor extends AudioWorkletProcessor {
     return { id, type: t, handle, engaged: !!engaged };
   }
 
-  // C-ABI export prefix for a node's type ('_sd' | '_ts' | '_rat').
+  // C-ABI export prefix for a node's type ('_sd' | '_ts' | '_phaser' | '_rat').
   _prefix(node) {
-    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : '_rat';
+    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'phaser' ? '_phaser' : '_rat';
   }
 
   _destroyPedal(node) {
@@ -276,8 +278,8 @@ class ClipperProcessor extends AudioWorkletProcessor {
     this._module[this._prefix(node) + '_destroy'](node.handle);
   }
 
-  // Per-node ABI routing (sd_*/ts_* for the SD-1 family, rat_* otherwise). Keeps
-  // the chain dispatch type-agnostic everywhere below.
+  // Per-node ABI routing by C-ABI prefix (sd_*/ts_*/phaser_*/rat_*). Keeps the
+  // chain dispatch type-agnostic everywhere below.
   _pedalSetParam(node, id, value) {
     this._module[this._prefix(node) + '_set_param'](node.handle, id, value);
   }

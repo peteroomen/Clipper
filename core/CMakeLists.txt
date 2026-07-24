@@ -74,6 +74,7 @@ add_library(clipper_dsp STATIC
     src/dsp/TsModel.cpp
     src/dsp/AmpModel.cpp
     src/dsp/ChorusModel.cpp
+    src/dsp/PhaserModel.cpp
     src/dsp/ReverbModel.cpp
     src/dsp/CabConvolver.cpp
     src/dsp/CabIR.cpp
@@ -135,6 +136,14 @@ if(NOT EMSCRIPTEN)
         target_compile_options(clipper_ts_tests PRIVATE -Wall -Wextra -UNDEBUG)
     endif()
     add_test(NAME clipper_ts_tests COMMAND clipper_ts_tests)
+    # --- v1.1: phaser ("Ninety") model tests ----------------------------------
+    add_executable(clipper_phaser_tests tests/test_phaser_model.cpp)
+    target_link_libraries(clipper_phaser_tests PRIVATE clipper_dsp)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_phaser_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_phaser_tests COMMAND clipper_phaser_tests)
 
     # --- M5: amp + cab tests --------------------------------------------------
     add_executable(clipper_amp_tests tests/test_amp_model.cpp)

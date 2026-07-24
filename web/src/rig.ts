@@ -22,8 +22,10 @@ export type SourceKind = 'test' | 'live';
 // One param shape keeps the chain/worklet/serializer pedal-agnostic.
 // v1.1 adds 'ts' (a TS808-style "Screamer" overdrive) — the SYMMETRIC-clipping
 // sibling of the SD-1, sharing the exact same three-knob param shape + ABI (its
-// slots also READ as Drive / Tone / Level).
-export type PedalType = 'rat' | 'sd1' | 'ts' | 'tuner';
+// slots also READ as Drive / Tone / Level) — and 'phaser' (the script-era
+// 4-stage allpass phaser, "Ninety"): same shape/ABI, but ONE real knob — slot 0
+// (distortion) carries SPEED; slots 1/2 are unused-but-carried.
+export type PedalType = 'rat' | 'sd1' | 'ts' | 'phaser' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
@@ -50,7 +52,7 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412', number> = {
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'tuner'];
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'phaser', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = ['clean120', 'jcm800', 'twin'];
@@ -180,11 +182,22 @@ export const TS_KNOB_DEFAULTS: PedalParams = {
   level: 0.75,
 };
 
+// Phaser ("Ninety", v1.1) opening state. ONE real knob: slot 0 (distortion) is
+// SPEED — opens at a slow/medium ~0.35 (a classic gentle sweep, ~0.7 Hz on the
+// log map). Slots 1/2 are carried but unused (fixed script-authentic depth, no
+// feedback). See PhaserModel.
+export const PHASER_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.35,
+  filter: 0.5,
+  level: 0.5,
+};
+
 // Per-type opening knob positions (gear tray "add" / swap use this).
 export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   rat: KNOB_DEFAULTS,
   sd1: SD1_KNOB_DEFAULTS,
   ts: TS_KNOB_DEFAULTS,
+  phaser: PHASER_KNOB_DEFAULTS,
   // The tuner has no knobs; params are unused but keep the shared shape.
   tuner: KNOB_DEFAULTS,
 };
@@ -284,7 +297,11 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
   const id = typeof p.id === 'string' && p.id.length > 0 ? p.id : fallbackId;
   // Known types round-trip; anything else coerces to the RAT.
   const type: PedalType =
-    p.type === 'tuner' ? 'tuner' : p.type === 'sd1' ? 'sd1' : p.type === 'ts' ? 'ts' : 'rat';
+    p.type === 'tuner' ? 'tuner'
+    : p.type === 'sd1' ? 'sd1'
+    : p.type === 'ts' ? 'ts'
+    : p.type === 'phaser' ? 'phaser'
+    : 'rat';
   return {
     id,
     type,

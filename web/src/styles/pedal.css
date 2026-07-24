@@ -17,6 +17,7 @@
 .pedal[data-pedal-type="sd1"]   { --pedal-accent: var(--accent-sd);    --pedal-accent-glow: var(--accent-sd-glow); }
 .pedal[data-pedal-type="ts"]    { --pedal-accent: var(--accent-ts);    --pedal-accent-glow: var(--accent-ts-glow); }
 .pedal[data-pedal-type="tuner"] { --pedal-accent: var(--accent-tuner); --pedal-accent-glow: var(--accent-tuner-glow); }
+.pedal[data-pedal-type="phaser"] { --pedal-accent: var(--accent-phaser); --pedal-accent-glow: var(--accent-phaser-glow); }
 .pedal.raised {
   background:
     linear-gradient(160deg, var(--chassis-tint, transparent), var(--chassis-tint, transparent)),
@@ -275,3 +276,17 @@
   transform: translateY(2px);
   box-shadow: 3px 4px 10px var(--sh-dark), -3px -3px 8px var(--sh-light),
     inset 2px 3px 7px rgba(0, 0, 0, 0.55); }
+/* ---- phaser 'single' face: the iconic ONE-KNOB script box ----
+   Shares the vertical 'stack' skeleton (hero wordmark, knob, round stomp) but
+   centers a SINGLE big SPEED knob — the one-control face that reads instantly as
+   the orange script phaser. The ORANGE accent (var(--accent-phaser)) is the
+   reference cue; the big lone knob is the morphology cue; "Ninety" is the name. */
+.pedal[data-face="single"] .knob-row {
+  --kd: 96px;            /* one big knob dominates the face */
+  justify-content: center;
+  margin: 8px 0 20px;
+}
+.pedal[data-face="single"] .k-name { letter-spacing: .3em; }
+/* A subtle orange sweep arc etched around the hero knob's zone, echoing the LFO
+   motion — small-area accent, neumorphic-safe. */
+.pedal[data-face="single"] .pedal-logo { margin-bottom: 14px; }

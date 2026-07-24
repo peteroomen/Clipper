@@ -353,8 +353,15 @@ how much existing machinery each reuses:
    +46.6 dB). Green `slim`-face box; the canonical mid-forward clean-boost stacker.
 2. **CE-2 chorus pedal** *(S)* — mono pedal re-voicing of the JC-120 BBD
    chorus machinery we already validated.
-3. **Phase 90** *(S–M)* — 4 JFET allpass stages + LFO + feedback; the spring
-   work built deep allpass fluency. Script-logo voicing.
+3. ~~**Phase 90** *(S–M)* — 4 JFET allpass stages + LFO + feedback; the spring
+   work built deep allpass fluency. Script-logo voicing.~~ ✅ *(shipped as the
+   'phaser' pedal "Ninety" — see docs §20: 4 first-order allpasses swept by one
+   rounded-triangle LFO, 50/50 dry+wet → 2 moving notches, ONE SPEED knob
+   (0.06–8 Hz), fixed depth, NO feedback (SCRIPT voicing; block-logo feedback
+   noted as future variant). Linear time-varying (no oversampling), per-sample
+   coefficients (no zipper). Notch positions match the analytic 4-stage response
+   to 0.00%, depth 48–94 dB, HF floor −130 dB. Single-knob orange face, assistant
+   add_pedal + placement/speed coaching.)*
 4. **Big Muff Pi** *(M)* — first BJT (Ebers-Moll) device model: 4-stage
    cascade, 2 clipping stages, mid-scoop stack. Iconic fuzz contrast.
 5. **Fuzz Face (silicon)** *(M)* — 2-transistor minimalism, but its soul is

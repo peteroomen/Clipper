@@ -28,6 +28,7 @@
 #include "clipper/dsp/TwinAmp.h"
 #include "clipper/dsp/SdModel.h"
 #include "clipper/dsp/TsModel.h"
+#include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/Biquad.h"
 #include "clipper/dsp/CabConvolver.h"
@@ -163,8 +164,9 @@ struct OldSpringReverb {
         "M2 flags: --os 1|2|4|8 (oversampling, default 4), --stage2 wdf|adaa (default wdf),\n"
         "          --alias-report (print the aliasing metric table for os=1/2/4/8 and exit).\n"
         "M6.5:     --ideal-opamp (bypass the op-amp model: ideal op-amp A/B),\n"
-        "M8/v1.1:  --pedal rat|sd1|ts (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
-        "          ts = TS808 Screamer soft/SYMMETRIC; for sd1/ts the knob flags map\n"
+        "M8/v1.1:  --pedal rat|sd1|ts|phaser (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
+        "          ts = TS808 Screamer soft/SYMMETRIC; phaser = script 4-stage phaser\n"
+        "          (--distortion = SPEED 0..1); for sd1/ts the knob flags map\n"
         "          positionally: --distortion=DRIVE, --filter=TONE),\n"
         "          --chain rat|clean (clean = amp+cab+limiter, pedal-bypassed path),\n"
         "          --cab clean212|brit412 (clean-chain cab; brit412 = the darker 4x12),\n"
@@ -617,6 +619,14 @@ int main(int argc, char** argv) {
             lim.prepare(fs);
             if (!out.empty()) lim.processMono(out.data(), static_cast<int>(out.size()));
         }
+    } else if (a.pedal == "phaser") {
+        // v1.1: the script-era 4-stage phaser ("Ninety"). ONE real knob: --distortion
+        // maps positionally to SPEED (0..1 -> 0.06..8 Hz log). Linear, no oversampling.
+        clipper::dsp::PhaserModel model;
+        model.prepare(fs);
+        model.setParameter(clipper::dsp::PhaserModel::PARAM_SPEED, a.distortion);
+        if (!input.empty())
+            model.process(input.data(), out.data(), static_cast<int>(input.size()));
     } else if (a.pedal == "sd1") {
         // M8: process through the SD-1 overdrive (soft, asymmetric feedback clip).
         // Knob flags map positionally: --distortion -> DRIVE, --filter -> TONE.
@@ -722,6 +732,13 @@ int main(int argc, char** argv) {
             "reverb=%.2f[%s], limiter-thresh=%.2f)\n  peak=%.4f  rms=%.4f  post-attack residual=%.6f (%.1f dB re rms)\n",
             out.size(), fs, a.outFile.c_str(), a.cab.c_str(), a.reverb,
             a.reverbAlgo.c_str(), a.limThresh, peak, rms, tailRms, tailDb);
+    } else if (a.pedal == "phaser") {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (pedal=phaser speed=%.2f -> %.3f Hz)\n"
+            "  peak=%.4f  rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.distortion,
+            clipper::dsp::PhaserModel::speedKnobToHz(a.distortion), peak, rms);
+    } else if (a.pedal == "sd1") {
     } else if (a.pedal == "sd1" || a.pedal == "ts") {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (pedal=%s drive=%.2f tone=%.2f level=%.2f "
