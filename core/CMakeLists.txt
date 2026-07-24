@@ -224,6 +224,27 @@ if(NOT EMSCRIPTEN)
     endif()
     add_test(NAME clipper_ac30_tests COMMAND clipper_ac30_tests)
 
+    # --- M11: Player Expectations Suite ---------------------------------------
+    # Tests the PLAYER'S expectations, not the circuit (docs §26): universal gear
+    # invariants (min-knob usability, hum torture, knob monotonicity, level
+    # sanity), live-convention processing (in-place 128-frame blocks — the way
+    # the worklet actually calls the C ABI), and golden "first five minutes" rig
+    # renders gated per third-octave band (goldens under tests/goldens/;
+    # regenerate ONLY via --update-goldens / scripts/update-goldens.sh).
+    # Links clipper_c_api because block B drives the exact worklet entry points.
+    add_executable(clipper_player_expectations_tests tests/test_player_expectations.cpp)
+    target_link_libraries(clipper_player_expectations_tests PRIVATE clipper_c_api)
+    # dr_wav (golden WAV IO) + shared measurement infra live under tools/, never
+    # in the DSP core.
+    target_include_directories(clipper_player_expectations_tests PRIVATE tools tools/third_party)
+    target_compile_definitions(clipper_player_expectations_tests PRIVATE
+        CLIPPER_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/goldens")
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_player_expectations_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_player_expectations_tests COMMAND clipper_player_expectations_tests)
+
     # --- Perf diagnosis: anti-denormal guard tests ----------------------------
     # Proves Biquad / OnePoleSmoother never leave recursive state in the subnormal
     # float range on a decaying tail (the amp-independent WASM crackle — see
