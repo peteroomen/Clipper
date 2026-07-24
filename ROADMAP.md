@@ -445,8 +445,18 @@ how much existing machinery each reuses:
   via a `ClipperLookAndFeel` + widget kit that translates the web CSS recipes to
   JUCE; a dev-only `xvfb` snapshot target renders one PNG per amp voice as proof.
   See `docs/DEVELOPMENT.md` → "Native app (JUCE)" → **Editor (neumorphic visual
-  pass)**. Remaining phase-2 native work (drag-reorderable chain, a **dark theme**
-  for the native editor, CLAP) stays parked here.
+  pass)**. **PEDAL-BOARD PARITY is now DONE too** ✅ — the fixed RAT → SD-1 pair
+  became the web app's board: all five AUDIO pedal types (RAT, SD-1, TS, Muff,
+  Phaser), any order, add / remove / swap / drag-reorder, each edit bracketed by
+  the worklet's declick fade, with the board saved as non-automatable APVTS state
+  (every existing param id untouched; a pre-parity session migrates back onto its
+  old pair). The board keeps the left-to-right layout and gained patch cables, the
+  web's four footswitch morphologies, and visible LEDs; the identical-core test now
+  covers multi-pedal chains and a new chain-edit test bounds the seam. The TUNER
+  stays web-only (display-only pedal: it needs a pitch tap + needle widget, and a
+  fake one would be worse than none). See `docs/DEVELOPMENT.md` → **Native
+  pedal-board parity**. Remaining phase-2 native work (the **tuner**, a **dark
+  theme** for the native editor, CLAP) stays parked here.
 - **Riff integration** — Clipper's rig as Riff's practice-tone engine; the
   assistant patterns already converge (both grew an "applied chip" chat UI).
 

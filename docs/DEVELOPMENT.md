@@ -2953,16 +2953,20 @@ consumes `core/` as a CMake subproject and links `clipper_dsp` directly.
 ### Architecture
 
 ```
-mono in ──► × input trim (−12..+24 dB) ──► RAT (if on) ──► SD-1 (if on)
+mono in ──► × input trim (−12..+24 dB) ──► board[0] (if engaged) ──► board[1] …
         ──► AmpModel.processStereo (tone stack + volume + bright + JC-120
             chorus/vibrato split: mono → stereo) ──► per-side CabConvolver
-            (cabL / cabR, if cab on) ──► OutputLimiter.processStereo ──► stereo out
+            (cabL / cabR, if cab on) ──► × declick envelope (chain edits only)
+        ──► OutputLimiter.processStereo ──► stereo out
 ```
 
+The pedal stage is the **user-ordered board** — see **Native pedal-board parity**
+below. It was a fixed RAT → SD-1 pair through the first native phase.
+
 - **`native/src/ClipperEngine.{h,cpp}`** — the whole DSP chain, using the core
-  C++ classes **directly** (`RatModel`, `SdModel`, `AmpModel` + its owned
-  `ChorusModel`, two `CabConvolver`s, `OutputLimiter`) — **not** the `clipper_c_api`
-  C ABI. This mirrors `web/worklet/clipper-processor.js` sample-for-sample. It has
+  C++ classes **directly** (`RatModel`, `SdModel`, `TsModel`, `MuffModel`,
+  `PhaserModel`, `AmpModel` + its owned `ChorusModel`, two `CabConvolver`s,
+  `OutputLimiter`) — **not** the `clipper_c_api` C ABI. This mirrors `web/worklet/clipper-processor.js` sample-for-sample. It has
   no JUCE dependency, so the console test can drive it standalone.
 - **`native/src/PluginProcessor.{h,cpp}`** — the JUCE `AudioProcessor`. Owns an
   `AudioProcessorValueTreeState` (the param store + state save/restore) and one
@@ -2975,14 +2979,14 @@ mono in ──► × input trim (−12..+24 dB) ──► RAT (if on) ──► 
   language (see **Editor (neumorphic visual pass)** below). All controls stay
   APVTS-attached; the **build git hash** is shown bottom-right (`CLIPPER_GIT_HASH`).
 - **`native/src/ClipperLookAndFeel.{h,cpp}`** — the `LookAndFeel` + a small custom
-  **widget kit** (knob, footswitch, lever, power rocker, mode switch) implementing
-  that language. This is where the CSS box-shadow/gradient recipes are translated to
-  JUCE drawing.
+  **widget kit** (knob, footswitch in four morphologies, lever, power rocker, mode
+  switch, chip button, jack, patch cable) implementing that language. This is where
+  the CSS box-shadow/gradient recipes are translated to JUCE drawing.
+- **`native/src/PedalCard.{h,cpp}`** — one pedal card on the board: the per-type
+  face table (eyebrow / wordmark / accent / morphology / knobs), its APVTS
+  attachments, its LED and its chain-position chips.
 
-**Fixed two-pedal chain (v1):** RAT then SD-1, both default off **except** RAT.
-Drag-reorder / arbitrary-length chains remain a web/UI feature for now; the native
-shell ships the fixed order. Mono in → stereo out so the chorus bloom works in
-Logic.
+Mono in → stereo out so the chorus bloom works in Logic.
 
 ### Parameter map (APVTS ↔ `web/src/rig.ts`)
 
@@ -2999,6 +3003,12 @@ unchanged. Toggles are `AudioParameterBool`; oversampling and chorus mode are
 | `ratDist` / `ratFilter` / `ratLevel` | float | 0.7 / 0.4 / 0.8 | `RatModel` id 0 / 1 / 2 |
 | `sdOn` | bool | false | chain: engage SD-1 |
 | `sdDrive` / `sdTone` / `sdLevel` | float | 0.5 / 0.5 / 0.7 | `SdModel` id 0 / 1 / 2 |
+| `tsOn` | bool | true | board: engage the Screamer |
+| `tsDrive` / `tsTone` / `tsLevel` | float | 0.5 / 0.5 / 0.75 | `TsModel` id 0 / 1 / 2 |
+| `muffOn` | bool | true | board: engage the Pi |
+| `muffSustain` / `muffTone` / `muffVolume` | float | 0.6 / 0.5 / 0.6 | `MuffModel` id 0 / 1 / 2 |
+| `phaserOn` | bool | true | board: engage the Ninety |
+| `phaserSpeed` | float | 0.35 | `PhaserModel` id 0 (SPEED — its only knob) |
 | `ampOn` | bool | true | chain: amp power (off ⇒ stereo passthrough) |
 | `volume` / `bass` / `middle` / `treble` | float | 0.4 / 0.5 / 0.5 / 0.6 | `AmpModel` id 0 / 1 / 2 / 3 |
 | `bright` | bool | false | `AmpModel` id 4 |
@@ -3006,6 +3016,9 @@ unchanged. Toggles are `AudioParameterBool`; oversampling and chorus mode are
 | `chorusMode` | choice Off/Chorus/Vibrato | Off | `AmpModel` id 8 (0/1/2) |
 | `chorusSpeed` / `chorusDepth` | float | 0.3 / 0.5 | `AmpModel` id 6 / 7 |
 | `oversampling` | choice 1x/2x/4x/8x | 4x | `RatModel`/`SdModel` `setOversampling` |
+
+Plus the **board** (which pedals, in what order) as a non-automatable child node of
+the state tree — see **Native pedal-board parity**.
 
 State save/restore is APVTS XML via `getStateInformation`/`setStateInformation`.
 
@@ -3025,15 +3038,20 @@ the identical-core test proves). Setup params are pushed once and **snapped** in
 cab toggle / oversampling change:
 
 ```
-latency = (ratOn  ? RatModel::latencySamples() : 0)   // OS group delay
-        + (sdOn   ? SdModel::latencySamples()  : 0)   // OS group delay
+latency = Σ over the BOARD, for each engaged pedal:
+              its model's latencySamples()            // OS group delay
+              (the phaser is linear -> 0)
+        + (ampOn && voice is a valve amp ? its latencySamples() : 0)
         + (ampOn && cab ? 128 : 0)                    // CabConvolver partition
         + 64                                          // OutputLimiter lookahead
 ```
 
+Off-board pedals contribute nothing however their engaged flag reads — the sum
+follows the board, not a pair of fixed slots.
+
 At the default 4× oversampling each dirt pedal reports **72** samples, the cab
-partition is **128**, and the limiter lookahead is **64**, so the full default
-rig (RAT + SD-1 + cab + limiter) reports **336** samples. The pedal group delay
+partition is **128**, and the limiter lookahead is **64**, so a RAT + SD-1 board with
+cab and limiter reports **336** samples. The pedal group delay
 tracks the oversampling factor via each model's `latencySamples()` accessor; the
 value is re-published whenever `cab` or `oversampling` changes.
 
@@ -3069,11 +3087,13 @@ then the box-shadow/gradient recipes become JUCE draws:
 Accent tokens are the **light-theme root** values: RAT `#F03B24`, SD-1 `#B58900`, JCM
 `#A87A18`, Twin `#4E7BA8`, AC30 `#B4612C`, Clean red.
 
-**Layout.** Left→right cards on the bench: **INPUT** (trim) · **RAT "Rodent"** (red;
-Dist/Filter/Level + round stomp) · **SD-1 "Super Drive"** (yellow; Drive/Tone/Level +
-stomp) · **AMP** (a single card whose **face switches** with the amp-voice choice).
-An amp-voice + oversampling selector pill pair sits top-right; the build stamp bottom-
-right. Resizable 1000×540 … 1560×900.
+**Layout.** Left→right on the bench: **INPUT** (trim) · the **pedal cards, in chain
+order** · the **gear tray** · **AMP** (a single card whose **face switches** with the
+amp-voice choice), joined by patch cables. An amp-voice + oversampling selector pill
+pair sits top-right; the build stamp bottom-right. Resizable from a minimum that
+tracks the board (1040 px empty, 1622 px with all five pedals) up to 2200×1200. The
+per-pedal faces live in `PedalCard.cpp`'s face table — see **Native pedal-board
+parity**.
 
 **The amp card mirrors the web faces exactly** (per-voice control visibility + accent),
 driven by `updateAmpFace()` off the `ampModel` APVTS choice:
@@ -3089,7 +3109,10 @@ driven by `updateAmpFace()` off the `ampModel` APVTS choice:
 "Cut" knob is the reused `jcmPresence` param, relabelled — no behaviour change.
 
 **Adding a future native pedal/amp face.** It mirrors the web's `FACES`/`Amp.tsx`
-tables. For an **amp voice**: add the `AudioParameterChoice` entry (already done in the
+tables. For a **pedal**: add a `PedalType`, a row in `PedalCard.cpp`'s `kFaces`
+table (eyebrow / wordmark / accent / morphology / knob ids), its APVTS parameters,
+and a `case` in the engine's `processPedal` / latency switches. A new footswitch
+shape is a new `Footswitch::Shape`. For an **amp voice**: add the `AudioParameterChoice` entry (already done in the
 processor), add a `case` in `updateAmpFace()` that sets the wordmark/eyebrow/accent and
 pushes the visible `NeuKnob*`s into `ampPrimaryKnobs_`/`ampModKnobs_`, and add the voice
 name to the `ampVoiceBox_` item list. For a **pedal**: add a card (a `Footswitch` + its
@@ -3099,15 +3122,144 @@ name to the `ampVoiceBox_` item list. For a **pedal**: add a card (a `Footswitch
 
 **Screenshots (headless).** A dev-only console target `clipper_editor_snap` (guarded by
 the CMake option `CLIPPER_BUILD_SNAPSHOT_TOOL`, default **OFF** — never in a release
-plugin build) opens the real editor, drives all four amp voices, and writes a
-`Component::createComponentSnapshot` PNG per voice. Run headless under Xvfb:
+plugin build) opens the real editor and writes `Component::createComponentSnapshot`
+PNGs: one per amp voice, plus the parity scenes (`native_parity_*.png` — the default
+board, four- and five-pedal boards, a reorder, a bypassed pedal, and the chorus/
+tremolo rows at the minimum, default and maximum window sizes). Run headless under
+Xvfb:
 
 ```bash
 cmake -B build -DCLIPPER_BUILD_SNAPSHOT_TOOL=ON
 cmake --build build --target clipper_editor_snap
 xvfb-run -a build/clipper_editor_snap_artefacts/Release/clipper_editor_snap <out-dir>
-# → clipper_native_{clean120,eight_hundred,twin,thirty}.png
+# → clipper_native_{clean120,eight_hundred,twin,thirty}.png + native_parity_*.png
 ```
+
+### Native pedal-board parity
+
+The first native phase shipped a **fixed two-pedal chain**: RAT, then SD-1, in that
+order, for ever. The web app had six pedal types on a stackable, reorderable board.
+The field report was blunt and correct — *"I can't move or swap pedals, meaning I
+can't test them all"* — along with four visual faults, and one instruction: **keep
+the left-to-right layout.** This section is what parity now means, and what the
+four visual bugs actually were.
+
+**What the board is now.** Any of the five AUDIO pedal types — RAT, SD-1, TS, Muff,
+Phaser — in any order, each engaged or true-bypassed independently, edited live.
+Each type is instantiable **once**, so the board is a subset and permutation of the
+five. That single constraint is what keeps the engine simple: every model stays a
+plain member of `ClipperEngine`, a reorder is a copy of five ints, and no audio-thread
+allocation, handle table or free is involved anywhere.
+
+**The tuner is deliberately absent.** It is display-only — no audio DSP; it mutes the
+chain and drives a needle from a pitch-detection tap. Shipping a native tuner means a
+detector, a needle widget and a repaint clock, and a fake one that looked right and
+read nothing would be worse than none. The gear tray lists it as *"Chromatic tuner
+(web only)"*, greyed, so the absence is visible rather than mysterious.
+
+#### Parameter model
+
+Two kinds of state, split by what they actually are:
+
+| | Knobs + engaged flags | The board (order + membership) |
+|---|---|---|
+| Where | APVTS **parameters** | a **child node of the APVTS state tree** |
+| Automatable | yes | no |
+| Why | they are continuous controls a host can sensibly ride | it is a *topology*; no host can meaningfully automate "the RAT moved after the Muff" |
+| Round-trips | with the session | with the session (`getStateInformation` saves the whole tree) |
+
+Every pedal type carries its full knob set as parameters, present whether or not the
+pedal is on the board — APVTS layouts are static, so a parameter cannot appear when a
+pedal is added. The engine simply ignores off-board pedals (and the identical-core
+test pins that: a case leaves the SD-1 *on* but *off the board* and proves it changes
+neither the audio nor the reported latency).
+
+New ids, all additive — **every pre-existing id is untouched**:
+
+| APVTS id | type | default | web source |
+|---|---|---|---|
+| `tsOn` / `tsDrive` / `tsTone` / `tsLevel` | bool, float ×3 | true, 0.5 / 0.5 / 0.75 | `TS_KNOB_DEFAULTS` |
+| `muffOn` / `muffSustain` / `muffTone` / `muffVolume` | bool, float ×3 | true, 0.6 / 0.5 / 0.6 | `MUFF_KNOB_DEFAULTS` |
+| `phaserOn` / `phaserSpeed` | bool, float | true, 0.35 | `PHASER_KNOB_DEFAULTS` |
+
+The phaser gets **one** knob. The web carries two unused slots so every pedal shares
+one param shape; exposing those to a host would advertise controls that do nothing.
+
+The board node stores a comma-separated key list (`"rat,muff,phaser"` — the same
+strings `web/src/rig.ts` uses). Parsing drops unknown keys, duplicates and overflow,
+so malformed state degrades to a valid board rather than failing. **The audio thread
+never reads the ValueTree**: `setChainOrder` also publishes a packed snapshot — 3 bits
+of length plus five 3-bit type slots — into an atomic that `snapshotParams()` unpacks
+lock-free.
+
+Two different defaults, on purpose:
+
+- a **fresh instance** opens on the web's `DEFAULT_RIG`: a single RAT;
+- a **pre-parity session** has no board node, so it migrates to the old fixed
+  `rat, sd1` pair and reloads sounding exactly as it did — its `ratOn` / `sdOn`
+  flags still say which of the two were engaged.
+
+#### Declicked chain edits
+
+Add, remove, reorder, swap and engage-toggle are all topology changes: the signal
+path changes between one sample and the next. Each is bracketed by the web worklet's
+**6 ms raised-cosine fade** — ramp to zero, swap *at* the zero, ramp back — with the
+envelope applied to the amp output ahead of the limiter, exactly where the worklet
+applies it. When no edit is in flight the envelope is skipped **entirely** rather
+than multiplied by 1.0, which is what keeps a steady chain bit-exact.
+
+Two deliberate differences from the worklet:
+
+1. **Engage toggles are bracketed too.** The worklet flips `node.engaged`
+   immediately; switching a high-gain pedal in or out is a step the core's ~5 ms knob
+   smoothing does not cover.
+2. **A 6 ms zero HOLD sits between the swap and the fade back in.** Pedals keep their
+   internal state across a reorder (as they do in the web, which reuses each handle),
+   so after the swap a pedal is suddenly fed a differently-phased signal and *rings*
+   while its filters and oversampler settle. That settling peaks a few ms after the
+   swap — underneath the worklet's immediate fade-in, where the chain-edit test
+   measured it at ~70× the steady slew. Holding at zero through the settling window
+   costs 6 ms of extra gap, which reads as instant, and removes the tick.
+
+Latency now follows the board: every **engaged, on-board** pedal's oversampling group
+delay, summed in series (the phaser is linear and adds none), plus the cab partition
+and the limiter lookahead as before.
+
+#### The four visual bugs, and what they actually were
+
+| Reported | Root cause | Fix |
+|---|---|---|
+| *"The lights are covered over"* | **Paint order inside a component, not z-order.** `Footswitch::paint` drew the LED first and then ran a `juce::DropShadow` for the stomp body — a wide translucent-black blur that reached back over the jewel and ate its halo. `PowerControl` had the identical inversion under its rocker. | Jewels are painted **last** in their component, and the pedal LED moved onto the chassis header at the top right — where `.pedal-top` puts it in the web, and where nothing else draws. |
+| *"The knobs for the 120 chorus overlap the divider line"* | The divider was drawn at the modulation row's **top edge**, which is exactly where those knobs' floating value arcs live, and the mode switch was explicitly offset 4 px **above** the row. A knife-edge in the amp grid made it worse: column count came from `knobArea.width / 66`, so a 131 px area gave **one** column, five rows, and the block ran off the bottom of the card. | The row gets a real 40 px gap with the divider centred **in** it; the mode switch starts on the row line. Columns now come from a *minimum* cell width, and cell height shrinks to fit, so no window size can overflow the card. |
+| *"There are no cables"* | Never implemented natively. | `skin::drawCable` ports `board.css`: the sag law from `Board.tsx` (`min(70, max(16, abs(dx)·0.16 + 14))`), the shadow / tube / specular-highlight / plug layering, drawn **before** the enclosures so each end tucks into its socket, with `skin::drawJack` sockets on the card edges. |
+| *"The foot switches aren't correct"* | Only one generic round stomp existed, with an LED stacked above it. | All four web morphologies: the RAT/phaser round stomp, the Muff's larger one, the SD-1's black rubber **treadle** (pebble face, toe ribs, embossed name) and the TS's hinged metal **pad** — each anchored where the web anchors it, with the 130 ms press thunk. Engaged state is the LED's job, never the switch's. |
+
+#### Board UX
+
+`INPUT · pedal cards in chain order · gear tray · AMP`, left to right, joined by
+cables. Each card carries a chip rack: **⠿** drag grip, position number, **◀ ▶**
+move, **⇄** swap, **✕** remove. Dragging the grip reorders live under the pointer
+using the web's rule — drop before the first card whose centre is right of the
+pointer. The tray and the swap menu list only types **not** already on the board.
+
+Two implementation notes worth keeping:
+
+- a **move** only permutes the cards, never destroys them, because a live drag calls
+  it from inside a card's own mouse handler; add/remove/swap *do* rebuild, so they
+  defer to the message loop rather than deleting the chip mid-click;
+- the window's **minimum width tracks the board**. Five pedals cannot be drawn
+  legibly in 1040 px; the first attempt squeezed them into 64 px slivers and pushed
+  the amp off its own card. The editor now asks for the bench it needs (1622 px for a
+  full five-pedal board) instead.
+
+#### Verification
+
+| Check | Result |
+|---|---|
+| `clipper_identical_core` — 4 amp voices + **3 multi-pedal boards** | ✅ max abs(plugin−ref) = 0.000e+00 (L and R), latency matches the composed models |
+| `clipper_chain_edit` — reorder / bypass / add / remove mid-signal | ✅ seam step inside the envelope bound; settles at the new board's own level; a knob move never arms the fade; the hard-splice control proves the bound can fail (15×) |
+| Full native `ctest` (2 native + 15 core suites) | ✅ 17/17 |
+| Editor snapshots, `native_parity_*.png` | ✅ default board, four- and five-pedal boards with cables + LEDs, a reorder, a bypassed pedal, the chorus row at min/default/max window, the Twin tremolo row, all four amp faces |
 
 ### Build targets
 
@@ -3125,10 +3277,11 @@ is set in `native/CMakeLists.txt` *before* adding `core/` so the static
 | FetchContent JUCE 8.0.4 (clone through proxy) | ✅ works |
 | Configure + build **Standalone** (Linux) | ✅ |
 | Configure + build **VST3** (Linux) | ✅ |
-| **Identical-core** console test (bit-exact) | ✅ 0.0 diff L+R, latency 336=336 (all four voices) |
+| **Identical-core** console test (bit-exact) | ✅ 0.0 diff L+R, latency matches (four voices + three multi-pedal boards) |
+| **Chain-edit** console test (declicked reorder/bypass/add/remove) | ✅ no discontinuity beyond the envelope |
 | Core ctest (all suites) still green | ✅ unchanged |
 | Neumorphic editor builds (LookAndFeel + widget kit), zero new warnings | ✅ |
-| Headless `clipper_editor_snap` PNGs (one per amp voice) under `xvfb-run` | ✅ four faces render + switch correctly |
+| Headless `clipper_editor_snap` PNGs under `xvfb-run` | ✅ four amp faces + every parity scene render correctly |
 | Headless Standalone launch under `xvfb-run` | ✅ starts, no crash (no audio HW in container — ALSA device warnings are expected) |
 | **AU** build + `auval` + Logic load | ⏳ mac-only, deferred |
 | VST3 in a real host (Reaper/Live) | ⏳ not run here |
