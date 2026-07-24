@@ -338,9 +338,14 @@ is the Logic path and exists today).
 External suggestions (Gemini) validated against the codebase; effort reflects
 how much existing machinery each reuses:
 
-1. **TS808 mode** *(XS)* — the SD-1 IS the Tube Screamer topology; a symmetric-
-   clipping variant + drive-pot value gives the most iconic overdrive in
-   history nearly free. Could ship as a pedal variant or an SD-1 "mode".
+1. **TS808 "Screamer"** *(XS)* — ✅ **shipped** (see docs §21). The SD-1 IS the
+   Tube-Screamer topology, so the Screamer ships as a SEPARATE pedal (`ts`) that
+   reuses ALL the SD-1 machinery via a shared, config-parameterized
+   `OverdriveEngine` — the SD-1 refactored onto it byte-for-byte (M8 suite passes
+   unchanged). The two differences are the config: SYMMETRIC 0.60 V diodes (2nd
+   harmonic −159.6 dBc, ~absent, vs the SD-1's −20.9 dBc asymmetric warmth — the
+   mirror) and a 500 kΩ drive pot (+40.6 dB max plateau, analytic, vs the SD-1's
+   +46.6 dB). Green `slim`-face box; the canonical mid-forward clean-boost stacker.
 2. **CE-2 chorus pedal** *(S)* — mono pedal re-voicing of the JC-120 BBD
    chorus machinery we already validated.
 3. **Phase 90** *(S–M)* — 4 JFET allpass stages + LFO + feedback; the spring

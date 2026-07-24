@@ -26,6 +26,7 @@
 #include "clipper/dsp/Jcm800PowerAmp.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/SdModel.h"
+#include "clipper/dsp/TsModel.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/Biquad.h"
 #include "clipper/dsp/CabConvolver.h"
@@ -150,8 +151,9 @@ struct OldSpringReverb {
         "M2 flags: --os 1|2|4|8 (oversampling, default 4), --stage2 wdf|adaa (default wdf),\n"
         "          --alias-report (print the aliasing metric table for os=1/2/4/8 and exit).\n"
         "M6.5:     --ideal-opamp (bypass the op-amp model: ideal op-amp A/B),\n"
-        "M8:       --pedal rat|sd1 (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
-        "          for sd1 the knob flags map positionally: --distortion=DRIVE, --filter=TONE),\n"
+        "M8/v1.1:  --pedal rat|sd1|ts (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
+        "          ts = TS808 Screamer soft/SYMMETRIC; for sd1/ts the knob flags map\n"
+        "          positionally: --distortion=DRIVE, --filter=TONE),\n"
         "          --chain rat|clean (clean = amp+cab+limiter, pedal-bypassed path),\n"
         "          --cab clean212|brit412 (clean-chain cab; brit412 = the darker 4x12),\n"
         "          --limiter-thresh T (clean-chain output soft-limiter threshold, default 0.97).\n"
@@ -564,6 +566,18 @@ int main(int argc, char** argv) {
         model.setParameter(clipper::dsp::SdModel::PARAM_LEVEL, a.level);
         if (!input.empty())
             model.process(input.data(), out.data(), static_cast<int>(input.size()));
+    } else if (a.pedal == "ts") {
+        // v1.1: process through the TS808 "Screamer" (soft, SYMMETRIC feedback
+        // clip). Knob flags map positionally: --distortion -> DRIVE, --filter -> TONE.
+        clipper::dsp::TsModel model;
+        model.prepare(fs, 128);
+        model.setOversampling(a.os);
+        model.setIdealOpAmp(a.idealOpAmp);
+        model.setParameter(clipper::dsp::TsModel::PARAM_DRIVE, a.distortion);
+        model.setParameter(clipper::dsp::TsModel::PARAM_TONE, a.filter);
+        model.setParameter(clipper::dsp::TsModel::PARAM_LEVEL, a.level);
+        if (!input.empty())
+            model.process(input.data(), out.data(), static_cast<int>(input.size()));
     } else {
         // Process through the RAT pedal model.
         clipper::dsp::RatModel model;
@@ -637,13 +651,13 @@ int main(int argc, char** argv) {
             "reverb=%.2f[%s], limiter-thresh=%.2f)\n  peak=%.4f  rms=%.4f  post-attack residual=%.6f (%.1f dB re rms)\n",
             out.size(), fs, a.outFile.c_str(), a.cab.c_str(), a.reverb,
             a.reverbAlgo.c_str(), a.limThresh, peak, rms, tailRms, tailDb);
-    } else if (a.pedal == "sd1") {
+    } else if (a.pedal == "sd1" || a.pedal == "ts") {
         std::printf(
-            "Rendered %zu frames @ %.0f Hz -> %s  (pedal=sd1 drive=%.2f tone=%.2f level=%.2f "
+            "Rendered %zu frames @ %.0f Hz -> %s  (pedal=%s drive=%.2f tone=%.2f level=%.2f "
             "os=%dx ideal-opamp=%d)\n"
             "  peak=%.4f  rms=%.4f\n",
-            out.size(), fs, a.outFile.c_str(), a.distortion, a.filter, a.level, a.os,
-            a.idealOpAmp ? 1 : 0, peak, rms);
+            out.size(), fs, a.outFile.c_str(), a.pedal.c_str(), a.distortion, a.filter,
+            a.level, a.os, a.idealOpAmp ? 1 : 0, peak, rms);
     } else {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (pedal=rat dist=%.2f filter=%.2f level=%.2f "

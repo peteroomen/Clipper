@@ -208,16 +208,20 @@ export const TOOLS = [
       'Add a pedal to the chain. Signal runs guitar -> pedals in order -> amp, so ' +
       'ORDER matters: a dirt box earlier vs later in the chain hits the amp ' +
       "differently. Types: 'rat' (hard, aggressive, symmetric clipping — the " +
-      "scooped, cutting RAT), 'sd1' (a Boss SD-1: soft, warm, asymmetric " +
+      "scooped, cutting RAT), 'sd1' (a Boss SD-1: soft, warm, ASYMMETRIC " +
       'overdrive with a mid-hump — the classic transparent boost, great in front ' +
-      "of another dirt or a cranked amp), and 'tuner' (a chromatic tuner — no " +
+      "of another dirt or a cranked amp), 'ts' (a TS808 'Screamer' — the GREEN " +
+      'box: soft, SYMMETRIC clipping with the same ~720 Hz mid-hump but a smoother, ' +
+      'glassier grind and less top-end gain; THE stacking pedal — low drive + high ' +
+      'level as a mid-forward clean boost into a pushed amp), and ' +
+      "'tuner' (a chromatic tuner — no " +
       'tone, but when stomped ON it MUTES the rig so the player can tune in ' +
       'silence; put it first in the chain by convention). Omit `position` to ' +
       'append at the end (just before the amp), or give a 0-based slot to insert.',
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -383,13 +387,20 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'tuner' =
-      input.type === 'tuner' ? 'tuner' : input.type === 'sd1' ? 'sd1' : 'rat';
+    const type: 'rat' | 'sd1' | 'ts' | 'tuner' =
+      input.type === 'tuner'
+        ? 'tuner'
+        : input.type === 'sd1'
+          ? 'sd1'
+          : input.type === 'ts'
+            ? 'ts'
+            : 'rat';
     const rawPos = input.position;
     const position =
       typeof rawPos === 'number' && Number.isFinite(rawPos) ? Math.max(0, rawPos | 0) : undefined;
     const index = controller.addPedal(type, position);
-    const label = type === 'tuner' ? 'Tuner' : type === 'sd1' ? 'SD-1' : 'RAT';
+    const label =
+      type === 'tuner' ? 'Tuner' : type === 'sd1' ? 'SD-1' : type === 'ts' ? 'Screamer' : 'RAT';
     return {
       content: JSON.stringify({ applied: { added: type, index } }),
       chip: `+ ${label} #${index + 1}`,

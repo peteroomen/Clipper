@@ -12,6 +12,7 @@
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/SdModel.h"
+#include "clipper/dsp/TsModel.h"
 
 #include <vector>
 
@@ -142,6 +143,50 @@ void sd_process(void* handle, const float* in_ptr, float* out_ptr,
                 int num_frames) {
     if (!handle) return;
     static_cast<clipper::dsp::SdModel*>(handle)->process(in_ptr, out_ptr,
+                                                         num_frames);
+}
+
+// --- v1.1: TS808-style "Screamer" overdrive exports --------------------------
+//
+// Additive alongside rat_* / sd_*, byte-for-byte the same opaque-handle ABI (the
+// TS shares the SD-1's engine + param ids 0=DRIVE, 1=TONE, 2=LEVEL). The worklet
+// drives a Screamer exactly like an SD-1; a chain can mix rat_*, sd_*, ts_*.
+
+EMSCRIPTEN_KEEPALIVE
+void* ts_create(float sample_rate) {
+    auto* m = new clipper::dsp::TsModel();
+    m->prepare(static_cast<double>(sample_rate), 128);
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void ts_destroy(void* handle) {
+    delete static_cast<clipper::dsp::TsModel*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void ts_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    static_cast<clipper::dsp::TsModel*>(handle)->setParameter(param_id, value);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void ts_set_oversampling(void* handle, int factor) {
+    if (!handle) return;
+    static_cast<clipper::dsp::TsModel*>(handle)->setOversampling(factor);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int ts_latency_samples(void* handle) {
+    if (!handle) return 0;
+    return static_cast<clipper::dsp::TsModel*>(handle)->latencySamples();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void ts_process(void* handle, const float* in_ptr, float* out_ptr,
+                int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::TsModel*>(handle)->process(in_ptr, out_ptr,
                                                          num_frames);
 }
 

@@ -76,228 +76,69 @@
 #include "clipper/dsp/SdModel.h"
 
 #include "clipper/dsp/AsymSoftClipper.h"
-#include "clipper/dsp/LM308Stage.h"
-#include "clipper/dsp/Oversampler.h"
-
-#include <algorithm>
-#include <cassert>
-#include <cmath>
-#include <vector>
+#include "clipper/dsp/OverdriveEngine.h"
 
 namespace clipper::dsp {
 
 namespace {
-constexpr double kTwoPi = 6.283185307179586;
-
-// --- Stage 1: mid-hump + DRIVE ---
-constexpr double kMidHumpHz = 720.5;  // 1/(2*pi*4.7k*0.047uF) — the mid-hump corner
-constexpr float kDriveMinDb = 12.0f;  // plateau ~4x: clips lightly at a hot input
-constexpr float kDriveMaxDb = 46.6f;  // plateau 1 + 1M/4.7k ~= 213.8x (+46.6 dB)
-
-// --- 4558 op-amp (fast, unlike the RAT's LM308) ---
-constexpr double kOpAmpGbwHz = 3.0e6;          // ~3 MHz gain-bandwidth product
-constexpr double kOpAmpSlewVoltsPerSec = 1.7e6;  // ~1.7 V/us slew
-
-// --- Stage 3: tone tilt + DC blocker ---
-constexpr double kTonePivotHz = 1000.0;  // treble-tilt split frequency
-constexpr float kToneMaxTiltDb = 12.0f;  // +/-12 dB treble at the extremes
-constexpr double kDcBlockHz = 12.0;      // output coupling-cap high-pass
-
-// --- Smoothing ---
-constexpr double kSmoothSeconds = 0.005;  // ~5 ms, matches the RAT/M0 smoothers
-
-float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
-
-float onePoleCoeff(double cutoffHz, double sampleRate) {
-    const double a = 1.0 - std::exp(-kTwoPi * cutoffHz / sampleRate);
-    return static_cast<float>(std::clamp(a, 0.0, 1.0));
-}
-
-// DRIVE knob (0..1) -> feedback gain K (= plateau_gain - 1), linear-in-dB.
-float driveKnobToK(float knob) {
-    const float db = kDriveMinDb + (kDriveMaxDb - kDriveMinDb) * clamp01(knob);
-    return std::pow(10.0f, db / 20.0f) - 1.0f;
-}
-
-// TONE knob (0..1) -> treble tilt LINEAR gain (1.0 == flat at knob 0.5).
-float toneKnobToTilt(float knob) {
-    const float db = (clamp01(knob) - 0.5f) * 2.0f * kToneMaxTiltDb;
-    return std::pow(10.0f, db / 20.0f);
-}
+// SD-1 config for the shared OverdriveEngine. These are exactly the in-line
+// constants the pre-refactor SdModel used, so the engine reproduces the M8
+// behaviour byte-for-byte (the M8 suite passes unchanged):
+//   - mid-hump 720.5 Hz  = 1/(2*pi*4.7k*0.047uF), the shared Zg leg;
+//   - DRIVE plateau [12, 46.6] dB, max = 1 + 1M/4.7k ~= 213.8x (+46.6 dB);
+//   - ASYMMETRIC diodes Vp=0.95 (2 diodes) / Vn=0.50 (1 diode) => even harmonics;
+//   - 4558 op-amp 3 MHz GBW / 1.7 V/us slew; tone tilt +/-12 dB about 1 kHz;
+//     12 Hz output DC blocker.
+constexpr OverdriveConfig kSdConfig = {
+    /* midHumpHz            */ 720.5,
+    /* driveMinDb           */ 12.0f,
+    /* driveMaxDb           */ 46.6f,
+    /* diodeVp              */ AsymSoftClipper::kDefaultVp,  // 0.95 (2 diodes)
+    /* diodeVn              */ AsymSoftClipper::kDefaultVn,  // 0.50 (1 diode)
+    /* opAmpGbwHz           */ 3.0e6,
+    /* opAmpSlewVoltsPerSec */ 1.7e6,
+    /* tonePivotHz          */ 1000.0,
+    /* toneMaxTiltDb        */ 12.0f,
+    /* dcBlockHz            */ 12.0,
+};
 }  // namespace
 
 struct SdModel::Impl {
-    double sampleRate = 44100.0;
-    int maxBlockSize = 128;
-    int osFactor = 4;
-    int clipMode = SdModel::CLIP_ADAA;
-    bool idealOpAmp = false;
-    bool symmetric = false;
-
-    // Smoothed physical params.
-    OnePoleSmoother driveK;   // feedback gain K (plateau - 1)
-    OnePoleSmoother toneTilt;  // treble tilt linear gain
-    OnePoleSmoother level;     // output gain
-
-    // Stage 1 mid-hump high-pass (runs at the oversampled rate; hp = x - LP720).
-    float midHumpCoef = 0.0f;
-    float midLpState = 0.0f;
-
-    // Stage 3 tone tilt low-pass (base rate) + DC blocker state.
-    float toneCoef = 0.0f;
-    float toneLpState = 0.0f;
-    double dcR = 0.0;
-    float dcX1 = 0.0f, dcY1 = 0.0f;
-
-    // M2 oversampling for the feedback clip.
-    Oversampler os;
-
-    // 4558 op-amp (bandwidth + slew) and the asymmetric ADAA soft clipper, both
-    // at the oversampled rate.
-    LM308Stage opAmp;
-    AsymSoftClipper clip;
-
-    void applyKnees() {
-        if (symmetric) {
-            const double v = 0.5 * (AsymSoftClipper::kDefaultVp + AsymSoftClipper::kDefaultVn);
-            clip.setKnees(v, v);
-        } else {
-            clip.setKnees(AsymSoftClipper::kDefaultVp, AsymSoftClipper::kDefaultVn);
-        }
-    }
-
-    void reprepareStage2() {
-        os.setFactor(osFactor);
-        const double osRate = sampleRate * os.factor();
-        midHumpCoef = onePoleCoeff(kMidHumpHz, osRate);
-        midLpState = 0.0f;
-        opAmp.prepare(osRate, kOpAmpGbwHz, kOpAmpSlewVoltsPerSec);
-        applyKnees();
-        clip.reset();
-    }
+    OverdriveEngine engine{kSdConfig};
 };
 
 SdModel::SdModel() : impl_(std::make_unique<Impl>()) {}
 SdModel::~SdModel() = default;
 
 void SdModel::prepare(double sampleRate, int maxBlockSize) {
-    Impl& d = *impl_;
-    d.sampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
-    d.maxBlockSize = maxBlockSize > 0 ? maxBlockSize : 128;
-
-    d.driveK.prepare(kSmoothSeconds, d.sampleRate);
-    d.toneTilt.prepare(kSmoothSeconds, d.sampleRate);
-    d.level.prepare(kSmoothSeconds, d.sampleRate);
-
-    d.toneCoef = onePoleCoeff(kTonePivotHz, d.sampleRate);
-    d.toneLpState = 0.0f;
-    d.dcR = std::exp(-kTwoPi * kDcBlockHz / d.sampleRate);
-    d.dcX1 = 0.0f;
-    d.dcY1 = 0.0f;
-
-    d.os.prepare(d.maxBlockSize);
-    d.reprepareStage2();
+    impl_->engine.prepare(sampleRate, maxBlockSize);
 }
 
-void SdModel::setOversampling(int factor) {
-    impl_->osFactor = factor;
-    impl_->reprepareStage2();
-}
-int SdModel::oversampling() const { return impl_->os.factor(); }
-int SdModel::latencySamples() const { return impl_->os.latencySamples(); }
+void SdModel::setOversampling(int factor) { impl_->engine.setOversampling(factor); }
+int SdModel::oversampling() const { return impl_->engine.oversampling(); }
+int SdModel::latencySamples() const { return impl_->engine.latencySamples(); }
 
-void SdModel::setClipMode(int mode) {
-    impl_->clipMode = (mode == CLIP_NAIVE) ? CLIP_NAIVE : CLIP_ADAA;
-    impl_->clip.reset();
-}
-int SdModel::clipMode() const { return impl_->clipMode; }
+void SdModel::setClipMode(int mode) { impl_->engine.setClipMode(mode); }
+int SdModel::clipMode() const { return impl_->engine.clipMode(); }
 
-void SdModel::setIdealOpAmp(bool ideal) {
-    impl_->idealOpAmp = ideal;
-    impl_->opAmp.reset();
-}
-bool SdModel::idealOpAmp() const { return impl_->idealOpAmp; }
+void SdModel::setIdealOpAmp(bool ideal) { impl_->engine.setIdealOpAmp(ideal); }
+bool SdModel::idealOpAmp() const { return impl_->engine.idealOpAmp(); }
 
-void SdModel::setSymmetric(bool symmetric) {
-    impl_->symmetric = symmetric;
-    impl_->applyKnees();
-}
-bool SdModel::symmetric() const { return impl_->symmetric; }
+void SdModel::setSymmetric(bool symmetric) { impl_->engine.setSymmetric(symmetric); }
+bool SdModel::symmetric() const { return impl_->engine.symmetric(); }
 
 void SdModel::setParameter(int paramId, float value) {
-    Impl& d = *impl_;
-    const float knob = clamp01(value);
-    switch (paramId) {
-        case PARAM_DRIVE:
-            d.driveK.setTarget(driveKnobToK(knob));
-            break;
-        case PARAM_TONE:
-            d.toneTilt.setTarget(toneKnobToTilt(knob));
-            break;
-        case PARAM_LEVEL:
-            d.level.setTarget(knob);  // identity linear map, as the RAT
-            break;
-        default:
-            break;
-    }
+    impl_->engine.setParameter(paramId, value);
 }
 
 void SdModel::process(const float* in, float* out, int numFrames) {
-    Impl& d = *impl_;
-    int off = 0;
-    while (off < numFrames) {
-        const int n = std::min(d.maxBlockSize, numFrames - off);
-        processChunk(in + off, out + off, n);
-        off += n;
-    }
+    impl_->engine.process(in, out, numFrames);
 }
 
 void SdModel::processChunk(const float* in, float* out, int numFrames) {
-    Impl& d = *impl_;
-    assert(numFrames <= d.maxBlockSize && "chunk exceeds maxBlockSize");
-
-    // Advance the DRIVE smoother across the chunk; use the chunk value as the
-    // feedback gain K for the oversampled section (control-rate, like the RAT's
-    // op-amp corner and AmpModel's coeffs — the 5 ms glide makes it click-free).
-    float K = d.driveK.value();
-    for (int i = 0; i < numFrames; ++i) K = d.driveK.next();
-    const float noiseGain = K + 1.0f;  // non-inverting closed-loop noise gain
-    if (!d.idealOpAmp) d.opAmp.setNoiseGain(noiseGain);
-
-    // --- Stage 1+2 (oversampled): V_out = V_in + f(K * HP720(V_in)). ---
-    // Upsample the RAW input; the clean pedestal V_in and the clipped feedback
-    // are summed at the oversampled rate so they stay sample-aligned. os.upsample
-    // copies `in` internally first, so in/out may alias.
-    d.os.upsample(in, numFrames);
-    float* w = d.os.buffer();
-    const int osN = d.os.bufferLength();
-    const float hc = d.midHumpCoef;
-    for (int i = 0; i < osN; ++i) {
-        const float x = w[i];
-        // Mid-hump high-pass: hp = x - LP720(x)  (unity at HF, 0 at DC).
-        d.midLpState += hc * (x - d.midLpState);
-        const float hp = x - d.midLpState;
-        float u = K * hp;                       // amplified feedback drive
-        if (!d.idealOpAmp) u = d.opAmp.processSample(u);  // 4558 BW + slew
-        const float vfb = (d.clipMode == CLIP_NAIVE) ? d.clip.processSampleNaive(u)
-                                                     : d.clip.processSampleADAA(u);
-        w[i] = x + vfb;                          // clean pedestal + soft-clipped fb
-    }
-    d.os.downsample(out, numFrames);
-
-    // --- Stage 3 (base rate, linear): DC block -> tone tilt -> level. ---
-    for (int i = 0; i < numFrames; ++i) {
-        const float v = out[i];
-        // One-pole DC blocker (output coupling cap, ~12 Hz).
-        const float y = v - d.dcX1 + static_cast<float>(d.dcR) * d.dcY1;
-        d.dcX1 = v;
-        d.dcY1 = y;
-        // Treble tilt: scale the HF half (y - LP_pivot) by the tilt gain.
-        d.toneLpState += d.toneCoef * (y - d.toneLpState);
-        const float hpTone = y - d.toneLpState;
-        const float toned = d.toneLpState + d.toneTilt.next() * hpTone;
-        out[i] = toned * d.level.next();
-    }
+    // Retained only to satisfy the header's private declaration; the engine owns
+    // chunking now. Never called.
+    impl_->engine.process(in, out, numFrames);
 }
 
 }  // namespace clipper::dsp

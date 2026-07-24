@@ -15,6 +15,7 @@
    (tokens.css, both themes). */
 .pedal[data-pedal-type="rat"]   { --pedal-accent: var(--accent-rat);   --pedal-accent-glow: var(--accent-rat-glow); }
 .pedal[data-pedal-type="sd1"]   { --pedal-accent: var(--accent-sd);    --pedal-accent-glow: var(--accent-sd-glow); }
+.pedal[data-pedal-type="ts"]    { --pedal-accent: var(--accent-ts);    --pedal-accent-glow: var(--accent-ts-glow); }
 .pedal[data-pedal-type="tuner"] { --pedal-accent: var(--accent-tuner); --pedal-accent-glow: var(--accent-tuner-glow); }
 .pedal.raised {
   background:
@@ -220,3 +221,57 @@
   color: #d9dbdf; text-transform: uppercase;
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.6), 0 -1px 0 rgba(255, 255, 255, 0.05); opacity: .92; }
 .pedal[data-face="compact"]:not(.on) .treadle-wordmark { opacity: .55; }
+
+/* ---- TS808 'slim' face: the GREEN Screamer, Ibanez-format box (v1.1) ----
+   Ibanez format: a knob row across the TOP, the script wordmark on the mid body,
+   and a RECTANGULAR hinged stomp PAD in the lower body. Slimmer than the RAT
+   stack and, crucially, NOT the Boss-compact SD-1 treadle — a different silhouette
+   at a glance (grayscale too: the morphology carries it). Green accent. */
+.pedal[data-face="slim"] {
+  width: 300px; /* slimmer than the RAT (320) / SD-1 (336) — the Ibanez footprint */
+  padding-top: 22px;
+}
+.pedal[data-face="slim"] .knob-row {
+  --kd: 58px; /* three knobs ride the top row with air */
+  gap: 24px;
+  justify-content: center;
+  margin: 10px 0 18px;
+}
+.pedal[data-face="slim"] .k-name { letter-spacing: .16em; }
+/* Script-ish wordmark on the mid body (the green-box logo cue). */
+.slim-wordmark {
+  text-align: center;
+  font-family: "Snell Roundhand", "Brush Script MT", "Segoe Script", cursive;
+  font-size: 34px; line-height: 1; letter-spacing: .01em;
+  margin: 2px 0 16px;
+  color: var(--pedal-accent, var(--ink));
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5), 0 -1px 0 rgba(255, 255, 255, 0.05);
+}
+.pedal[data-face="slim"]:not(.on) .slim-wordmark { opacity: .6; }
+/* The pad zone owns the lower body; nothing below it. */
+.pad-zone { margin-top: 8px; margin-bottom: 0; display: flex; justify-content: center; }
+/* The rectangular hinged stomp PAD — a metal jack-plate stomp (Ibanez cue), NOT a
+   round stomp and NOT the SD-1's rubber treadle. Wide, low, brushed metal. */
+.fsw-pad {
+  width: 100%;
+  height: 96px;
+  border-radius: 12px;
+  background: linear-gradient(160deg, #2c3036, #1c1e22);
+  box-shadow: 7px 9px 20px var(--sh-dark), -6px -6px 14px var(--sh-light),
+    inset 0 2px 0 rgba(255, 255, 255, 0.06);
+}
+.fsw-pad::before { /* brushed metal plate face */
+  content: ""; position: absolute; inset: 8px; border-radius: 8px;
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0 1px, transparent 1px 3px),
+    linear-gradient(160deg, #33373d, #232529);
+  box-shadow: inset 1px 2px 4px rgba(255, 255, 255, 0.05), inset 0 -4px 10px rgba(0, 0, 0, 0.5); }
+.fsw-pad::after { /* the hinge line across the toe */
+  content: ""; position: absolute; left: 18px; right: 18px; bottom: 20px; height: 3px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, transparent, rgba(0,0,0,0.5) 20%, rgba(0,0,0,0.5) 80%, transparent);
+  opacity: .7; }
+.fsw-pad:active, .fsw-pad.stomped {
+  transform: translateY(2px);
+  box-shadow: 3px 4px 10px var(--sh-dark), -3px -3px 8px var(--sh-light),
+    inset 2px 3px 7px rgba(0, 0, 0, 0.55); }
