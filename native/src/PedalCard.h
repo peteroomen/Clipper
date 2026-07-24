@@ -3,6 +3,9 @@
 // The native translation of web/src/components/Pedal.tsx + the FACES table: a dark
 // neumorphic chassis carrying, top to bottom,
 //
+// (the GOLD 'plate' face reshuffles this: its wordmark is ENGRAVED into a milled
+// nameplate band between the knobs and the stomp, so it has no hero line of its own.)
+//
 //   [rack]      the chain-position chips — grip (drag to reorder) · position ·
 //               move-earlier · move-later · swap · remove. The web floats these
 //               above the enclosure (.unit-rack); native keeps them INSIDE the
@@ -38,11 +41,19 @@ namespace clipper::native {
 // The static per-type presentation table — the native sibling of the web FACES
 // record. One entry per PedalType.
 struct PedalFace {
+    // The body layout — the native sibling of the web FACES `layout` field.
+    //   Stack    the reference vertical stack: eyebrow, hero wordmark, knob row, stomp.
+    //   Triangle the Muff's three knobs in their classic triangle.
+    //   Single   the phaser's ONE big centred knob.
+    //   Plate    the GOLD box: knob row over an ENGRAVED NAMEPLATE band carrying the
+    //            wordmark (so this face has no hero wordmark of its own), round stomp.
+    enum class Layout { Stack, Triangle, Single, Plate };
+
     const char* eyebrow;      // the small model line (.pedal-model)
-    const char* wordmark;     // the hero name (.pedal-logo)
+    const char* wordmark;     // the hero name (.pedal-logo) / the nameplate engraving
     juce::Colour accent;      // the small-area identity colour
     Footswitch::Shape shape;  // the ONE morphology cue
-    bool triangleKnobs;       // the Muff's three-knob triangle
+    Layout layout;
     float wordmarkSize;
     struct Knob {
         const char* name;
@@ -52,7 +63,7 @@ struct PedalFace {
     const char* onParamId;    // the engaged-flag parameter
 };
 
-// The face for a PedalType (PEDAL_RAT..PEDAL_PHASER).
+// The face for a PedalType (PEDAL_RAT..PEDAL_GOLD).
 const PedalFace& pedalFace(int type);
 // The human label used in the gear tray / swap menus.
 juce::String pedalMenuLabel(int type);
@@ -100,7 +111,7 @@ private:
     ChipButton swap_{juce::String::fromUTF8("\xe2\x87\x84")};  // ⇄
     ChipButton remove_{juce::String::fromUTF8("\xe2\x9c\x95")};// ✕
 
-    juce::Rectangle<int> ledBounds_, headerBounds_, wordmarkBounds_;
+    juce::Rectangle<int> ledBounds_, headerBounds_, wordmarkBounds_, plateBounds_;
     int posWidth_ = 18;  // 0 when a narrow card drops the position number
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PedalCard)

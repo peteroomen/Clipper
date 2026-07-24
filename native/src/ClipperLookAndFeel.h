@@ -83,6 +83,14 @@ inline const juce::Colour accentSd    {0xffB58900};  // --accent-sd           (y
 inline const juce::Colour accentTs    {0xff1E9E5A};  // --accent-ts           (green box)
 inline const juce::Colour accentMuff  {0xff7A3FBF};  // --accent-muff         (violet)
 inline const juce::Colour accentPhaser{0xffC4611A};  // --accent-phaser       (burnt orange)
+// --accent-gold. Every other accent here is the LIGHT-theme root value, because
+// every other accent also has to survive on the light bench. This one does not: the
+// gold pedal's accent only ever paints on the pinned-DARK pedal chassis, and the
+// light-theme #8F6A22 sits at ~2.8:1 there — a muddy brown that loses the one thing
+// this pedal is famous for. So it takes the web's DARK-theme token, exactly as the
+// chassis surfaces already do (pedal.css pins its island to dark values on every
+// theme). Champagne gold, ~6.9:1 on the charcoal.
+inline const juce::Colour accentGold  {0xffD9B36B};  // --accent-gold (dark-theme token)
 inline const juce::Colour accentJcm   {0xffA87A18};  // --accent-jcm          (brass gold)
 inline const juce::Colour accentTwin  {0xff4E7BA8};  // --accent-twin         (silver-blue)
 inline const juce::Colour accentAc30  {0xffB4612C};  // --accent-ac30         (copper)
@@ -118,11 +126,33 @@ void drawJack(juce::Graphics&, juce::Point<float> centre, float diameter);
 // highlight, and a plug disc at each end.
 void drawCable(juce::Graphics&, juce::Point<float> from, juce::Point<float> to);
 
+// The GOLD pedal's milled NAMEPLATE (pedal.css .name-plate / .name-plate-text): a
+// recessed band cut into the chassis, hairline accent rules along its top and bottom
+// lips, and the wordmark ENGRAVED into it — cut in from above, catching light on the
+// lower edge, the inverse of the RAT logo's raised emboss. Type only: the original's
+// engraved figure is its trademark, so nothing but letters goes on this plate.
+void drawNamePlate(juce::Graphics&, juce::Rectangle<float>, juce::Colour accent,
+                   const juce::String& text, bool engaged);
+
+// The PEDALBOARD RAIL the cards stand on (the scrollable board's floor). A channel
+// milled into the porcelain bench — the same inset recipe as board.css's .board-source
+// well — carrying a ribbed rubber MAT. No photo texture: the ribs are drawn, the
+// depth is shadow. It spans the whole scrolling content, so it slides with the pedals
+// and gives the board somewhere to run off to.
+void drawBoardRail(juce::Graphics&, juce::Rectangle<float>);
+
 // Condensed hero wordmark font (Anton-substitute: boldened + horizontally
 // compressed system font). `height` in px.
 juce::Font wordmarkFont(float height);
 // Monospaced eyebrow/label font (the web's ui-monospace small caps labels).
 juce::Font monoFont(float height);
+// Serif face for the engraved nameplate (the web asks for Optima/Palatino; native
+// takes the platform's default serif, which is the same gesture).
+juce::Font serifFont(float height);
+// Draw `text` LETTER-SPACED and centred in `area` at the current font/colour — the
+// engraved plate's .42em tracking, which JUCE fonts have no direct notion of.
+void drawTracked(juce::Graphics&, const juce::String& text, juce::Rectangle<float> area,
+                 float tracking);
 }  // namespace skin
 
 // ---------------------------------------------------------------------------
@@ -139,6 +169,12 @@ public:
 
     void drawComboBox(juce::Graphics&, int w, int h, bool isDown, int buttonX,
                       int buttonY, int buttonW, int buttonH, juce::ComboBox&) override;
+    // The board viewport's slim horizontal scrollbar: a carved track with a soft
+    // capsule thumb, so the overflow affordance belongs to the bench rather than
+    // arriving as a stock grey OS bar across the pedalboard.
+    void drawScrollbar(juce::Graphics&, juce::ScrollBar&, int x, int y, int width,
+                       int height, bool isScrollbarVertical, int thumbStartPosition,
+                       int thumbSize, bool isMouseOver, bool isMouseDown) override;
     juce::Font getComboBoxFont(juce::ComboBox&) override;
     void positionComboBoxText(juce::ComboBox&, juce::Label&) override;
     void drawPopupMenuBackground(juce::Graphics&, int w, int h) override;

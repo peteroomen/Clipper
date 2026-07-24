@@ -16,27 +16,62 @@ constexpr int kTopBar = 66;
 constexpr int kInputW = 106;
 constexpr int kTrayW = 124;
 constexpr int kAmpMinW = 356;
-// A pedal card's preferred width scales with its knob count (the phaser's one-knob
-// face is genuinely narrower — its morphology). Cards breathe between preferred and
-// minimum as the board fills up; below the minimum a card stops being a pedal and
-// starts being a sliver, so the WINDOW grows instead (see requiredBoardWidth).
+// A pedal card's width scales with its knob count (the phaser's one-knob face is
+// genuinely narrower — its morphology). Cards now ALWAYS take this width: they never
+// squeeze, because a crowded board scrolls instead of grinding its pedals into
+// slivers. That is the whole point of the viewport.
 constexpr int kPedalMaxW = 212;
 constexpr int kPedalMinW = 150;
-constexpr int kPhaserMinW = 112;  // the one-knob face genuinely needs less
 constexpr int kKnobCellW = 66;
 constexpr int kKnobCellH = 92;
 constexpr int kKnobCellMinH = 46;
+constexpr int kMinWidth = 1040;
 constexpr int kMinHeight = 560;
+
+// The scrolled content's own margins, so the rail's rounded ends and the first
+// card's cast shadow have somewhere to sit instead of being clipped at x=0.
+constexpr int kRailPad = 20;
+// How much rail shows BELOW the cards — the lip a real pedalboard leaves in front.
+constexpr int kRailLip = 26;
+// How far the rail rides UP behind the cards. Only the slivers between enclosures
+// and this lip are ever visible, which is exactly how a loaded board looks.
+constexpr int kRailRise = 84;
+constexpr int kScrollBarH = 11;
+// Drag auto-scroll: how close to the viewport edge starts the pump, and how far each
+// tick slides the board.
+constexpr int kAutoScrollEdge = 56;
+constexpr int kAutoScrollStep = 22;
+constexpr int kAutoScrollMs = 24;
+// The edge veil's width (the "more board that way" affordance).
+constexpr int kFadeW = 34;
 
 int preferredPedalWidth(int type) {
     const int knobs = (int)pedalFace(type).knobs.size();
+    // The GOLD box's engraved nameplate needs its tracking to breathe, so the plate
+    // face is the one card that asks for more than the knob count implies.
+    if (pedalFace(type).layout == PedalFace::Layout::Plate) return 236;
     return juce::jlimit(kPedalMinW, kPedalMaxW, 46 + 56 * knobs);
 }
-
-int minimumPedalWidth(int type) {
-    return pedalFace(type).knobs.size() <= 1 ? kPhaserMinW : kPedalMinW;
-}
 }  // namespace
+
+void BoardEdgeFade::paint(juce::Graphics& g) {
+    auto r = getLocalBounds().toFloat();
+    const float w = juce::jmin((float)kFadeW, r.getWidth() * 0.25f);
+    // Fades to the bench, not to white: the board reads as passing UNDER the edge of
+    // the working area rather than being wiped out by a gradient.
+    if (left_) {
+        juce::ColourGradient grad(skin::ground.withAlpha(0.72f), r.getX(), 0.0f,
+                                  skin::ground.withAlpha(0.0f), r.getX() + w, 0.0f, false);
+        g.setGradientFill(grad);
+        g.fillRect(r.withWidth(w));
+    }
+    if (right_) {
+        juce::ColourGradient grad(skin::ground.withAlpha(0.72f), r.getRight(), 0.0f,
+                                  skin::ground.withAlpha(0.0f), r.getRight() - w, 0.0f, false);
+        g.setGradientFill(grad);
+        g.fillRect(r.withTrimmedLeft((int)(r.getWidth() - w)));
+    }
+}
 
 ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& p)
     : juce::AudioProcessorEditor(&p), proc_(p) {
@@ -56,10 +91,58 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
 
     // ---- THE BOARD ------------------------------------------------------------
     // Cards are built from the processor's chain (see rebuildBoard); the gear tray
-    // adds whatever is not on the board yet.
+    // adds whatever is not on the board yet. Both live inside the SCROLLED content,
+    // so the board can be any length without the window growing.
+    boardContent_.onPaint = [this](juce::Graphics& g) { paintBoardContent(g); };
+    boardView_.setViewedComponent(&boardContent_, false);
+    // Horizontal only. The vertical axis is the card's own business; letting the
+    // board scroll vertically would just let a user lose the pedals off the top.
+    boardView_.setScrollBarsShown(false, true);
+    boardView_.setScrollBarThickness(kScrollBarH);
+    // A plain wheel with no horizontal component still scrolls the board: JUCE routes
+    // deltaY to the x axis when x is the only scrollable one, which is what makes a
+    // mouse (not just a trackpad) able to reach the far end of a long chain.
+    boardView_.setScrollOnDragMode(juce::Viewport::ScrollOnDragMode::never);
+    boardView_.onScroll = [this] {
+        // The boundary cables are drawn by the EDITOR but end inside the content, so
+        // they have to be re-struck every time the content moves.
+        repaint();
+        const int hidden = boardOverflow();
+        const int at = boardView_.getViewPositionX();
+        boardFade_.setEdges(hidden > 0 && at > 0, hidden > 0 && at < hidden);
+    };
+    addAndMakeVisible(boardView_);
+    addAndMakeVisible(boardFade_);  // added AFTER the viewport, so it veils it
+
     trayAdd_.setTint(skin::benchInkDim);
-    addAndMakeVisible(trayAdd_);
+    boardContent_.addAndMakeVisible(trayAdd_);
     trayAdd_.onClick = [this] { showTrayMenu(); };
+
+    autoScroll_.onTick = [this] {
+        if (draggingCard_ < 0) {
+            autoScroll_.stopTimer();
+            return;
+        }
+        const int visW = boardView_.getMaximumVisibleWidth();
+        int dir = 0;
+        if (dragViewX_ < kAutoScrollEdge) dir = -1;
+        else if (dragViewX_ > visW - kAutoScrollEdge) dir = 1;
+        if (dir == 0) {
+            autoScroll_.stopTimer();
+            return;
+        }
+        const int was = boardView_.getViewPositionX();
+        const int want = juce::jlimit(0, juce::jmax(0, boardOverflow()),
+                                      was + dir * kAutoScrollStep);
+        if (want == was) {  // already against the end — nothing left to reveal
+            autoScroll_.stopTimer();
+            return;
+        }
+        boardView_.setViewPosition(want, 0);
+        // The pointer has not moved, but the board under it has — so the card the
+        // drag is hovering over has changed. Re-run the reorder from the new content x.
+        reorderUnderPointer(want + dragViewX_);
+    };
 
     // ---- AMP knobs (superset; per-voice visibility set in updateAmpFace) -------
     knob(volume_, volumeAttach_, pid::volume, "Vol", skin::accentClean);
@@ -129,9 +212,10 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     addAndMakeVisible(buildStamp_);
 
     setResizable(true, true);
-    // Wide enough for a FULL board (five pedals + input + tray + amp) at the top of
-    // the range; the minimum still fits a couple of pedals with the cards squeezed.
-    setResizeLimits(1040, 560, 2200, 1000);
+    // A FIXED minimum again. The board no longer votes on how wide the window has to
+    // be — it scrolls. 1040x560 fits the input card, a couple of pedals, and a full
+    // amp face; everything past that is the user's choice of desk space.
+    setResizeLimits(kMinWidth, kMinHeight, 2400, 1200);
     setSize(1360, 640);
 
     rebuildBoard();
@@ -141,6 +225,7 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
 
 ClipperAudioProcessorEditor::~ClipperAudioProcessorEditor() {
     stopTimer();
+    autoScroll_.stopTimer();
     setLookAndFeel(nullptr);
 }
 
@@ -172,7 +257,7 @@ void ClipperAudioProcessorEditor::rebuildBoard() {
     for (int i = 0; i < (int)chain.size(); ++i) {
         auto* card = new PedalCard(proc_, chain[(size_t)i]);
         cards_.add(card);
-        addAndMakeVisible(card);
+        boardContent_.addAndMakeVisible(card);
         card->setPosition(i, (int)chain.size());
         // The callbacks look their own index UP at call time rather than capturing
         // it: a drag permutes the card array under them, and a stale captured index
@@ -184,30 +269,64 @@ void ClipperAudioProcessorEditor::rebuildBoard() {
         card->onDragTo = [this, card](int x) { dragCardTo(cards_.indexOf(card), x); };
         card->onDragEnd = [this] {
             draggingCard_ = -1;
+            autoScroll_.stopTimer();
             repaint();
         };
     }
     // Every type already on the board is unavailable to add.
     trayAdd_.setChipEnabled((int)chain.size() < kMaxChain);
     boardVersion_ = proc_.chainVersion();
-    applyBoardSizeFloor();
+    layoutBoardContent();
 }
 
-// A board needs bench to stand on. The window's MINIMUM width tracks the current
-// chain: input + every card at its minimum + the tray + the amp at its minimum +
-// the cable gaps. If the window is already narrower than that, it grows — better an
-// editor that asks for room than one that grinds five pedals into unreadable
-// slivers and pushes the amp off its own card.
-void ClipperAudioProcessorEditor::applyBoardSizeFloor() {
-    if (sizingFloor_) return;  // setSize re-enters resized(); don't spiral
-    int need = 2 * kMargin + kInputW + kTrayW + kAmpMinW + kChainGap * (cards_.size() + 2);
-    for (auto* c : cards_) need += minimumPedalWidth(c->type());
-    need = juce::jlimit(1040, 2200, need);
-    setResizeLimits(need, kMinHeight, 2200, 1200);
-    if (getWidth() < need) {
-        const juce::ScopedValueSetter<bool> guard(sizingFloor_, true);
-        setSize(need, juce::jmax(kMinHeight, getHeight()));
+int ClipperAudioProcessorEditor::boardOverflow() const {
+    return juce::jmax(0, boardContent_.getWidth() - boardView_.getMaximumVisibleWidth());
+}
+
+void ClipperAudioProcessorEditor::setBoardScroll(double proportion) {
+    const int hidden = boardOverflow();
+    if (hidden <= 0) {
+        boardView_.setViewPosition(0, 0);
+        return;
     }
+    boardView_.setViewPosition(
+        juce::roundToInt(juce::jlimit(0.0, 1.0, proportion) * hidden), 0);
+}
+
+// Lay the chain out INSIDE the scrolled content, at each card's full width — no
+// squeeze. The content is as wide as the chain needs (or the viewport, whichever is
+// larger, so the rail always reaches both edges) and the viewport does the rest.
+void ClipperAudioProcessorEditor::layoutBoardContent() {
+    const int visW = juce::jmax(0, boardView_.getWidth());
+    int need = 2 * kRailPad + kTrayW + kChainGap * cards_.size();
+    for (auto* c : cards_) need += preferredPedalWidth(c->type());
+
+    // Reserve the scrollbar strip only when it will actually be there, so a board
+    // that fits gets the full height for its cards.
+    const bool overflows = need > visW;
+    const int visH = juce::jmax(0, boardView_.getHeight() - (overflows ? kScrollBarH : 0));
+    boardContent_.setSize(juce::jmax(need, visW), visH);
+
+    const int cardH = juce::jmax(40, visH - kRailLip);
+    auto row = juce::Rectangle<int>(kRailPad, 0, boardContent_.getWidth() - 2 * kRailPad,
+                                    cardH);
+    for (auto* card : cards_) {
+        card->setBounds(row.removeFromLeft(preferredPedalWidth(card->type())));
+        row.removeFromLeft(kChainGap);
+    }
+    // The tray sits in the chain but ABOVE the jack line, so the cable running from
+    // the last pedal to the amp passes cleanly beneath it.
+    auto tray = row.removeFromLeft(kTrayW);
+    trayAdd_.setBounds(tray.getX(), tray.getY() + (int)(cardH * 0.42) - 74,
+                       tray.getWidth(), 42);
+
+    // Keep the scroll position legal after a remove (the content may have shrunk out
+    // from under it) and refresh the edge veils.
+    const int hidden = boardOverflow();
+    if (boardView_.getViewPositionX() > hidden) boardView_.setViewPosition(hidden, 0);
+    boardFade_.setEdges(hidden > 0 && boardView_.getViewPositionX() > 0,
+                        hidden > 0 && boardView_.getViewPositionX() < hidden);
+    boardContent_.repaint();
 }
 
 // Rebuild AFTER the current event finishes. An add/remove/swap is requested from a
@@ -299,19 +418,45 @@ void ClipperAudioProcessorEditor::movePedal(int from, int to) {
     repaint();
 }
 
-void ClipperAudioProcessorEditor::dragCardTo(int cardIndex, int parentX) {
-    // Live reorder under the pointer — the same rule the web board uses: the drag
-    // lands BEFORE the first card whose horizontal centre is right of the pointer.
+// A card's grip reports the pointer in CONTENT coordinates (the card's parent is now
+// the scrolled content). Two things follow from a drag: the live reorder, and — if
+// the pointer has reached a viewport edge — the auto-scroll pump that lets a pedal be
+// dragged somewhere that is currently off screen.
+void ClipperAudioProcessorEditor::dragCardTo(int cardIndex, int contentX) {
     if (cardIndex < 0 || cardIndex >= cards_.size()) return;
     draggingCard_ = cardIndex;
+    dragViewX_ = contentX - boardView_.getViewPositionX();
+    reorderUnderPointer(contentX);
+    updateAutoScroll();
+}
+
+void ClipperAudioProcessorEditor::reorderUnderPointer(int contentX) {
+    // The same rule the web board uses: the drag lands BEFORE the first card whose
+    // horizontal centre is right of the pointer.
+    if (draggingCard_ < 0 || draggingCard_ >= cards_.size()) return;
     int target = cards_.size() - 1;
     for (int i = 0; i < cards_.size(); ++i) {
-        if (parentX < cards_[i]->getBounds().getCentreX()) {
+        if (contentX < cards_[i]->getBounds().getCentreX()) {
             target = i;
             break;
         }
     }
-    if (target != cardIndex) movePedal(cardIndex, target);
+    if (target != draggingCard_) {
+        const int from = draggingCard_;
+        draggingCard_ = target;  // the card travels with the pointer
+        movePedal(from, target);
+    }
+}
+
+void ClipperAudioProcessorEditor::updateAutoScroll() {
+    const int visW = boardView_.getMaximumVisibleWidth();
+    const bool wantsScroll = boardOverflow() > 0 && draggingCard_ >= 0 &&
+                             (dragViewX_ < kAutoScrollEdge ||
+                              dragViewX_ > visW - kAutoScrollEdge);
+    if (wantsScroll && !autoScroll_.isTimerRunning())
+        autoScroll_.startTimer(kAutoScrollMs);
+    else if (!wantsScroll && autoScroll_.isTimerRunning())
+        autoScroll_.stopTimer();
 }
 
 void ClipperAudioProcessorEditor::updateAmpFace() {
@@ -421,11 +566,6 @@ void ClipperAudioProcessorEditor::updateEnablement() {
 // Layout
 // ---------------------------------------------------------------------------
 void ClipperAudioProcessorEditor::resized() {
-    // The floor is enforced HERE as well as on a board change, so that a host (or a
-    // headless tool) that sets a size directly — bypassing the resize constrainer —
-    // still cannot squeeze the board below what it can legibly draw.
-    applyBoardSizeFloor();
-
     auto r = getLocalBounds().reduced(kMargin);
 
     // Top bar: title left; amp-voice + oversample pills right.
@@ -444,38 +584,17 @@ void ClipperAudioProcessorEditor::resized() {
     row.removeFromBottom(18);  // reserve for the build-stamp line
 
     // ---- the LEFT-TO-RIGHT signal chain --------------------------------------
-    // INPUT · pedal cards (in chain order) · gear tray · AMP. The pedal cards take
-    // their preferred widths, shrinking together only if the board has filled up
-    // beyond what the window can show at full size.
-    const int nCards = cards_.size();
-    int wanted = 0;
-    for (auto* c : cards_) wanted += preferredPedalWidth(c->type());
-    const int fixed = kInputW + kTrayW + kAmpMinW + kChainGap * (nCards + 2);
-    const int available = juce::jmax(0, row.getWidth() - fixed);
-    // A single scale factor keeps the relative widths (the phaser stays the narrow
-    // one-knob box) while the whole board breathes in and out with the window. It
-    // can only shrink cards to their MINIMUM: a crowded board grows the window
-    // instead of grinding its pedals into slivers.
-    const double squeeze =
-        (wanted > 0 && wanted > available) ? (double)available / (double)wanted : 1.0;
-
+    // INPUT (fixed) · [ the scrolling board: pedal cards · gear tray ] · AMP (fixed).
+    // The two fixed cards are carved off first and the viewport simply takes what is
+    // left, so the ends of the signal path never move however long the chain gets.
     cardInput_ = row.removeFromLeft(kInputW);
     row.removeFromLeft(kChainGap);
-    for (auto* card : cards_) {
-        const int w = juce::jmax(minimumPedalWidth(card->type()),
-                                 (int)std::lround(preferredPedalWidth(card->type()) * squeeze));
-        card->setBounds(row.removeFromLeft(w));
-        row.removeFromLeft(kChainGap);
-    }
-    trayBounds_ = row.removeFromLeft(kTrayW);
-    row.removeFromLeft(kChainGap);
-    cardAmp_ = row;
+    cardAmp_ = row.removeFromRight(juce::jmax(kAmpMinW, row.getWidth() / 3));
+    row.removeFromRight(kChainGap);
 
-    // The tray sits in the chain, but ABOVE the jack line, so the cable running
-    // from the last pedal to the amp passes cleanly beneath it.
-    trayAdd_.setBounds(trayBounds_.getX(),
-                       trayBounds_.getY() + (int)(trayBounds_.getHeight() * 0.42) - 74,
-                       trayBounds_.getWidth(), 42);
+    boardView_.setBounds(row);
+    boardFade_.setBounds(row);
+    layoutBoardContent();
 
     // INPUT card: one knob, dead-centred in the card (header floats at the top).
     {
@@ -602,22 +721,54 @@ void ClipperAudioProcessorEditor::paint(juce::Graphics& g) {
     pillCaption(ampVoiceBox_, "AMP VOICE");
     pillCaption(oversampleBox_, "OVERSAMPLE");
 
-    // ---- PATCH CABLES ---------------------------------------------------------
-    // Drawn BEFORE the enclosures (and before every child component, which JUCE
-    // paints after the parent), so each cable end disappears under the chassis and
-    // into its socket — the web's z-order, where the cable layer sits behind the
-    // units. The run is: input.out -> card[0].in, card[i].out -> card[i+1].in, and
-    // the last out -> amp.in. An EMPTY board is valid: one cable spans input to amp.
+    // ---- THE TWO BOUNDARY PATCH CABLES ----------------------------------------
+    // Cables between pedals live inside the viewport and scroll with them (see
+    // paintBoardContent). These two do not: input.out -> card[0].in and
+    // card[last].out -> amp.in each have ONE end on the fixed bench and one end
+    // inside the scrolling content.
+    //
+    // They TRACK the scroll. The board-side end is the real jack position pushed
+    // through the viewport transform, so as the board slides the cable's span and
+    // sag follow it. When that jack scrolls out past the viewport's edge the end is
+    // CLAMPED to the edge and a jack plate is drawn there: the cable then reads as
+    // entering a grommet on the side of the board, which is what a real board does
+    // with a lead that leaves it. No cable is ever drawn running backwards over the
+    // input card, which is what an unclamped transform would do.
+    //
+    // Drawn BEFORE the child components (JUCE paints the parent first), so each end
+    // disappears under a chassis and into its socket — the web's cable z-order.
     {
         const float jackY = (float)cardInput_.getY() + cardInput_.getHeight() * 0.42f;
-        juce::Point<float> prevOut{(float)cardInput_.getRight(), jackY};
-        for (auto* card : cards_) {
-            skin::drawCable(g, prevOut, card->inJack());
-            prevOut = card->outJack();
+        const float ampJackY = (float)cardAmp_.getY() + cardAmp_.getHeight() * 0.42f;
+        const juce::Point<float> inputOut{(float)cardInput_.getRight(), jackY};
+        const juce::Point<float> ampIn{(float)cardAmp_.getX(), ampJackY};
+
+        if (cards_.isEmpty()) {
+            skin::drawCable(g, inputOut, ampIn);  // an EMPTY board is valid
+        } else {
+            const float viewL = (float)boardView_.getX();
+            const float viewR = viewL + (float)boardView_.getMaximumVisibleWidth();
+            const float dx = viewL - (float)boardView_.getViewPositionX();
+            const float dy = (float)boardView_.getY();
+
+            auto toBench = [&](juce::Point<float> p, bool& clamped) {
+                juce::Point<float> q{p.x + dx, p.y + dy};
+                clamped = q.x < viewL || q.x > viewR;
+                q.x = juce::jlimit(viewL, viewR, q.x);
+                return q;
+            };
+
+            bool clampedIn = false, clampedOut = false;
+            const juce::Point<float> firstIn = toBench(cards_.getFirst()->inJack(), clampedIn);
+            const juce::Point<float> lastOut = toBench(cards_.getLast()->outJack(), clampedOut);
+
+            skin::drawCable(g, inputOut, firstIn);
+            skin::drawCable(g, lastOut, ampIn);
+            // The grommet only appears when the cable actually terminates at the
+            // board's edge; when the pedal is on screen it already draws its own jack.
+            if (clampedIn) skin::drawJack(g, firstIn, 16.0f);
+            if (clampedOut) skin::drawJack(g, lastOut, 16.0f);
         }
-        skin::drawCable(g, prevOut,
-                        {(float)cardAmp_.getX(),
-                         (float)cardAmp_.getY() + cardAmp_.getHeight() * 0.42f});
     }
 
     auto drawCard = [&](juce::Rectangle<int> card, const juce::String& eyebrow,
@@ -658,15 +809,6 @@ void ClipperAudioProcessorEditor::paint(juce::Graphics& g) {
                            (float)cardAmp_.getY() + cardAmp_.getHeight() * 0.42f},
                        16.0f);
 
-    // Gear-tray caption, above the add button and clear of the cable line.
-    if (!trayBounds_.isEmpty()) {
-        g.setColour(skin::benchFaint);
-        g.setFont(skin::monoFont(9.5f));
-        g.drawText(cards_.isEmpty() ? juce::String("EMPTY CHAIN") : juce::String("GEAR TRAY"),
-                   trayBounds_.getX(), trayAdd_.getY() - 18, trayBounds_.getWidth(), 14,
-                   juce::Justification::centred);
-    }
-
     // Modulation row divider + caption inside the amp card. The line lives in the
     // MIDDLE of the gap between the tone rows and the mod row, so neither the mod
     // knobs' floating value arcs nor the mode switch can touch it.
@@ -680,6 +822,42 @@ void ClipperAudioProcessorEditor::paint(juce::Graphics& g) {
         g.drawText(modCaption_.toUpperCase(), cap.getX(), cap.getCentreY() - 10,
                    cap.getWidth(), 20, juce::Justification::centredLeft);
     }
+}
+
+// ---------------------------------------------------------------------------
+// The scrolled content: the RAIL the pedals stand on, the cables BETWEEN them, and
+// the gear-tray caption. Everything here is in content coordinates and slides with
+// the board; the editor draws it through BoardContent::onPaint so the whole board's
+// visual language stays in one file.
+// ---------------------------------------------------------------------------
+void ClipperAudioProcessorEditor::paintBoardContent(juce::Graphics& g) {
+    auto area = boardContent_.getLocalBounds();
+    if (area.isEmpty()) return;
+
+    // The RAIL. It spans the full content width — so on an overflowing board it runs
+    // off both edges of the viewport, which is precisely the cue that there is more
+    // board out there. Its top rides up BEHIND the enclosures: only the slivers
+    // between them and the lip in front are ever seen, exactly as on a loaded board.
+    {
+        const int cardH = juce::jmax(40, area.getHeight() - kRailLip);
+        auto rail = juce::Rectangle<int>(0, juce::jmax(0, cardH - kRailRise),
+                                         area.getWidth(), 0)
+                        .withBottom(area.getHeight() - 2);
+        skin::drawBoardRail(g, rail.toFloat());
+    }
+
+    // The cables BETWEEN pedals, in content space — they scroll for free, because
+    // they are drawn by the same component the cards live in. Drawn after the rail
+    // and before the cards (children paint last), so a plug tucks into its socket.
+    for (int i = 1; i < cards_.size(); ++i)
+        skin::drawCable(g, cards_[i - 1]->outJack(), cards_[i]->inJack());
+
+    // Gear-tray caption, above the add button and clear of the cable line.
+    g.setColour(skin::benchFaint);
+    g.setFont(skin::monoFont(9.5f));
+    g.drawText(cards_.isEmpty() ? juce::String("EMPTY CHAIN") : juce::String("GEAR TRAY"),
+               trayAdd_.getX(), trayAdd_.getY() - 18, trayAdd_.getWidth(), 14,
+               juce::Justification::centred);
 }
 
 }  // namespace clipper::native

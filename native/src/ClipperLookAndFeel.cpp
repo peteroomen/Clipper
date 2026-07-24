@@ -160,6 +160,138 @@ juce::Font monoFont(float height) {
     return juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), height,
                                         juce::Font::plain));
 }
+
+juce::Font serifFont(float height) {
+    return juce::Font(juce::FontOptions(juce::Font::getDefaultSerifFontName(), height,
+                                        juce::Font::plain));
+}
+
+void drawTracked(juce::Graphics& g, const juce::String& text, juce::Rectangle<float> area,
+                 float tracking) {
+    if (text.isEmpty()) return;
+    const juce::Font f = g.getCurrentFont();
+    const int n = text.length();
+
+    // Measure once with the tracking folded in, then shrink the tracking (never the
+    // font — the engraving reads by its wide spacing) if the run would overhang.
+    auto runWidth = [&](float track) {
+        float w = 0.0f;
+        for (int i = 0; i < n; ++i)
+            w += juce::GlyphArrangement::getStringWidth(f, juce::String::charToString(text[i]));
+        return w + track * static_cast<float>(juce::jmax(0, n - 1));
+    };
+    float track = tracking;
+    if (runWidth(track) > area.getWidth() && n > 1)
+        track = juce::jmax(0.0f, track - (runWidth(track) - area.getWidth()) /
+                                             static_cast<float>(n - 1));
+
+    float x = area.getX() + (area.getWidth() - runWidth(track)) * 0.5f;
+    for (int i = 0; i < n; ++i) {
+        const juce::String ch = juce::String::charToString(text[i]);
+        const float w = juce::GlyphArrangement::getStringWidth(f, ch);
+        g.drawText(ch, juce::Rectangle<float>(x, area.getY(), w, area.getHeight()),
+                   juce::Justification::centred, false);
+        x += w + track;
+    }
+}
+
+void drawNamePlate(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour accent,
+                   const juce::String& text, bool engaged) {
+    if (r.getWidth() < 8.0f || r.getHeight() < 8.0f) return;
+    const float radius = 6.0f;  // .name-plate border-radius
+    auto path = roundedRectPath(r, radius);
+
+    // The milled band: linear-gradient(160deg,#23262b,#1b1e22) — a shade below the
+    // chassis, so it reads as material removed rather than a panel stuck on.
+    {
+        juce::Graphics::ScopedSaveState ss(g);
+        g.reduceClipRegion(path);
+        fillDiagGradient(g, r, juce::Colour(0xff23262B), juce::Colour(0xff1B1E22));
+        // inset 2px 3px 6px sh-darker / inset -1px -1px 3px sh-light — the recess.
+        g.setColour(shDarker);
+        g.strokePath(roundedRectPath(r.translated(2.0f, 3.0f), radius),
+                     juce::PathStrokeType(4.0f));
+        g.setColour(shLight);
+        g.strokePath(roundedRectPath(r.translated(-1.2f, -1.2f), radius),
+                     juce::PathStrokeType(2.0f));
+    }
+
+    // The hairline gold rules along the plate's top and bottom lips (border-top 55%,
+    // border-bottom 40%) — the only place the accent touches a large surface.
+    g.setColour(accent.withMultipliedAlpha(engaged ? 0.55f : 0.34f));
+    g.drawLine(r.getX() + radius, r.getY() + 0.5f, r.getRight() - radius, r.getY() + 0.5f, 1.0f);
+    g.setColour(accent.withMultipliedAlpha(engaged ? 0.40f : 0.24f));
+    g.drawLine(r.getX() + radius, r.getBottom() - 0.5f, r.getRight() - radius,
+               r.getBottom() - 0.5f, 1.0f);
+
+    // ENGRAVED lettering: cut in from above (a dark line along the top of each
+    // stroke), catching light on the lower lip — the inverse of an emboss.
+    auto textArea = r.reduced(10.0f, 0.0f);
+    const float h = juce::jlimit(13.0f, 26.0f, r.getHeight() * 0.60f);
+    g.setFont(serifFont(h));
+    const juce::String mark = text.toUpperCase();
+    const float track = juce::jmax(2.0f, h * 0.42f);  // .42em tracking
+
+    g.setColour(juce::Colour(0xBF000000));
+    drawTracked(g, mark, textArea.translated(0.0f, -1.0f), track);
+    g.setColour(juce::Colour(0x12FFFFFF));
+    drawTracked(g, mark, textArea.translated(0.0f, 1.0f), track);
+    // color-mix(accent 78%, ink) — gold, but pulled toward the panel ink so it reads
+    // as metal catching light rather than printed paint.
+    g.setColour(accent.interpolatedWith(ink, 0.22f).withMultipliedAlpha(engaged ? 1.0f : 0.55f));
+    drawTracked(g, mark, textArea, track);
+}
+
+void drawBoardRail(juce::Graphics& g, juce::Rectangle<float> r) {
+    if (r.getWidth() < 4.0f || r.getHeight() < 4.0f) return;
+
+    // 1. The CHANNEL milled into the bench — board.css's .board-source recess
+    //    (inset 4px 4px 10px sh-darker, inset -3px -3px 8px sh-light), scaled up to
+    //    a whole plank. Bench-toned, so it belongs to the porcelain rather than
+    //    competing with the dark enclosures standing in it.
+    const float radius = 14.0f;
+    auto channel = roundedRectPath(r, radius);
+    g.setColour(benchWell);
+    g.fillPath(channel);
+    {
+        juce::Graphics::ScopedSaveState ss(g);
+        g.reduceClipRegion(channel);
+        g.setColour(juce::Colour(0x40000000));
+        g.strokePath(roundedRectPath(r.translated(2.5f, 3.0f), radius),
+                     juce::PathStrokeType(7.0f));
+        g.setColour(juce::Colour(0x66FFFFFF));
+        g.strokePath(roundedRectPath(r.translated(-2.0f, -2.0f), radius),
+                     juce::PathStrokeType(5.0f));
+    }
+
+    // 2. The ribbed rubber MAT lying in the channel. Warm dark grey — a different
+    //    family from the cool charcoal chassis, so a pedal never dissolves into it.
+    auto mat = r.reduced(7.0f, 6.0f);
+    if (mat.getWidth() < 4.0f || mat.getHeight() < 4.0f) return;
+    auto matPath = roundedRectPath(mat, 9.0f);
+    {
+        juce::Graphics::ScopedSaveState ss(g);
+        g.reduceClipRegion(matPath);
+        fillDiagGradient(g, mat, juce::Colour(0xff4A473F), juce::Colour(0xff35332E));
+
+        // Drawn ribs, not a texture bitmap: a light edge and a dark valley per rib,
+        // the way moulded rubber matting actually catches a workbench lamp.
+        const float pitch = 11.0f;
+        for (float x = mat.getX() + pitch * 0.5f; x < mat.getRight(); x += pitch) {
+            g.setColour(juce::Colour(0x14FFFFFF));
+            g.drawLine(x, mat.getY() + 2.0f, x, mat.getBottom() - 2.0f, 1.6f);
+            g.setColour(juce::Colour(0x33000000));
+            g.drawLine(x + 1.8f, mat.getY() + 2.0f, x + 1.8f, mat.getBottom() - 2.0f, 1.4f);
+        }
+        // The mat sits IN the channel: shadow along its top lip, light along the base.
+        g.setColour(juce::Colour(0x59000000));
+        g.strokePath(roundedRectPath(mat.translated(0.0f, 2.4f), 9.0f),
+                     juce::PathStrokeType(4.0f));
+        g.setColour(juce::Colour(0x14FFFFFF));
+        g.drawLine(mat.getX() + 9.0f, mat.getBottom() - 1.0f, mat.getRight() - 9.0f,
+                   mat.getBottom() - 1.0f, 1.0f);
+    }
+}
 }  // namespace skin
 
 // ===========================================================================
@@ -292,6 +424,38 @@ void ClipperLookAndFeel::drawPopupMenuBackground(juce::Graphics& g, int w, int h
     g.fillRoundedRectangle(r.reduced(1.0f), 8.0f);
     g.setColour(juce::Colour(0x22FFFFFF));
     g.drawRoundedRectangle(r.reduced(1.0f), 8.0f, 1.0f);
+}
+
+void ClipperLookAndFeel::drawScrollbar(juce::Graphics& g, juce::ScrollBar&, int x, int y,
+                                       int width, int height, bool isScrollbarVertical,
+                                       int thumbStartPosition, int thumbSize,
+                                       bool isMouseOver, bool isMouseDown) {
+    auto area = juce::Rectangle<int>(x, y, width, height).toFloat();
+    const float thick = isScrollbarVertical ? area.getWidth() : area.getHeight();
+    const float radius = thick * 0.5f;
+
+    // The TRACK: a shallow groove scratched into the bench, not a filled gutter —
+    // it must not read as a second rail under the real one.
+    auto track = isScrollbarVertical ? area.reduced(thick * 0.30f, 2.0f)
+                                     : area.reduced(2.0f, thick * 0.30f);
+    g.setColour(skin::benchWell.darker(0.06f));
+    g.fillRoundedRectangle(track, track.getHeight() * 0.5f);
+
+    if (thumbSize <= 0) return;  // content fits — nothing to grab
+
+    // The THUMB: a soft capsule in the bench's own ink, brightening on hover/drag.
+    auto thumb = isScrollbarVertical
+                     ? juce::Rectangle<float>(area.getX(), (float)thumbStartPosition,
+                                              area.getWidth(), (float)thumbSize)
+                     : juce::Rectangle<float>((float)thumbStartPosition, area.getY(),
+                                              (float)thumbSize, area.getHeight());
+    thumb = isScrollbarVertical ? thumb.reduced(thick * 0.22f, 1.0f)
+                                : thumb.reduced(1.0f, thick * 0.22f);
+    const float alpha = isMouseDown ? 0.92f : (isMouseOver ? 0.78f : 0.58f);
+    g.setColour(skin::benchInkDim.withAlpha(alpha));
+    g.fillRoundedRectangle(thumb, radius);
+    g.setColour(juce::Colour(0x30FFFFFF));
+    g.drawRoundedRectangle(thumb.reduced(0.5f), radius, 1.0f);
 }
 
 // ===========================================================================

@@ -5,11 +5,14 @@
 // ClipperAudioProcessor + ClipperAudioProcessorEditor and writes
 // Component::createComponentSnapshot PNGs of:
 //
-//   * one shot per AMP VOICE (the visual-pass deliverable), and
+//   * one shot per AMP VOICE (the visual-pass deliverable),
 //   * the NATIVE PARITY scenes: the default board, a full board with every pedal
 //     type (cables + lit LEDs), the same board after a reorder, a bypassed pedal,
 //     and the amp faces at the smallest and largest window sizes (the overlap /
-//     occlusion audit).
+//     occlusion audit), and
+//   * the SCROLLING BOARD scenes (native_scroll_*): a six-pedal board at both
+//     scroll extremes and mid-scroll, the rail, the minimum window, and the GOLD
+//     'Myth' plate face lit and bypassed.
 //
 // Run headless under xvfb:
 //   xvfb-run -a ./clipper_editor_snap <out-dir>
@@ -109,10 +112,74 @@ int main(int argc, char** argv) {
     shoot(*editor, outDir, "native_parity_full_board_large.png",
           "all five pedals, large window");
 
-    // The SMALLEST window with a crowded board — the squeeze audit.
+    // The SMALLEST window with a crowded board. This used to be the SQUEEZE audit —
+    // the window's minimum grew until the board fitted. It is now the SCROLL audit:
+    // the window stays at 1040 and the board runs off the edge.
     editor->setSize(1040, 560);
     shoot(*editor, outDir, "native_parity_full_board_small.png",
-          "all five pedals, smallest window that fits the board");
+          "all five pedals, minimum window - the board scrolls instead");
+
+    // ---- 1b. the SCROLLING BOARD + the RAIL + the GOLD pedal ------------------
+    // The board no longer grows the window; it scrolls inside a viewport while the
+    // INPUT card and the AMP face stay pinned outside it. These shots are the proof:
+    // overflow, the rail the pedals stand on, and the boundary cables at both scroll
+    // extremes. `shootScrolled` parks the board at a proportion of its overflow.
+    auto shootScrolled = [&](const char* file, const char* label, double proportion) {
+        editor->refreshFromState();
+        editor->resized();
+        editor->setBoardScroll(proportion);
+        shoot(*editor, outDir, file, label);
+    };
+
+    // The shipped default board, now sitting on the rail with room to spare.
+    proc.setChainOrder(ClipperAudioProcessor::defaultChain());
+    setParam(proc.apvts, pid::ampModel, 0.0f);
+    editor->setSize(1360, 640);
+    shootScrolled("native_scroll_default_board.png",
+                  "default board - one RAT on the rail, board fits (no scrollbar)", 0.0);
+
+    // ALL SIX types at once — the board the old grow-the-window build would have
+    // demanded ~1622 px of desk for. Photographed mid-scroll, so the rail runs off
+    // both edges and both boundary cables terminate at their grommets.
+    const std::vector<int> full = {PEDAL_RAT,  PEDAL_SD,     PEDAL_TS,
+                                   PEDAL_MUFF, PEDAL_PHASER, PEDAL_GOLD};
+    proc.setChainOrder(full);
+    for (const char* id : {pid::ratOn, pid::sdOn, pid::tsOn, pid::muffOn, pid::phaserOn,
+                           pid::goldOn})
+        setParam(proc.apvts, id, 1.0f);
+    shootScrolled("native_scroll_six_pedals_midscroll.png",
+                  "6-pedal board mid-scroll - rail overflows, edge veils on both sides",
+                  0.5);
+    shootScrolled("native_scroll_six_pedals_start.png",
+                  "the same six, scrolled hard left - input cable reaches the first pedal",
+                  0.0);
+    shootScrolled("native_scroll_six_pedals_end.png",
+                  "the same six, scrolled hard right - last pedal meets the amp cable",
+                  1.0);
+    if (editor->boardOverflow() <= 0) {
+        std::printf("FAILED: the six-pedal board did not overflow the viewport\n");
+        ++failures;
+    }
+
+    // The SMALLEST window with that same six-pedal board: the fixed INPUT card and
+    // the full AMP face still stand outside a board that is mostly off screen.
+    editor->setSize(1040, 560);
+    shootScrolled("native_scroll_small_window.png",
+                  "minimum window - fixed input + amp, board scrolled", 0.45);
+
+    // The GOLD pedal's face, close enough to judge: the engraved nameplate, the
+    // hairline gold rules, the round stomp. Alone on the board so nothing crowds it.
+    proc.setChainOrder({PEDAL_GOLD});
+    editor->setSize(1120, 700);
+    shootScrolled("native_scroll_gold_face.png",
+                  "the GOLD 'Myth' plate face - engraved nameplate, gold accent", 0.0);
+
+    // The gold box BYPASSED: the LED goes dark, the knobs dim, and the engraving
+    // fades with them — the plate has to read as off, not merely unlit.
+    setParam(proc.apvts, pid::goldOn, 0.0f);
+    shootScrolled("native_scroll_gold_bypassed.png",
+                  "Myth bypassed - engraving and LED both go quiet", 0.0);
+    setParam(proc.apvts, pid::goldOn, 1.0f);
 
     // ---- 2. the amp voices (the original visual-pass deliverable) -------------
     struct Voice {

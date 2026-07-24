@@ -16,30 +16,39 @@ constexpr int kJackD = 16;      // .jack is 16px
 const PedalFace kFaces[PEDAL_TYPE_COUNT] = {
     // RAT — the reference: red, the round stomp, the vertical stack.
     {"Dirt N\xc2\xba""1 \xc2\xb7 Rodent-Type", "Rodent", skin::accentRat,
-     Footswitch::Shape::Round, false, 38.0f,
+     Footswitch::Shape::Round, PedalFace::Layout::Stack, 38.0f,
      {{"Dist", pid::ratDist}, {"Filter", pid::ratFilter}, {"Level", pid::ratLevel}},
      pid::ratOn},
     // SD-1 — yellow, and the Boss-compact RUBBER TREADLE (the morphology cue).
     {"Drive N\xc2\xba""2 \xc2\xb7 Yellow", "Super Drive", skin::accentSd,
-     Footswitch::Shape::Treadle, false, 26.0f,
+     Footswitch::Shape::Treadle, PedalFace::Layout::Stack, 26.0f,
      {{"Drive", pid::sdDrive}, {"Tone", pid::sdTone}, {"Level", pid::sdLevel}},
      pid::sdOn},
     // TS — the green box, and the Ibanez-format hinged metal PAD.
     {"Drive N\xc2\xba""3 \xc2\xb7 Green", "Screamer", skin::accentTs,
-     Footswitch::Shape::Pad, false, 30.0f,
+     Footswitch::Shape::Pad, PedalFace::Layout::Stack, 30.0f,
      {{"Drive", pid::tsDrive}, {"Tone", pid::tsTone}, {"Level", pid::tsLevel}},
      pid::tsOn},
     // Muff — violet, the big stomp, and the classic three-knob TRIANGLE. Knob order
     // is the triangle placement: Sustain top-left, Volume top-right, Tone below.
     {"Fuzz N\xc2\xba""5 \xc2\xb7 Pi", "Pi", skin::accentMuff,
-     Footswitch::Shape::BigRound, true, 44.0f,
+     Footswitch::Shape::BigRound, PedalFace::Layout::Triangle, 44.0f,
      {{"Sustain", pid::muffSustain}, {"Volume", pid::muffVolume}, {"Tone", pid::muffTone}},
      pid::muffOn},
     // Phaser — burnt orange, and the iconic ONE big knob.
     {"Phaser N\xc2\xba""4 \xc2\xb7 Script", "Ninety", skin::accentPhaser,
-     Footswitch::Shape::Round, false, 34.0f,
+     Footswitch::Shape::Round, PedalFace::Layout::Single, 34.0f,
      {{"Speed", pid::phaserSpeed}},
      pid::phaserOn},
+    // GOLD — the hoarded gold box. Its morphology cue is the milled NAMEPLATE band:
+    // the original is remembered for a colour and for being ENGRAVED rather than
+    // printed, so native takes the colour and the engraving IDEA. Type only — the
+    // figure on the real enclosure IS the trademark and is deliberately absent, as
+    // are the words Klon/Centaur/KTR. "Myth" is the wink at what the box became.
+    {"Drive N\xc2\xba""6 \xc2\xb7 Gold", "Myth", skin::accentGold,
+     Footswitch::Shape::Round, PedalFace::Layout::Plate, 30.0f,
+     {{"Gain", pid::goldGain}, {"Treble", pid::goldTreble}, {"Output", pid::goldLevel}},
+     pid::goldOn},
 };
 }  // namespace
 
@@ -54,6 +63,7 @@ juce::String pedalMenuLabel(int type) {
         case PEDAL_TS:     return "Screamer - green overdrive";
         case PEDAL_MUFF:   return "Pi - big-box fuzz";
         case PEDAL_PHASER: return "Ninety - script phaser";
+        case PEDAL_GOLD:   return "Myth - gold transparent overdrive";
         default:           return "Pedal";
     }
 }
@@ -178,12 +188,20 @@ void PedalCard::resized() {
         ledBounds_ = juce::Rectangle<int>(head.getRight() - kLedD - 6,
                                           head.getCentreY() - kLedD / 2, kLedD, kLedD);
     }
-    wordmarkBounds_ = r.removeFromTop((int)pedalFace(type_).wordmarkSize + 8);
-    r.removeFromTop(6);
-
-    // Knobs, then the footswitch owning the lower body.
     const PedalFace& face = pedalFace(type_);
-    if (face.triangleKnobs && knobs_.size() == 3) {
+    // The 'plate' face carries its name ENGRAVED in the mid-body nameplate, not as a
+    // hero line under the eyebrow — so it spends that vertical band on the knobs.
+    if (face.layout == PedalFace::Layout::Plate) {
+        wordmarkBounds_ = {};
+        r.removeFromTop(4);
+    } else {
+        wordmarkBounds_ = r.removeFromTop((int)face.wordmarkSize + 8);
+        r.removeFromTop(6);
+    }
+
+    // Knobs, then (on the plate face) the nameplate, then the footswitch.
+    plateBounds_ = {};
+    if (face.layout == PedalFace::Layout::Triangle && knobs_.size() == 3) {
         // The Muff triangle: two across the top, the third centred below them.
         auto top = r.removeFromTop(kKnobH);
         const int cw = top.getWidth() / 2;
@@ -191,7 +209,7 @@ void PedalCard::resized() {
         knobs_[1]->setBounds(top.reduced(4, 0));
         auto bottom = r.removeFromTop(kKnobH);
         knobs_[2]->setBounds(bottom.withSizeKeepingCentre(juce::jmin(cw, 76), kKnobH));
-    } else if (knobs_.size() == 1) {
+    } else if (face.layout == PedalFace::Layout::Single && knobs_.size() == 1) {
         // The phaser's one big knob, centred (the [data-face=single] face).
         auto row = r.removeFromTop(juce::jmax(kKnobH, juce::jmin(120, r.getHeight() / 2)));
         knobs_[0]->setBounds(row.withSizeKeepingCentre(
@@ -200,6 +218,15 @@ void PedalCard::resized() {
         auto row = r.removeFromTop(kKnobH);
         const int cw = row.getWidth() / juce::jmax(1, (int)knobs_.size());
         for (auto& k : knobs_) k->setBounds(row.removeFromLeft(cw).reduced(2, 0));
+    }
+
+    // The milled NAMEPLATE band sits between the knob row and the stomp (the web's
+    // .name-plate, margin 2px 0 18px). It takes a fixed slice so the engraving keeps
+    // its proportions however tall the card gets.
+    if (face.layout == PedalFace::Layout::Plate) {
+        r.removeFromTop(2);
+        plateBounds_ = r.removeFromTop(juce::jlimit(30, 46, r.getHeight() / 3));
+        r.removeFromTop(14);
     }
 
     r.removeFromTop(12);
@@ -226,9 +253,15 @@ void PedalCard::paint(juce::Graphics& g) {
     g.setFont(skin::monoFont(9.5f));
     g.drawText(juce::String::fromUTF8(face.eyebrow).toUpperCase(),
                headerBounds_.withTrimmedRight(kLedD + 20), juce::Justification::centredLeft);
-    g.setColour(face.accent.withAlpha(engaged_ ? 1.0f : 0.62f));
-    g.setFont(skin::wordmarkFont(face.wordmarkSize));
-    g.drawText(face.wordmark, wordmarkBounds_, juce::Justification::centredLeft);
+    if (!wordmarkBounds_.isEmpty()) {
+        g.setColour(face.accent.withAlpha(engaged_ ? 1.0f : 0.62f));
+        g.setFont(skin::wordmarkFont(face.wordmarkSize));
+        g.drawText(face.wordmark, wordmarkBounds_, juce::Justification::centredLeft);
+    }
+
+    // The GOLD box's engraved nameplate — this face's whole morphology cue.
+    if (!plateBounds_.isEmpty())
+        skin::drawNamePlate(g, plateBounds_.toFloat(), face.accent, face.wordmark, engaged_);
 
     // The side jacks, drawn ON the chassis edge so the cable ends tuck into them.
     skin::drawJack(g, {0.0f, card.getHeight() * 0.42f}, (float)kJackD);
