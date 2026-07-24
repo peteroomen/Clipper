@@ -137,6 +137,19 @@ Field feedback from real playing, prioritized ahead of new pedals:
   the RAT is already handle-based, so multiple instances stack safely.
   Architecture for everything M7+ plugs into.
 
+- **M6.8 — Pedal visual identity pass — SHIPPED.** *Shared chassis, distinct
+  souls.* One sculpted neumorphic chassis family, per-pedal identity on three
+  declared axes — full-body enclosure **tint** (desaturated into the palette,
+  both themes), referential face **geometry**, and model **typography** — homage,
+  never replica. The RAT stays the reference (tall charcoal box, centered 3-knob
+  trio, condensed logo, round stomp); the SD-1 becomes a Boss-compact homage
+  (warm-amber body, knob row over a wide flat hinged **treadle**), distinct from
+  the RAT even in grayscale. The tuner goes **TC-style**: a segmented LED meter
+  (recessed neumorphic wells — red flat/sharp bar from center, green center lock)
+  and a big **7-segment** note screen on a dark readout. A future pedal declares
+  its face in one `FACES` entry + tint tokens (docs §17). **No core/C-ABI/worklet
+  change** — a pure web visual pass.
+
 - **M6.7 — Reverb** *(queued)* — the JC-120's missing spring. Note: M5 shipped
   NO reverb (docs §M5 confirm); the panel has no knob because the block does
   not exist. M6.7 adds an algorithmic spring-flavored reverb in the authentic

@@ -1,12 +1,16 @@
-/* tuner (M7) — chromatic needle tuner, built on the shared .pedal shell */
+/* tuner (M7 · restyled M6.8) — TC-style segmented face on the shared .pedal shell.
+   A recessed dark "screen" holds a big 7-segment note; a strip of discrete LED
+   wells (red flanks, green center) is the in-tune meter. Both themes: the reds/
+   greens glow on dark and read as ink-on-porcelain in light; unlit segments stay
+   faintly visible (the neumorphic charm). */
 .pedal.tuner {
   display: flex;
   flex-direction: column;
   align-items: center;
 }
 
-/* Lock LED: green in tune / red when off-pitch / dim when no signal. Overrides
-   the default red .pedal.on .led (higher specificity so it always wins). */
+/* Lock LED (top-right): green in tune / red off-pitch / dim when no signal.
+   Overrides the default red .pedal.on .led (higher specificity so it wins). */
 .pedal.tuner .tuner-led {
   transition: box-shadow 0.18s, background 0.18s;
 }
@@ -15,90 +19,115 @@
   box-shadow: inset 2px 2px 4px var(--sh-darker), inset -1px -1px 3px var(--sh-light);
 }
 .pedal.tuner .tuner-led.red {
-  background: var(--led);
-  box-shadow: 0 0 14px var(--led-glow), 0 0 4px var(--led-glow), inset 0 -2px 4px rgba(0, 0, 0, 0.25);
+  background: var(--seg-red);
+  box-shadow: 0 0 14px var(--seg-red-glow), 0 0 4px var(--seg-red-glow), inset 0 -2px 4px rgba(0, 0, 0, 0.25);
 }
 .pedal.tuner .tuner-led.green {
-  background: #2fce6a;
-  box-shadow: 0 0 15px rgba(47, 206, 106, 0.65), 0 0 5px rgba(47, 206, 106, 0.6),
-    inset 0 -2px 4px rgba(0, 0, 0, 0.25);
+  background: var(--seg-green);
+  box-shadow: 0 0 15px var(--seg-green-glow), 0 0 5px var(--seg-green-glow), inset 0 -2px 4px rgba(0, 0, 0, 0.25);
 }
 
-/* Big note name + octave. */
-.tuner-note-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: center;
-  gap: 4px;
-  margin: 10px 0 2px;
-  min-height: 62px;
-}
-.tuner-note {
-  font-family: Anton, 'Arial Narrow', sans-serif;
-  font-size: 64px;
-  line-height: 1;
-  color: var(--ink);
-  text-shadow: 1px 1px 0 var(--sh-light);
-  min-width: 1.4ch;
-  text-align: center;
-}
-.tuner-oct {
-  font-size: 18px;
-  color: var(--ink-dim);
-}
-.pedal.tuner:not(.on) .tuner-note {
-  color: var(--ink-faint);
-}
-
-/* Gauge. */
-.tuner-gauge {
+/* ---- the recessed dark "screen": big 7-seg note + octave + sharp ---- */
+.tuner-screen {
+  position: relative;
   width: 100%;
+  margin: 12px 0 14px;
+  padding: 14px 18px;
+  border-radius: 16px;
+  background: var(--seg-face);
+  box-shadow: inset 4px 4px 12px rgba(0, 0, 0, 0.5), inset -3px -3px 8px rgba(255, 255, 255, 0.04),
+    0 1px 0 var(--sh-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 96px;
+}
+.tuner-note-display {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.seg7 {
+  width: 62px;
   height: auto;
-  margin: 2px 0 4px;
+  display: block;
   overflow: visible;
 }
-.gauge-track {
-  fill: none;
-  stroke: var(--arc-track);
-  stroke-width: 5;
-  stroke-linecap: round;
+.seg7-part {
+  fill: var(--seg-dim);
+  transition: fill 0.12s, filter 0.12s;
 }
-.gauge-zone {
-  fill: none;
-  stroke: color-mix(in srgb, #2fce6a 60%, transparent);
-  stroke-width: 5;
-  stroke-linecap: round;
+.seg7-part.on {
+  fill: var(--seg-lit);
+  filter: drop-shadow(0 0 4px var(--seg-lit-glow)) drop-shadow(0 0 1px var(--seg-lit-glow));
 }
-.gauge-tick {
-  stroke: var(--ink-faint);
-  stroke-width: 2;
-  stroke-linecap: round;
-  opacity: 0.7;
+/* Disengaged: no signal — everything sits at the dim placeholder level. */
+.pedal.tuner:not(.on) .seg7-part.on {
+  fill: var(--seg-dim);
+  filter: none;
 }
-.gauge-tick.center {
-  stroke: var(--ink-dim);
-  stroke-width: 2.5;
-  opacity: 0.9;
+.seg-sharp {
+  position: relative;
+  width: 14px;
+  height: 46px;
+  margin-left: 3px;
 }
-.gauge-needle {
-  stroke: var(--led);
-  stroke-width: 3;
-  stroke-linecap: round;
+.seg-sharp::after {
+  content: '♯';
+  position: absolute;
+  top: 0;
+  left: 0;
+  font-size: 26px;
+  line-height: 1;
+  color: var(--seg-dim);
 }
-.pedal.tuner.on .gauge-needle {
-  stroke: var(--led);
+.seg-sharp.on::after {
+  color: var(--seg-lit);
+  text-shadow: 0 0 6px var(--seg-lit-glow);
 }
-.gauge-hub {
-  fill: var(--cap);
-  stroke: var(--sh-darker);
-  stroke-width: 1.5;
+.tuner-oct {
+  font-size: 20px;
+  color: color-mix(in srgb, var(--seg-lit) 55%, transparent);
+  min-width: 1ch;
 }
-.pedal.tuner:not(.on) .gauge-needle {
-  stroke: var(--ink-faint);
-  opacity: 0.5;
+.pedal.tuner:not(.on) .tuner-oct {
+  color: var(--seg-dim);
 }
 
-/* ±cents readout. */
+/* ---- segmented meter: discrete wells, red flanks + green center ---- */
+.tuner-meter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+  margin: 2px 0 12px;
+}
+.seg {
+  flex: 1 1 0;
+  height: 16px;
+  max-width: 22px;
+  border-radius: 5px;
+  /* unlit = recessed neumorphic well */
+  background: var(--well);
+  box-shadow: inset 2px 2px 4px var(--sh-darker), inset -1px -1px 2px var(--sh-light);
+  transition: background 0.1s, box-shadow 0.1s;
+}
+.seg-green {
+  max-width: 26px;
+  height: 20px; /* the center strip stands a touch prouder */
+}
+.seg-red[data-on='true'] {
+  background: var(--seg-red);
+  box-shadow: 0 0 10px var(--seg-red-glow), 0 0 3px var(--seg-red-glow), inset 0 -1px 2px rgba(0, 0, 0, 0.3);
+}
+.seg-green[data-on='true'] {
+  background: var(--seg-green);
+  box-shadow: 0 0 12px var(--seg-green-glow), 0 0 4px var(--seg-green-glow), inset 0 -1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* ---- ±cents readout ---- */
 .tuner-cents-row {
   display: flex;
   align-items: baseline;
@@ -122,4 +151,17 @@
   letter-spacing: 0.24em;
   text-transform: uppercase;
   color: var(--ink-faint);
+}
+
+/* visually hidden — carries the note text for the a11y / test seam */
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }

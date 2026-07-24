@@ -40,6 +40,23 @@
   --cable: #35383E;
   --cable-hi: rgba(255, 255, 255, 0.5);
   --cable-plug: #C4C0B8;
+  /* M6.8 pedal identity — per-enclosure body tints. Desaturated washes layered
+     over the neumorphic base (shared chassis, distinct souls); the tint shifts
+     hue while the face GEOMETRY + typography carry the grayscale read. */
+  --rat-tint: rgba(46, 52, 64, 0.16); /* cool graphite — the dark RAT box */
+  --sd1-tint: rgba(214, 158, 44, 0.17); /* warm amber — the Boss-yellow homage */
+  --tuner-tint: rgba(58, 92, 134, 0.11); /* cool slate blue */
+  /* M6.8 tuner — segmented meter LEDs (recessed neumorphic wells) + the 7-seg
+     note "screen" (a dark readout window in both themes; lit segments glow, unlit
+     stay faintly visible). */
+  --seg-red: #E23B2A;
+  --seg-red-glow: rgba(226, 59, 42, 0.55);
+  --seg-green: #24C265;
+  --seg-green-glow: rgba(36, 194, 101, 0.6);
+  --seg-face: #202329;
+  --seg-lit: #E9F5EC;
+  --seg-lit-glow: rgba(150, 240, 180, 0.5);
+  --seg-dim: rgba(170, 185, 178, 0.11);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -71,6 +88,19 @@
     --cable: #14161A;
     --cable-hi: rgba(255, 255, 255, 0.11);
     --cable-plug: #474C54;
+    /* M6.8 pedal identity — deeper washes for the dark board */
+    --rat-tint: rgba(6, 8, 12, 0.36); /* deepen the RAT toward graphite black */
+    --sd1-tint: rgba(150, 108, 30, 0.24); /* muted warm amber */
+    --tuner-tint: rgba(46, 80, 122, 0.3); /* deep slate blue */
+    /* M6.8 tuner segments (glow on dark) */
+    --seg-red: #FF4A34;
+    --seg-red-glow: rgba(255, 74, 52, 0.6);
+    --seg-green: #34E070;
+    --seg-green-glow: rgba(52, 224, 112, 0.65);
+    --seg-face: #101216;
+    --seg-lit: #DDF6E5;
+    --seg-lit-glow: rgba(90, 240, 150, 0.55);
+    --seg-dim: rgba(150, 175, 160, 0.1);
   }
 }
 :root[data-theme="light"] {
@@ -85,6 +115,10 @@
   --cap: linear-gradient(145deg,#EFEDE8,#D9D6CF); --cap-edge: linear-gradient(145deg,#DDDAD3,#EFEDE8);
   --panel-grad: linear-gradient(160deg,#EAE8E3,#DFDCD6);
   --cable: #35383E; --cable-hi: rgba(255,255,255,.5); --cable-plug: #C4C0B8;
+  --rat-tint: rgba(46,52,64,.16); --sd1-tint: rgba(214,158,44,.17); --tuner-tint: rgba(58,92,134,.11);
+  --seg-red: #E23B2A; --seg-red-glow: rgba(226,59,42,.55);
+  --seg-green: #24C265; --seg-green-glow: rgba(36,194,101,.6);
+  --seg-face: #202329; --seg-lit: #E9F5EC; --seg-lit-glow: rgba(150,240,180,.5); --seg-dim: rgba(170,185,178,.11);
 }
 :root[data-theme="dark"] {
   --ground: #26292E; --ground-deep: #202329;
@@ -98,4 +132,8 @@
   --cap: linear-gradient(145deg,#2E3238,#212429); --cap-edge: linear-gradient(145deg,#1E2126,#2C3036);
   --panel-grad: linear-gradient(160deg,#292C32,#222529);
   --cable: #14161A; --cable-hi: rgba(255,255,255,.11); --cable-plug: #474C54;
+  --rat-tint: rgba(6,8,12,.36); --sd1-tint: rgba(150,108,30,.24); --tuner-tint: rgba(46,80,122,.3);
+  --seg-red: #FF4A34; --seg-red-glow: rgba(255,74,52,.6);
+  --seg-green: #34E070; --seg-green-glow: rgba(52,224,112,.65);
+  --seg-face: #101216; --seg-lit: #DDF6E5; --seg-lit-glow: rgba(90,240,150,.55); --seg-dim: rgba(150,175,160,.1);
 }

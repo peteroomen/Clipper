@@ -2539,3 +2539,102 @@ clear the quarantine bit with
 For distribution (not needed for local play) you would sign with a Developer ID
 and notarize. Standalone `.app` runs the same core through JUCE's own audio
 device I/O for a quick check without a host.
+
+## 17. M6.8 — Pedal visual identity: shared chassis, distinct souls
+
+Field feedback: the SD-1 "looks the same as the RAT" and the tuner should be "more
+TC-electronic — segmented display, red/green lines for the meter." The pass keeps
+**one sculpted neumorphic chassis family** (the `.pedal raised` shell, both themes)
+and gives each pedal a **soul** on three declared axes — with **homage, never
+replica** (no real trademarks/logos/exact trade dress).
+
+### The identity system — how a future pedal declares its face
+
+Every knob pedal's identity lives in one `PedalFace` entry in
+`web/src/components/Pedal.tsx` (`FACES: Record<…, PedalFace>`). A face declares:
+
+1. **Enclosure tint** — a per-type CSS custom prop (`--rat-tint` / `--sd1-tint` /
+   `--tuner-tint`, defined in **all four** theme blocks of `tokens.css`). It is a
+   *desaturated wash* composited **over** the neumorphic `--panel-grad` by
+   `.pedal.raised` (`background: linear-gradient(tint,tint), var(--panel-grad)`),
+   so the sculpted light/shadow survives in both light and dark while the body hue
+   shifts. `.pedal[data-pedal-type="…"]` assigns the tint (and, for the SD-1, swaps
+   the LED/arc accent to amber). Specificity `.pedal.raised` (0,2,0) beats the base
+   `.raised` recipe (0,1,0), so the tint always wins.
+2. **Face layout** — a `layout: 'stack' | 'compact'` field, surfaced as
+   `data-face` on the enclosure and styled in `pedal.css`:
+   - `stack` (RAT — *it is the reference*): tall charcoal box, big centered
+     3-knob trio, stark condensed **Anton** wordmark, a round stomp.
+   - `compact` (SD-1 — Boss-compact **homage**): a warm-amber body, a tight knob
+     row (`--kd: 54px`) riding the top edge over a **wide flat hinged treadle**
+     (`.fsw-treadle` — the footswitch *is* the treadle, with grip ribs at the toe
+     and an embossed wordmark), a small model line. Distinct from the RAT at a
+     glance **even in grayscale**, because the geometry — not just the hue —
+     differs; the tints are luminance-similar by design, so the *shape* carries the
+     grayscale read.
+3. **Typography** — the `wordmark` field + treatment: the RAT's condensed Anton
+   logo vs the SD-1's bold Avenir treadle plate.
+
+To add a pedal: append a `FACES` entry (tint token in `tokens.css` ×4 blocks,
+`data-pedal-type` rule, and — only if it needs a new geometry — a `[data-face]`
+variant in `pedal.css`). The footswitch keeps one shared `data-testid="footswitch"`
++ `role="switch"` across faces; only its *shape* changes.
+
+### TC-style tuner face (`Tuner.tsx`, `tuner.css`)
+
+The needle gauge is replaced by two segmented elements on the shared chassis:
+
+- **Segmented meter** — a horizontal strip of **11 discrete LED wells** (5 red per
+  side + 1 green center) in recessed neumorphic wells (off = unlit well, the
+  neumorphic charm). Full scale ±50 c ⇒ ~10 c/segment. Lit reds form a **bar from
+  center outward** on the flat (left) / sharp (right) side; count =
+  `clamp(round(|cents|/10), 1, 5)`. The **green center** lights only when
+  `|cents| ≤ IN_TUNE_CENTS` (3) held ≥ 350 ms (`LOCK_HOLD_MS`, same dwell the
+  needle build used). Segments are driven imperatively each rAF frame via refs
+  (`data-on`), so ~60 fps updates never churn React.
+- **Segmented note screen** — a big **7-segment** letter (built as SVG polygons,
+  no font download) on a recessed dark "screen" (`--seg-face`, dark in both themes,
+  like a real tuner readout). Unlit segments stay faintly visible (`--seg-dim`);
+  lit ones glow (`--seg-lit` + `--seg-lit-glow`). B and D use the lowercase forms
+  so all seven note letters read distinctly; `-` is the no-signal placeholder. A
+  sharp indicator (`♯`, CSS pseudo so it stays out of the a11y text) and the octave
+  ride beside it.
+- LED reds/greens are **tokens** (`--seg-red/-glow`, `--seg-green/-glow`) with
+  dark-theme variants (glow on dark, ink on light).
+
+Kept intact: mute-on-stomp (engaged = muted, the one DSP touch is unchanged),
+engaged/disengaged states, the ±cents readout (flat = amber, sharp = blue), A=440,
+and all testids/roles (`tuner`, `tuner-note` still reads `—` with no pitch via a
+visually-hidden text node, `tuner-footswitch`, `tuner-led`, `tuner-cents`). New
+`tuner-meter` segments carry `data-seg` / `data-on` for assertion.
+
+### Board
+
+No layout rework. Jacks are anchored at a fixed `top: 120px` on the `.board-unit`
+wrapper (not the pedal body), and the cable endpoints are **measured from the live
+DOM** every layout change / resize (`Board.measure()` reads each jack's
+`getBoundingClientRect`), so the now-**variable pedal heights** (the compact SD-1 is
+shorter than the RAT) anchor and route correctly with zero Board change — verified
+in both themes with RAT + SD-1 + tuner on the board.
+
+### Test seam
+
+`__CLIPPER_TEST__.pushTunerReading(reading)` (App.tsx, additive) injects a synthetic
+`TunerReading` straight into the tuner UI (bypassing the 33 ms live throttle) so the
+segmented meter/screen can be driven without a live audio path — used by the new
+face test and screenshot capture.
+
+### Build and test (M6.8)
+
+```bash
+cd web && npm run build && npm test   # tsc + vite clean; 36 Playwright (35 + the
+                                      # new segmented-meter face test)
+```
+
+New coverage (`tests/tuner.spec.ts`): a pushed flat reading lights red wells on the
+left only, a sharp reading on the right only, and an in-tune (0 c) reading lights
+the green center (after the hold) with reds dark. The tuner accuracy + mute audio
+tests are untouched and pass. Both themes were screenshotted (board with RAT +
+SD-1 + tuner; the tuner engaged on a −24 c flat reading so the red segments show).
+**No core / C-ABI / worklet / engine change** — this is a pure web visual pass.
+

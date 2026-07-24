@@ -1,12 +1,30 @@
-/* pedal */
+/* pedal — SHARED CHASSIS, DISTINCT SOULS (M6.8)
+   One sculpted neumorphic chassis (.pedal.raised); each type declares a body TINT
+   (--pedal-tint), a face LAYOUT ([data-face]), and a typography treatment. The
+   tint is a desaturated wash composited OVER the neumorphic --panel-grad, so both
+   light and dark themes keep their sculpted light/shadow while the enclosure hue
+   shifts per pedal. */
 .pedal {
   width: 320px; padding: 26px 24px 30px; flex-shrink: 0;
   border-radius: 30px;
   position: relative; z-index: 1;
 }
-/* M8: the SD-1 overdrive swaps the red LED/arc accent for amber (defined in
-   tokens.css for both themes) so it reads distinct from the RAT on the board. */
-.pedal[data-pedal-type="sd1"] { --led: var(--led-sd); --led-glow: var(--led-sd-glow); }
+
+/* Per-type identity. The tint prop is consumed by the chassis background below;
+   the SD-1 also swaps the red LED/arc accent for amber (tokens.css, both themes).
+   Specificity 0,2,0 (.pedal.raised) beats the base .raised recipe (0,1,0). */
+.pedal[data-pedal-type="rat"] { --pedal-tint: var(--rat-tint); }
+.pedal[data-pedal-type="sd1"] {
+  --pedal-tint: var(--sd1-tint);
+  --led: var(--led-sd); --led-glow: var(--led-sd-glow);
+}
+.pedal[data-pedal-type="tuner"] { --pedal-tint: var(--tuner-tint); }
+.pedal.raised {
+  background:
+    linear-gradient(160deg, var(--pedal-tint, transparent), var(--pedal-tint, transparent)),
+    var(--panel-grad);
+}
+
 .pedal-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .pedal-model { font-size: 10px; letter-spacing: .28em; color: var(--ink-faint); text-transform: uppercase;
   font-family: ui-monospace, Menlo, monospace; }
@@ -77,3 +95,52 @@
 .fsw:focus-visible { outline: 2px solid var(--ai); outline-offset: 4px; }
 .fsw-label { font-size: 10px; letter-spacing: .3em; color: var(--ink-faint);
   font-family: ui-monospace, Menlo, monospace; text-transform: uppercase; }
+
+/* ---- SD-1 'compact' face: Boss-compact HOMAGE ----
+   Knobs ride the top edge as a tight row; the lower body is a wide flat hinged
+   TREADLE pad (the footswitch itself, not a round stomp), with the model wordmark
+   embossed on the plate. Distinct from the RAT's stacked geometry at a glance —
+   even in grayscale. */
+.pedal[data-face="compact"] { padding-top: 22px; }
+.pedal[data-face="compact"] .pedal-model { letter-spacing: .2em; }
+.pedal[data-face="compact"] .knob-row {
+  --kd: 54px; /* smaller knobs so three ride the top row */
+  gap: 14px;
+  justify-content: center;
+  margin: 10px 0 18px;
+}
+.pedal[data-face="compact"] .k-name { letter-spacing: .16em; }
+
+.treadle-zone { margin-top: 6px; }
+/* The wide flat treadle — a raised sculpted plate hinged at the top edge. */
+.fsw-treadle {
+  width: 100%;
+  height: 132px;
+  border-radius: 18px;
+  background: var(--cap-edge);
+  box-shadow: 7px 9px 20px var(--sh-dark), -6px -6px 14px var(--sh-light),
+    inset 0 2px 0 var(--sh-light);
+  display: flex; align-items: flex-end; justify-content: center;
+  padding-bottom: 16px;
+  overflow: hidden;
+}
+.fsw-treadle::before { /* the tread face — inset panel with a top-hinge highlight */
+  content: ""; position: absolute; inset: 6px; border-radius: 13px;
+  background: var(--cap);
+  box-shadow: inset 1px 2px 3px var(--sh-light), inset 0 -3px 8px var(--sh-darker); }
+.fsw-treadle::after { /* grip ribs across the toe */
+  content: ""; position: absolute; left: 22px; right: 22px; bottom: 14px; height: 18px;
+  border-radius: 4px;
+  background: repeating-linear-gradient(90deg, var(--sh-darker) 0 2px, transparent 2px 8px);
+  opacity: .32; }
+.fsw-treadle:active, .fsw-treadle.stomped {
+  transform: translateY(2px);
+  box-shadow: 3px 4px 10px var(--sh-dark), -3px -3px 8px var(--sh-light),
+    inset 2px 3px 7px var(--sh-darker); }
+.treadle-wordmark {
+  position: relative; z-index: 1;
+  font-family: "Avenir Next", Avenir, "Segoe UI", system-ui, sans-serif;
+  font-weight: 700; font-size: 21px; letter-spacing: .04em;
+  color: var(--ink); text-transform: uppercase;
+  text-shadow: 1px 1px 0 var(--sh-light); opacity: .9; }
+.pedal[data-face="compact"]:not(.on) .treadle-wordmark { opacity: .5; }

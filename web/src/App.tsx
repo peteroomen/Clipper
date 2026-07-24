@@ -123,6 +123,14 @@ export default function App() {
       // M7 tuner detection seam: run the McLeod pitch path over a known frame.
       tuner: { frameSize: TUNER_FRAME_SIZE, detect: detectPitch },
       getTunerReading: () => tunerReadingRef.current,
+      // M6.8: push a synthetic reading into the tuner UI (segmented meter +
+      // note screen) without a live audio path — used by the tuner-face tests
+      // and screenshot capture. Bypasses the live throttle so every push renders.
+      // Additive test seam only; no app behavior change.
+      pushTunerReading: (r: TunerReading | null) => {
+        tunerReadingRef.current = r;
+        setTunerReading(r);
+      },
     };
   }, []);
 
