@@ -6,6 +6,8 @@
 
 #include "clipper/dsp/Jcm800PowerAmp.h"
 
+#include "clipper/dsp/TubeSolverMode.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -38,7 +40,9 @@ TriodeEval triodeEval(double Va, double Vgk, const TriodeStage::KorenParams& p) 
     if (E1 <= 0.0) return {0.0, 0.0, 0.0};
     const double C = 2.0 / p.kg1;
     const double Ip = C * std::pow(E1, p.ex);
-    const double dIp_dE1 = C * p.ex * std::pow(E1, p.ex - 1.0);
+    // dIp/dE1 = C*ex*E1^(ex-1) == ex*Ip/E1 — one pow instead of two (§25); the
+    // Jacobian only steers the iterates, Newton converges to the same root.
+    const double dIp_dE1 = p.ex * Ip / E1;
     const double dE1_dVgk = Va * sig / S;
     const double dE1_dVa = L / p.kp - (Va * Va * Vgk * sig) / (S * S * S);
     return {Ip, dIp_dE1 * dE1_dVa, dIp_dE1 * dE1_dVgk};
@@ -61,6 +65,14 @@ double el34ScreenCurrent(double Vg1k, double Vg2, const El34Params& p) {
     const double E1 = (Vg2 / p.kp) * softplus(p.kp * (1.0 / p.mu + Vg1k / Vg2));
     if (E1 <= 0.0) return 0.0;
     return (2.0 / p.kg2) * std::pow(E1, p.ex);
+}
+
+// Vp-independent Koren factor: Ip = base·atan(Vp/kvb). See the header (§25).
+double el34PlateBase(double Vg1k, double Vg2, const El34Params& p) {
+    if (Vg2 <= 0.0) return 0.0;
+    const double E1 = (Vg2 / p.kp) * softplus(p.kp * (1.0 / p.mu + Vg1k / Vg2));
+    if (E1 <= 0.0) return 0.0;
+    return (2.0 / p.kg1) * std::pow(E1, p.ex);
 }
 
 // ===========================================================================
@@ -112,40 +124,38 @@ void LtpInverter::prepare() {
 }
 
 void LtpInverter::processSample(double vg1, double vg2, double& va1, double& va2) {
+    const double tol = 1e-7 * tubeSolverTolScale();  // §25, regression-gated
+    const double gRa1 = 1.0 / cfg_.Ra1, gRa2 = 1.0 / cfg_.Ra2;
+    const double gTail = 1.0 / cfg_.Rtail;
     double Va1 = va1_, Va2 = va2_, Vk = vk_;  // warm start
     for (int it = 0; it < 40; ++it) {
         const double Vgk1 = vg1 - Vk, Vgk2 = vg2 - Vk;
         const TriodeEval k1 = triodeEval(Va1, Vgk1, cfg_.tube);
         const TriodeEval k2 = triodeEval(Va2, Vgk2, cfg_.tube);
-        const double r1 = (cfg_.bPlus - Va1) / cfg_.Ra1 - k1.Ip;
-        const double r2 = (cfg_.bPlus - Va2) / cfg_.Ra2 - k2.Ip;
-        const double r3 = k1.Ip + k2.Ip - Vk / cfg_.Rtail;
-        const double J[3][3] = {
-            {-1.0 / cfg_.Ra1 - k1.dVa, 0.0, k1.dVgk},
-            {0.0, -1.0 / cfg_.Ra2 - k2.dVa, k2.dVgk},
-            {k1.dVa, k2.dVa, -(k1.dVgk + k2.dVgk) - 1.0 / cfg_.Rtail},
-        };
-        const double b[3] = {-r1, -r2, -r3};
-        const double det =
-            J[0][0] * (J[1][1] * J[2][2] - J[1][2] * J[2][1]) -
-            J[0][1] * (J[1][0] * J[2][2] - J[1][2] * J[2][0]) +
-            J[0][2] * (J[1][0] * J[2][1] - J[1][1] * J[2][0]);
-        if (std::fabs(det) < 1e-30) break;
-        auto cramer = [&](int col) {
-            double c[3][3];
-            for (int r = 0; r < 3; ++r) {
-                c[r][0] = J[r][0]; c[r][1] = J[r][1]; c[r][2] = J[r][2];
-                c[r][col] = b[r];
-            }
-            return (c[0][0] * (c[1][1] * c[2][2] - c[1][2] * c[2][1]) -
-                    c[0][1] * (c[1][0] * c[2][2] - c[1][2] * c[2][0]) +
-                    c[0][2] * (c[1][0] * c[2][1] - c[1][1] * c[2][0])) / det;
-        };
-        double d0 = std::clamp(cramer(0), -60.0, 60.0);
-        double d1 = std::clamp(cramer(1), -60.0, 60.0);
-        double d2 = std::clamp(cramer(2), -20.0, 20.0);
+        const double r1 = (cfg_.bPlus - Va1) * gRa1 - k1.Ip;
+        const double r2 = (cfg_.bPlus - Va2) * gRa2 - k2.Ip;
+        const double r3 = k1.Ip + k2.Ip - Vk * gTail;
+        // Jacobian sparsity is FIXED (each plate row couples only its own plate and
+        // the shared tail; J01 == J10 == 0), so the 3x3 solves by direct elimination
+        // instead of general Cramer with column copies (§25) — same solution:
+        //   J00·d0            + J02·d2 = b0
+        //             J11·d1  + J12·d2 = b1
+        //   J20·d0  + J21·d1  + J22·d2 = b2
+        const double J00 = -gRa1 - k1.dVa, J02 = k1.dVgk;
+        const double J11 = -gRa2 - k2.dVa, J12 = k2.dVgk;
+        const double J20 = k1.dVa, J21 = k2.dVa;
+        const double J22 = -(k1.dVgk + k2.dVgk) - gTail;
+        const double b0 = -r1, b1 = -r2, b2 = -r3;
+        if (std::fabs(J00) < 1e-30 || std::fabs(J11) < 1e-30) break;
+        const double q0 = J20 / J00, q1 = J21 / J11;
+        const double denom = J22 - q0 * J02 - q1 * J12;
+        if (std::fabs(denom) < 1e-30) break;
+        const double dk = (b2 - q0 * b0 - q1 * b1) / denom;
+        const double d0 = std::clamp((b0 - J02 * dk) / J00, -60.0, 60.0);
+        const double d1 = std::clamp((b1 - J12 * dk) / J11, -60.0, 60.0);
+        const double d2 = std::clamp(dk, -20.0, 20.0);
         Va1 += d0; Va2 += d1; Vk += d2;
-        if (std::fabs(d0) < 1e-7 && std::fabs(d1) < 1e-7 && std::fabs(d2) < 1e-7) break;
+        if (std::fabs(d0) < tol && std::fabs(d1) < tol && std::fabs(d2) < tol) break;
     }
     va1_ = Va1; va2_ = Va2; vk_ = Vk;
     va1 = Va1; va2 = Va2;
@@ -195,6 +205,7 @@ void Jcm800PowerAmp::setOversampling(int factor) {
     vScreen_ = vScreenIdle_;
     vCcUp_ = ltp_.quiescentPlate1() - kVbias;   // cap blocks DC: grid at Vbias
     vCcDown_ = ltp_.quiescentPlate2() - kVbias;
+    vgUp_ = vgDown_ = kVbias;                   // grid warm starts at idle
     otHpS_ = 0.0; otLpS_ = 0.0; presLpS_ = 0.0;
     fbDelay_ = 0.0;
     lastOutPeak_ = 0.0;
@@ -232,26 +243,32 @@ void Jcm800PowerAmp::setParameter(int paramId, float value) {
     }
 }
 
-// Per-tube plate-load Newton: solve Ip with Vp = rail − (Ip − Iq)·Rpp. Smooth,
-// 2–4 iters warm from the rail; central-difference dIp/dVp (robust, not the cost).
+// Per-tube plate-load Newton: solve Ip with Vp = rail − (Ip − Iq)·Rpp. The grids
+// are FIXED during this solve, so the Koren base factor (softplus + pow) hoists out
+// of the loop (Ip = base·atan(Vp/kvb), see el34PlateBase) and dIp/dVp is exact:
+// base/(kvb·(1+(Vp/kvb)²)). Same residual equation and exit tolerance as the
+// central-difference version it replaced (§25, regression-gated at −120 dBFS);
+// each iteration now costs one atan instead of three full pentode evaluations.
 inline double Jcm800PowerAmp::solveTubePlate(double vg1k, double vg2, double rail,
-                                             double& vpOut) const {
+                                             double& vpOut, double& baseOut) const {
+    const double tol = 1e-4 * tubeSolverTolScale();
+    const double base = el34PlateBase(vg1k, vg2, el34_);
+    const double kvb = el34_.kvb;
     double Vp = rail;
     for (int it = 0; it < 40; ++it) {
-        const double i = el34PlateCurrent(Vp, vg1k, vg2, el34_);
+        const double u = Vp / kvb;
+        const double i = base * std::atan(u);
         const double f = Vp - (rail - (i - iqTube_) * kRppReflected);
-        const double h = 1e-2;
-        const double di = (el34PlateCurrent(Vp + h, vg1k, vg2, el34_) -
-                           el34PlateCurrent(Vp - h, vg1k, vg2, el34_)) / (2.0 * h);
-        const double df = 1.0 + di * kRppReflected;
+        const double df = 1.0 + (base / (kvb * (1.0 + u * u))) * kRppReflected;
         double dv = -f / df;
         dv = std::clamp(dv, -150.0, 150.0);
         Vp += dv;
         if (Vp < 0.0) Vp = 0.01;
-        if (std::fabs(dv) < 1e-4) break;
+        if (std::fabs(dv) < tol) break;
     }
     vpOut = Vp;
-    return el34PlateCurrent(Vp, vg1k, vg2, el34_);
+    baseOut = base;
+    return base * std::atan(Vp / kvb);
 }
 
 // EL34 grid node: PI plate AC through the coupling cap Cc into the grid leak Rg
@@ -259,14 +276,15 @@ inline double Jcm800PowerAmp::solveTubePlate(double vg1k, double vg2, double rai
 // + conduction structure as the M9.1 triode input. Returns Vg1k (= grid volts, the
 // cathode is grounded); updates the coupling-cap blocking state vCc.
 inline double Jcm800PowerAmp::solveEl34Grid(double vpPlateAC, double vpPlateQ,
-                                            double& vCc) const {
+                                            double& vCc, double& vgWarm) const {
     // Source node driving the cap is the PI plate: absolute plate = vpPlateQ + AC.
     const double vp = vpPlateQ + vpPlateAC;
     // Cap companion: current into grid = gCc*((vp - Vg) - vCc_prev). Grid KCL:
     //   gCc*((vp - Vg) - vCc) = (Vg - Vbias)*gRg + Igk(Vg)
     // Newton in Vg. Igk = (Vgn/Rgk)*softplus(Vg/Vgn) (conduction for Vg ≳ 0).
     const double ig0 = gridVgn_ / gridRgk_;
-    double Vg = kVbias;  // warm: idle grid at bias
+    const double tol = 1e-7 * tubeSolverTolScale();
+    double Vg = vgWarm;  // warm start from the previous sample's solution (§25)
     for (int it = 0; it < 40; ++it) {
         const double u = Vg / gridVgn_;
         const double Igk = ig0 * softplus(u);
@@ -276,9 +294,10 @@ inline double Jcm800PowerAmp::solveEl34Grid(double vpPlateAC, double vpPlateQ,
         double dVg = -r / dr;
         dVg = std::clamp(dVg, -100.0, 100.0);
         Vg += dVg;
-        if (std::fabs(dVg) < 1e-7) break;
+        if (std::fabs(dVg) < tol) break;
     }
     vCc = (vp - Vg);  // update cap voltage (blocking state)
+    vgWarm = Vg;      // next sample's warm start
     return Vg;        // grid-cathode (cathode grounded)
 }
 
@@ -295,15 +314,18 @@ inline float Jcm800PowerAmp::processSampleOS(float xf) {
     const double va2AC = va2 - ltp_.quiescentPlate2();
 
     // 2. PI plates → EL34 grids (coupling + blocking). Anti-phase legs.
-    const double vgUp = solveEl34Grid(va1AC, ltp_.quiescentPlate1(), vCcUp_);
-    const double vgDown = solveEl34Grid(va2AC, ltp_.quiescentPlate2(), vCcDown_);
+    const double vgUp = solveEl34Grid(va1AC, ltp_.quiescentPlate1(), vCcUp_, vgUp_);
+    const double vgDown = solveEl34Grid(va2AC, ltp_.quiescentPlate2(), vCcDown_, vgDown_);
 
     // 3. EL34 pair: plate currents (with plate-load saturation) at the sagged rail.
-    double vpUp = 0.0, vpDown = 0.0;
-    const double ipUp = solveTubePlate(vgUp, vScreen_, vRail_, vpUp);
-    const double ipDown = solveTubePlate(vgDown, vScreen_, vRail_, vpDown);
-    const double ig2Up = el34ScreenCurrent(vgUp, vScreen_, el34_);
-    const double ig2Down = el34ScreenCurrent(vgDown, vScreen_, el34_);
+    //    The screen currents reuse the plate solve's hoisted Koren base — same E1,
+    //    Ig2 = base·(kg1/kg2) (§25).
+    double vpUp = 0.0, vpDown = 0.0, baseUp = 0.0, baseDown = 0.0;
+    const double ipUp = solveTubePlate(vgUp, vScreen_, vRail_, vpUp, baseUp);
+    const double ipDown = solveTubePlate(vgDown, vScreen_, vRail_, vpDown, baseDown);
+    const double kScr = el34_.kg1 / el34_.kg2;
+    const double ig2Up = baseUp * kScr;
+    const double ig2Down = baseDown * kScr;
 
     // 4. Output transformer (linear): differential primary voltage → secondary.
     const double vPriDiff = (ipUp - ipDown) * kRppReflected;  // volts

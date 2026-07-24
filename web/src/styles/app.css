@@ -92,6 +92,13 @@ header.hero { position: relative; padding: 28px 0 8px; }
 .status dd { margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px;
   color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
 
+/* Engine-load readout states (perf visibility, field-lag report). 'ok' reads as
+   normal ink; 'warn' (avg > 80%, headroom thinning) glows amber; 'underrun' (a real
+   dropout) glows red — the objective face of "crackle/lag". */
+.status dd[data-load-state="warn"] { color: var(--led-sd); }
+.status dd[data-load-state="underrun"] { color: var(--led);
+  text-shadow: 0 0 8px var(--led-glow); font-weight: 600; }
+
 /* theme toggle, top-right */
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .eyebrow-row { display: flex; align-items: center; gap: 12px; }

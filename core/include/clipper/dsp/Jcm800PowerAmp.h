@@ -155,6 +155,14 @@ double el34PlateCurrent(double Vp, double Vg1k, double Vg2, const El34Params& p)
 // Screen current (A) — rises with drive; feeds the screen-node sag.
 double el34ScreenCurrent(double Vg1k, double Vg2, const El34Params& p);
 
+// The Vp-INDEPENDENT factor of the pentode plate law (solver-perf pass, §25):
+//   Ip(Vp) = el34PlateBase(Vg1k, Vg2, p) * atan(Vp / p.kvb)
+// with base = (2/kg1)·E1^ex (0 at cutoff / Vg2<=0). During the per-tube plate-load
+// Newton the grids are fixed, so base is hoisted out of the loop, each iteration
+// costs one atan, and dIp/dVp = base/(kvb·(1+(Vp/kvb)²)) is exact. The screen
+// current shares E1: Ig2 = base·(kg1/kg2).
+double el34PlateBase(double Vg1k, double Vg2, const El34Params& p);
+
 // ---------------------------------------------------------------------------
 // LtpInverter — 12AX7 long-tailed-pair phase inverter (Koren device law).
 // Per-sample 3×3 nodal Newton (Va1, Va2, Vk_tail); grids are driven voltages.
@@ -273,11 +281,15 @@ private:
     void solveOperatingPoint();
     inline float processSampleOS(float x);
     // Per-tube plate-load Newton: Ip with Vp = rail − (Ip−Iq)·Rpp. Returns Ip;
-    // outputs the resolved plate voltage in vpOut.
-    inline double solveTubePlate(double vg1k, double vg2, double rail, double& vpOut) const;
+    // outputs the resolved plate voltage in vpOut and the hoisted Koren base
+    // factor in baseOut (for the shared-E1 screen current, see el34PlateBase).
+    inline double solveTubePlate(double vg1k, double vg2, double rail, double& vpOut,
+                                 double& baseOut) const;
     // EL34 grid-node solve (coupling cap + grid leak to bias + grid conduction).
-    // vpPlateAC = PI plate AC drive; state vCc updated. Returns Vg1k (grid-cathode).
-    inline double solveEl34Grid(double vpPlateAC, double vpPlateQ, double& vCc) const;
+    // vpPlateAC = PI plate AC drive; state vCc updated. vgWarm carries the previous
+    // sample's solution in/out (warm start, §25). Returns Vg1k (grid-cathode).
+    inline double solveEl34Grid(double vpPlateAC, double vpPlateQ, double& vCc,
+                                double& vgWarm) const;
 
     double sampleRate_ = 44100.0;
     double osRate_ = 176400.0;
@@ -301,6 +313,8 @@ private:
 
     // PI→EL34 coupling-cap blocking state (per tube) + grid conduction params.
     double vCcUp_ = 0.0, vCcDown_ = 0.0;
+    // Previous-sample grid solutions (Newton warm start, §25).
+    double vgUp_ = kVbias, vgDown_ = kVbias;
     double gCc_ = 0.0, gRg_ = 0.0;
     double gridRgk_ = 1500.0, gridVgn_ = 0.5;  // EL34 grid conduction (harder knee)
 

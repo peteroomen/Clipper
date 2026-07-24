@@ -224,6 +224,37 @@ if(NOT EMSCRIPTEN)
     endif()
     add_test(NAME clipper_ac30_tests COMMAND clipper_ac30_tests)
 
+    # --- Perf diagnosis: anti-denormal guard tests ----------------------------
+    # Proves Biquad / OnePoleSmoother never leave recursive state in the subnormal
+    # float range on a decaying tail (the amp-independent WASM crackle — see
+    # Denormal.h and docs §25). Header-only guard, so this links clipper_dsp only
+    # for the rbj:: coefficient designers.
+    add_executable(clipper_denormal_tests tests/test_denormal.cpp)
+    target_link_libraries(clipper_denormal_tests PRIVATE clipper_dsp)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_denormal_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_denormal_tests COMMAND clipper_denormal_tests)
+
+    # --- Solver-perf pass: tube-solver early-exit regression (docs §25) -------
+    # Renders a riff through each valve amp voice at production solver tolerances
+    # and at 1000x-tighter reference tolerances; the two must agree below
+    # -120 dBFS. Pins the accuracy contract behind every solver speed shortcut.
+    add_executable(clipper_tube_solver_tests tests/test_tube_solver.cpp)
+    target_link_libraries(clipper_tube_solver_tests PRIVATE clipper_dsp)
+    if(NOT MSVC)
+        target_compile_options(clipper_tube_solver_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_tube_solver_tests COMMAND clipper_tube_solver_tests)
+
+    # --- Per-unit CPU cost benchmark (native only; docs §25) ------------------
+    add_executable(clipper-bench tools/bench/main.cpp)
+    target_link_libraries(clipper-bench PRIVATE clipper_dsp)
+    if(NOT MSVC)
+        target_compile_options(clipper-bench PRIVATE -Wall -Wextra)
+    endif()
+
     # --- CLI render harness (native only, NOT part of the WASM build) ---------
     add_executable(clipper-render tools/render/main.cpp)
     target_link_libraries(clipper-render PRIVATE clipper_dsp)

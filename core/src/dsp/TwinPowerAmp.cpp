@@ -7,6 +7,8 @@
 
 #include "clipper/dsp/TwinPowerAmp.h"
 
+#include "clipper/dsp/TubeSolverMode.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -76,6 +78,7 @@ void TwinPowerAmp::setOversampling(int factor) {
     vScreen_ = vScreenIdle_;
     vCcUp_ = ltp_.quiescentPlate1() - kVbias;
     vCcDown_ = ltp_.quiescentPlate2() - kVbias;
+    vgUp_ = vgDown_ = kVbias;   // grid warm starts at idle
     otHpS_ = 0.0; otLpS_ = 0.0;
     fbDelay_ = 0.0;
     lastOutPeak_ = 0.0;
@@ -111,33 +114,38 @@ void TwinPowerAmp::setParameter(int paramId, float value) {
     }
 }
 
+// Plate-load Newton with the hoisted Koren base and exact dIp/dVp (see the JCM's
+// solveTubePlate; §25, regression-gated): one atan per iteration, same root.
 inline double TwinPowerAmp::solveTubePlate(double vg1k, double vg2, double rail,
-                                           double& vpOut) const {
+                                           double& vpOut, double& baseOut) const {
+    const double tol = 1e-4 * tubeSolverTolScale();
+    const double base = el34PlateBase(vg1k, vg2, tube6L6_);
+    const double kvb = tube6L6_.kvb;
     double Vp = rail;
     for (int it = 0; it < 40; ++it) {
-        const double i = el34PlateCurrent(Vp, vg1k, vg2, tube6L6_);
+        const double u = Vp / kvb;
+        const double i = base * std::atan(u);
         const double f = Vp - (rail - (i - iqTube_) * kRppReflected);
-        const double h = 1e-2;
-        const double di = (el34PlateCurrent(Vp + h, vg1k, vg2, tube6L6_) -
-                           el34PlateCurrent(Vp - h, vg1k, vg2, tube6L6_)) / (2.0 * h);
-        const double df = 1.0 + di * kRppReflected;
+        const double df = 1.0 + (base / (kvb * (1.0 + u * u))) * kRppReflected;
         double dv = -f / df;
         dv = std::clamp(dv, -150.0, 150.0);
         Vp += dv;
         if (Vp < 0.0) Vp = 0.01;
-        if (std::fabs(dv) < 1e-4) break;
+        if (std::fabs(dv) < tol) break;
     }
     vpOut = Vp;
-    return el34PlateCurrent(Vp, vg1k, vg2, tube6L6_);
+    baseOut = base;
+    return base * std::atan(Vp / kvb);
 }
 
 // 6L6 grid node: PI plate AC through the coupling cap into the grid leak (to
 // Vbias) + grid conduction. Same structure as the M9.3 EL34 grid solve.
 inline double TwinPowerAmp::solveTubeGrid(double vpPlateAC, double vpPlateQ,
-                                          double& vCc) const {
+                                          double& vCc, double& vgWarm) const {
     const double vp = vpPlateQ + vpPlateAC;
     const double ig0 = gridVgn_ / gridRgk_;
-    double Vg = kVbias;
+    const double tol = 1e-7 * tubeSolverTolScale();
+    double Vg = vgWarm;  // warm start from the previous sample's solution (§25)
     for (int it = 0; it < 40; ++it) {
         const double u = Vg / gridVgn_;
         const double Igk = ig0 * softplus(u);
@@ -147,9 +155,10 @@ inline double TwinPowerAmp::solveTubeGrid(double vpPlateAC, double vpPlateQ,
         double dVg = -r / dr;
         dVg = std::clamp(dVg, -100.0, 100.0);
         Vg += dVg;
-        if (std::fabs(dVg) < 1e-7) break;
+        if (std::fabs(dVg) < tol) break;
     }
     vCc = (vp - Vg);
+    vgWarm = Vg;
     return Vg;
 }
 
@@ -166,15 +175,17 @@ inline float TwinPowerAmp::processSampleOS(float xf) {
     const double va2AC = va2 - ltp_.quiescentPlate2();
 
     // 2. PI plates → 6L6 grids (coupling + blocking). Anti-phase legs.
-    const double vgUp = solveTubeGrid(va1AC, ltp_.quiescentPlate1(), vCcUp_);
-    const double vgDown = solveTubeGrid(va2AC, ltp_.quiescentPlate2(), vCcDown_);
+    const double vgUp = solveTubeGrid(va1AC, ltp_.quiescentPlate1(), vCcUp_, vgUp_);
+    const double vgDown = solveTubeGrid(va2AC, ltp_.quiescentPlate2(), vCcDown_, vgDown_);
 
     // 3. 6L6 pair (each = kTubesPerSide paralleled tubes) at the sagged rail.
-    double vpUp = 0.0, vpDown = 0.0;
-    const double ipUp = solveTubePlate(vgUp, vScreen_, vRail_, vpUp);
-    const double ipDown = solveTubePlate(vgDown, vScreen_, vRail_, vpDown);
-    const double ig2Up = el34ScreenCurrent(vgUp, vScreen_, tube6L6_);
-    const double ig2Down = el34ScreenCurrent(vgDown, vScreen_, tube6L6_);
+    //    Screen currents reuse the plate solve's hoisted base: Ig2 = base·kg1/kg2.
+    double vpUp = 0.0, vpDown = 0.0, baseUp = 0.0, baseDown = 0.0;
+    const double ipUp = solveTubePlate(vgUp, vScreen_, vRail_, vpUp, baseUp);
+    const double ipDown = solveTubePlate(vgDown, vScreen_, vRail_, vpDown, baseDown);
+    const double kScr = tube6L6_.kg1 / tube6L6_.kg2;
+    const double ig2Up = baseUp * kScr;
+    const double ig2Down = baseDown * kScr;
 
     // 4. Output transformer (linear): differential primary → secondary. The per-
     //    tube diff × kRppReflected already carries the kTubesPerSide factor (Raa/2).

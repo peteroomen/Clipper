@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { startEngine, listInputDevices, detectPitch, type Engine } from './audio';
+import {
+  startEngine,
+  listInputDevices,
+  detectPitch,
+  type Engine,
+  type RenderLoad,
+} from './audio';
 import { TUNER_FRAME_SIZE, type TunerReading } from './tuner';
 import { PARAM_ID, AMP_PARAM_ID, OVERSAMPLING_FACTORS } from './params';
 import {
@@ -65,6 +71,12 @@ export default function App() {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState<string>('');
   const [theme, setTheme] = useState<ThemeChoice>('system');
+
+  // Engine (DSP) load from AudioContext.renderCapacity — ground-truth audio-thread
+  // headroom on the user's own machine (perf visibility, field-lag report). null
+  // until the first 'update'; {supported:false} when the browser lacks the API.
+  // Updates at ~1 Hz on purpose, so this state does not add to render churn.
+  const [engineLoad, setEngineLoad] = useState<RenderLoad | null>(null);
 
   // Post-trim input peak (linear, from the worklet meter). null until running.
   const [inputPeak, setInputPeak] = useState<number | null>(null);
@@ -463,6 +475,7 @@ export default function App() {
         onLatencySamples: setLatencySamples,
         onPeak: setInputPeak,
         onTuner: handleTuner,
+        onRenderLoad: setEngineLoad,
       });
       engineRef.current = engine;
       setSampleRate(engine.context.sampleRate);
@@ -487,6 +500,7 @@ export default function App() {
     setRunning(false);
     setStatus('stopped');
     setInputPeak(null);
+    setEngineLoad(null);
     tunerReadingRef.current = null;
     setTunerReading(null);
   }
@@ -494,6 +508,29 @@ export default function App() {
   const modelLatencyMs = sampleRate ? (latencySamples / sampleRate) * 1000 : 0;
   const ioLatencyMs = ((baseLatency ?? 0) + (outputLatency ?? 0)) * 1000;
   const totalLatencyMs = modelLatencyMs + ioLatencyMs;
+
+  // Engine-load readout (perf visibility). "DSP 23%" from renderCapacity's average
+  // load, with the peak alongside; an underrun (a real dropout) flips it to an alarm
+  // state. When the browser lacks the API we say so rather than showing a fake 0%.
+  // 'warn' when the average creeps past 80% (headroom running out — pre-glitch).
+  const engineLoadText = !running
+    ? '—'
+    : engineLoad == null
+      ? 'measuring…'
+      : !engineLoad.supported
+        ? 'n/a (needs Chromium)'
+        : `DSP ${Math.round(engineLoad.averageLoad * 100)}% · peak ${Math.round(engineLoad.peakLoad * 100)}%` +
+          (engineLoad.underrunRatio > 0
+            ? ` · UNDERRUN ${Math.round(engineLoad.underrunRatio * 100)}%`
+            : '');
+  const engineLoadState =
+    !running || engineLoad == null || !engineLoad.supported
+      ? 'idle'
+      : engineLoad.underrunRatio > 0
+        ? 'underrun'
+        : engineLoad.averageLoad > 0.8
+          ? 'warn'
+          : 'ok';
 
   return (
     <div className="app">
@@ -661,6 +698,10 @@ export default function App() {
                   <dd>{running ? `${ioLatencyMs.toFixed(1)} ms` : '—'}</dd>
                   <dt>Latency · total</dt>
                   <dd>{running ? `${totalLatencyMs.toFixed(1)} ms` : '—'}</dd>
+                  <dt>Engine load</dt>
+                  <dd data-testid="engine-load" data-load-state={engineLoadState}>
+                    {engineLoadText}
+                  </dd>
                 </dl>
               </div>
             </section>

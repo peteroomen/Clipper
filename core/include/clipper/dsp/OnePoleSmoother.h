@@ -12,6 +12,8 @@
 
 #include <cmath>
 
+#include "clipper/dsp/Denormal.h"
+
 namespace clipper::dsp {
 
 // Exponential one-pole approach toward a target:  y += coeff * (target - y).
@@ -38,9 +40,18 @@ public:
     // Set the target the smoother ramps toward.
     void setTarget(float v) { target_ = v; }
 
-    // Advance one sample and return the new smoothed value.
+    // Advance one sample and return the new smoothed value. Anti-denormal: once the
+    // residual (target - value) has decayed below the denormal floor, snap exactly
+    // to the target. This kills BOTH denormal traps in an exponential approach — a
+    // value_ ringing down toward a 0 target (it would otherwise asymptote and STICK
+    // in the subnormal range forever, a permanent audio-thread denormal generator),
+    // and the (target - value) residual drifting subnormal near a nonzero target.
+    // Snapping within 1e-30 of the target is imperceptible (well past any param
+    // resolution) and makes the smoother settle exactly. See Denormal.h / docs §25.
     inline float next() {
         value_ += coeff_ * (target_ - value_);
+        const float residual = target_ - value_;
+        if (residual < kDenormalFloor && residual > -kDenormalFloor) value_ = target_;
         return value_;
     }
 

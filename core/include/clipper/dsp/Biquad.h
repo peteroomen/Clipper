@@ -13,6 +13,8 @@
 
 #include <cmath>
 
+#include "clipper/dsp/Denormal.h"
+
 namespace clipper::dsp {
 
 struct BiquadCoeffs {
@@ -27,11 +29,15 @@ public:
 
     void reset() { z1_ = z2_ = 0.0f; }
 
-    // Transposed Direct Form II.
+    // Transposed Direct Form II. The two state updates are flushed through the
+    // anti-denormal guard (Denormal.h): a decaying tail rings z1_/z2_ down through
+    // the subnormal range, which is a CPU cliff on WASM (no FTZ) — the guard snaps
+    // the state to exactly 0 once it falls below the denormal floor (-600 dB), so
+    // no subnormal ever feeds the next sample's multiplies. Audio-transparent.
     inline float process(float x) {
         const float y = c_.b0 * x + z1_;
-        z1_ = c_.b1 * x - c_.a1 * y + z2_;
-        z2_ = c_.b2 * x - c_.a2 * y;
+        z1_ = flushDenormal(c_.b1 * x - c_.a1 * y + z2_);
+        z2_ = flushDenormal(c_.b2 * x - c_.a2 * y);
         return y;
     }
 

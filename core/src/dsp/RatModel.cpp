@@ -69,6 +69,7 @@
 
 #include "clipper/dsp/RatModel.h"
 
+#include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/DiodeClipperADAA.h"
 #include "clipper/dsp/LM308Stage.h"
 #include "clipper/dsp/Oversampler.h"
@@ -323,8 +324,10 @@ void RatModel::processChunk(const float* in, float* out, int numFrames) {
     // stage-1 constants above. Computed into stage1Buf so in/out may alias.
     for (int i = 0; i < numFrames; ++i) {
         const float x = in[i];
-        d.shape1State += c1 * (x - d.shape1State);
-        d.shape2State += c2 * (x - d.shape2State);
+        // Anti-denormal (Denormal.h): a one-pole ringing toward silence asymptotes
+        // and STICKS in the float subnormal range — flush the state at -600 dB.
+        d.shape1State = flushDenormal(d.shape1State + c1 * (x - d.shape1State));
+        d.shape2State = flushDenormal(d.shape2State + c2 * (x - d.shape2State));
         const float shaped = x - kShapeG1 * d.shape1State - kShapeG2 * d.shape2State;
         d.stage1Buf[static_cast<size_t>(i)] = shaped * d.preGain.next();
     }
@@ -360,7 +363,7 @@ void RatModel::processChunk(const float* in, float* out, int numFrames) {
     // --- Stage 3 (base rate, linear): tone low-pass then level. ---
     for (int i = 0; i < numFrames; ++i) {
         const float a = d.filterCoef.next();
-        d.loPassState += a * (out[i] - d.loPassState);
+        d.loPassState = flushDenormal(d.loPassState + a * (out[i] - d.loPassState));
         out[i] = d.loPassState * d.level.next();
     }
 }

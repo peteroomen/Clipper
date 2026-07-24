@@ -4,6 +4,8 @@
 
 #include "clipper/dsp/OptoTremolo.h"
 
+#include "clipper/dsp/Denormal.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -63,7 +65,11 @@ double OptoTremolo::tick() {
     // Smooth the control targets toward the knobs.
     const double rateTarget = kMinHz * std::pow(kMaxHz / kMinHz, speed_);
     rateSmoothed_ += smoothA_ * (rateTarget - rateSmoothed_);
-    depthSmoothed_ += smoothA_ * (intensity_ - depthSmoothed_);
+    // Anti-denormal flush (Denormal.h): with INTENSITY at 0 the depth smoother
+    // decays toward 0 and would otherwise sink into double subnormals and stick.
+    // (rateSmoothed_ needs no guard — its target is always >= kMinHz; cell_ needs
+    // none — the running lamp LFO keeps it moving through normal magnitudes.)
+    depthSmoothed_ = flushDenormal(depthSmoothed_ + smoothA_ * (intensity_ - depthSmoothed_));
 
     // LFO: raised-cosine lamp drive in [0,1] (0 = dark, 1 = bright). A raised
     // cosine (not a bare sine) keeps the lamp bounded to [0,1] like a real neon

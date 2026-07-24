@@ -244,8 +244,13 @@ public:
 private:
     void solveOperatingPoint();
     inline float processSampleOS(float x);
-    inline double solveTubePlate(double vg1k, double vg2, double rail, double& vpOut) const;
-    inline double solveTubeGrid(double vpPlateAC, double vpPlateQ, double& vCc) const;
+    // Plate-load Newton with the hoisted Koren base (Ip = base·atan(Vp/kvb), exact
+    // dIp/dVp); baseOut feeds the shared-E1 screen current (§25).
+    inline double solveTubePlate(double vg1k, double vg2, double rail, double& vpOut,
+                                 double& baseOut) const;
+    // Grid-node solve; vgWarm carries the previous sample's solution (§25).
+    inline double solveTubeGrid(double vpPlateAC, double vpPlateQ, double& vCc,
+                                double& vgWarm) const;
 
     double sampleRate_ = 44100.0;
     double osRate_ = 176400.0;
@@ -273,6 +278,9 @@ private:
     double iIdleTotal_ = 0.0;         // quiescent total cathode current (envelope floor)
 
     double vCcUp_ = 0.0, vCcDown_ = 0.0;
+    // Previous-sample grid solutions (Newton warm start, §25). Idle grid DC is 0
+    // (the grid leak returns to ground — cathode bias, no negative supply).
+    double vgUp_ = 0.0, vgDown_ = 0.0;
     double gCc_ = 0.0, gRg_ = 0.0;
     double gridRgk_ = 1500.0, gridVgn_ = 0.5;
 
