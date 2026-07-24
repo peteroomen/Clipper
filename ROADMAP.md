@@ -323,6 +323,32 @@ independent slices that can interleave anywhere:
   tight low end, famously scooped; pairs with the brit412 and a future
   straight-cab IR.
 
+### M11 — Player Expectations Suite ✅ *(shipped — docs §26)*
+
+The missing test layer between "the circuit math is right" and "a player plugs
+in and it sounds right". Four field bugs (RAT "no balls", cab fizz, Muff Pi hum
+blowout, AC30 "muddy") shipped while every circuit metric was green — M11 pins
+what the PLAYER hears, permanently:
+
+- **Universal gear invariants** (`clipper_player_expectations_tests`, ctest #15)
+  over every dirt pedal and amp voice at the app's opening knobs: min-knob
+  usability (audible floor −70 dBFS), the hum-torture standard (60 Hz hum
+  ≥ 28 dB below the note at min AND default gain — a floor for all future gear),
+  knob-monotonicity spot-checks (gain→THD, level→RMS, tone→spectral direction,
+  incl. the inverted RAT FILTER / AC30 CUT), and per-gear default-level windows.
+- **Live-convention testing**: every C-ABI entry point rendered in-place at
+  128-frame blocks (the worklet's exact convention) vs separate-buffer
+  big-block — bit-identical today, pinned forever (the in-place convolver-bug
+  catcher).
+- **Golden "first five minutes" renders** (five default rigs, 944 KB of 16-bit
+  48 k WAVs) gated per third-octave band at ±1.5 dB — lossless refactors pass,
+  voicing drift fails; regeneration only via `scripts/update-goldens.sh`.
+- **Web sim** (`web/tests/expectations.spec.ts`): each pedal added + stomped at
+  defaults, all four amp voices cycled — audible, NaN-free, level-sane,
+  click-free. **Found + fixed a real latent bug:** the worklet stomp (pedal
+  bypass / amp power) was the one topology change not declick-bracketed — it
+  popped audibly; stomps now ride the shared raised-cosine declick.
+
 ### Pre-commercialization checklist (if that day comes)
 
 Circuit modeling itself is legally safe (topologies aren't copyrightable;

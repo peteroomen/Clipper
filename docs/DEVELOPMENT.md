@@ -4180,3 +4180,146 @@ in the existing neumorphic status card (`.status` dl), styled through the stock
   four amp voices; `web` tsc + vite build green; WASM rebuilt via
   `scripts/build-wasm.sh` with the single consolidated `EXPORTED_FUNCTIONS`
   list intact.
+
+## 26. M11 — Player Expectations Suite (test the player's expectations, not just the circuit)
+
+**Why this milestone exists.** Four field bugs shipped while every circuit metric
+was green — each caught only by a player's ears:
+
+1. **RAT "no balls"** — harmonic ratios, alias floors, bit-exactness all passed,
+   but input-level calibration + an over-aggressive low shelf left the pedal
+   gutless at the levels a real player feeds it (fixed in M6.1).
+2. **Cab fizz** — "correct" convolution of a wrong-sounding IR (a −22.9 dB noise
+   tail + 2 dB response steps), plus an IN-PLACE aliasing hazard: the web worklet
+   calls the convolver with `out == in`, and the null test used separate buffers.
+3. **Muff Pi hum blowout** — the input stage rail-clipped even a −40 dBFS
+   single-coil hum and min sustain didn't help; no THD/spectrum test ever probed
+   MIN-knob settings or a realistic noise floor (§24 postmortem).
+4. **AC30 "muddy"** — the CUT knob's control-law default opened the amp 3 dB
+   dark. Circuit right, knob taper wrong (§23 re-taper + character guard).
+
+The pattern: **we tested the circuit, not the player's expectations.** M11 is the
+missing layer — a permanent suite that drives every piece of gear the way a
+player does (default knobs, min knobs, realistic levels, realistic noise, the
+worklet's exact calling conventions) and pins what they must hear.
+Files: `core/tests/test_player_expectations.cpp` (`clipper_player_expectations_tests`,
+ctest #15 — links `clipper_c_api` because it drives the worklet's exact C ABI),
+goldens under `core/tests/goldens/`, `scripts/update-goldens.sh`, and
+`web/tests/expectations.spec.ts` (Playwright). All core measurements run at
+**48 kHz** — the AudioWorklet's fixed rate, where every one of the four bugs was
+heard (per-rate circuit behavior stays pinned by the per-gear suites).
+
+### Block A — universal gear invariants (one harness, EVERY gear)
+
+One parameterized harness over every dirt pedal (`rat`/`sd1`/`ts`/`muff`) and
+every amp voice (`clean120`/`jcm800`/`twin`/`ac30`), at the app's exact opening
+knobs (`rig.ts` defaults), with smoothers settled 0.25 s before measuring.
+Standard signal: a 220 Hz pluck peaking at −20 dBFS (RMS −33.5 dBFS).
+
+- **A1 Min-knob usability** (the Muff bug generalized): at defaults AND with any
+  single knob at minimum, output must be finite, bounded (pedals < 2 V peak —
+  the muff legitimately peaks 1.69 V dark; amps < 1.05 normalized) and, unless
+  the knob is an output-level pot, audible (RMS > **−70 dBFS**). Level pots must
+  genuinely attenuate (≥ 6 dB below default; every one measured a clean kill,
+  −240 dBFS). Quietest legit min-knob case: **ac30 bass=0 at −64.1 dBFS** — the
+  passive Vox top-boost stack guts a low-heavy pluck with BASS at zero
+  (authentic; the floor separates "authentically quiet" from "silenced").
+- **A2 Hum torture standard** (the Pi's field signal, now a floor for ALL future
+  gear): 220 Hz note at −10 dBFS + 60 Hz hum at −40 dBFS through every dirt
+  pedal at min AND default gain — the 60 Hz component must stay **≥ 28 dB below
+  the note**. Measured: rat −36.0/−41.6, sd1 −33.1/−39.3, ts −33.1/−38.2,
+  muff −51.1/−55.8 dB (min/default). The input hum sits 30 dB below the note and
+  a perfectly linear pedal preserves that, so ~−33 dB at min drive is the
+  physical ceiling — the 28 dB bar leaves 5.1 dB margin on today's tightest gear
+  while catching a Pi-class blowout (pre-fix: hum at ~−1 dB) outright.
+- **A3 Knob monotonicity spot-checks**: gain/drive/sustain at lo/mid/hi must
+  yield non-decreasing THD (rat 0→22→37 %, sd1 0→12→37 %, ts 0→6→32 %, muff
+  36→38→147 % at 0/0.6/1.0 — §24's coarse-trend contract, jcm800 gain
+  0→11→47 %); level pots non-decreasing RMS; tone knobs at extremes must move
+  the spectrum the documented direction — pedals via high-band harmonic energy
+  (≥ 6 dB; a plain spectral centroid is fundamental-dominated and barely moves),
+  amps via the 3 kHz band (≥ 4 dB), including the two INVERTED knobs (RAT
+  FILTER: clockwise darkens; AC30 CUT: clockwise darkens).
+- **A4 Level sanity** (the "no balls" / "blows the mix apart" guard): output RMS
+  delta at defaults must sit inside a documented per-gear window (measured
+  ± ~10 dB). Measured: rat +18.6, sd1 +15.6, ts +13.1, muff **+29.4** (the
+  sustain wall lifts a DECAYING pluck's RMS by design — a fuzz that didn't would
+  be the bug), clean120 −6.0, jcm800 +1.7, twin −13.8, ac30 −11.7 dB. One
+  symmetric global bound can't hold that honest spread, so the windows are per
+  gear — tight enough that a ±10 dB voicing drift fails loudly.
+
+### Block B — live-convention testing (the test that would have caught the convolver bug)
+
+Every processing entry point is rendered TWICE through fresh instances: once the
+way tests find convenient (separate in/out buffers, one big call), once the way
+the WORKLET actually calls it (**in-place, `out == in`, 128-frame blocks,
+48 kHz**), and the two must agree within float tolerance (2e-5). Covered: the
+five pedal C ABIs (`rat_`/`sd_`/`ts_`/`muff_`/`phaser_`), the AmpChain C ABI for
+all four voices (cab ON + reverb 0.25 so the spring runs in-place too), the
+stereo amp path with chorus ON (128-frame vs big-block; `in` may not alias the
+outputs, per the documented contract), and the bare `CabConvolver` +
+`ReverbModel`. Measured today: **bit-identical** (max |Δ| = 0) on every path —
+the suite pins that so an in-place aliasing bug can never ship silently again.
+
+### Block C — golden "first five minutes" renders
+
+The rigs a new player actually tries first, at DEFAULT knobs, rendered through
+the same C-ABI chain the worklet drives, committed as 16-bit mono 48 kHz WAVs
+(2 s pluck each, 944 KB total, `core/tests/goldens/`):
+
+| golden | rig | peak / RMS |
+|---|---|---|
+| `rat_jcm800.wav` | RAT → JCM800 + brit412 cab | 0.237 / −23.8 dBFS |
+| `sd1_twin_reverb.wav` | SD-1 → Twin + clean212 + reverb 0.25 | 0.144 / −35.7 dBFS |
+| `muff_twin.wav` | Muff → CLEAN Twin + clean212 (the Gilmour move) | 0.178 / −26.4 dBFS |
+| `ts_ac30.wav` | Screamer → AC30 + clean212 | 0.063 / −39.3 dBFS |
+| `clean120_chorus.wav` | clean 120 + chorus ON + clean212 (stereo → mono mix) | 0.038 / −47.1 dBFS |
+
+Gate: **per-third-octave-band RMS difference ≤ 1.5 dB** (bands within 55 dB of
+the golden's loudest band; 7–13 live bands per rig) plus broadband RMS ± 1 dB —
+perceptual-ish, so lossless refactors (solver iteration changes, chunking) pass
+but voicing drift (a re-tapered knob, a re-voiced shelf, a changed IR) fails.
+The gate's own floor (16-bit quantization + windowing) measures 0.11 dB worst.
+Regenerating goldens is a DELIBERATE act only:
+`./build/clipper_player_expectations_tests --update-goldens` (or
+`scripts/update-goldens.sh`), then commit the diff with a justification.
+
+### Block D — web "first five minutes" sim (`web/tests/expectations.spec.ts`)
+
+What a new player does, in the real browser engine: add each dirt pedal at its
+opening defaults onto the default rig, stomp it on, play a −20 dBFS note; cycle
+all four amp voices at defaults. Asserts per render: (1) audible non-silent
+output, (2) no NaN, (3) RMS inside the documented window (dirt pedals
+−32..−4 dBFS through the default clean rig; amp voices −42..−6 dBFS), (4)
+stomping on/off mid-note does not click (max sample delta bounded by ~2× the
+steady-state slew).
+
+**Latent bug found and fixed by (4): the worklet's STOMP was the one topology
+change NOT declick-bracketed.** `bypass` messages flipped `node.engaged` (and
+amp power) instantly between quanta, stepping the output mid-waveform — a clean
+−20 dBFS tone and a driven pedal output differ by hundreds of millivolts at the
+flip sample, i.e. an audible pop on every stomp. Chain edits, cab swaps, and
+amp-model swaps were all already staged at the raised-cosine declick's fade-out
+zero; M11 routes stomps (pedal bypass + amp power) through the SAME bracket
+(`_pendingBypass` / `_pendingAmpBypass` in `clipper-processor.js`, applied in
+`_commitPending`). Pre-ready stomps still apply immediately (no audio running —
+nothing can click), and the synchronous `latency` echo (the tests' delivery
+barrier) is preserved.
+
+### Findings ledger (what the new invariants surfaced)
+
+- **Worklet stomp click** — real, fixed (above).
+- **AC30 BASS at min is very quiet** (−64.1 dBFS for the standard pluck, ~17 dB
+  under its defaults) — authentic passive-stack behavior, documented as the
+  audible-floor anchor, not a bug.
+- **In-place/live-convention rendering is currently bit-exact everywhere** —
+  the convolver-class hazard exists only if code changes; now pinned.
+- **Everything else passed on first measurement** — the four shipped field
+  fixes (M6.1, M6.5/M6.6, §24, §23) hold with margin under their generalized
+  invariants.
+
+- Verification for the milestone: core ctest **15/15** (14 prior + player
+  expectations); `web` tsc green; Playwright suite green with the repo config
+  (including the four new expectations tests); no DSP source touched (the WASM
+  module is unchanged — only the authored worklet JS changed, re-copied to
+  `web/public/generated/` exactly as `build-wasm.sh` does).
