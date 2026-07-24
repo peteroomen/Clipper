@@ -249,46 +249,58 @@ class ClipperProcessor extends AudioWorkletProcessor {
       return { id, type: 'tuner', handle: 0, engaged: !!engaged };
     }
     const mod = this._module;
+    // Model dispatch by type: 'sd1' -> sd_*, 'phaser' -> phaser_* (linear allpass
+    // sweep; set_oversampling is a no-op, latency 0), anything else -> RAT.
     const isSd = type === 'sd1';
-    const handle = isSd ? mod._sd_create(this._sr) : mod._rat_create(this._sr);
-    const setOs = isSd ? mod._sd_set_oversampling : mod._rat_set_oversampling;
-    const setParam = isSd ? mod._sd_set_param : mod._rat_set_param;
-    setOs(handle, this._oversampling | 0);
+    const isPhaser = type === 'phaser';
+    const norm = isSd ? 'sd1' : isPhaser ? 'phaser' : 'rat';
+    const handle = isSd
+      ? mod._sd_create(this._sr)
+      : isPhaser
+        ? mod._phaser_create(this._sr)
+        : mod._rat_create(this._sr);
+    const node = { id, type: norm, handle, engaged: !!engaged };
+    this._pedalSetOversampling(node, this._oversampling | 0);
     if (params) {
-      setParam(handle, 0, +params.distortion);
-      setParam(handle, 1, +params.filter);
-      setParam(handle, 2, +params.level);
+      // Slot 0/1/2 are pedal-agnostic; for a phaser slot 0 = SPEED, 1/2 unused.
+      this._pedalSetParam(node, 0, +params.distortion);
+      this._pedalSetParam(node, 1, +params.filter);
+      this._pedalSetParam(node, 2, +params.level);
     }
-    return { id, type: isSd ? 'sd1' : 'rat', handle, engaged: !!engaged };
+    return node;
   }
 
   _destroyPedal(node) {
     if (!node || !node.handle) return;
     if (node.type === 'sd1') this._module._sd_destroy(node.handle);
+    else if (node.type === 'phaser') this._module._phaser_destroy(node.handle);
     else this._module._rat_destroy(node.handle);
   }
 
-  // Per-node ABI routing (sd_* for an SD-1, rat_* otherwise). Keeps the chain
-  // dispatch type-agnostic everywhere below.
+  // Per-node ABI routing (sd_* for an SD-1, phaser_* for a phaser, rat_*
+  // otherwise). Keeps the chain dispatch type-agnostic everywhere below.
   _pedalSetParam(node, id, value) {
     const mod = this._module;
     if (node.type === 'sd1') mod._sd_set_param(node.handle, id, value);
+    else if (node.type === 'phaser') mod._phaser_set_param(node.handle, id, value);
     else mod._rat_set_param(node.handle, id, value);
   }
   _pedalSetOversampling(node, factor) {
     const mod = this._module;
     if (node.type === 'sd1') mod._sd_set_oversampling(node.handle, factor);
+    else if (node.type === 'phaser') mod._phaser_set_oversampling(node.handle, factor);
     else mod._rat_set_oversampling(node.handle, factor);
   }
   _pedalLatency(node) {
     const mod = this._module;
-    return node.type === 'sd1'
-      ? mod._sd_latency_samples(node.handle)
-      : mod._rat_latency_samples(node.handle);
+    if (node.type === 'sd1') return mod._sd_latency_samples(node.handle);
+    if (node.type === 'phaser') return mod._phaser_latency_samples(node.handle);
+    return mod._rat_latency_samples(node.handle);
   }
   _pedalProcess(node, inPtr, outPtr, n) {
     const mod = this._module;
     if (node.type === 'sd1') mod._sd_process(node.handle, inPtr, outPtr, n);
+    else if (node.type === 'phaser') mod._phaser_process(node.handle, inPtr, outPtr, n);
     else mod._rat_process(node.handle, inPtr, outPtr, n);
   }
 

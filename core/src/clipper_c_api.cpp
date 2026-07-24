@@ -10,6 +10,7 @@
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/Jcm800Amp.h"
+#include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/SdModel.h"
 
@@ -143,6 +144,50 @@ void sd_process(void* handle, const float* in_ptr, float* out_ptr,
     if (!handle) return;
     static_cast<clipper::dsp::SdModel*>(handle)->process(in_ptr, out_ptr,
                                                          num_frames);
+}
+
+// --- v1.1: Phaser ("Ninety") model exports -----------------------------------
+//
+// Additive alongside rat_*/sd_*, and byte-for-byte the same opaque-handle ABI so
+// the worklet can drive a phaser exactly like a dirt pedal (param slot 0 = SPEED;
+// slots 1/2 are carried but ignored). The phaser is a LINEAR time-varying block
+// (allpass sweep): no clipping, so no oversampling and zero added latency — the
+// set_oversampling export is a documented NO-OP and latency is always 0, letting
+// the generic per-node chain routing call the same five entry points on it.
+
+EMSCRIPTEN_KEEPALIVE
+void* phaser_create(float sample_rate) {
+    auto* m = new clipper::dsp::PhaserModel();
+    m->prepare(static_cast<double>(sample_rate));
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void phaser_destroy(void* handle) {
+    delete static_cast<clipper::dsp::PhaserModel*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void phaser_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    static_cast<clipper::dsp::PhaserModel*>(handle)->setParameter(param_id, value);
+}
+
+// No-op: the phaser is linear time-varying, so it never oversamples. Present only
+// so the worklet's generic pedal routing can call it uniformly.
+EMSCRIPTEN_KEEPALIVE
+void phaser_set_oversampling(void* /*handle*/, int /*factor*/) {}
+
+// Always 0: no oversampling filter, no lookahead — the phaser adds no latency.
+EMSCRIPTEN_KEEPALIVE
+int phaser_latency_samples(void* /*handle*/) { return 0; }
+
+EMSCRIPTEN_KEEPALIVE
+void phaser_process(void* handle, const float* in_ptr, float* out_ptr,
+                    int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::PhaserModel*>(handle)->process(in_ptr, out_ptr,
+                                                             num_frames);
 }
 
 // --- M5: clean amp + cab exports ---------------------------------------------

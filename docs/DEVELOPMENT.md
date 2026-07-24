@@ -3143,3 +3143,120 @@ none of which the rename touched, and the "Clipper" heading assertions target th
 segments and green screen show). **No core / C-ABI / worklet / engine change** —
 this remains a pure web visual pass.
 
+
+## 20. v1.1 item 3 — Phaser ("Ninety"): the script-era 4-stage phaser (docs §22)
+
+The first MODULATION pedal that isn't the amp's chorus: a homage to the script-logo
+MXR Phase 90. The spring reverb (§16) built deep first-order-allpass fluency, and
+this is where it pays off — the phaser IS a short, swept allpass cascade summed with
+the dry. `core/src/dsp/PhaserModel.{h,cpp}`, C ABI `phaser_*`, worklet `phaser`
+dispatch, rig type `phaser`, a single-knob `Pedal` face, assistant `add_pedal`
+'phaser' + coaching. **Trademark-safe:** wordmark **"Ninety"**, model line
+`PHASER Nº4 · SCRIPT`; no MXR/Phase 90 on any user surface (docs §17 doctrine).
+
+### The model — 4 first-order allpasses, one LFO, two moving notches
+
+```
+  in ─┬──────────────────────────────────────────► 0.5·dry ─┐
+      └─► [AP₁]─►[AP₂]─►[AP₃]─►[AP₄] ─────────────► 0.5·wet ─┴─► out
+```
+
+- **Four FIRST-ORDER allpass sections**, bilinear form `H(z) = (a + z⁻¹)/(1 + a·z⁻¹)`,
+  `a = (t−1)/(t+1)`, `t = tan(π·fc/fs)` — the −90° phase point sits at `fc` exactly
+  (prewarped). Each rotates phase 0 → −180°; four in series rotate 0 → −720°, so the
+  50/50 dry+wet sum has magnitude `|cos(θ/2)|` (θ = total allpass phase) and NULLS
+  wherever θ is an odd multiple of 180° — at −180° and −540°. That's **exactly TWO
+  notches** in-band (4 stages → 2 notches), the Phase-90 comb. For identical stages
+  the pair falls at `tan(22.5°)·fc ≈ 0.414·fc` and `tan(67.5°)·fc ≈ 2.414·fc`.
+- **Corner sweep** `fc ∈ [200, 2000] Hz` — a clean decade (the JFETs' ~decade of
+  drain-source resistance swing). Over a cycle the notches sweep `≈83…828 Hz` (lower)
+  and `≈483…4828 Hz` (upper) — the whoosh across the guitar's low-mids and presence.
+  **Depth (this span) is FIXED — script-authentic** (the script Phase 90 has no depth
+  control).
+- **ONE knob: SPEED** → `0.06…8 Hz`, log (`rate = 0.06·(8/0.06)^knob`) — the original's
+  famously wide range; slow tape-warble occupies most of the knob, the Leslie-ish fast
+  end is compressed at the top.
+- **NO feedback / regeneration** — that is the later block-logo ("Script switch"/
+  reissue) addition; the SCRIPT voicing modelled here omits it (smoother, less vocal).
+  **Ledger note** for a future variant: add a single feedback tap around the cascade
+  (`loopIn = dry + g·wet`) to get the block-logo's resonant peak.
+- **Per-stage detune ±1.5%** (fixed, deterministic `{0.985, 0.995, 1.005, 1.015}`):
+  real JFETs never match, so the four notch contributions don't stack into one
+  infinite null. A measurement hook (`setDetune(false)`) disables it for the clean
+  analytic reference.
+
+### LFO shape — a slightly-shark-toothed (rounded) TRIANGLE, and why
+
+The corner is modulated in **log-frequency**; the LFO is a **triangle blended with
+≈15% aligned cosine** (`roundedTriangle`). Rationale (documented tradeoff, mirrors
+the ChorusModel sine justification in §11.2):
+
+- **Triangle, not sine:** a triangle in log-`fc` sweeps the notches at a CONSTANT
+  musical rate — equal time per octave rising and falling, the even "searching"
+  Phase-90 movement. A sine dwells at the turnarounds (the corner sits at the extremes)
+  and reads as a phaser that "parks", not sweeps.
+- **Rounded, not pure triangle:** a pure triangle reverses instantaneously at its
+  peaks — a corner in `d(fc)/dt` that ticks. The real pedal's op-amp integrator + the
+  JFET's soft `R(Vgs)` law round those peaks; the 15% cosine blend reproduces that
+  "shark-tooth" (constant-slope body, rounded reversals). Verified by the no-zipper
+  spectral-floor test — the reversal leaves no turnaround tick.
+
+### Linear time-varying → no oversampling; zipper is the only risk
+
+There is no nonlinearity (no clipping), so **no oversampling** and **zero added
+latency** (`phaser_set_oversampling` is a documented no-op, `phaser_latency_samples`
+returns 0). The only aliasing risk is coefficient stepping as the corner sweeps, so the
+four allpass coefficients are recomputed **PER SAMPLE** from the continuous LFO (never
+block-stepped); the SPEED knob is one-pole smoothed (~8 ms) and the LFO phase is
+continuous, so a rate move never clicks and a fast sweep leaves a clean floor.
+
+### Validation — `clipper_phaser_tests` (deterministic, 44.1 / 48 / 96 kHz)
+
+The analytic reference is the EXACT discrete transfer function `0.5·(1 + Π AP_k)` built
+from the model's own published coefficient recipe (`cornerHzAtPhase` / `stageDetune`
+static accessors), so it cannot drift from the implementation. Measured numbers (44.1 k):
+
+- **(a) Static notch positions:** at frozen LFO phases the RENDERED notches match the
+  analytic response to **0.00%** (e.g. ph 0.25 → 262.1 Hz / 1521.9 Hz), EXACTLY 2
+  notches in-band, and the pair sits at ≈0.414·fc / ≈2.414·fc (the −8·atan physics).
+- **(b) Sweep tracking:** the upper notch measured at the quarter-cycle points rises
+  `482 → 1522 → 4677 Hz` (trough → centre → peak) and returns to `1522 Hz` at ¾ — it
+  tracks the LFO corner across the cycle.
+- **(c) SPEED map:** knob 0 → 0.060 Hz, knob 1 → 8.000 Hz, knob 0.5 → 0.693 Hz (log,
+  = √(lo·hi)).
+- **(d) Notch DEPTH (mix):** an allpass sum is never flat, so we assert DEPTH, not
+  flatness — the composite notch is **48–94 dB** deep even WITH detune on (bar: >20 dB).
+- **(e) No zipper:** a fast (8 Hz) sweep on a 1 kHz tone leaves the far-field floor
+  (5–11 kHz) at **−130 to −157 dB** rel carrier (bar: <−80 dB) — smooth per-sample
+  coefficients, no tick.
+- **(f) Bypass/level sanity:** silence → silence; a 0.5 sine stays ≤0.50 in steady
+  state (allpass-sum ~unity gain, no blow-up); a ~0 dB comb peak exists.
+
+All 8 native suites remain green (`ctest`): the phaser suite added, nothing else changed.
+
+### Integration (additive everywhere)
+
+- **C ABI** `phaser_create/destroy/set_param/set_oversampling(no-op)/latency_samples(0)/
+  process` — byte-for-byte the dirt-pedal opaque-handle shape, so the worklet's generic
+  per-node routing drives it uniformly. Param slot 0 = SPEED; slots 1/2 carried, unused.
+- **Worklet** (`clipper-processor.js`): a `phaser` branch in `_createPedal` /
+  `_destroyPedal` / `_pedalSetParam` / `_pedalSetOversampling` / `_pedalLatency` /
+  `_pedalProcess`. `build-wasm.sh` compiles `PhaserModel.cpp` and exports `_phaser_*`.
+- **rig.ts:** `PedalType` gains `'phaser'`; `AVAILABLE_PEDAL_TYPES`,
+  `PHASER_KNOB_DEFAULTS` (speed 0.35), `PEDAL_KNOB_DEFAULTS`, and the normalizer's type
+  coercion all extended — one entry each (strictly additive; old rigs load unchanged).
+- **Pedal face** (`Pedal.tsx` `FACES.phaser`, `pedal.css` `[data-face="single"]`,
+  `tokens.css` `--accent-phaser`): a NEW `'single'` layout — dark chassis, **ORANGE**
+  accent (`#C4611A` light / `#FF8C3A` dark), ONE big centered SPEED knob, round stomp,
+  wordmark "Ninety", model `PHASER Nº4 · SCRIPT`.
+- **Assistant** (`tools.ts`, `prompt.ts`): `add_pedal` enum gains `'phaser'`; a `'speed'`
+  pedal-param alias resolves to slot 0; coaching covers placement (AFTER dirt = vocal
+  EVH swoosh, BEFORE = subtler) and speed (slow = tape-warble, fast = Leslie-ish).
+- **Render harness:** `clipper-render --pedal phaser --distortion <speed>` (listening).
+
+### Listening pack (scratchpad)
+
+A clean strummed E-major chord (`make_chord.py`) rendered at `phaser_slow.wav`
+(speed 0.12 ≈ 0.11 Hz), `phaser_medium.wav` (0.42 ≈ 0.47 Hz), `phaser_fast.wav`
+(0.85 ≈ 3.84 Hz), and `phaser_post_rodent.wav` (through the RAT first — the post-dirt
+swoosh). All peak-safe (linear pedal, no clipping).

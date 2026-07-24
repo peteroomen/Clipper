@@ -43,12 +43,14 @@ interface KnobSpec {
   param: ParamName;
   testId: string;
 }
-type FaceLayout = 'stack' | 'compact';
+type FaceLayout = 'stack' | 'compact' | 'single';
 interface PedalFace {
   layout: FaceLayout;
   model: string; // small model line (top eyebrow)
   wordmark: string; // hero text: the stack logo / the treadle plate name
-  knobs: [KnobSpec, KnobSpec, KnobSpec];
+  // 1..3 knobs. The dirt faces carry three; the phaser's 'single' face carries
+  // exactly one (the iconic one-knob face).
+  knobs: KnobSpec[];
 }
 // Every KNOB pedal gets a faceplate here; the tuner renders via its own component
 // (Tuner.tsx) and never reaches Pedal. To add a future pedal's face, add an entry
@@ -78,11 +80,24 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Level', aria: 'Level', param: 'level', testId: 'knob-level' },
     ],
   },
+  phaser: {
+    // The iconic ONE-KNOB face: a single big centered SPEED knob on a dark chassis
+    // with an ORANGE accent (the orange box, instantly read). "Ninety" is the wink
+    // (the script-logo Phase 90); model line names the type without the trademark.
+    layout: 'single',
+    model: 'PHASER Nº4 · SCRIPT',
+    wordmark: 'Ninety',
+    knobs: [
+      // ONE real knob. It writes the shared slot 0 (rig param 'distortion'), which
+      // the phaser core reads as SPEED. Slots 1/2 are unused-but-carried.
+      { name: 'Speed', aria: 'Speed', param: 'distortion', testId: 'knob-speed' },
+    ],
+  },
 };
 
 export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
   const { engaged, params, type } = pedal;
-  const face: PedalFace = type === 'sd1' ? FACES.sd1 : FACES.rat;
+  const face: PedalFace = (FACES as Partial<Record<PedalType, PedalFace>>)[type] ?? FACES.rat;
   const defaults = PEDAL_KNOB_DEFAULTS[type] ?? PEDAL_KNOB_DEFAULTS.rat;
 
   const knobs = (
@@ -138,7 +153,18 @@ export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
         <span className="led" data-testid="pedal-led" aria-hidden="true" />
       </div>
 
-      {face.layout === 'stack' ? (
+      {face.layout === 'compact' ? (
+        // Boss-compact homage: knobs ride the top edge with air; the treadle owns
+        // the LOWER body and sits at the bottom — nothing below it (no caption;
+        // the wordmark is embossed on the treadle itself).
+        <>
+          {knobs}
+          <div className="fsw-zone treadle-zone">{footswitch}</div>
+        </>
+      ) : (
+        // 'stack' (RAT three-knob trio) and 'single' (phaser one-knob face) share
+        // the vertical layout: hero wordmark, knob(s), round stomp. The 'single'
+        // face centers its one big SPEED knob (styled via [data-face="single"]).
         <>
           <div className="pedal-logo display">{face.wordmark}</div>
           {knobs}
@@ -146,14 +172,6 @@ export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
             {footswitch}
             <span className="fsw-label">Stomp</span>
           </div>
-        </>
-      ) : (
-        // Boss-compact homage: knobs ride the top edge with air; the treadle owns
-        // the LOWER body and sits at the bottom — nothing below it (no caption;
-        // the wordmark is embossed on the treadle itself).
-        <>
-          {knobs}
-          <div className="fsw-zone treadle-zone">{footswitch}</div>
         </>
       )}
     </div>

@@ -55,6 +55,8 @@ export const TOOLS = [
       "SD-1 pedal params: 'drive' (0..1 overdrive amount), 'tone' (0=dark .. 1=bright, " +
       "0.5=flat — a treble tilt), 'level'. (For an SD-1 you may use 'dist' as an " +
       "alias for 'drive' and 'filter' for 'tone' — same slots.) " +
+      "Phaser pedal param: 'speed' (its ONE knob — the LFO sweep rate; low = a " +
+      "slow tape-warble, high = a fast Leslie-ish swirl). " +
       "Amp params: 'volume', 'bass', 'middle', 'treble' (tone controls are flat " +
       "at 0.5), plus the chorus/vibrato modulation 'speed' (LFO rate ~0.15-8 Hz) " +
       "and 'depth' (sweep amount / how deep the pitch wobble is) — these only do " +
@@ -210,14 +212,18 @@ export const TOOLS = [
       "differently. Types: 'rat' (hard, aggressive, symmetric clipping — the " +
       "scooped, cutting RAT), 'sd1' (a Boss SD-1: soft, warm, asymmetric " +
       'overdrive with a mid-hump — the classic transparent boost, great in front ' +
-      "of another dirt or a cranked amp), and 'tuner' (a chromatic tuner — no " +
+      "of another dirt or a cranked amp), 'phaser' (a script-era 4-stage phaser — " +
+      'the classic swirling/whooshing modulation with ONE knob, SPEED: placed ' +
+      'AFTER the dirt it gives the vocal EVH swoosh, before the dirt it is subtler ' +
+      'and blends into the note; slow = a gentle tape-warble, fast = a Leslie-ish ' +
+      "rotary shimmer), and 'tuner' (a chromatic tuner — no " +
       'tone, but when stomped ON it MUTES the rig so the player can tune in ' +
       'silence; put it first in the chain by convention). Omit `position` to ' +
       'append at the end (just before the amp), or give a 0-based slot to insert.',
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'phaser', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -257,6 +263,7 @@ export const TOOLS = [
 const PEDAL_PARAM: Record<string, string> = {
   dist: 'distortion',
   drive: 'distortion', // SD-1 Drive shares the distortion slot (id 0)
+  speed: 'distortion', // phaser SPEED is the one knob — also slot 0
   filter: 'filter',
   tone: 'filter', // SD-1 Tone shares the filter slot (id 1)
   level: 'level',
@@ -383,13 +390,17 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'tuner' =
-      input.type === 'tuner' ? 'tuner' : input.type === 'sd1' ? 'sd1' : 'rat';
+    const type: 'rat' | 'sd1' | 'phaser' | 'tuner' =
+      input.type === 'tuner' ? 'tuner'
+      : input.type === 'sd1' ? 'sd1'
+      : input.type === 'phaser' ? 'phaser'
+      : 'rat';
     const rawPos = input.position;
     const position =
       typeof rawPos === 'number' && Number.isFinite(rawPos) ? Math.max(0, rawPos | 0) : undefined;
     const index = controller.addPedal(type, position);
-    const label = type === 'tuner' ? 'Tuner' : type === 'sd1' ? 'SD-1' : 'RAT';
+    const label =
+      type === 'tuner' ? 'Tuner' : type === 'sd1' ? 'SD-1' : type === 'phaser' ? 'Phaser' : 'RAT';
     return {
       content: JSON.stringify({ applied: { added: type, index } }),
       chip: `+ ${label} #${index + 1}`,

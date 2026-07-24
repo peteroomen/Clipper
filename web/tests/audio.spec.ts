@@ -637,6 +637,118 @@ test('reverb: 0 == dry; up leaves a decaying tail after the input stops', async 
   expect(result.wetTail2).toBeLessThan(result.wetTail1);
 });
 
+// v1.1: the script phaser sweeps two notches under an LFO. A steady 400 Hz tone
+// through an engaged phaser is MODULATED as the lower notch (which sweeps
+// ~83-828 Hz) passes through 400 Hz: the output envelope dips deeply when the
+// notch sits on the tone (a notch measurably present) and the amplitude in an
+// EARLY vs a LATE window differs (the notch has moved = two LFO phases differ).
+test('phaser: engaged phaser sweeps a moving notch through a steady tone', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 1.6; // > one LFO cycle at the chosen speed
+
+    async function render(chain: Array<Record<string, unknown>>): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      // De-flake: Chromium's FIRST OfflineAudioContext.addModule in a fresh
+      // process can hang (the same WebAudio warmup flake the retries guard); make
+      // a context whose addModule resolved, retrying a fresh context on timeout.
+      let ctx: OfflineAudioContext | null = null;
+      for (let attempt = 0; attempt < 4 && !ctx; attempt++) {
+        const c = new OfflineAudioContext(1, length, sampleRate);
+        try {
+          await Promise.race([
+            c.audioWorklet.addModule('/generated/clipper-processor.js'),
+            new Promise((_r, rej) => setTimeout(() => rej(new Error('addModule timeout')), 6000)),
+          ]);
+          ctx = c;
+        } catch {
+          /* fresh context, try again */
+        }
+      }
+      if (!ctx) throw new Error('addModule failed after retries');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') {
+            clearTimeout(t);
+            resolve();
+          } else if (e.data?.type === 'error') {
+            clearTimeout(t);
+            reject(new Error(e.data.message));
+          }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 6000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') {
+            clearTimeout(t);
+            resolve();
+          }
+        };
+        // Power the amp OFF so this is a pure pedal DSP proof; install a phaser
+        // chain with SPEED ~0.6 (a ~1.1 Hz sweep — a full cycle inside the render).
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true });
+        node.port.postMessage({
+          type: 'chain',
+          pedals: [
+            { id: 'ph', type: 'phaser', engaged: true, params: { distortion: 0.6, filter: 0.5, level: 0.5 } },
+          ],
+        });
+        node.port.postMessage({ type: 'oversampling', factor: 4 });
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 400 });
+      osc.connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+
+    // Windowed RMS over [t0, t1) seconds.
+    function winRms(data: Float32Array, t0: number, t1: number): number {
+      const a = Math.floor(t0 * sampleRate), b = Math.min(data.length, Math.floor(t1 * sampleRate));
+      let sum = 0, n = 0;
+      for (let i = a; i < b; i++) { sum += data[i] * data[i]; n++; }
+      return n ? Math.sqrt(sum / n) : 0;
+    }
+
+    const out = await render([]);
+    // Slide a 40 ms window across the render (skip the initial settling) and find
+    // the min/max window RMS: the min is where the notch sits on 400 Hz.
+    const win = 0.04;
+    let minW = Infinity, maxW = 0;
+    for (let t = 0.15; t + win < seconds; t += 0.02) {
+      const r = winRms(out, t, t + win);
+      if (r < minW) minW = r;
+      if (r > maxW) maxW = r;
+    }
+    return {
+      minW,
+      maxW,
+      early: winRms(out, 0.2, 0.35),
+      late: winRms(out, 0.9, 1.05),
+      overall: winRms(out, 0.15, seconds - 0.05),
+    };
+  });
+
+  // A notch is measurably present: the deepest window is far below the loudest
+  // (the sweeping notch buries the 400 Hz tone as it passes).
+  expect(result.maxW).toBeGreaterThan(0.02);
+  expect(result.maxW / Math.max(result.minW, 1e-9)).toBeGreaterThan(3);
+  // Two LFO phases differ: an early window and a later window are not the same
+  // amplitude (the notch has moved between them).
+  const rel = Math.abs(result.early - result.late) / Math.max(result.early, result.late, 1e-9);
+  expect(rel).toBeGreaterThan(0.08);
+});
+
 // M6.4: the pedal CHAIN is dynamic and ordered. Reordering two RATs with
 // different settings changes the processed signal (distortion is nonlinear, so
 // A->B != B->A); the SAME order renders deterministically (bit-identical).
@@ -1168,6 +1280,42 @@ test('board: cables connect the units; the gear tray adds and removes pedals', a
   expect(count0).toBe(0);
   // The amp is still there at the end of the chain.
   await expect(page.getByTestId('board-amp')).toBeVisible();
+});
+
+// v1.1: the script phaser has its own single-knob FACE (dark chassis, orange
+// accent, one big SPEED knob, "Ninety" wordmark). The gear tray adds it, the face
+// renders with exactly one knob, and the choice round-trips through a reload.
+test('phaser: gear tray adds it, the one-knob face renders, and it persists', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByTestId('board')).toBeVisible();
+
+  // Add a phaser from the gear tray.
+  await page.getByTestId('add-pedal').click();
+  await page.getByTestId('add-pedal-phaser').click();
+
+  // A second unit appears; it is a phaser face with the single SPEED knob.
+  const phaser = page.getByTestId('board-unit-1').getByTestId('pedal');
+  await expect(phaser).toBeVisible();
+  await expect(phaser).toHaveAttribute('data-pedal-type', 'phaser');
+  await expect(phaser).toHaveAttribute('data-face', 'single');
+  await expect(phaser.getByTestId('knob-speed')).toBeVisible();
+  // The one-knob face carries exactly ONE knob (no dist/tone/level trio).
+  await expect(phaser.locator('.knob')).toHaveCount(1);
+  await expect(phaser.getByText('Ninety')).toBeVisible();
+
+  // It is a real phaser in the rig state.
+  const type = await page.evaluate(
+    () => (window as any).__CLIPPER_TEST__.getRig().pedals[1].type
+  );
+  expect(type).toBe('phaser');
+
+  // Persists across a reload (localStorage round-trip).
+  await page.reload();
+  await expect(page.getByTestId('board')).toBeVisible();
+  const persisted = await page.evaluate(
+    () => (window as any).__CLIPPER_TEST__.getRig().pedals.map((p: any) => p.type)
+  );
+  expect(persisted).toEqual(['rat', 'phaser']);
 });
 
 // M6.4: keyboard-accessible reorder (the move buttons) changes the chain order in

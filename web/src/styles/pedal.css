@@ -13,9 +13,10 @@
 /* Per-type ACCENT only — the chassis is identical across all pedals. The accent
    is a saturated small-area color that reads neumorphic-safe on the dark chassis
    (tokens.css, both themes). */
-.pedal[data-pedal-type="rat"]   { --pedal-accent: var(--accent-rat);   --pedal-accent-glow: var(--accent-rat-glow); }
-.pedal[data-pedal-type="sd1"]   { --pedal-accent: var(--accent-sd);    --pedal-accent-glow: var(--accent-sd-glow); }
-.pedal[data-pedal-type="tuner"] { --pedal-accent: var(--accent-tuner); --pedal-accent-glow: var(--accent-tuner-glow); }
+.pedal[data-pedal-type="rat"]    { --pedal-accent: var(--accent-rat);    --pedal-accent-glow: var(--accent-rat-glow); }
+.pedal[data-pedal-type="sd1"]    { --pedal-accent: var(--accent-sd);     --pedal-accent-glow: var(--accent-sd-glow); }
+.pedal[data-pedal-type="phaser"] { --pedal-accent: var(--accent-phaser); --pedal-accent-glow: var(--accent-phaser-glow); }
+.pedal[data-pedal-type="tuner"]  { --pedal-accent: var(--accent-tuner);  --pedal-accent-glow: var(--accent-tuner-glow); }
 .pedal.raised {
   background:
     linear-gradient(160deg, var(--chassis-tint, transparent), var(--chassis-tint, transparent)),
@@ -220,3 +221,18 @@
   color: #d9dbdf; text-transform: uppercase;
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.6), 0 -1px 0 rgba(255, 255, 255, 0.05); opacity: .92; }
 .pedal[data-face="compact"]:not(.on) .treadle-wordmark { opacity: .55; }
+
+/* ---- phaser 'single' face: the iconic ONE-KNOB script box ----
+   Shares the vertical 'stack' skeleton (hero wordmark, knob, round stomp) but
+   centers a SINGLE big SPEED knob — the one-control face that reads instantly as
+   the orange script phaser. The ORANGE accent (var(--accent-phaser)) is the
+   reference cue; the big lone knob is the morphology cue; "Ninety" is the name. */
+.pedal[data-face="single"] .knob-row {
+  --kd: 96px;            /* one big knob dominates the face */
+  justify-content: center;
+  margin: 8px 0 20px;
+}
+.pedal[data-face="single"] .k-name { letter-spacing: .3em; }
+/* A subtle orange sweep arc etched around the hero knob's zone, echoing the LFO
+   motion — small-area accent, neumorphic-safe. */
+.pedal[data-face="single"] .pedal-logo { margin-bottom: 14px; }
