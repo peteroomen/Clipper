@@ -96,6 +96,61 @@ void drawJewel(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour accent,
     }
 }
 
+void drawJack(juce::Graphics& g, juce::Point<float> centre, float diameter) {
+    const float r = diameter * 0.5f;
+    juce::Rectangle<float> body(centre.x - r, centre.y - r, diameter, diameter);
+    // The socket ring: a recessed well (inset dark TL + light BR, board.css .jack).
+    g.setColour(well);
+    g.fillEllipse(body);
+    g.setColour(shDarker);
+    g.drawEllipse(body.reduced(0.5f).translated(0.7f, 0.8f), 1.6f);
+    g.setColour(shLight);
+    g.drawEllipse(body.reduced(0.5f).translated(-0.6f, -0.6f), 1.2f);
+    // The bore (.jack::after) — a darker inner disc.
+    auto bore = body.reduced(diameter * 0.25f);
+    g.setColour(groundDeep.darker(0.55f));
+    g.fillEllipse(bore);
+    g.setColour(shDarker);
+    g.drawEllipse(bore.reduced(0.4f), 0.9f);
+}
+
+void drawCable(juce::Graphics& g, juce::Point<float> from, juce::Point<float> to) {
+    // Sag law lifted from Board.tsx cablePath(): grows with the span, clamped, and
+    // hung from the LOWER of the two ends so the tube always droops.
+    const float dx = to.x - from.x;
+    const float sag = juce::jlimit(16.0f, 70.0f, std::abs(dx) * 0.16f + 14.0f);
+    const float lowY = juce::jmax(from.y, to.y) + sag;
+    juce::Path p;
+    p.startNewSubPath(from);
+    p.cubicTo({from.x + dx * 0.28f, lowY}, {from.x + dx * 0.72f, lowY}, to);
+
+    // .cable filter: drop-shadow(1px 3px 2.5px var(--sh-dark)) — the tube's cast
+    // shadow on the surface below it.
+    {
+        juce::Path shadow = p;
+        shadow.applyTransform(juce::AffineTransform::translation(1.0f, 3.0f));
+        g.setColour(castShadow.withAlpha(0.30f));
+        g.strokePath(shadow, juce::PathStrokeType(8.0f, juce::PathStrokeType::curved,
+                                                  juce::PathStrokeType::rounded));
+    }
+    // .cable-body — the rubber tube.
+    g.setColour(cable);
+    g.strokePath(p, juce::PathStrokeType(7.0f, juce::PathStrokeType::curved,
+                                         juce::PathStrokeType::rounded));
+    // .cable-hi — the specular edge hugging the top of the tube (translateY -1.4).
+    {
+        juce::Path hi = p;
+        hi.applyTransform(juce::AffineTransform::translation(0.0f, -1.4f));
+        g.setColour(cableHi.withAlpha(0.22f));
+        g.strokePath(hi, juce::PathStrokeType(2.4f, juce::PathStrokeType::curved,
+                                              juce::PathStrokeType::rounded));
+    }
+    // .cable-plug — the plug disc at each end.
+    g.setColour(cablePlug);
+    g.fillEllipse(from.x - 5.0f, from.y - 5.0f, 10.0f, 10.0f);
+    g.fillEllipse(to.x - 5.0f, to.y - 5.0f, 10.0f, 10.0f);
+}
+
 juce::Font wordmarkFont(float height) {
     // Anton substitute: a heavy, horizontally-compressed system sans.
     return juce::Font(juce::FontOptions(height, juce::Font::bold)).withHorizontalScale(0.82f);
@@ -303,55 +358,233 @@ void NeuKnob::resized() {
 }
 
 // ===========================================================================
-// Footswitch (round stomp + LED + caption)
+// Footswitch — the four web morphologies (pedal.css .fsw / -treadle / -pad)
 // ===========================================================================
 Footswitch::Footswitch() {}
 
 void Footswitch::mouseDown(const juce::MouseEvent&) {
+    // The thunk: press for ~130 ms (the web's transient `.stomped`), then release.
+    pressed_ = true;
+    repaint();
+    startTimer(130);
     if (onClick) onClick();
+}
+
+void Footswitch::timerCallback() {
+    stopTimer();
+    pressed_ = false;
+    repaint();
 }
 
 void Footswitch::paint(juce::Graphics& g) {
     auto r = getLocalBounds().toFloat();
-    // LED at top; round stomp centred below it; caption directly under the stomp —
-    // the group reads as one unit (no detached bottom caption).
-    const float ledD = 13.0f;
-    const float capH = 16.0f;
-    const float gapAfterLed = 9.0f;
-    float d = juce::jmin(r.getWidth(), r.getHeight() - ledD - gapAfterLed - capH - 4.0f);
-    d = juce::jmax(60.0f, d);
-    auto led = juce::Rectangle<float>(r.getCentreX() - ledD * 0.5f, r.getY(), ledD, ledD);
-    skin::drawJewel(g, led, accent_, on_);
+    // `.fsw:active { transform: translateY(2px) }` — the whole switch drops.
+    if (pressed_) r = r.translated(0.0f, 2.0f);
+    switch (shape_) {
+        case Shape::Treadle: paintTreadle(g, r); break;
+        case Shape::Pad:     paintPad(g, r); break;
+        default:             paintRound(g, r); break;
+    }
+}
 
-    juce::Rectangle<float> stomp(r.getCentreX() - d * 0.5f, r.getY() + ledD + gapAfterLed, d, d);
+void Footswitch::paintRound(juce::Graphics& g, juce::Rectangle<float> r) {
+    const float capH = caption_.isEmpty() ? 0.0f : 16.0f;
+    // The web disc is 88 px (104 on the Muff's wide face); scale down only if the
+    // slot is genuinely smaller than that.
+    const float want = shape_ == Shape::BigRound ? 104.0f : 88.0f;
+    float d = juce::jmin(want, juce::jmin(r.getWidth(), r.getHeight() - capH - 4.0f));
+    d = juce::jmax(44.0f, d);
+    // Centre the disc + its caption in the zone: a stomp pinned to the top of a
+    // tall slot leaves the enclosure looking half-empty below it.
+    const float top = r.getY() + juce::jmax(0.0f, (r.getHeight() - d - capH - 4.0f) * 0.5f);
+    juce::Rectangle<float> stomp(r.getCentreX() - d * 0.5f, top, d, d);
+
     juce::Path sp;
     sp.addEllipse(stomp);
-    juce::DropShadow(skin::shDark, 10, {4, 5}).drawForPath(g, sp);
+    // 8px 8px 18px --sh-dark (raised) collapsing to 3/3/8 while pressed.
+    juce::DropShadow(skin::shDark, pressed_ ? 8 : 16, pressed_ ? juce::Point<int>{3, 3}
+                                                               : juce::Point<int>{5, 6})
+        .drawForPath(g, sp);
     g.setGradientFill(juce::ColourGradient(skin::capEdgeTop, stomp.getTopLeft(),
                                            skin::capEdgeBot, stomp.getBottomRight(), false));
     g.fillEllipse(stomp);
-    // Inner cap.
-    auto inner = stomp.reduced(d * 0.16f);
+    // .fsw::before — the inset cap dome (inset 10px on an 88px disc).
+    auto inner = stomp.reduced(d * 0.114f);
     g.setGradientFill(juce::ColourGradient(skin::capTop, inner.getTopLeft(), skin::capBot,
                                            inner.getBottomRight(), false));
     g.fillEllipse(inner);
     g.setColour(juce::Colour(0x14FFFFFF));
     g.drawEllipse(inner.reduced(0.5f), 1.0f);
-    // grip dots ring.
+    if (pressed_) {  // inset 2px 2px 6px --sh-darker
+        g.setColour(skin::shDarker);
+        g.drawEllipse(stomp.reduced(1.4f), 2.6f);
+    }
+    // .fsw::after — the fine grip ring (repeating conic, opacity .3).
     g.setColour(skin::shDarker.withAlpha(0.3f));
     auto grip = stomp.reduced(d * 0.34f);
     for (int i = 0; i < 16; ++i) {
-        float a = (float)i / 16.0f * juce::MathConstants<float>::twoPi;
-        float gx = grip.getCentreX() + std::cos(a) * grip.getWidth() * 0.5f;
-        float gy = grip.getCentreY() + std::sin(a) * grip.getHeight() * 0.5f;
+        const float a = (float)i / 16.0f * juce::MathConstants<float>::twoPi;
+        const float gx = grip.getCentreX() + std::cos(a) * grip.getWidth() * 0.5f;
+        const float gy = grip.getCentreY() + std::sin(a) * grip.getHeight() * 0.5f;
         g.fillEllipse(gx - 1.0f, gy - 1.0f, 2.0f, 2.0f);
     }
-    // caption directly beneath the stomp.
-    g.setColour(skin::inkFaint);
-    g.setFont(skin::monoFont(9.5f));
-    g.drawText(caption_.toUpperCase(),
-               juce::Rectangle<float>(r.getX(), stomp.getBottom() + 3.0f, r.getWidth(), capH),
-               juce::Justification::centred);
+    if (capH > 0.0f) {  // .fsw-label
+        g.setColour(skin::inkFaint);
+        g.setFont(skin::monoFont(9.5f));
+        g.drawText(caption_.toUpperCase(),
+                   juce::Rectangle<float>(r.getX(), stomp.getBottom() + 4.0f, r.getWidth(),
+                                          capH),
+                   juce::Justification::centred);
+    }
+}
+
+void Footswitch::paintTreadle(juce::Graphics& g, juce::Rectangle<float> r) {
+    // .fsw-treadle: a wide BLACK RUBBER pad owning the LOWER body — the web drops
+    // it to the bottom of the enclosure with nothing beneath it, and that placement
+    // is half the Boss-compact read. Explicitly darker/mattes than the metal knobs.
+    const float h = juce::jmin(r.getHeight(), 150.0f);
+    auto body = r.withTop(r.getBottom() - h);
+    juce::Path bp;
+    bp.addRoundedRectangle(body, 18.0f);
+    juce::DropShadow(skin::shDark, pressed_ ? 10 : 20, pressed_ ? juce::Point<int>{3, 4}
+                                                                : juce::Point<int>{7, 9})
+        .drawForPath(g, bp);
+    g.setGradientFill(juce::ColourGradient(juce::Colour(0xff26282D), body.getTopLeft(),
+                                           juce::Colour(0xff17181C), body.getBottomRight(),
+                                           false));
+    g.fillRoundedRectangle(body, 18.0f);
+    // ::before — the matte rubber tread face (inset 6px) + pebble texture.
+    auto face = body.reduced(6.0f);
+    g.setGradientFill(juce::ColourGradient(juce::Colour(0xff1F2125), face.getTopLeft(),
+                                           juce::Colour(0xff131417), face.getBottomRight(),
+                                           false));
+    g.fillRoundedRectangle(face, 13.0f);
+    {
+        juce::Graphics::ScopedSaveState ss(g);
+        g.reduceClipRegion(roundedRectPath(face, 13.0f));
+        g.setColour(juce::Colour(0x0AFFFFFF));
+        for (float y = face.getY() + 2.0f; y < face.getBottom(); y += 5.0f)
+            for (float x = face.getX() + 2.0f; x < face.getRight(); x += 5.0f)
+                g.fillEllipse(x, y, 1.6f, 1.6f);
+    }
+    // ::after — the raised grip ribs across the toe.
+    {
+        juce::Rectangle<float> ribs(body.getX() + 22.0f, body.getBottom() - 32.0f,
+                                    juce::jmax(0.0f, body.getWidth() - 44.0f), 18.0f);
+        juce::Graphics::ScopedSaveState ss(g);
+        g.reduceClipRegion(roundedRectPath(ribs, 4.0f));
+        for (float x = ribs.getX(); x < ribs.getRight(); x += 8.0f) {
+            g.setColour(juce::Colour(0x8C000000));
+            g.fillRect(x, ribs.getY(), 2.0f, ribs.getHeight());
+            g.setColour(juce::Colour(0x0FFFFFFF));
+            g.fillRect(x + 2.0f, ribs.getY(), 1.0f, ribs.getHeight());
+        }
+    }
+    // .treadle-wordmark — embossed light lettering, dimmed when bypassed.
+    if (wordmark_.isNotEmpty()) {
+        auto tw = juce::Rectangle<float>(body.getX(), body.getBottom() - 62.0f,
+                                         body.getWidth(), 26.0f);
+        g.setFont(juce::Font(juce::FontOptions(19.0f, juce::Font::bold)));
+        g.setColour(juce::Colours::black.withAlpha(0.55f));
+        g.drawText(wordmark_.toUpperCase(), tw.translated(0.0f, 1.0f),
+                   juce::Justification::centred);
+        g.setColour(juce::Colour(0xffD9DBDF).withAlpha(engaged_ ? 0.92f : 0.55f));
+        g.drawText(wordmark_.toUpperCase(), tw, juce::Justification::centred);
+    }
+}
+
+void Footswitch::paintPad(juce::Graphics& g, juce::Rectangle<float> r) {
+    // .fsw-pad: the Ibanez-format hinged METAL plate — wide, low, brushed, and (like
+    // the treadle) owning the bottom of the enclosure with nothing below it.
+    const float h = juce::jmin(r.getHeight(), 96.0f);
+    auto body = r.withTop(r.getBottom() - h);
+    juce::Path bp;
+    bp.addRoundedRectangle(body, 12.0f);
+    juce::DropShadow(skin::shDark, pressed_ ? 10 : 20, pressed_ ? juce::Point<int>{3, 4}
+                                                                : juce::Point<int>{7, 9})
+        .drawForPath(g, bp);
+    g.setGradientFill(juce::ColourGradient(juce::Colour(0xff2C3036), body.getTopLeft(),
+                                           juce::Colour(0xff1C1E22), body.getBottomRight(),
+                                           false));
+    g.fillRoundedRectangle(body, 12.0f);
+    // ::before — the brushed plate face (vertical micro-striping).
+    auto face = body.reduced(8.0f);
+    g.setGradientFill(juce::ColourGradient(juce::Colour(0xff33373D), face.getTopLeft(),
+                                           juce::Colour(0xff232529), face.getBottomRight(),
+                                           false));
+    g.fillRoundedRectangle(face, 8.0f);
+    {
+        juce::Graphics::ScopedSaveState ss(g);
+        g.reduceClipRegion(roundedRectPath(face, 8.0f));
+        g.setColour(juce::Colour(0x08FFFFFF));
+        for (float x = face.getX(); x < face.getRight(); x += 3.0f)
+            g.fillRect(x, face.getY(), 1.0f, face.getHeight());
+    }
+    // ::after — the hinge line across the toe.
+    g.setColour(juce::Colours::black.withAlpha(0.5f));
+    g.fillRoundedRectangle(body.getX() + 18.0f, body.getBottom() - 22.0f,
+                           juce::jmax(0.0f, body.getWidth() - 36.0f), 3.0f, 1.5f);
+    if (wordmark_.isNotEmpty()) {
+        auto tw = juce::Rectangle<float>(body.getX(), body.getY() + 16.0f, body.getWidth(),
+                                         24.0f);
+        g.setFont(skin::monoFont(11.0f));
+        g.setColour(skin::inkFaint.withAlpha(engaged_ ? 1.0f : 0.55f));
+        g.drawText(wordmark_.toUpperCase(), tw, juce::Justification::centred);
+    }
+}
+
+// ===========================================================================
+// ChipButton (the .rack-btn / .tray-add pill)
+// ===========================================================================
+ChipButton::ChipButton(const juce::String& text) : text_(text) {}
+
+void ChipButton::mouseDown(const juce::MouseEvent&) {
+    if (!enabled_) return;
+    held_ = true;
+    dragged_ = false;
+    repaint();
+}
+
+void ChipButton::mouseDrag(const juce::MouseEvent& e) {
+    if (!enabled_ || !onDrag) return;
+    // Only start dragging past a small threshold, so a click never reorders.
+    if (!dragged_ && e.getDistanceFromDragStart() < 4) return;
+    dragged_ = true;
+    onDrag(getX() + e.x);
+}
+
+void ChipButton::mouseUp(const juce::MouseEvent&) {
+    const bool wasDragged = dragged_;
+    held_ = false;
+    dragged_ = false;
+    repaint();
+    if (!enabled_) return;
+    if (wasDragged) {
+        if (onDragEnd) onDragEnd();
+    } else if (onClick) {
+        onClick();
+    }
+}
+
+void ChipButton::paint(juce::Graphics& g) {
+    auto r = getLocalBounds().toFloat().reduced(1.0f);
+    const float radius = juce::jmin(7.0f, r.getHeight() * 0.35f);
+    if (held_) {
+        // :active — the raised pill inverts to a recess.
+        g.setColour(skin::well);
+        g.fillRoundedRectangle(r, radius);
+        g.setColour(skin::shDarker);
+        g.drawRoundedRectangle(r.reduced(0.5f).translated(0.6f, 0.7f), radius, 1.6f);
+    } else {
+        juce::Path p = roundedRectPath(r, radius);
+        juce::DropShadow(skin::shDark, 5, {2, 2}).drawForPath(g, p);
+        skin::fillDiagGradient(g, r, skin::capEdgeTop, skin::capEdgeBot);
+        g.setColour(juce::Colour(0x12FFFFFF));
+        g.strokePath(roundedRectPath(r.reduced(0.5f), radius), juce::PathStrokeType(1.0f));
+    }
+    g.setColour(enabled_ ? tint_ : tint_.withAlpha(0.35f));
+    g.setFont(skin::monoFont(juce::jmin(12.0f, r.getHeight() * 0.62f)));
+    g.drawText(text_, r, juce::Justification::centred);
 }
 
 // ===========================================================================
@@ -405,9 +638,10 @@ void PowerControl::paint(juce::Graphics& g) {
     const float jewelD = 15.0f;
     auto jewel = juce::Rectangle<float>(r.getCentreX() - jewelD * 0.5f, r.getY(), jewelD,
                                         jewelD);
-    skin::drawJewel(g, jewel, accent_, on_);
-
-    auto rockArea = r.withTrimmedTop(jewelD + 6.0f).withTrimmedBottom(16.0f);
+    // The jewel is drawn LAST (see below): the rocker's DropShadow reaches back over
+    // this band and used to paint out the lit halo — the "lights are covered over"
+    // bug. The rocker also gets a wider gap so the shadow starts clear of the glow.
+    auto rockArea = r.withTrimmedTop(jewelD + 14.0f).withTrimmedBottom(16.0f);
     float rw = 44.0f, rh = juce::jmin(60.0f, rockArea.getHeight());
     juce::Rectangle<float> rocker(rockArea.getCentreX() - rw * 0.5f, rockArea.getY(), rw, rh);
     juce::Path rp = roundedRectPath(rocker, 11.0f);
@@ -430,6 +664,9 @@ void PowerControl::paint(juce::Graphics& g) {
     g.setColour(skin::inkFaint);
     g.setFont(skin::monoFont(9.5f));
     g.drawText("POWER", r.withTop(r.getBottom() - 14.0f), juce::Justification::centred);
+
+    // The jewel goes on LAST, over the rocker's cast shadow — never under it.
+    skin::drawJewel(g, jewel, accent_, on_);
 }
 
 // ===========================================================================

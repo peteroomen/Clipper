@@ -71,10 +71,18 @@ inline const juce::Colour shLight     {0x0EFFFFFF};  // rgba(255,255,255,.055)
 // (.pedal.raised light-theme: 16px 18px 34px rgba(54,50,44,.3)).
 inline const juce::Colour castShadow  {0x4D36322C};  // rgba(54,50,44,.30)
 
+// Patch-cable palette (board.css light theme: --cable / --cable-hi / --cable-plug).
+inline const juce::Colour cable       {0xff35383E};
+inline const juce::Colour cableHi     {0x80FFFFFF};  // rgba(255,255,255,.5)
+inline const juce::Colour cablePlug   {0xffC4C0B8};
+
 // Per-section ACCENTS — light-theme root values (readable on the light bench and
 // on the dark chassis). tokens.css :root / [data-theme=light].
 inline const juce::Colour accentRat   {0xffF03B24};  // --led / --accent-rat  (red)
 inline const juce::Colour accentSd    {0xffB58900};  // --accent-sd           (yellow/gold)
+inline const juce::Colour accentTs    {0xff1E9E5A};  // --accent-ts           (green box)
+inline const juce::Colour accentMuff  {0xff7A3FBF};  // --accent-muff         (violet)
+inline const juce::Colour accentPhaser{0xffC4611A};  // --accent-phaser       (burnt orange)
 inline const juce::Colour accentJcm   {0xffA87A18};  // --accent-jcm          (brass gold)
 inline const juce::Colour accentTwin  {0xff4E7BA8};  // --accent-twin         (silver-blue)
 inline const juce::Colour accentAc30  {0xffB4612C};  // --accent-ac30         (copper)
@@ -92,7 +100,23 @@ void drawChassisCard(juce::Graphics&, juce::Rectangle<float>, float radius);
 void drawWell(juce::Graphics&, juce::Rectangle<float>, float radius);
 
 // A small round jewel/LED. `on` lights it (accent + glow); off is a recessed dot.
+//
+// PAINT ORDER MATTERS: a lit jewel's glow spreads to ~3× its radius, so it must be
+// drawn LAST in its component — after every neighbouring body and, above all, after
+// their juce::DropShadow passes, which are translucent black over a wide blur and
+// will otherwise eat the halo. That inversion is exactly what made the LEDs look
+// "covered over" before native parity (see docs → Native pedal-board parity).
 void drawJewel(juce::Graphics&, juce::Rectangle<float>, juce::Colour accent, bool on);
+
+// A carved side JACK socket (board.css .jack): a recessed ring with a darker bore.
+// Drawn ON TOP of the chassis so a cable end reads as entering the socket.
+void drawJack(juce::Graphics&, juce::Point<float> centre, float diameter);
+
+// One neumorphic PATCH CABLE between two jack centres (board.css .cable): a
+// gravity-sagging cubic (the sag grows with the span, matching Board.tsx's
+// cablePath), a soft cast shadow under the tube, the rubber body, a specular top
+// highlight, and a plug disc at each end.
+void drawCable(juce::Graphics&, juce::Point<float> from, juce::Point<float> to);
 
 // Condensed hero wordmark font (Anton-substitute: boldened + horizontally
 // compressed system font). `height` in px.
@@ -148,24 +172,80 @@ private:
     bool dimmed_{false};
 };
 
-// The round stomp FOOTSWITCH (the RAT's morphology) with an LED above and a
-// caption below. Toggles `on` via onClick.
-class Footswitch : public juce::Component {
+// The FOOTSWITCH — the pedal's morphology cue, translated from the web recipes in
+// pedal.css. Four shapes, one behaviour:
+//
+//   Round     .fsw           — the RAT/phaser stomp: cap-edge disc, inset cap dome,
+//                              a ring of grip dots, "STOMP" caption beneath.
+//   BigRound  [data-face=wide] .fsw — the Muff's larger stomp (104 vs 88 px).
+//   Treadle   .fsw-treadle    — the Boss-compact rubber pad: matte tread face,
+//                              pebble texture, grip ribs at the toe, embossed
+//                              wordmark, no caption.
+//   Pad       .fsw-pad        — the Ibanez-format hinged metal plate: brushed
+//                              face + a hinge line across the toe, no caption.
+//
+// Pressing THUNKS (`.fsw:active` — the body drops 2 px and its outer shadow
+// collapses into an inset one) for ~130 ms, exactly like the web's transient
+// press; the engaged STATE is shown by the card's LED, never by this widget. It
+// therefore no longer draws an LED of its own — the old stacked-LED layout is
+// what the stomp's drop shadow was painting over.
+class Footswitch : public juce::Component, private juce::Timer {
 public:
+    enum class Shape { Round, BigRound, Treadle, Pad };
+
     Footswitch();
     void setAccent(juce::Colour c) { accent_ = c; repaint(); }
-    void setOn(bool o) { on_ = o; repaint(); }
-    bool isOn() const { return on_; }
+    void setShape(Shape s) { shape_ = s; repaint(); }
     void setCaption(const juce::String& c) { caption_ = c; repaint(); }
+    // The name embossed on a treadle/pad face (the web's .treadle-wordmark).
+    void setWordmark(const juce::String& w) { wordmark_ = w; repaint(); }
+    // Dim the embossed wordmark when the pedal is bypassed (.pedal:not(.on)).
+    void setEngaged(bool e) { engaged_ = e; repaint(); }
     std::function<void()> onClick;
 
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
 
 private:
+    void timerCallback() override;
+    void paintRound(juce::Graphics&, juce::Rectangle<float>);
+    void paintTreadle(juce::Graphics&, juce::Rectangle<float>);
+    void paintPad(juce::Graphics&, juce::Rectangle<float>);
+
     juce::Colour accent_{skin::accentRat};
-    bool on_{false};
+    Shape shape_{Shape::Round};
+    bool pressed_{false};
+    bool engaged_{true};
     juce::String caption_{"Stomp"};
+    juce::String wordmark_;
+};
+
+// A small neumorphic CHIP button — the board.css `.rack-btn` / `.tray-add` family:
+// a rounded cap-edge pill with a dual shadow that inverts to an inset one while
+// held. Used for the per-card reorder/swap/remove rack and the gear tray.
+class ChipButton : public juce::Component {
+public:
+    explicit ChipButton(const juce::String& text = {});
+    void setText(const juce::String& t) { text_ = t; repaint(); }
+    void setTint(juce::Colour c) { tint_ = c; repaint(); }
+    void setChipEnabled(bool e) { enabled_ = e; setInterceptsMouseClicks(e, false); repaint(); }
+    bool chipEnabled() const { return enabled_; }
+    // Optional drag reporting (the grip): x is in the PARENT's coordinate space.
+    std::function<void()> onClick;
+    std::function<void(int parentX)> onDrag;
+    std::function<void()> onDragEnd;
+
+    void paint(juce::Graphics&) override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
+
+private:
+    juce::String text_;
+    juce::Colour tint_{skin::inkDim};
+    bool enabled_{true};
+    bool held_{false};
+    bool dragged_{false};
 };
 
 // A carved-slot lever toggle (the amp Bright/Cab levers): a recessed well with a
