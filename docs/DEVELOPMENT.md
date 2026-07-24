@@ -3248,7 +3248,7 @@ move, **⇄** swap, **✕** remove. Dragging the grip reorders live under the po
 using the web's rule — drop before the first card whose centre is right of the
 pointer. The tray and the swap menu list only types **not** already on the board.
 
-Two implementation notes worth keeping:
+Two implementation notes, one of which did not survive contact with the user:
 
 - a **move** only permutes the cards, never destroys them, because a live drag calls
   it from inside a card's own mouse handler; add/remove/swap *do* rebuild, so they
@@ -3257,8 +3257,8 @@ Two implementation notes worth keeping:
 
 #### The board scrolls (superseding "grow the window")
 
-The parity pass had a third implementation note: the window's minimum width tracked
-the board, so five pedals raised the floor to 1622 px. The reasoning was sound as far
+The parity pass's second implementation note was that the window's minimum width
+tracked the board, so five pedals raised the floor to 1622 px. The reasoning was sound as far
 as it went — squeezing five cards into 1040 px had produced 64 px slivers and pushed
 the amp off its own card, and a legible board is worth asking for room. What it got
 wrong was **whose room it is**. The window belongs to the user; a plugin that widens
