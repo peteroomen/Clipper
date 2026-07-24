@@ -10,6 +10,10 @@ namespace {
 constexpr float kTrimMinDb = -12.0f;
 constexpr float kTrimMaxDb = 24.0f;
 constexpr int   kCabPartition = 128;  // == worklet render quantum / cab partition
+// The JCM's fixed internal oversampling — matches the C ABI (docs §18: 4× ships;
+// 8× buys nothing at the composed max-gain floor). Independent of the pedal OS.
+constexpr int   kJcmOversampling = 4;
+constexpr int   kAmpJcm800 = 1;  // Params::ampModel value for the JCM
 }  // namespace
 
 float trimKnobToGain(float knob01) {
@@ -44,6 +48,17 @@ void ClipperEngine::applyParamsToModels() {
     amp_.setParameter(clipper::dsp::AmpModel::PARAM_CHORUS_MODE,
                       static_cast<float>(p.chorusMode));
     amp_.setParameter(clipper::dsp::AmpModel::PARAM_REVERB, p.reverb);
+
+    // JCM800 (M9.4): kept current alongside the Clean 120 so a live model switch is
+    // instant. bass/middle/treble are SHARED (same knob values feed both tone
+    // stacks); gain/master/presence are JCM-only.
+    using J = clipper::dsp::Jcm800Amp;
+    jcm_.setParameter(J::PARAM_GAIN, p.jcmGain);
+    jcm_.setParameter(J::PARAM_MASTER, p.jcmMaster);
+    jcm_.setParameter(J::PARAM_BASS, p.bass);
+    jcm_.setParameter(J::PARAM_MID, p.middle);
+    jcm_.setParameter(J::PARAM_TREBLE, p.treble);
+    jcm_.setParameter(J::PARAM_PRESENCE, p.jcmPresence);
 }
 
 void ClipperEngine::setParams(const Params& p) {
@@ -53,6 +68,7 @@ void ClipperEngine::setParams(const Params& p) {
 
 void ClipperEngine::updateParams(const Params& p) {
     using clipper::dsp::AmpModel;
+    using clipper::dsp::Jcm800Amp;
     using clipper::dsp::RatModel;
     using clipper::dsp::SdModel;
     const Params& o = params_;  // old snapshot
@@ -67,15 +83,31 @@ void ClipperEngine::updateParams(const Params& p) {
 
     // Amp knobs + toggles.
     if (p.volume != o.volume) amp_.setParameter(AmpModel::PARAM_VOLUME, p.volume);
-    if (p.bass != o.bass)     amp_.setParameter(AmpModel::PARAM_BASS, p.bass);
-    if (p.middle != o.middle) amp_.setParameter(AmpModel::PARAM_MIDDLE, p.middle);
-    if (p.treble != o.treble) amp_.setParameter(AmpModel::PARAM_TREBLE, p.treble);
+    // bass/middle/treble are SHARED between both amp voices — update BOTH tone
+    // stacks so the inactive voice is already correct at a live switch.
+    if (p.bass != o.bass) {
+        amp_.setParameter(AmpModel::PARAM_BASS, p.bass);
+        jcm_.setParameter(Jcm800Amp::PARAM_BASS, p.bass);
+    }
+    if (p.middle != o.middle) {
+        amp_.setParameter(AmpModel::PARAM_MIDDLE, p.middle);
+        jcm_.setParameter(Jcm800Amp::PARAM_MID, p.middle);
+    }
+    if (p.treble != o.treble) {
+        amp_.setParameter(AmpModel::PARAM_TREBLE, p.treble);
+        jcm_.setParameter(Jcm800Amp::PARAM_TREBLE, p.treble);
+    }
     if (p.bright != o.bright) amp_.setParameter(AmpModel::PARAM_BRIGHT, p.bright ? 1.0f : 0.0f);
     if (p.chorusSpeed != o.chorusSpeed) amp_.setParameter(AmpModel::PARAM_CHORUS_SPEED, p.chorusSpeed);
     if (p.chorusDepth != o.chorusDepth) amp_.setParameter(AmpModel::PARAM_CHORUS_DEPTH, p.chorusDepth);
     if (p.chorusMode != o.chorusMode)
         amp_.setParameter(AmpModel::PARAM_CHORUS_MODE, static_cast<float>(p.chorusMode));
     if (p.reverb != o.reverb) amp_.setParameter(AmpModel::PARAM_REVERB, p.reverb);
+
+    // JCM800-only knobs.
+    if (p.jcmGain != o.jcmGain)         jcm_.setParameter(Jcm800Amp::PARAM_GAIN, p.jcmGain);
+    if (p.jcmMaster != o.jcmMaster)     jcm_.setParameter(Jcm800Amp::PARAM_MASTER, p.jcmMaster);
+    if (p.jcmPresence != o.jcmPresence) jcm_.setParameter(Jcm800Amp::PARAM_PRESENCE, p.jcmPresence);
 
     // Oversampling change: reset only the pedals' OS filter state (like the web
     // worklet's per-node setOversampling), not a full re-prepare.
@@ -99,6 +131,10 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     rat_.prepare(sampleRate_, maxBlock_);
     sd_.prepare(sampleRate_, maxBlock_);
     amp_.prepare(sampleRate_, maxBlock_);
+    // The JCM runs at its fixed 4× internally (set BEFORE prepare so its stages
+    // size to it), independent of the pedal OS selector — matches the C ABI.
+    jcm_.setOversampling(kJcmOversampling);
+    jcm_.prepare(sampleRate_, maxBlock_);
 
     rat_.setOversampling(params_.oversampling);
     sd_.setOversampling(params_.oversampling);
@@ -150,13 +186,21 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
     }
 
     // 3. Amp stage. Powered off => stereo passthrough of the mono chain signal.
+    // Clean 120 splits to a stereo pair (chorus); the JCM is a MONO head, so its
+    // single output is mirrored to both sides (dual-mono) before the identical cab
+    // pair — matching the C ABI's amp_process_stereo.
     if (!p.ampOn) {
         for (int i = 0; i < numFrames; ++i) {
             outL[i] = cur[i];
             outR[i] = cur[i];
         }
     } else {
-        amp_.processStereo(cur, outL, outR, numFrames);
+        if (p.ampModel == kAmpJcm800) {
+            jcm_.process(cur, outL, numFrames);
+            for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
+        } else {
+            amp_.processStereo(cur, outL, outR, numFrames);
+        }
         if (p.cab) {
             cabL_.process(outL, outL, numFrames);  // in-place ok
             cabR_.process(outR, outR, numFrames);
@@ -172,6 +216,9 @@ int ClipperEngine::latencySamples() const {
     int n = 0;
     if (p.ratOn) n += rat_.latencySamples();
     if (p.sdOn) n += sd_.latencySamples();
+    // The JCM adds its own oversampling group delay when it is the powered voice;
+    // the linear Clean 120 adds nothing.
+    if (p.ampOn && p.ampModel == kAmpJcm800) n += jcm_.latencySamples();
     if (p.ampOn && p.cab) n += kCabPartition;      // cab adds one partition (128)
     n += limiter_.latencySamples();                // lookahead (64)
     return n;

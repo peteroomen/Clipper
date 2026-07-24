@@ -2115,6 +2115,102 @@ full scale, NOT re-normalized). `--jcm-presence` is the power-amp presence knob;
 ceiling). Reuses `--jcm-drive/-gain/-master/-bass/-mid/-treble` and `--os`. `--jcm-pre`
 (M9.2 preamp alone) still works unchanged.
 
+## 19. M9.4 — JCM800 joins the amp registry (integration end-to-end)
+
+M9.1–9.3 built and validated the JCM800 2204 DSP (`Jcm800Amp` = preamp cascade →
+power section). **M9.4 wires it into the app as a second selectable amp voice**
+alongside the Clean 120, end-to-end: C ABI, worklet, rig serializer, React face,
+assistant, and the native JUCE plugin. No DSP was changed — this milestone is pure
+integration, and the load-bearing proof is that the **identical-core test is now
+bit-exact on BOTH amp models**.
+
+### One handle, two voices (the C ABI)
+
+`AmpChain` (`core/src/clipper_c_api.cpp`) now owns **both** `AmpModel amp` (Clean 120)
+and `Jcm800Amp jcm`, plus an `int model`. Both are **created and prepared up front**
+in `amp_create` (the JCM at its fixed **4× internal oversampling** — docs §18: 4×
+ships), so the new `amp_set_model(handle, which)` export is a **realtime-safe int
+flip**, never an allocation on the audio thread. The cab pair is **shared**: whichever
+voice is active feeds the same per-side `CabConvolver`s.
+
+- **Routing.** `amp_set_param` keeps **both** voices current at all times (a knob
+  moved just before a switch must already be reflected in the incoming voice). The two
+  models use **different id spaces** (`AmpModel::PARAM_VOLUME==0` vs
+  `Jcm800Amp::PARAM_GAIN==0`), so ids are **translated explicitly**, not forwarded
+  blindly: `BASS/MID/TREBLE` (ids 1/2/3) are **shared** → both; `volume/bright/chorus
+  (6/7/8)/reverb (9)` are Clean-120-only → `AmpModel`; the new **JCM-only ids 10/11/12
+  (gain/presence/master)** → `Jcm800Amp`. The JCM has **no bright/chorus/reverb** (a
+  real 2204 has none), so those simply never reach it.
+- **Mono head → dual-mono.** The JCM is a **mono valve head**; `amp_process_stereo`
+  renders it once into `out_l` and **mirrors to `out_r`** before the identical cab
+  pair (any stereo width there would be fake). The Clean 120 keeps its true stereo
+  chorus split.
+- **Latency.** `amp_latency_samples` adds the JCM's own oversampling group delay
+  (`jcm.latencySamples()` = preamp four serial halfband stages + the power-section
+  round trip) when it is the active voice; the linear Clean 120 adds nothing. Cab
+  (128) + limiter (64) as before. Measured: Clean 120 path **336**, JCM path **624**.
+
+### Click-free amp swap (the worklet)
+
+`web/worklet/clipper-processor.js` gained a `{ type: 'ampModel', model }` message and a
+`_pendingAmpModel`. Exactly like a cab swap, it is staged in the message handler and
+applied at the **declick fade-out zero** in `_commitPending` (which calls
+`_amp_set_model` then re-publishes latency, since the JCM path is longer). So switching
+amps mid-signal is a **smooth raised-cosine bracketed swap — no pop** (proven in
+`web/tests/amp.spec.ts`).
+
+### Rig, params, UI, assistant
+
+- **`rig.ts`.** `AmpType` becomes `'clean120' | 'jcm800'`; `AmpParams` gains **additive**
+  `gain/presence/master` (defaults 0.5/0.5/0.4). Migration is a seam: an unknown/absent
+  type coerces to `clean120`, and pre-M9.4 rigs load the JCM defaults — old saved rigs
+  round-trip **unchanged**. The pinned exact-JSON round-trip test literal in
+  `audio.spec.ts` was extended per the house pattern.
+- **`params.ts` / `audio.ts`.** New ids `AMP_PARAM_JCM_GAIN/PRESENCE/MASTER = 10/11/12`
+  and an `AMP_MODEL_INDEX` map; `setAmpModel(type)` posts the `ampModel` message. The
+  JCM knobs are sent on every start so both voices stay current.
+- **`Amp.tsx` — the JCM FACE (per §17 doctrine).** Same dark neumorphic chassis; identity
+  is a small-area **GOLD/BRASS accent** (`--accent-jcm`) on the knob arcs/readouts + the
+  "**Eight Hundred**" wordmark (model line **HEAD Nº2 · BRIT-TYPE**) — homage, never
+  replica. The era-correct 2204 control row is **PRESENCE · BASS · MIDDLE · TREBLE ·
+  MASTER · GAIN** (real front-panel order); **bright/chorus/reverb are hidden**; the Cab
+  lever + Power rocker stay. The two faces are separate components behind one `Amp`
+  wrapper switching on `amp.type`.
+- **`Board.tsx` / `App.tsx`.** The amp-slot menu lists both amps; `setAmpType` updates the
+  rig + engine click-free and, **when switching to the JCM with the Clean 2×12 still
+  loaded, drops a one-line hint suggesting the Brit 4×12 — but never auto-switches the
+  cab** (the player's choice stays theirs).
+- **Assistant.** New `set_amp` tool (`clipper120` | `jcm800`), the `gain/presence/master`
+  params, and coaching for the JCM voice — including the canonical **SD-1 boost into a
+  cranked JCM** move and the presence-vs-treble distinction (power-amp HF lift *after* the
+  distortion vs. the preamp tone stack *before* it).
+
+### Native (JUCE)
+
+`ClipperEngine`/`Params` gained `ampModel` + `jcmGain/jcmMaster/jcmPresence`; the APVTS
+adds an **Amp Model** choice (0 = Clean 120, 1 = JCM800) and the three JCM knobs.
+`bass/middle/treble` are updated on **both** tone stacks so the inactive voice is correct
+at a live switch; the process path mirrors the C ABI's mono-head dual-mono routing.
+
+### The proof — identical-core, both models
+
+`native/tests/identical_core_test.cpp` was refactored to parametrize `renderReference` /
+`renderPlugin` by `Params` and now runs **two cases**: the Clean 120 (linear stereo
+chorus + reverb) and the JCM800 (an SD-1 boost into a cranked head, dual-mono into the
+cab pair). Both are **bit-exact** (max |plugin − reference| = **0.0**, engine cross-check
+0.0, latency 336 / 624 matched) — the plugin and raw engine wrap the identical core for
+both voices.
+
+### Perf smoke
+
+`web/tests/amp.spec.ts` includes a perf smoke that times the **JCM800 WASM offline
+render** vs the Clean 120 and reports the ratio. Headless-CI steady state: clean120 ≈ 53
+ms, **jcm800 ≈ 2.27 s for 2 s of audio (~1.14× real-time, ~43× the linear clean amp)** —
+the expected cost of the per-sample tube Newton solves at 4× OS. The test asserts only a
+**generous** bound (a guard against pathological regressions like a lost fast-path or an
+accidental 8× OS), not a tight budget; an analytic plate-solve Jacobian remains the
+obvious future optimization (docs §18).
+
 ## Built DSP artifacts are committed
 
 `web/public/generated/` (the Emscripten-built WASM engine + the worklet copy)

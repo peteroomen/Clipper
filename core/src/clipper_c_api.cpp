@@ -9,6 +9,7 @@
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
+#include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/SdModel.h"
 
@@ -160,13 +161,38 @@ namespace {
 // One past the AmpModel param ids so it never collides with them.
 constexpr int kAmpParamCab = clipper::dsp::AmpModel::PARAM_COUNT;  // == 5
 
+// M9.4: the JCM800's three amp-specific knob ids, placed ABOVE every clean-120 id
+// (reverb == 9 is the current top) so the ABI stays purely additive and the
+// clean-120 ids never shift. GAIN/PRESENCE/MASTER are JCM-only; the JCM's
+// BASS/MID/TREBLE REUSE the clean-120 tone ids (1/2/3) since they mean the same
+// thing to the player. Must mirror web/src/params.ts AMP_PARAM_JCM_*.
+constexpr int kAmpParamJcmGain = 10;
+constexpr int kAmpParamJcmPresence = 11;
+constexpr int kAmpParamJcmMaster = 12;
+
+// Which amp model the chain's single handle is currently voicing.
+enum AmpModelId { kAmpClean120 = 0, kAmpJcm800 = 1 };
+
+// The JCM's fixed internal oversampling. Docs §18 measured 4× as the requirement
+// (8× buys nothing at the composed max-gain compound-alias floor), so the JCM runs
+// at 4× regardless of the rig's pedal-oversampling selector — a deliberate design
+// constant, never silently reduced for perf.
+constexpr int kJcmOversampling = 4;
+
 struct AmpChain {
-    clipper::dsp::AmpModel amp;
+    // Two amp voices behind ONE handle (M9.4). Both are created + prepared up front
+    // so amp_set_model is a realtime-safe int flip (no allocation on the audio
+    // thread). The cab pair below is SHARED: whichever model is active feeds the
+    // same per-side CabConvolvers + custom-IR machinery.
+    clipper::dsp::AmpModel amp;         // clean 120 (JC-120 style, linear, stereo)
+    clipper::dsp::Jcm800Amp jcm;        // Marshall JCM800 2204 (mono head)
+    int model = kAmpClean120;
     // M6.3: the amp goes STEREO from the chorus stage on, so the cab IR runs PER
     // SIDE. Two independent CabConvolver instances (same IR) — the wet R side is
     // genuinely a different signal from the dry L side in chorus mode, so a single
     // mono cab AFTER a wet/dry sum would collapse the stereo bloom. cabL doubles
-    // as the mono cab for the legacy amp_process() path.
+    // as the mono cab for the legacy amp_process() path. The JCM is a MONO head, so
+    // its output is copied to both sides (dual-mono) before the identical cab pair.
     clipper::dsp::CabConvolver cabL, cabR;
     bool cabOn = true;
     // Cab expansion: the engine rate is remembered so the cab can be regenerated
@@ -196,9 +222,25 @@ void* amp_create(float sample_rate) {
     auto* c = new AmpChain();
     c->sr = sr;
     c->amp.prepare(sr, 128);
+    // Prepare the JCM up front too (heavy: solves all tube DC op points), so the
+    // model swap later is a lock-free int flip. It runs at its fixed 4× internally.
+    c->jcm.setOversampling(kJcmOversampling);
+    c->jcm.prepare(sr, 128);
     const std::vector<float> ir = clipper::dsp::generateDefaultCab2x12IR(sr);
     loadIrBothSides(c, ir);
     return c;
+}
+
+// M9.4: select which amp voice the handle drives (0 = Clean 120, 1 = JCM800). The
+// worklet calls this at the declick fade-out zero (never inside process()), so the
+// topology swap is click-free — exactly like a cab swap. Both voices are already
+// prepared, so this only flips an int. Chorus/reverb are Clean-120 features and are
+// simply not reached on the JCM path (the 2204 has neither).
+EMSCRIPTEN_KEEPALIVE
+void amp_set_model(void* handle, int which) {
+    if (!handle) return;
+    auto* c = static_cast<AmpChain*>(handle);
+    c->model = which == kAmpJcm800 ? kAmpJcm800 : kAmpClean120;
 }
 
 // Cab expansion: swap the BUILT-IN cab IR (0 = Clean 2x12, 1 = Brit 4x12) on both
@@ -238,43 +280,79 @@ EMSCRIPTEN_KEEPALIVE
 void amp_set_param(void* handle, int param_id, float value) {
     if (!handle) return;
     auto* c = static_cast<AmpChain*>(handle);
+    // The cab on/off toggle is chain-level and shared by BOTH amp models.
     if (param_id == kAmpParamCab) {
         c->cabOn = value >= 0.5f;
-    } else {
-        c->amp.setParameter(param_id, value);
+        return;
+    }
+    // Keep BOTH amp voices current at all times, independent of which is active:
+    // the model swap is deferred to the declick zero, so a knob moved just before a
+    // switch must already be reflected in the incoming voice. The two models use
+    // DIFFERENT id spaces (AmpModel::PARAM_VOLUME==0 vs Jcm800Amp::PARAM_GAIN==0), so
+    // ids can't be blindly forwarded to both — each id is translated explicitly.
+    //   - BASS/MID/TREBLE are SHARED tone controls -> both models.
+    //   - volume/bright/chorus(6/7/8)/reverb(9) are Clean-120-only -> AmpModel.
+    //   - gain/presence/master (10/11/12) are JCM-only -> Jcm800Amp.
+    using A = clipper::dsp::AmpModel;
+    using J = clipper::dsp::Jcm800Amp;
+    switch (param_id) {
+        case A::PARAM_BASS:   c->amp.setParameter(A::PARAM_BASS, value);   c->jcm.setParameter(J::PARAM_BASS, value);   break;
+        case A::PARAM_MIDDLE: c->amp.setParameter(A::PARAM_MIDDLE, value); c->jcm.setParameter(J::PARAM_MID, value);    break;
+        case A::PARAM_TREBLE: c->amp.setParameter(A::PARAM_TREBLE, value); c->jcm.setParameter(J::PARAM_TREBLE, value); break;
+        case kAmpParamJcmGain:     c->jcm.setParameter(J::PARAM_GAIN, value); break;
+        case kAmpParamJcmPresence: c->jcm.setParameter(J::PARAM_PRESENCE, value); break;
+        case kAmpParamJcmMaster:   c->jcm.setParameter(J::PARAM_MASTER, value); break;
+        default:
+            // Clean-120-only ids (volume 0, bright 4, chorus 6/7/8, reverb 9). The
+            // JCM ignores these (no bright/chorus/reverb on a real 2204).
+            c->amp.setParameter(param_id, value);
+            break;
     }
 }
 
-// Total latency of the amp instance in samples: the amp itself is linear (0),
-// the cab adds one partition (128) when engaged. Both sides share the partition
-// size, so this is the same for the mono and stereo paths.
+// Total latency of the amp instance in base-rate samples: the Clean 120 is linear
+// (0); the JCM adds its oversampling group delay; the cab adds one partition (128)
+// when engaged. Both cab sides share the partition size, so this is the same for
+// the mono and stereo paths.
 EMSCRIPTEN_KEEPALIVE
 int amp_latency_samples(void* handle) {
     if (!handle) return 0;
     auto* c = static_cast<AmpChain*>(handle);
-    return c->cabOn ? c->cabL.latencySamples() : 0;
+    int n = c->model == kAmpJcm800 ? c->jcm.latencySamples() : 0;
+    if (c->cabOn) n += c->cabL.latencySamples();
+    return n;
 }
 
-// Mono path (pre-M6.3, retained for ABI compatibility): tone+volume -> single
-// cab. Chorus never runs here.
+// Mono path (pre-M6.3, retained for ABI compatibility): amp voice -> single cab.
+// Chorus never runs here. Routes to the JCM (mono head) when it is the active model.
 EMSCRIPTEN_KEEPALIVE
 void amp_process(void* handle, const float* in_ptr, float* out_ptr,
                  int num_frames) {
     if (!handle) return;
     auto* c = static_cast<AmpChain*>(handle);
-    c->amp.process(in_ptr, out_ptr, num_frames);
+    if (c->model == kAmpJcm800) c->jcm.process(in_ptr, out_ptr, num_frames);
+    else c->amp.process(in_ptr, out_ptr, num_frames);
     if (c->cabOn) c->cabL.process(out_ptr, out_ptr, num_frames);  // in-place ok
 }
 
-// M6.3 STEREO path: tone+volume -> chorus split -> a per-side cab on each of
-// outL/outR. With the chorus mode off, outL == outR. in_ptr may not alias the
-// outputs; outL_ptr and outR_ptr must be distinct.
+// M6.3 STEREO path. Clean 120: tone+volume -> chorus split -> a per-side cab on
+// each of outL/outR (with the chorus mode off, outL == outR). JCM800: it is a MONO
+// head, so its single mono output is copied to BOTH sides (dual-mono) and then run
+// through the SAME identical cab pair — any stereo width there would be fake, so
+// the JCM is honestly mono-into-a-cab-pair. in_ptr may not alias the outputs;
+// out_l_ptr and out_r_ptr must be distinct.
 EMSCRIPTEN_KEEPALIVE
 void amp_process_stereo(void* handle, const float* in_ptr, float* out_l_ptr,
                         float* out_r_ptr, int num_frames) {
     if (!handle) return;
     auto* c = static_cast<AmpChain*>(handle);
-    c->amp.processStereo(in_ptr, out_l_ptr, out_r_ptr, num_frames);
+    if (c->model == kAmpJcm800) {
+        // Mono head into out_l, then mirror to out_r (dual-mono before the cabs).
+        c->jcm.process(in_ptr, out_l_ptr, num_frames);
+        for (int i = 0; i < num_frames; ++i) out_r_ptr[i] = out_l_ptr[i];
+    } else {
+        c->amp.processStereo(in_ptr, out_l_ptr, out_r_ptr, num_frames);
+    }
     if (c->cabOn) {
         c->cabL.process(out_l_ptr, out_l_ptr, num_frames);  // in-place ok
         c->cabR.process(out_r_ptr, out_r_ptr, num_frames);

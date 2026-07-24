@@ -50,6 +50,15 @@ public:
     // Output normalized (1.0 == full scale).
     void process(const float* in, float* out, int numFrames);
 
+    // Total oversampling-filter group delay in base-rate samples (0 at 1x): the
+    // preamp cascade's four serial triode stages + the power section's own OS
+    // round trip. The interstage scale is a memoryless gain (no delay). Reported
+    // by the C ABI so the worklet/plugin can delay-compensate the JCM path just
+    // like the RAT/SD-1 oversamplers.
+    int latencySamples() const {
+        return preamp_.latencySamples() + power_.latencySamples();
+    }
+
     // Introspection / passthrough for tests + the render CLI.
     Jcm800Preamp& preamp() { return preamp_; }
     Jcm800PowerAmp& powerAmp() { return power_; }

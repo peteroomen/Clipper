@@ -38,6 +38,11 @@ inline constexpr const char* chorusMode  = "chorusMode";
 inline constexpr const char* chorusSpeed = "chorusSpeed";
 inline constexpr const char* chorusDepth = "chorusDepth";
 inline constexpr const char* reverb      = "reverb";
+// M9.4 JCM800: the amp-voice choice + the three JCM-only knobs.
+inline constexpr const char* ampModel    = "ampModel";
+inline constexpr const char* jcmGain     = "jcmGain";
+inline constexpr const char* jcmMaster   = "jcmMaster";
+inline constexpr const char* jcmPresence = "jcmPresence";
 inline constexpr const char* oversampling = "oversampling";
 }  // namespace pid
 

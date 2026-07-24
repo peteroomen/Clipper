@@ -18,6 +18,25 @@
 /* the amp's value arcs dim when powered off (mirrors the pedal's .k-arc dim) */
 .amp:not(.on) .k-arc { opacity: .3; }
 
+/* M9.4 JCM800 face — the ONE morphology/colour cue per the M6.8.1 doctrine (docs
+   §17): the shared dark chassis is unchanged, identity is a small-area GOLD/BRASS
+   accent. Setting --pedal-accent makes the shared knob anatomy (pedal.css .k-arc /
+   .k-val, which read var(--pedal-accent, …)) paint gold, and the model wordmark +
+   power jewel pick up the same brass — a knowing plexi-gold wink, homage not
+   replica. The six-knob control row wraps like the clean face. */
+.amp[data-amp-type="jcm800"] {
+  --pedal-accent: var(--accent-jcm);
+  --pedal-accent-glow: var(--accent-jcm-glow);
+}
+.amp[data-amp-type="jcm800"] .amp-name { color: var(--accent-jcm); }
+.amp[data-amp-type="jcm800"].on .jewel {
+  background: radial-gradient(circle at 35% 30%, #FFF0C8, var(--accent-jcm) 55%, #6B4E08);
+  box-shadow: 0 0 16px var(--accent-jcm-glow), 0 0 5px var(--accent-jcm-glow);
+}
+.amp[data-amp-type="jcm800"] .jewel {
+  background: color-mix(in srgb, var(--accent-jcm) 18%, var(--well));
+}
+
 /* toggle (bright / cab) — a lever in a carved slot */
 .toggle { display: flex; flex-direction: column; align-items: center; gap: 9px; cursor: pointer;
   background: none; border: none; padding: 0; font: inherit; }

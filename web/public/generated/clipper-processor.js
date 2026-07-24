@@ -180,6 +180,9 @@ class ClipperProcessor extends AudioWorkletProcessor {
     // is applied at the SAME declick fade-out zero as a chain edit (M6.4), so the
     // IR change is click-free. { builtin } or { irPtr, irLen }.
     this._pendingCab = null;
+    // M9.4: a pending amp-model swap (0 = Clean 120, 1 = JCM800), applied at the
+    // SAME declick fade-out zero, so switching amps mid-signal is click-free.
+    this._pendingAmpModel = null;
 
     // Tuner mute (M7). An engaged tuner mutes the whole chain output (true tuner-
     // pedal behavior: stomp = mute). `_muteActive` is derived from the chain (any
@@ -391,7 +394,7 @@ class ClipperProcessor extends AudioWorkletProcessor {
   // fading. Runs during the output-zero of the declick, so the (non-RT-safe) cab
   // regeneration/free here is inaudible.
   _commitPending() {
-    if (!this._pending && !this._pendingCab) return;
+    if (!this._pending && !this._pendingCab && this._pendingAmpModel == null) return;
     if (this._pending) {
       for (const node of this._pending.removed) this._destroyPedal(node);
       this._chain = this._pending.nodes;
@@ -407,6 +410,13 @@ class ClipperProcessor extends AudioWorkletProcessor {
         this._module._free(pc.irPtr); // the core copied the samples in
       }
       this._pendingCab = null;
+    }
+    if (this._pendingAmpModel != null) {
+      // M9.4: flip the amp voice at the fade zero. Both voices are pre-created in
+      // the C ABI, so this is just an int flip (no allocation) — but the JCM adds
+      // oversampling latency vs the linear Clean 120, so latency is republished.
+      this._module._amp_set_model(this._amp, this._pendingAmpModel | 0);
+      this._pendingAmpModel = null;
     }
     this._postLatency();
   }
@@ -428,14 +438,14 @@ class ClipperProcessor extends AudioWorkletProcessor {
     } else if (data.type === 'chain') {
       // A new topology. If an edit is still fading, commit it first so the diff
       // is against the current committed chain, then prepare + start a new fade.
-      if (this._pending || this._pendingCab) this._commitPending();
+      if (this._pending || this._pendingCab || this._pendingAmpModel != null) this._commitPending();
       this._pending = this._prepareChain(data.pedals || []);
       this._declickPhase = 'out'; // ramp to zero, swap at the bottom, ramp back
     } else if (data.type === 'cab') {
       // Cab expansion: swap the cab IR click-free. Stage it here (the malloc +
       // heap copy of a custom IR is fine in the message handler) and apply it at
       // the declick fade-out zero (in _commitPending), exactly like a chain edit.
-      if (this._pending || this._pendingCab) this._commitPending();
+      if (this._pending || this._pendingCab || this._pendingAmpModel != null) this._commitPending();
       if (data.custom && data.custom.length) {
         const arr = data.custom; // transferred Float32Array (mono, engine-rate)
         const len = arr.length | 0;
@@ -445,6 +455,12 @@ class ClipperProcessor extends AudioWorkletProcessor {
       } else {
         this._pendingCab = { builtin: (data.builtin | 0) || 0 };
       }
+      this._declickPhase = 'out';
+    } else if (data.type === 'ampModel') {
+      // M9.4: swap the amp voice (0 = Clean 120, 1 = JCM800) click-free — staged
+      // here and applied at the declick fade-out zero, exactly like a cab swap.
+      if (this._pending || this._pendingCab || this._pendingAmpModel != null) this._commitPending();
+      this._pendingAmpModel = (data.model | 0) || 0;
       this._declickPhase = 'out';
     }
   }

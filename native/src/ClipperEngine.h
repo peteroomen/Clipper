@@ -34,6 +34,7 @@
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
+#include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/OutputLimiter.h"
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/SdModel.h"
@@ -60,18 +61,28 @@ struct Params {
     float sdTone = 0.5f;
     float sdLevel = 0.7f;
 
+    // Amp voice (M9.4): 0 = Clean 120, 1 = JCM800. Selects which head process()
+    // drives; both are always kept current so a live switch is instant.
+    int   ampModel = 0;
+
     // Clean 120 amp.
     bool  ampOn = true;   // power
     float volume = 0.4f;
-    float bass = 0.5f;
-    float middle = 0.5f;
-    float treble = 0.6f;
+    float bass = 0.5f;    // SHARED with the JCM tone stack (both amps use it)
+    float middle = 0.5f;  // SHARED
+    float treble = 0.6f;  // SHARED
     bool  bright = false;
     bool  cab = true;
     int   chorusMode = 0;  // 0 off | 1 chorus | 2 vibrato
     float chorusSpeed = 0.3f;
     float chorusDepth = 0.5f;
     float reverb = 0.0f;   // M6.7 spring reverb wet/dry mix (0 = dry)
+
+    // JCM800 (M9.4) knobs — gain = preamp drive, master = power-amp drive,
+    // presence = power-amp HF lift. bass/middle/treble above are shared.
+    float jcmGain = 0.5f;
+    float jcmMaster = 0.4f;
+    float jcmPresence = 0.5f;
 
     // Nonlinear-stage oversampling for the dirt pedals (1/2/4/8, default 4).
     int oversampling = 4;
@@ -126,7 +137,8 @@ private:
 
     clipper::dsp::RatModel rat_;
     clipper::dsp::SdModel  sd_;
-    clipper::dsp::AmpModel amp_;
+    clipper::dsp::AmpModel amp_;      // Clean 120
+    clipper::dsp::Jcm800Amp jcm_;     // JCM800 2204 (mono head, M9.4)
     clipper::dsp::CabConvolver cabL_, cabR_;
     clipper::dsp::OutputLimiter limiter_;
 

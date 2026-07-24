@@ -1002,6 +1002,10 @@ test('rig state: JSON round-trips exactly and restores from localStorage', async
           depth: 0.8,
           chorusMode: 2,
           reverb: 0.5,
+          // M9.4 JCM800 knobs — additive; sit after reverb in the normalized shape.
+          gain: 0.55,
+          presence: 0.35,
+          master: 0.7,
         },
       },
       oversampling: 8,
