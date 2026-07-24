@@ -31,10 +31,12 @@ export const AMP_PARAM_JCM_GAIN = 10;
 export const AMP_PARAM_JCM_PRESENCE = 11;
 export const AMP_PARAM_JCM_MASTER = 12;
 
-// The worklet's amp-model index (mirrors AmpModelId in clipper_c_api.cpp).
-export const AMP_MODEL_INDEX: Record<'clean120' | 'jcm800', number> = {
+// The worklet's amp-model index (mirrors AmpModelId in clipper_c_api.cpp). M10.1
+// adds the Twin as voice 2 (purely additive; clean120/jcm800 indices unchanged).
+export const AMP_MODEL_INDEX: Record<'clean120' | 'jcm800' | 'twin', number> = {
   clean120: 0,
   jcm800: 1,
+  twin: 2,
 };
 
 // Chorus mode enum (mirrors ChorusModel::Mode). Kept as plain numbers so it flows

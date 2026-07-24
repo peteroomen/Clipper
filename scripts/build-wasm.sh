@@ -87,6 +87,10 @@ emcc \
     "$CORE_DIR/src/dsp/Jcm800Preamp.cpp" \
     "$CORE_DIR/src/dsp/Jcm800PowerAmp.cpp" \
     "$CORE_DIR/src/dsp/Jcm800Amp.cpp" \
+    "$CORE_DIR/src/dsp/OptoTremolo.cpp" \
+    "$CORE_DIR/src/dsp/TwinPreamp.cpp" \
+    "$CORE_DIR/src/dsp/TwinPowerAmp.cpp" \
+    "$CORE_DIR/src/dsp/TwinAmp.cpp" \
     -I "$CORE_DIR/include" \
     -isystem "$WDF_INC" \
     -O3 \

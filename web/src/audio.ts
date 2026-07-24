@@ -58,7 +58,7 @@ export interface StartOptions {
   inputTrim: number; // 0..1 knob position, rig-level pre-pedal input trim
   pedals: PedalInstance[]; // the ordered pedal chain (may be empty)
   amp: AmpParams; // amp knob positions (0..1)
-  ampType: AmpType; // which amp voice (clean120 | jcm800)
+  ampType: AmpType; // which amp voice (clean120 | jcm800 | twin)
   ampEngaged: boolean; // false = amp+cab bypassed
   cabModel: CabChoice; // which cab IR (built-in or 'custom')
   // Mono custom-cab samples + the rate they're stored at, when cabModel is
@@ -91,7 +91,7 @@ export interface Engine {
   setPedalParam(pedalId: string, id: number, value: number): void;
   setPedalBypass(pedalId: string, on: boolean): void; // per-instance bypass
   setAmpParam(id: number, value: number): void; // amp param
-  // M9.4: swap the amp voice (clean120 | jcm800) — applied click-free in the
+  // M9.4: swap the amp voice (clean120 | jcm800 | twin) — applied click-free in the
   // worklet via the declick fade, exactly like a cab swap.
   setAmpModel(type: AmpType): void;
   setInputTrim(knob: number): void; // 0..1 knob -> linear gain, applied pre-pedal
@@ -241,8 +241,11 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   engine.setAmpParam(AMP_PARAM_JCM_PRESENCE, opts.amp.presence);
   engine.setAmpParam(AMP_PARAM_JCM_MASTER, opts.amp.master);
   // Select the amp voice (default clean120 needs no swap, but sending is harmless
-  // and keeps the worklet's model + reported latency in sync from sample 0).
+  // and keeps the worklet's model + reported latency in sync from sample 0). M10.1:
+  // the twin is voice 2. The reverb/speed/depth already sent above reach it (the C
+  // ABI routes reverb id 9 to all three voices and speed/depth to the twin tremolo).
   if (opts.ampType === 'jcm800') engine.setAmpModel('jcm800');
+  else if (opts.ampType === 'twin') engine.setAmpModel('twin');
   engine.setAmpBypass(!opts.ampEngaged);
 
   // Cab: the worklet's amp_create loads the Clean 2x12 by default. Apply the

@@ -24,8 +24,12 @@ export type PedalType = 'rat' | 'sd1' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
-// treble/presence — no chorus/reverb/bright/volume). Both share the cab pair.
-export type AmpType = 'clean120' | 'jcm800';
+// treble/presence). M10.1: the 'twin' — a Fender blackface "Twin-style" combo (the
+// CLEAN benchmark): volume/bass/middle/treble/bright + spring reverb + optical
+// tremolo (reusing the speed/depth mod knobs as tremolo SPEED/INTENSITY). All three
+// share the cab pair; all three now have a REVERB knob (the JCM's is a usability
+// add — the real 2204 has none). No new params: the Twin reuses existing knobs.
+export type AmpType = 'clean120' | 'jcm800' | 'twin';
 
 // Cab expansion: which speaker cabinet IR the amp runs. 'clean212' is the
 // built-in Clean 2x12 (the JC-120 platform), 'brit412' the darker/thicker Brit
@@ -44,9 +48,9 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412', number> = {
 
 // The pedal types that can be added from the gear tray (M6.4).
 export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'tuner'];
-// The amp types that can be selected in the amp slot (M6.4 / M9.4): the Clean 120
-// and the Marshall JCM800.
-export const AVAILABLE_AMP_TYPES: readonly AmpType[] = ['clean120', 'jcm800'];
+// The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
+// Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
+export const AVAILABLE_AMP_TYPES: readonly AmpType[] = ['clean120', 'jcm800', 'twin'];
 
 export type ParamName = 'distortion' | 'filter' | 'level';
 export type AmpParamName =
@@ -321,10 +325,11 @@ export function normalizeRig(raw: unknown): RigState {
   const customCabLabel =
     typeof a.customCabLabel === 'string' ? a.customCabLabel : undefined;
 
-  // Amp type migration (M9.4): a known 'jcm800' round-trips; anything else (incl.
-  // an old rig with no type) coerces to the Clean 120, so pre-M9.4 saved rigs load
-  // unchanged.
-  const ampType: AmpType = a.type === 'jcm800' ? 'jcm800' : 'clean120';
+  // Amp type migration (M9.4 / M10.1): known 'jcm800' / 'twin' round-trip; anything
+  // else (incl. an old rig with no type) coerces to the Clean 120, so pre-M9.4 saved
+  // rigs load unchanged.
+  const ampType: AmpType =
+    a.type === 'jcm800' ? 'jcm800' : a.type === 'twin' ? 'twin' : 'clean120';
 
   return {
     input: { trim: clamp01(inp.trim, d.input.trim) },

@@ -282,16 +282,18 @@ export default function App() {
     setAmpEngaged(!rigRef.current.amp.engaged);
   }
 
-  // Swap the amp voice (clean120 | jcm800). Updates the rig and, if running, the
-  // engine (click-free in the worklet). When switching TO the JCM with the clean
-  // 2×12 still loaded, drop a one-line hint suggesting the Brit 4×12 — but never
-  // auto-switch the cab (the player's choice stays theirs).
+  // Swap the amp voice (clean120 | jcm800 | twin). Updates the rig and, if running,
+  // the engine (click-free in the worklet). A one-line cab HINT nudges the natural
+  // pairing — the Brit 4×12 for the JCM, the Clean 2×12 for the Twin (a real Twin is
+  // a 2×12 combo) — but never auto-switches the cab (the player's choice stays theirs).
   function setAmpType(type: AmpType) {
     if (rigRef.current.amp.type === type) return;
     setRig((r) => ({ ...r, amp: { ...r.amp, type } }));
     engineRef.current?.setAmpModel(type);
     if (type === 'jcm800' && rigRef.current.amp.cabModel === 'clean212') {
       setCabNote('JCM800 loaded — try the Brit 4×12 cab for a thicker, darker rock voicing.');
+    } else if (type === 'twin' && rigRef.current.amp.cabModel === 'brit412') {
+      setCabNote('Twin Sixty-Five loaded — try the Clean 2×12 (a real Twin is a 2×12 combo).');
     } else {
       setCabNote(null);
     }
@@ -408,9 +410,9 @@ export default function App() {
       setCab: (cab) => {
         if (cab === 'clean212' || cab === 'brit412') setCabModel(cab);
       },
-      // M9.4: the coach may swap the amp voice (clean120 | jcm800).
+      // M9.4/M10.1: the coach may swap the amp voice (clean120 | jcm800 | twin).
       setAmp: (type) => {
-        if (type === 'clean120' || type === 'jcm800') setAmpType(type);
+        if (type === 'clean120' || type === 'jcm800' || type === 'twin') setAmpType(type);
       },
       addPedal: (type, position) => addPedal((type as PedalType) ?? 'rat', position),
       removePedal: (index) => {

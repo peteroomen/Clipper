@@ -62,6 +62,10 @@
      brass on the light porcelain. Amp faces set --pedal-accent from this. */
   --accent-jcm: #A87A18;
   --accent-jcm-glow: rgba(198, 148, 30, 0.5);
+  /* M10.1 Twin amp — COOL SILVER-BLUE accent (the blackface-panel wink), a readable
+     steel blue on the light porcelain. Amp faces set --pedal-accent from this. */
+  --accent-twin: #4E7BA8;
+  --accent-twin-glow: rgba(78, 123, 168, 0.5);
   /* M6.8 tuner — segmented meter LEDs (recessed neumorphic wells) + the 7-seg
      note "screen" (a dark readout window in both themes; lit segments glow, unlit
      stay faintly visible). */
@@ -118,6 +122,9 @@
     /* M9.4 JCM800 — brighter brass gold, glows on the dark board */
     --accent-jcm: #E8B84B;
     --accent-jcm-glow: rgba(232, 184, 75, 0.55);
+    /* M10.1 Twin — brighter cool silver-blue, glows on the dark board */
+    --accent-twin: #7FB4E8;
+    --accent-twin-glow: rgba(127, 180, 232, 0.55);
     /* M6.8 tuner segments (glow on dark) */
     --seg-red: #FF4A34;
     --seg-red-glow: rgba(255, 74, 52, 0.6);
@@ -145,6 +152,7 @@
   --accent-rat: var(--led); --accent-rat-glow: var(--led-glow);
   --accent-sd: #B58900; --accent-sd-glow: rgba(201,152,10,.5);
   --accent-jcm: #A87A18; --accent-jcm-glow: rgba(198,148,30,.5);
+  --accent-twin: #4E7BA8; --accent-twin-glow: rgba(78,123,168,.5);
   --accent-tuner: var(--seg-green); --accent-tuner-glow: var(--seg-green-glow);
   --seg-red: #E23B2A; --seg-red-glow: rgba(226,59,42,.55);
   --seg-green: #24C265; --seg-green-glow: rgba(36,194,101,.6);
@@ -166,6 +174,7 @@
   --accent-rat: var(--led); --accent-rat-glow: var(--led-glow);
   --accent-sd: #FFC94D; --accent-sd-glow: rgba(255,201,77,.55);
   --accent-jcm: #E8B84B; --accent-jcm-glow: rgba(232,184,75,.55);
+  --accent-twin: #7FB4E8; --accent-twin-glow: rgba(127,180,232,.55);
   --accent-tuner: var(--seg-green); --accent-tuner-glow: var(--seg-green-glow);
   --seg-red: #FF4A34; --seg-red-glow: rgba(255,74,52,.6);
   --seg-green: #34E070; --seg-green-glow: rgba(52,224,112,.65);

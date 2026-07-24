@@ -37,6 +37,23 @@
   background: color-mix(in srgb, var(--accent-jcm) 18%, var(--well));
 }
 
+/* M10.1 Twin face — same doctrine as the JCM: the shared dark chassis is unchanged,
+   identity is a small-area COOL SILVER-BLUE accent (the blackface panel wink). The
+   panel stays light/bench-style exactly like the Eight Hundred face — no new panel
+   philosophy. The knob arcs/wordmark/jewel pick up the silver-blue. */
+.amp[data-amp-type="twin"] {
+  --pedal-accent: var(--accent-twin);
+  --pedal-accent-glow: var(--accent-twin-glow);
+}
+.amp[data-amp-type="twin"] .amp-name { color: var(--accent-twin); }
+.amp[data-amp-type="twin"].on .jewel {
+  background: radial-gradient(circle at 35% 30%, #EAF2FF, var(--accent-twin) 55%, #24405E);
+  box-shadow: 0 0 16px var(--accent-twin-glow), 0 0 5px var(--accent-twin-glow);
+}
+.amp[data-amp-type="twin"] .jewel {
+  background: color-mix(in srgb, var(--accent-twin) 18%, var(--well));
+}
+
 /* toggle (bright / cab) — a lever in a carved slot */
 .toggle { display: flex; flex-direction: column; align-items: center; gap: 9px; cursor: pointer;
   background: none; border: none; padding: 0; font: inherit; }

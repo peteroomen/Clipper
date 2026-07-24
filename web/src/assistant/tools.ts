@@ -34,8 +34,8 @@ export interface RigController {
   // Cab expansion: switch between the BUILT-IN cabs ('clean212' | 'brit412').
   // Never selects 'custom' (that needs a user file upload).
   setCab: (cab: 'clean212' | 'brit412') => void;
-  // M9.4: swap the amp voice ('clean120' | 'jcm800').
-  setAmp: (type: 'clean120' | 'jcm800') => void;
+  // M9.4/M10.1: swap the amp voice ('clean120' | 'jcm800' | 'twin').
+  setAmp: (type: 'clean120' | 'jcm800' | 'twin') => void;
   // Chain edits (M6.4). addPedal returns the new instance's chain index.
   addPedal: (type: string, position?: number) => number;
   removePedal: (index: number) => void;
@@ -182,21 +182,28 @@ export const TOOLS = [
   {
     name: 'set_amp',
     description:
-      'Choose the AMP head. Two voices: ' +
+      'Choose the AMP head. Three voices: ' +
       "'clean120' — the JC-120-style solid-state CLEAN platform (linear; all the " +
       'dirt comes from the pedals in front; has the bright switch, stereo chorus/' +
       'vibrato, and spring reverb). ' +
       "'jcm800' — a Marshall JCM800 2204: a real VALVE head with its own preamp " +
       'distortion (4× 12AX7 cascade) and cranked EL34 power-amp grit. It is a MONO ' +
-      'head with GAIN + MASTER + a Marshall bass/mid/treble tone stack + PRESENCE, ' +
-      'and NO chorus/reverb/bright/volume. Reach for the JCM when the player wants ' +
-      'amp distortion / classic rock crunch rather than a pristine clean pedal ' +
-      'platform. The canonical move is an SD-1 boosting a cranked JCM. Pairs best ' +
-      'with the Brit 4×12 cab. Switching is click-free; the cab and pedals carry over.',
+      'head with GAIN + MASTER + a Marshall bass/mid/treble tone stack + PRESENCE + ' +
+      'a spring REVERB, and no chorus/bright/volume. The canonical move is an SD-1 ' +
+      'boosting a cranked JCM; pairs best with the Brit 4×12 cab. ' +
+      "'twin' — a Fender blackface 'Twin-style' combo: the CLEAN-HEADROOM KING. A " +
+      'valve amp (2× 12AX7 → Fender tone stack → 6L6 power) that stays glassy and ' +
+      'clean until pushed hard, then breaks up late from the power stage. It has ' +
+      'VOLUME + a scooped Fender bass/mid/treble + a BRIGHT switch + a period-correct ' +
+      'spring REVERB + an optical TREMOLO (the SPEED/INTENSITY knobs — a "vibrato" on ' +
+      'the panel but really amplitude tremolo). Reach for the Twin for pristine cleans, ' +
+      'shimmer, surf, and the classic reverb-and-tremolo combo; the BRIGHT switch bites ' +
+      'at low volume. A real Twin is a 2×12, so it pairs best with the Clean 2×12 cab. ' +
+      'Switching is click-free; the cab and pedals carry over.',
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['clean120', 'jcm800'] },
+        type: { type: 'string', enum: ['clean120', 'jcm800', 'twin'] },
       },
       required: ['type'],
       additionalProperties: false,
@@ -439,11 +446,13 @@ export function executeTool(
   }
 
   if (name === 'set_amp') {
-    const type = input.type === 'jcm800' ? 'jcm800' : 'clean120';
+    const type =
+      input.type === 'jcm800' ? 'jcm800' : input.type === 'twin' ? 'twin' : 'clean120';
     controller.setAmp(type);
+    const chipName = type === 'jcm800' ? 'JCM800' : type === 'twin' ? 'Twin Sixty-Five' : 'Clean 120';
     return {
       content: JSON.stringify({ applied: { amp: type } }),
-      chip: `Amp ${type === 'jcm800' ? 'JCM800' : 'Clean 120'}`,
+      chip: `Amp ${chipName}`,
     };
   }
 
