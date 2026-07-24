@@ -249,6 +249,28 @@ is one of the most canonical pairings in rock.
 4. Amp-panel UI (preamp/master volume era-correct), oversampling per stage
    budgeted like M2, A/B render harness.
 
+### v1.1 gear candidates (validated, ordered by reuse)
+
+External suggestions (Gemini) validated against the codebase; effort reflects
+how much existing machinery each reuses:
+
+1. **TS808 mode** *(XS)* — the SD-1 IS the Tube Screamer topology; a symmetric-
+   clipping variant + drive-pot value gives the most iconic overdrive in
+   history nearly free. Could ship as a pedal variant or an SD-1 "mode".
+2. **CE-2 chorus pedal** *(S)* — mono pedal re-voicing of the JC-120 BBD
+   chorus machinery we already validated.
+3. **Phase 90** *(S–M)* — 4 JFET allpass stages + LFO + feedback; the spring
+   work built deep allpass fluency. Script-logo voicing.
+4. **Big Muff Pi** *(M)* — first BJT (Ebers-Moll) device model: 4-stage
+   cascade, 2 clipping stages, mid-scoop stack. Iconic fuzz contrast.
+5. **Fuzz Face (silicon)** *(M)* — 2-transistor minimalism, but its soul is
+   PICKUP LOADING (cleans up with guitar volume): requires adding a source-
+   impedance model to the chain input — design that first or don't bother.
+6. **Klon Centaur** *(M)* — our addition (the famous omission): parallel
+   clean/dirt blend, germanium clippers; the most-cloned pedal alive.
+7. **Deluxe Memory Man** *(L)* — BBD delay + compander + degradation;
+   replaces the parked DD-3 as the delay milestone (analog > digital DSP-wise).
+
 ### Parked (unordered)
 
 - **BD-2 Blues Driver** (third dirt flavor), **DD-3 delay** (new DSP family:
