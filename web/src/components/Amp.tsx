@@ -12,10 +12,17 @@
 //     homage "Eight Hundred" (model line HEAD Nº2 · BRIT-TYPE) · a GOLD/BRASS accent
 //     on the knob arcs/readouts · the era-correct control row PRESENCE · BASS ·
 //     MIDDLE · TREBLE · MASTER · GAIN (real 2204 front-panel left-to-right order) ·
-//     NO bright/chorus/reverb (a real 2204 has none — those controls are hidden) ·
-//     the Cab lever + Power rocker stay (the cab applies to both heads). It is a
+//     a REVERB knob (M10.1 usability add — the real 2204 has none) · no bright/chorus ·
+//     the Cab lever + Power rocker stay (the cab applies to all heads). It is a
 //     MONO valve head that makes its own distortion (gain = preamp drive, master =
 //     power-amp drive, presence = power-amp HF lift).
+//
+//   Twin (amp.type === 'twin'): the Fender blackface "Twin-style" CLEAN benchmark —
+//     a knowing homage "Twin Sixty-Five" (model line COMBO Nº3 · BLACK-PANEL) · a cool
+//     silver-blue accent · the control row VOLUME · BASS · MIDDLE · TREBLE · REVERB ·
+//     a BRIGHT switch · a TREMOLO row (SPEED · INTENSITY — the optical "vibrato") ·
+//     no gain/master/presence (this amp makes clean headroom, not preamp gain) and
+//     no chorus mode. Cab lever + Power rocker stay.
 //
 // When powered off the jewel goes dark and the value arcs dim (via `.amp.on`), and
 // the worklet bypasses amp+cab. Everything reads/writes the RigState the parent
@@ -182,6 +189,16 @@ function Jcm800Face({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
           onChange={(v) => onParam('gain', v)}
           testId="knob-gain"
         />
+        {/* M10.1 — a spring REVERB knob added as a usability convenience. The real
+            2204 has no reverb; the app adds one anyway (docs §19 note). */}
+        <Knob
+          name="Reverb"
+          ariaLabel="Reverb"
+          value={params.reverb}
+          defaultValue={AMP_KNOB_DEFAULTS.reverb}
+          onChange={(v) => onParam('reverb', v)}
+          testId="knob-reverb"
+        />
 
         {/* Cab lever + Power rocker only — no Bright (the 2204 has none). */}
         <AmpRight amp={amp} onToggle={onToggle} onTogglePower={onTogglePower} showBright={false} />
@@ -306,10 +323,112 @@ function Clean120Face({ amp, onParam, onToggle, onTogglePower, onChorusMode }: A
   );
 }
 
+// The Twin face — the Fender blackface "Twin-style" CLEAN benchmark. A knowing
+// homage "Twin Sixty-Five" (model line COMBO Nº3 · BLACK-PANEL) · a cool silver-
+// blue accent (--accent-twin) · the control row VOLUME · BASS · MIDDLE · TREBLE ·
+// REVERB, a BRIGHT switch, and a TREMOLO row (SPEED · INTENSITY — the optical
+// "vibrato"). Hidden: gain/master/presence (this amp makes no preamp gain) and the
+// chorus mode (its modulation is tremolo, not chorus). The panel stays light/bench-
+// style exactly like the Eight Hundred face — no new panel philosophy.
+function TwinFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
+  const { params } = amp;
+  return (
+    <div
+      className={`amp raised twin${amp.engaged ? ' on' : ''}`}
+      data-testid="amp"
+      data-engaged={amp.engaged}
+      data-amp-type="twin"
+    >
+      <div className="amp-head">
+        <div className="amp-name display" data-testid="amp-name">
+          Twin Sixty-Five<small>Combo Nº3 · Black-Panel</small>
+        </div>
+      </div>
+
+      {/* Blackface panel order: Volume · Bass · Middle · Treble · Reverb. */}
+      <div className="amp-controls">
+        <Knob
+          name="Vol"
+          ariaLabel="Volume"
+          value={params.volume}
+          defaultValue={AMP_KNOB_DEFAULTS.volume}
+          onChange={(v) => onParam('volume', v)}
+          testId="knob-volume"
+        />
+        <Knob
+          name="Bass"
+          ariaLabel="Bass"
+          value={params.bass}
+          defaultValue={AMP_KNOB_DEFAULTS.bass}
+          onChange={(v) => onParam('bass', v)}
+          testId="knob-bass"
+        />
+        <Knob
+          name="Mid"
+          ariaLabel="Middle"
+          value={params.middle}
+          defaultValue={AMP_KNOB_DEFAULTS.middle}
+          onChange={(v) => onParam('middle', v)}
+          testId="knob-middle"
+        />
+        <Knob
+          name="Treble"
+          ariaLabel="Treble"
+          value={params.treble}
+          defaultValue={AMP_KNOB_DEFAULTS.treble}
+          onChange={(v) => onParam('treble', v)}
+          testId="knob-treble"
+        />
+        <Knob
+          name="Reverb"
+          ariaLabel="Reverb"
+          value={params.reverb}
+          defaultValue={AMP_KNOB_DEFAULTS.reverb}
+          onChange={(v) => onParam('reverb', v)}
+          testId="knob-reverb"
+        />
+
+        <AmpRight amp={amp} onToggle={onToggle} onTogglePower={onTogglePower} showBright={true} />
+      </div>
+
+      {/* The famous "vibrato" (a misnomer — it is amplitude TREMOLO): SPEED +
+          INTENSITY. Reuses the shared speed/depth mod knobs, routed to the opto
+          tremolo (per-model routing in the C ABI). No mode switch. */}
+      <div className="amp-chorus" data-testid="tremolo">
+        <div className="amp-chorus-label display">Tremolo</div>
+        <div className="amp-chorus-controls">
+          <Knob
+            name="Speed"
+            ariaLabel="Tremolo speed"
+            value={params.speed}
+            defaultValue={AMP_KNOB_DEFAULTS.speed}
+            onChange={(v) => onParam('speed', v)}
+            testId="knob-speed"
+          />
+          <Knob
+            name="Intensity"
+            ariaLabel="Tremolo intensity"
+            value={params.depth}
+            defaultValue={AMP_KNOB_DEFAULTS.depth}
+            onChange={(v) => onParam('depth', v)}
+            testId="knob-depth"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Amp(props: AmpProps) {
   return (
     <div className="amp-wing">
-      {props.amp.type === 'jcm800' ? <Jcm800Face {...props} /> : <Clean120Face {...props} />}
+      {props.amp.type === 'jcm800' ? (
+        <Jcm800Face {...props} />
+      ) : props.amp.type === 'twin' ? (
+        <TwinFace {...props} />
+      ) : (
+        <Clean120Face {...props} />
+      )}
     </div>
   );
 }

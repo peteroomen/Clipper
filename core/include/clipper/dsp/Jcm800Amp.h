@@ -20,10 +20,12 @@
 #ifndef CLIPPER_DSP_JCM800_AMP_H
 #define CLIPPER_DSP_JCM800_AMP_H
 
+#include <memory>
 #include <vector>
 
 #include "clipper/dsp/Jcm800Preamp.h"
 #include "clipper/dsp/Jcm800PowerAmp.h"
+#include "clipper/dsp/ReverbModel.h"
 
 namespace clipper::dsp {
 
@@ -36,10 +38,20 @@ public:
         PARAM_MID = 3,
         PARAM_TREBLE = 4,
         PARAM_PRESENCE = 5,  // power-amp presence (HF feedback lift)
-        PARAM_COUNT = 6,
+        // --- M10.1 additive: spring reverb as a USABILITY convenience -----------
+        // A real 2204 has no reverb; the app adds one anyway (the user wants the
+        // normal amp conveniences — authenticity yields to usability here, docs
+        // §19 note). Mono ReverbModel placed AFTER the power amp, BEFORE the C
+        // ABI's dual-mono split (same placement logic as the Twin). 0..1 wet mix;
+        // 0 == bit-exact passthrough (so the M9.3 tests stay bit-exact).
+        PARAM_REVERB = 6,
+        PARAM_COUNT = 7,
     };
 
     Jcm800Amp();
+    ~Jcm800Amp();
+    Jcm800Amp(const Jcm800Amp&) = delete;
+    Jcm800Amp& operator=(const Jcm800Amp&) = delete;
 
     void prepare(double sampleRate, int maxBlockSize);
     void setOversampling(int factor);     // both preamp + power section
@@ -74,6 +86,10 @@ private:
 
     Jcm800Preamp preamp_;
     Jcm800PowerAmp power_;
+    // M10.1: mono spring reverb after the power amp (usability convenience). Held
+    // by unique_ptr so this header needn't inline ReverbModel's Impl. Default mix
+    // 0 → bit-exact passthrough, so the M9.3 tests stay bit-exact.
+    std::unique_ptr<ReverbModel> reverb_;
     std::vector<float> buf_;  // interstage scratch (maxBlock)
 };
 

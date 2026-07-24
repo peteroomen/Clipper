@@ -13,7 +13,9 @@ constexpr int   kCabPartition = 128;  // == worklet render quantum / cab partiti
 // The JCM's fixed internal oversampling — matches the C ABI (docs §18: 4× ships;
 // 8× buys nothing at the composed max-gain floor). Independent of the pedal OS.
 constexpr int   kJcmOversampling = 4;
+constexpr int   kTwinOversampling = 4;  // matches the C ABI (docs §20: 4× ships)
 constexpr int   kAmpJcm800 = 1;  // Params::ampModel value for the JCM
+constexpr int   kAmpTwin = 2;    // Params::ampModel value for the Twin
 }  // namespace
 
 float trimKnobToGain(float knob01) {
@@ -59,6 +61,19 @@ void ClipperEngine::applyParamsToModels() {
     jcm_.setParameter(J::PARAM_MID, p.middle);
     jcm_.setParameter(J::PARAM_TREBLE, p.treble);
     jcm_.setParameter(J::PARAM_PRESENCE, p.jcmPresence);
+    jcm_.setParameter(J::PARAM_REVERB, p.reverb);  // M10.1 usability add
+
+    // Twin (M10.1): kept current alongside the others. Reuses the shared knobs —
+    // volume/bright + bass/mid/treble + reverb + speed/depth (→ tremolo).
+    using T = clipper::dsp::TwinAmp;
+    twin_.setParameter(T::PARAM_VOLUME, p.volume);
+    twin_.setParameter(T::PARAM_BASS, p.bass);
+    twin_.setParameter(T::PARAM_MID, p.middle);
+    twin_.setParameter(T::PARAM_TREBLE, p.treble);
+    twin_.setParameter(T::PARAM_BRIGHT, p.bright ? 1.0f : 0.0f);
+    twin_.setParameter(T::PARAM_REVERB, p.reverb);
+    twin_.setParameter(T::PARAM_SPEED, p.chorusSpeed);
+    twin_.setParameter(T::PARAM_INTENSITY, p.chorusDepth);
 }
 
 void ClipperEngine::setParams(const Params& p) {
@@ -71,6 +86,7 @@ void ClipperEngine::updateParams(const Params& p) {
     using clipper::dsp::Jcm800Amp;
     using clipper::dsp::RatModel;
     using clipper::dsp::SdModel;
+    using clipper::dsp::TwinAmp;
     const Params& o = params_;  // old snapshot
 
     // Dirt-pedal knobs (only the changed ones — never re-seed a steady smoother).
@@ -81,28 +97,50 @@ void ClipperEngine::updateParams(const Params& p) {
     if (p.sdTone != o.sdTone)       sd_.setParameter(SdModel::PARAM_TONE, p.sdTone);
     if (p.sdLevel != o.sdLevel)     sd_.setParameter(SdModel::PARAM_LEVEL, p.sdLevel);
 
-    // Amp knobs + toggles.
-    if (p.volume != o.volume) amp_.setParameter(AmpModel::PARAM_VOLUME, p.volume);
-    // bass/middle/treble are SHARED between both amp voices — update BOTH tone
-    // stacks so the inactive voice is already correct at a live switch.
+    // Amp knobs + toggles. VOLUME feeds clean120 + twin.
+    if (p.volume != o.volume) {
+        amp_.setParameter(AmpModel::PARAM_VOLUME, p.volume);
+        twin_.setParameter(TwinAmp::PARAM_VOLUME, p.volume);
+    }
+    // bass/middle/treble are SHARED across ALL THREE amp voices — update every tone
+    // stack so the inactive voices are already correct at a live switch.
     if (p.bass != o.bass) {
         amp_.setParameter(AmpModel::PARAM_BASS, p.bass);
         jcm_.setParameter(Jcm800Amp::PARAM_BASS, p.bass);
+        twin_.setParameter(TwinAmp::PARAM_BASS, p.bass);
     }
     if (p.middle != o.middle) {
         amp_.setParameter(AmpModel::PARAM_MIDDLE, p.middle);
         jcm_.setParameter(Jcm800Amp::PARAM_MID, p.middle);
+        twin_.setParameter(TwinAmp::PARAM_MID, p.middle);
     }
     if (p.treble != o.treble) {
         amp_.setParameter(AmpModel::PARAM_TREBLE, p.treble);
         jcm_.setParameter(Jcm800Amp::PARAM_TREBLE, p.treble);
+        twin_.setParameter(TwinAmp::PARAM_TREBLE, p.treble);
     }
-    if (p.bright != o.bright) amp_.setParameter(AmpModel::PARAM_BRIGHT, p.bright ? 1.0f : 0.0f);
-    if (p.chorusSpeed != o.chorusSpeed) amp_.setParameter(AmpModel::PARAM_CHORUS_SPEED, p.chorusSpeed);
-    if (p.chorusDepth != o.chorusDepth) amp_.setParameter(AmpModel::PARAM_CHORUS_DEPTH, p.chorusDepth);
+    // BRIGHT feeds clean120 + twin.
+    if (p.bright != o.bright) {
+        amp_.setParameter(AmpModel::PARAM_BRIGHT, p.bright ? 1.0f : 0.0f);
+        twin_.setParameter(TwinAmp::PARAM_BRIGHT, p.bright ? 1.0f : 0.0f);
+    }
+    // SPEED/DEPTH feed clean120 chorus + twin tremolo SPEED/INTENSITY.
+    if (p.chorusSpeed != o.chorusSpeed) {
+        amp_.setParameter(AmpModel::PARAM_CHORUS_SPEED, p.chorusSpeed);
+        twin_.setParameter(TwinAmp::PARAM_SPEED, p.chorusSpeed);
+    }
+    if (p.chorusDepth != o.chorusDepth) {
+        amp_.setParameter(AmpModel::PARAM_CHORUS_DEPTH, p.chorusDepth);
+        twin_.setParameter(TwinAmp::PARAM_INTENSITY, p.chorusDepth);
+    }
     if (p.chorusMode != o.chorusMode)
         amp_.setParameter(AmpModel::PARAM_CHORUS_MODE, static_cast<float>(p.chorusMode));
-    if (p.reverb != o.reverb) amp_.setParameter(AmpModel::PARAM_REVERB, p.reverb);
+    // REVERB feeds all three voices (clean120 + jcm + twin).
+    if (p.reverb != o.reverb) {
+        amp_.setParameter(AmpModel::PARAM_REVERB, p.reverb);
+        jcm_.setParameter(Jcm800Amp::PARAM_REVERB, p.reverb);
+        twin_.setParameter(TwinAmp::PARAM_REVERB, p.reverb);
+    }
 
     // JCM800-only knobs.
     if (p.jcmGain != o.jcmGain)         jcm_.setParameter(Jcm800Amp::PARAM_GAIN, p.jcmGain);
@@ -135,6 +173,10 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     // size to it), independent of the pedal OS selector — matches the C ABI.
     jcm_.setOversampling(kJcmOversampling);
     jcm_.prepare(sampleRate_, maxBlock_);
+    // The Twin likewise runs at its fixed 4× internally (docs §20), independent of
+    // the pedal OS selector — matches the C ABI.
+    twin_.setOversampling(kTwinOversampling);
+    twin_.prepare(sampleRate_, maxBlock_);
 
     rat_.setOversampling(params_.oversampling);
     sd_.setOversampling(params_.oversampling);
@@ -198,6 +240,10 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
         if (p.ampModel == kAmpJcm800) {
             jcm_.process(cur, outL, numFrames);
             for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
+        } else if (p.ampModel == kAmpTwin) {
+            // The Twin is a mono combo head → dual-mono into the identical cab pair.
+            twin_.process(cur, outL, numFrames);
+            for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
         } else {
             amp_.processStereo(cur, outL, outR, numFrames);
         }
@@ -216,9 +262,10 @@ int ClipperEngine::latencySamples() const {
     int n = 0;
     if (p.ratOn) n += rat_.latencySamples();
     if (p.sdOn) n += sd_.latencySamples();
-    // The JCM adds its own oversampling group delay when it is the powered voice;
+    // The JCM/Twin add their own oversampling group delay when the powered voice;
     // the linear Clean 120 adds nothing.
     if (p.ampOn && p.ampModel == kAmpJcm800) n += jcm_.latencySamples();
+    if (p.ampOn && p.ampModel == kAmpTwin) n += twin_.latencySamples();
     if (p.ampOn && p.cab) n += kCabPartition;      // cab adds one partition (128)
     n += limiter_.latencySamples();                // lookahead (64)
     return n;

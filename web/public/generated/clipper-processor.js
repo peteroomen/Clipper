@@ -180,8 +180,9 @@ class ClipperProcessor extends AudioWorkletProcessor {
     // is applied at the SAME declick fade-out zero as a chain edit (M6.4), so the
     // IR change is click-free. { builtin } or { irPtr, irLen }.
     this._pendingCab = null;
-    // M9.4: a pending amp-model swap (0 = Clean 120, 1 = JCM800), applied at the
-    // SAME declick fade-out zero, so switching amps mid-signal is click-free.
+    // M9.4/M10.1: a pending amp-model swap (0 = Clean 120, 1 = JCM800, 2 = Twin),
+    // applied at the SAME declick fade-out zero, so switching amps mid-signal is
+    // click-free. The index is passed through opaquely to _amp_set_model.
     this._pendingAmpModel = null;
 
     // Tuner mute (M7). An engaged tuner mutes the whole chain output (true tuner-
@@ -455,8 +456,8 @@ class ClipperProcessor extends AudioWorkletProcessor {
       }
       this._declickPhase = 'out';
     } else if (data.type === 'ampModel') {
-      // M9.4: swap the amp voice (0 = Clean 120, 1 = JCM800) click-free — staged
-      // here and applied at the declick fade-out zero, exactly like a cab swap.
+      // M9.4/M10.1: swap the amp voice (0 = Clean 120, 1 = JCM800, 2 = Twin) click-
+      // free — staged here and applied at the declick fade-out zero, like a cab swap.
       if (this._pending || this._pendingCab || this._pendingAmpModel != null) this._commitPending();
       this._pendingAmpModel = (data.model | 0) || 0;
       this._declickPhase = 'out';

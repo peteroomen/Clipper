@@ -287,11 +287,16 @@ MNA tone stacks, spring reverb) covers all of these. Tube order chosen so each
 amp adds ONE new piece of machinery; the two solid-state amps are light,
 independent slices that can interleave anywhere:
 
-- **M10.1 — Fender Twin-style** *(M)* — the clean benchmark. Only new device:
-  the 6L6GC Koren fit. Fender-values TMB stack (pre-gain position), 4x 6L6
-  push-pull, NFB. Our spring reverb is period-correct here; build the
-  tremolo block ("vibrato" — the famous amplitude-modulation misnomer) as
-  part of this milestone.
+- **M10.1 — Fender Twin-style** ✅ *(shipped — docs §20)* — the clean benchmark,
+  wired in end-to-end as the THIRD amp voice `twin`. New devices: the 6L6GC +
+  12AT7 Koren fits and the reusable `OptoTremolo` (fast-attack/slow-release opto
+  cell). `FenderToneStack` (blackface values, pre-gain, high-Z plate source, the
+  deep mid scoop), 4× 6L6GC push-pull (balanced 12AT7 LTP PI, no presence), light
+  sag, period-correct spring reverb, optical tremolo. Validated (`clipper_twin_tests`)
+  at 44.1/48/96 k: DC op points, Fender notch vs analytic H(s), NFB sign+magnitude,
+  tremolo asymmetry, reverb placement, clean-headroom + monotonic THD, sag < JCM,
+  aliasing. Identical-core bit-exact across all three voices. *(Bonus this milestone:
+  the JCM800 also gained a spring REVERB knob — usability over authenticity, docs §19.)*
 - **M10.2 — Vox AC30-style top boost** *(M–L)* — new power-amp physics:
   EL84s (new fit), CATHODE bias (bias shifts dynamically with signal — the
   class-A compression/chime), NO negative feedback, top-cut control post-PI.

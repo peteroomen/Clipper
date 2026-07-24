@@ -390,3 +390,349 @@ test('amp UI: selecting jcm800 swaps the face and hints brit412 without auto-swi
   await expect(page.getByTestId('cab-note')).toContainText('Brit 4×12');
   expect(amp.cabModel).toBe('clean212');
 });
+
+// =====================================================================================
+// M10.1 — Twin (Fender blackface clean benchmark) — the THIRD amp voice (model 2).
+// Amp param ids reused by the Twin: 0 = volume, 4 = bright, 5 = cab, 6 = speed
+// (→ tremolo SPEED), 7 = depth (→ tremolo INTENSITY), 9 = reverb.
+// =====================================================================================
+
+const AMP_TWIN_MODEL = 2;
+const AMP_SPEED = 6;
+const AMP_DEPTH = 7;
+const AMP_REVERB = 9;
+
+// --- 6. Switching to the Twin changes the sound AND does not pop (declick). --------
+// The Twin is a valve amp with its own voicing (warm 12AX7 stages + scooped Fender
+// stack + 6L6 power), so the SAME clean tone through it differs audibly from the
+// linear Clean 120 — and the mid-signal swap is declick-bracketed (no pop, no NaN).
+test('amp switch: twin renders a different tone than clean120, swap is click-free', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.5;
+    async function render(twin: boolean): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.5 }); // volume
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 7, value: 0.0 }); // trem OFF (isolate voicing)
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: 0.0 }); // reverb off
+        if (twin) node.port.postMessage({ type: 'ampModel', model: 2 });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 }); // cab on -> latency echo
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: 0.5 });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+    function rms(d: Float32Array): number {
+      const s0 = Math.floor(sampleRate * 0.2); let s = 0;
+      for (let i = s0; i < d.length; i++) s += d[i] * d[i];
+      return Math.sqrt(s / (d.length - s0));
+    }
+    function maxAbsDiff(a: Float32Array, b: Float32Array): number {
+      const s0 = Math.floor(a.length * 0.4); let m = 0;
+      for (let i = s0; i < a.length; i++) { const dd = Math.abs(a[i] - b[i]); if (dd > m) m = dd; }
+      return m;
+    }
+    function maxDelta(d: Float32Array): number {
+      let m = 0; for (let i = 1; i < d.length; i++) { const a = Math.abs(d[i] - d[i - 1]); if (a > m) m = a; }
+      return m;
+    }
+    function anyNaN(d: Float32Array): boolean {
+      for (let i = 0; i < d.length; i++) if (!Number.isFinite(d[i])) return true;
+      return false;
+    }
+    const clean = await render(false);
+    const twin = await render(true);
+    return {
+      cleanRms: rms(clean), twinRms: rms(twin),
+      diff: maxAbsDiff(clean, twin),
+      cleanDelta: maxDelta(clean), twinDelta: maxDelta(twin),
+      nan: anyNaN(twin),
+    };
+  });
+
+  expect(result.cleanRms).toBeGreaterThan(0.01);
+  expect(result.twinRms).toBeGreaterThan(0.01);
+  expect(result.diff).toBeGreaterThan(0.02); // audibly different voicing
+  expect(result.nan).toBe(false);
+  // The swap's largest sample step stays in the same ballpark — the declick fade
+  // means the topology change does not pop.
+  expect(result.twinDelta).toBeLessThan(result.cleanDelta * 2.0 + 0.05);
+});
+
+// --- 7. The Twin's tremolo audibly modulates a render's ENVELOPE. -----------------
+// With INTENSITY up and a moderate SPEED, the opto tremolo pumps the output level up
+// and down — so the block-RMS envelope swings far more than with the tremolo off.
+test('amp twin: the optical tremolo modulates the output envelope', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 1.5; // long enough for several tremolo cycles
+    async function render(intensity: number, speed: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'ampModel', model: 2 }); // Twin active
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.5 }); // volume
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: 0.0 }); // reverb off (clean env)
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 6, value: speed }); // SPEED
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 7, value: intensity }); // INTENSITY
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 }); // cab on -> latency echo
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: 0.5 });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+    // Coefficient of variation of a block-RMS envelope (skip the startup transient).
+    function envCV(d: Float32Array): number {
+      const block = 512;
+      const start = Math.floor(sampleRate * 0.3);
+      const env: number[] = [];
+      for (let i = start; i + block < d.length; i += block) {
+        let s = 0; for (let j = 0; j < block; j++) s += d[i + j] * d[i + j];
+        env.push(Math.sqrt(s / block));
+      }
+      const mean = env.reduce((a, b) => a + b, 0) / env.length;
+      const varr = env.reduce((a, b) => a + (b - mean) * (b - mean), 0) / env.length;
+      return Math.sqrt(varr) / (mean + 1e-9);
+    }
+    const off = await render(0.0, 0.6);
+    const on = await render(0.8, 0.6);
+    return { offCV: envCV(off), onCV: envCV(on) };
+  });
+
+  // The steady tone's envelope is nearly flat; the tremolo pumps it hard.
+  expect(result.offCV).toBeLessThan(0.05);
+  expect(result.onCV).toBeGreaterThan(result.offCV * 4);
+  expect(result.onCV).toBeGreaterThan(0.15);
+});
+
+// --- 8. Twin params reach the core: raising REVERB adds a wet tail. ----------------
+test('amp twin: raising the reverb adds a wet tail (params reach the core)', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.9;
+    async function render(reverb: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'ampModel', model: 2 });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.5 });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 7, value: 0.0 }); // trem off
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: reverb }); // REVERB
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 });
+      });
+      // A short pluck (gain envelope on the oscillator) then SILENCE, so the tail is
+      // pure reverb.
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 330 });
+      const g = new GainNode(ctx, { gain: 0.0 });
+      g.gain.setValueAtTime(0.6, 0);
+      g.gain.setValueAtTime(0.6, 0.15);
+      g.gain.linearRampToValueAtTime(0.0, 0.16); // note off at 160 ms
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+    function tailRms(d: Float32Array): number {
+      const s0 = Math.floor(sampleRate * 0.45); // well after the note stops
+      let s = 0; for (let i = s0; i < d.length; i++) s += d[i] * d[i];
+      return Math.sqrt(s / (d.length - s0));
+    }
+    const dry = await render(0.0);
+    const wet = await render(0.6);
+    return { dryTail: tailRms(dry), wetTail: tailRms(wet) };
+  });
+
+  // The spring tail persists after the note stops only when reverb is up.
+  expect(result.wetTail).toBeGreaterThan(result.dryTail * 3);
+});
+
+// --- 9. Twin rig round-trips through JSON exactly (no new params). ----------------
+test('amp twin: a twin rig round-trips through JSON literally', async ({ page }) => {
+  await page.goto('/');
+  const rt = await page.evaluate(() => {
+    const t = (window as any).__CLIPPER_TEST__;
+    const rig = {
+      input: { trim: 0.4 },
+      pedals: [
+        { id: 'rat-1', type: 'rat', engaged: true, params: { distortion: 0.3, filter: 0.5, level: 0.8 } },
+      ],
+      amp: {
+        type: 'twin',
+        engaged: true,
+        cabModel: 'clean212',
+        params: {
+          volume: 0.55, bass: 0.5, middle: 0.55, treble: 0.6, bright: 1, cab: 1,
+          speed: 0.7, depth: 0.6, chorusMode: 0, reverb: 0.35,
+          gain: 0.5, presence: 0.5, master: 0.4,
+        },
+      },
+      oversampling: 4,
+      source: 'test',
+    };
+    const back = t.deserializeRig(t.serializeRig(rig));
+    return { equal: JSON.stringify(rig) === JSON.stringify(back), back };
+  });
+  expect(rt.equal).toBe(true);
+  expect(rt.back.amp.type).toBe('twin');
+});
+
+// --- 10. UI: selecting the Twin swaps the face + hints clean212 (never auto-switch). -
+test('amp UI: selecting twin swaps to Twin Sixty-Five and hints clean212 from a brit cab', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByTestId('board-amp')).toBeVisible();
+  await expect(page.getByTestId('amp-name')).toContainText('Clean 120');
+
+  // Load the Brit 4x12 first (the cab buttons live in the amp-slot menu) so
+  // switching to the Twin triggers the clean212 hint.
+  await page.getByTestId('amp-select').click();
+  await expect(page.getByTestId('amp-menu')).toBeVisible();
+  await page.getByTestId('cab-brit412').click();
+  const cabAfter = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().amp.cabModel);
+  expect(cabAfter).toBe('brit412');
+
+  await page.getByTestId('amp-select').click();
+  await expect(page.getByTestId('amp-menu')).toBeVisible();
+  await page.getByTestId('amp-twin').click();
+
+  const amp = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().amp);
+  expect(amp.type).toBe('twin');
+  await expect(page.getByTestId('amp-name')).toContainText('Twin Sixty-Five');
+  await expect(page.getByTestId('amp')).toHaveAttribute('data-amp-type', 'twin');
+  // The Twin face shows a TREMOLO row + Bright lever + Reverb knob; hides gain/master.
+  await expect(page.getByTestId('tremolo')).toBeVisible();
+  await expect(page.getByTestId('bright-toggle')).toBeVisible();
+  await expect(page.getByTestId('knob-reverb')).toBeVisible();
+  await expect(page.getByTestId('knob-gain')).toHaveCount(0);
+  await expect(page.getByTestId('knob-master')).toHaveCount(0);
+  // A one-line hint suggested the Clean 2x12 — but the cab was NOT auto-switched.
+  await expect(page.getByTestId('cab-note')).toContainText('Clean 2×12');
+  expect(amp.cabModel).toBe('brit412');
+});
+
+// --- 11. PERF SMOKE: report the Twin WASM offline-render wall-time ratio. ----------
+test('perf smoke: twin offline-render wall-time ratio is within a generous bound', async ({
+  page,
+}, testInfo) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const perf = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 2.0;
+    async function timedRender(twin: boolean): Promise<number> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.5 });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: 0.3 }); // reverb
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 7, value: 0.5 }); // trem
+        if (twin) node.port.postMessage({ type: 'ampModel', model: 2 });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 });
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: 0.5 });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const t0 = performance.now();
+      await ctx.startRendering();
+      return performance.now() - t0;
+    }
+    await timedRender(false);
+    await timedRender(true);
+    const cleanTimes: number[] = [];
+    const twinTimes: number[] = [];
+    for (let i = 0; i < 3; i++) { cleanTimes.push(await timedRender(false)); twinTimes.push(await timedRender(true)); }
+    const clean = Math.min(...cleanTimes);
+    const twin = Math.min(...twinTimes);
+    return { clean, twin, ratio: twin / clean, rtFactor: twin / (seconds * 1000), seconds };
+  });
+
+  const line =
+    `\n[M10.1 PERF SMOKE] twin vs clean120 WASM offline render (${perf.seconds}s @ 48kHz, headless Chromium):\n` +
+    `  clean120        : ${perf.clean.toFixed(1)} ms\n` +
+    `  twin            : ${perf.twin.toFixed(1)} ms\n` +
+    `  RATIO (twin/clean): ${perf.ratio.toFixed(2)}x\n` +
+    `  twin real-time  : ${perf.rtFactor.toFixed(2)}x  (render wall-time / audio seconds)\n`;
+  // eslint-disable-next-line no-console
+  console.log(line);
+  await testInfo.attach('twin-perf-ratio', { body: line, contentType: 'text/plain' });
+
+  // Guard against pathological regressions (an accidental 8x OS, a lost fast-path);
+  // the measured ratio is the expected steady-state cost of the tube Newton solves.
+  expect(perf.clean).toBeGreaterThan(0);
+  expect(perf.twin).toBeGreaterThan(0);
+  expect(perf.ratio).toBeLessThan(150);
+});

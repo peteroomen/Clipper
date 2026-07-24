@@ -25,6 +25,7 @@
 #include "clipper/dsp/Jcm800Preamp.h"
 #include "clipper/dsp/Jcm800PowerAmp.h"
 #include "clipper/dsp/Jcm800Amp.h"
+#include "clipper/dsp/TwinAmp.h"
 #include "clipper/dsp/SdModel.h"
 #include "clipper/dsp/TsModel.h"
 #include "clipper/dsp/AmpModel.h"
@@ -76,7 +77,18 @@ struct Args {
     float jcmBass = 0.5f, jcmMid = 0.5f, jcmTreble = 0.5f;  // TMB tone knobs
     bool jcm = false;             // M9.3: the FULL JCM800 2204 (preamp -> power section)
     float jcmPresence = 0.5f;     // power-amp presence knob (HF feedback lift)
+    float jcmReverb = 0.0f;       // M10.1: spring reverb mix (usability add; 0..1)
     bool jcmCab = false;          // M9.3: run the full amp through the brit412 4x12 cab
+    // M10.1: the FULL Fender blackface "Twin-style" amp (the clean benchmark).
+    bool twin = false;            // run the composed TwinAmp (preamp->reverb->trem->power)
+    float twinDrive = 1.0f;       // input-gain multiplier into V1's grid (volts)
+    float twinVolume = 0.5f;      // channel VOLUME knob (audio taper)
+    float twinBass = 0.5f, twinMid = 0.5f, twinTreble = 0.6f;  // Fender TMB tone knobs
+    bool twinBright = false;      // bright switch (treble bleed across the volume pot)
+    float twinReverb = 0.0f;      // spring reverb wet mix (0..1)
+    float twinSpeed = 0.5f;       // tremolo SPEED (0..1, log map ~1..10 Hz)
+    float twinIntensity = 0.0f;   // tremolo INTENSITY (0..1, modulation depth)
+    bool twinCab = false;         // run the amp through the clean212 2x12 cab
 };
 
 // Output soft limiter, parameterized by threshold so the clean-path A/B can
@@ -173,8 +185,15 @@ struct OldSpringReverb {
         "          -> output transformer -> NFB/presence + B+ sag; output is normalized,\n"
         "          1.0 == full scale, NO re-normalization),\n"
         "          --jcm-presence P (0..1 power-amp presence: HF feedback lift),\n"
+        "          --jcm-presence P / --jcm-reverb R (M10.1 spring reverb, 0..1),\n"
         "          --jcm-cab (run the full amp through the brit412 4x12 cab),\n"
-        "          reuses --jcm-drive/-gain/-master/-bass/-mid/-treble and --os.\n",
+        "          reuses --jcm-drive/-gain/-master/-bass/-mid/-treble and --os.\n"
+        "M10.1:    --twin (the FULL Fender blackface 'Twin-style' clean benchmark:\n"
+        "          2x 12AX7 + pre-gain Fender TMB -> spring reverb -> optical tremolo\n"
+        "          -> 12AT7 LTP PI -> 6L6GC quad -> OT -> flat NFB -> light sag),\n"
+        "          --twin-drive D, --twin-volume V, --twin-bass/-mid/-treble (0..1),\n"
+        "          --twin-bright, --twin-reverb R, --twin-speed S, --twin-intensity I,\n"
+        "          --twin-cab (clean212 2x12), reuses --os.\n",
         argv0, argv0, argv0, argv0);
     std::exit(2);
 }
@@ -350,7 +369,19 @@ int main(int argc, char** argv) {
         else if (s == "--jcm-treble") a.jcmTreble = std::atof(need("--jcm-treble"));
         else if (s == "--jcm") a.jcm = true;
         else if (s == "--jcm-presence") a.jcmPresence = std::atof(need("--jcm-presence"));
+        else if (s == "--jcm-reverb") a.jcmReverb = std::atof(need("--jcm-reverb"));
         else if (s == "--jcm-cab") a.jcmCab = true;
+        else if (s == "--twin") a.twin = true;
+        else if (s == "--twin-drive") a.twinDrive = std::atof(need("--twin-drive"));
+        else if (s == "--twin-volume") a.twinVolume = std::atof(need("--twin-volume"));
+        else if (s == "--twin-bass") a.twinBass = std::atof(need("--twin-bass"));
+        else if (s == "--twin-mid") a.twinMid = std::atof(need("--twin-mid"));
+        else if (s == "--twin-treble") a.twinTreble = std::atof(need("--twin-treble"));
+        else if (s == "--twin-bright") a.twinBright = true;
+        else if (s == "--twin-reverb") a.twinReverb = std::atof(need("--twin-reverb"));
+        else if (s == "--twin-speed") a.twinSpeed = std::atof(need("--twin-speed"));
+        else if (s == "--twin-intensity") a.twinIntensity = std::atof(need("--twin-intensity"));
+        else if (s == "--twin-cab") a.twinCab = true;
         else if (s == "--alias-report") a.aliasReport = true;
         else if (s == "-h" || s == "--help") usage(argv[0]);
         else if (!s.empty() && s[0] == '-') {
@@ -440,7 +471,38 @@ int main(int argc, char** argv) {
     double triodePeakVolts = 0.0;  // reported for the --triode chain
     double jcmPeakVolts = 0.0;     // reported for the --jcm-pre chain
 
-    if (a.jcm) {
+    if (a.twin) {
+        // M10.1: the FULL Fender blackface "Twin-style" amp — the clean benchmark.
+        // TwinPreamp (2x 12AX7 + pre-gain Fender TMB + volume/bright) -> mono spring
+        // reverb -> optical tremolo -> TwinPowerAmp (12AT7 LTP PI -> 6L6GC quad -> OT
+        // -> flat NFB -> light sag). Output is NORMALIZED (1.0 == full scale), NOT
+        // re-normalized. --twin-cab runs it through the clean212 2x12 (the natural
+        // pairing for a 2x12 combo) with the shipped output limiter guarding the ceiling.
+        clipper::dsp::TwinAmp amp;
+        amp.prepare(fs, 128);
+        amp.setOversampling(a.os);
+        amp.setParameter(clipper::dsp::TwinAmp::PARAM_VOLUME, a.twinVolume);
+        amp.setParameter(clipper::dsp::TwinAmp::PARAM_BASS, a.twinBass);
+        amp.setParameter(clipper::dsp::TwinAmp::PARAM_MID, a.twinMid);
+        amp.setParameter(clipper::dsp::TwinAmp::PARAM_TREBLE, a.twinTreble);
+        amp.setParameter(clipper::dsp::TwinAmp::PARAM_BRIGHT, a.twinBright ? 1.0f : 0.0f);
+        amp.setParameter(clipper::dsp::TwinAmp::PARAM_REVERB, a.twinReverb);
+        amp.setParameter(clipper::dsp::TwinAmp::PARAM_SPEED, a.twinSpeed);
+        amp.setParameter(clipper::dsp::TwinAmp::PARAM_INTENSITY, a.twinIntensity);
+        std::vector<float> grid(input.size());
+        for (size_t i = 0; i < input.size(); ++i) grid[i] = input[i] * a.twinDrive;
+        if (!grid.empty())
+            amp.process(grid.data(), out.data(), static_cast<int>(grid.size()));
+        if (a.twinCab && !out.empty()) {
+            auto ir = clipper::dsp::generateDefaultCab2x12IR(fs);
+            clipper::dsp::CabConvolver cab;
+            cab.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
+            cab.process(out.data(), out.data(), static_cast<int>(out.size()));
+            clipper::dsp::OutputLimiter lim(0.97f);
+            lim.prepare(fs);
+            lim.processMono(out.data(), static_cast<int>(out.size()));
+        }
+    } else if (a.jcm) {
         // M9.3: the FULL JCM800 2204 — preamp -> LTP phase inverter -> push-pull EL34
         // -> output transformer -> global NFB + presence + B+ sag. The output is the
         // power amp's NORMALIZED signal (1.0 == full scale), so — unlike --jcm-pre —
@@ -455,6 +517,7 @@ int main(int argc, char** argv) {
         amp.setParameter(clipper::dsp::Jcm800Amp::PARAM_MID, a.jcmMid);
         amp.setParameter(clipper::dsp::Jcm800Amp::PARAM_TREBLE, a.jcmTreble);
         amp.setParameter(clipper::dsp::Jcm800Amp::PARAM_PRESENCE, a.jcmPresence);
+        amp.setParameter(clipper::dsp::Jcm800Amp::PARAM_REVERB, a.jcmReverb);
         std::vector<float> grid(input.size());
         for (size_t i = 0; i < input.size(); ++i) grid[i] = input[i] * a.jcmDrive;
         if (!grid.empty())
@@ -614,7 +677,15 @@ int main(int argc, char** argv) {
         rms += static_cast<double>(v) * v;
     }
     rms = out.empty() ? 0.0 : std::sqrt(rms / out.size());
-    if (a.jcm) {
+    if (a.twin) {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (chain=Twin FULL amp%s, drive=%.2f, "
+            "volume=%.2f bass=%.2f mid=%.2f treble=%.2f bright=%d reverb=%.2f speed=%.2f "
+            "intensity=%.2f, os=%dx)\n  normalized peak=%.4f (1.0==full scale)  rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.twinCab ? "+clean212 cab" : "", a.twinDrive,
+            a.twinVolume, a.twinBass, a.twinMid, a.twinTreble, a.twinBright ? 1 : 0,
+            a.twinReverb, a.twinSpeed, a.twinIntensity, a.os, peak, rms);
+    } else if (a.jcm) {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (chain=JCM800 FULL amp%s, drive=%.2f, "
             "gain=%.2f master=%.2f bass=%.2f mid=%.2f treble=%.2f presence=%.2f, os=%dx)\n"

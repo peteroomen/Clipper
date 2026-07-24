@@ -459,6 +459,47 @@ test('assistant: set_amp switches the amp head to the JCM800', async ({ page }) 
   await expect(page.getByTestId('amp')).toHaveAttribute('data-amp-type', 'jcm800');
 });
 
+// M10.1: the coach can swap to the Twin (set_amp type:'twin') for a clean benchmark.
+const SET_AMP_TWIN_TURN = sse([
+  { type: 'message_start', message: { id: 'msg_tw', type: 'message', role: 'assistant', content: [] } },
+  { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+  { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Loading the Twin for glassy cleans and headroom.' } },
+  { type: 'content_block_stop', index: 0 },
+  { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_tw', name: 'set_amp', input: {} } },
+  { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"type":"twin"}' } },
+  { type: 'content_block_stop', index: 1 },
+  { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 11 } },
+  { type: 'message_stop' },
+]);
+
+test('assistant: set_amp switches the amp head to the Twin', async ({ page }) => {
+  let call = 0;
+  await page.route('**/api/health', mockHealthOk);
+  await page.route('**/api/chat', async (route) => {
+    call += 1;
+    if (call === 1) {
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: SET_AMP_TWIN_TURN });
+    } else {
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: FOLLOWUP });
+    }
+  });
+
+  await page.goto('/');
+  await expect(page.getByTestId('amp-name')).toContainText('Clean 120');
+
+  await page.getByTestId('chat-input').fill('give me pristine Fender cleans');
+  await page.getByTestId('chat-send').click();
+
+  await expect(page.getByTestId('tool-chips')).toContainText('Amp Twin Sixty-Five');
+  const type = await page.evaluate(
+    () => (window as any).__CLIPPER_TEST__.getRig().amp.type
+  );
+  expect(type).toBe('twin');
+  // The amp FACE swapped to the Twin Sixty-Five wordmark.
+  await expect(page.getByTestId('amp-name')).toContainText('Twin Sixty-Five');
+  await expect(page.getByTestId('amp')).toHaveAttribute('data-amp-type', 'twin');
+});
+
 test('assistant: proxy-down shows a clear in-chat error notice', async ({ page }) => {
   await page.route('**/api/health', mockHealthOk);
   await page.route('**/api/chat', (route) => route.abort());

@@ -81,6 +81,10 @@ add_library(clipper_dsp STATIC
     src/dsp/Jcm800Preamp.cpp
     src/dsp/Jcm800PowerAmp.cpp
     src/dsp/Jcm800Amp.cpp
+    src/dsp/OptoTremolo.cpp
+    src/dsp/TwinPreamp.cpp
+    src/dsp/TwinPowerAmp.cpp
+    src/dsp/TwinAmp.cpp
 )
 target_include_directories(clipper_dsp PUBLIC include)
 target_link_libraries(clipper_dsp PUBLIC chowdsp_wdf)
@@ -173,6 +177,17 @@ if(NOT EMSCRIPTEN)
         target_compile_options(clipper_jcm800_power_tests PRIVATE -Wall -Wextra -UNDEBUG)
     endif()
     add_test(NAME clipper_jcm800_power_tests COMMAND clipper_jcm800_power_tests)
+
+    # --- M10.1: Twin (Fender blackface) amp tests -----------------------------
+    add_executable(clipper_twin_tests tests/test_twin_amp.cpp)
+    target_link_libraries(clipper_twin_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (aliasing metric) under tools/measure.
+    target_include_directories(clipper_twin_tests PRIVATE tools)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_twin_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_twin_tests COMMAND clipper_twin_tests)
 
     # --- CLI render harness (native only, NOT part of the WASM build) ---------
     add_executable(clipper-render tools/render/main.cpp)
