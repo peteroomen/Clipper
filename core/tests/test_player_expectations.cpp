@@ -371,7 +371,8 @@ std::vector<Gear> allGear() {
     // A4 level-sanity windows (RMS delta dB, standard pluck at defaults), each
     // measured value ± ~10 dB. Measured 2026-07 @ 48 kHz (input RMS −33.5 dBFS):
     //   rat +18.6   sd1 +15.6   ts +13.1   muff +29.4 (fuzz sustain wall — by design)
-    //   clean120 −6.0   jcm800 +1.7   twin −13.8   ac30 −11.7 (0.4 opening volume)
+    //   clean120 −6.0   jcm800 +1.7   twin −13.8   ac30 +1.6 (0.4 opening volume;
+    //   see docs §23 second amendment — the AC30 gain-structure fix moved it +13.3 dB)
     auto window = [&](const char* name, double lo, double hi) {
         for (auto& g : gear)
             if (g.name == name) { g.lvlDeltaLo = lo; g.lvlDeltaHi = hi; }
@@ -440,7 +441,7 @@ std::vector<Gear> allGear() {
     window("clean120", -17.0, 3.0);
     window("jcm800", -10.0, 10.0);
     window("twin", -25.0, -5.0);
-    window("ac30", -23.0, -3.0);
+    window("ac30", -8.0, 12.0);
     return gear;
 }
 
@@ -454,12 +455,15 @@ bool isDirtPedal(const Gear& g) { return g.isPedal; }
 // Bars (measured 2026-07, 48 kHz, standard pluck peak −20 dBFS / RMS −33.5 dBFS;
 // every render lets smoothers SETTLE 0.25 s at the target first):
 //   audible floor  −70 dBFS RMS   quietest legit min-knob output measured:
-//                                  ac30 bass=0 at −64.1 dBFS (5.9 dB margin) — the
-//                                  passive Vox stack genuinely guts a low-heavy
-//                                  pluck with BASS at zero (authentic, quiet, but
-//                                  audible); next-quietest rat distortion=0 −50.4.
-//                                  The floor separates "authentically quiet" from
-//                                  "silenced" (a true kill measures −240).
+//                                  twin mid=0 at −51.3 dBFS (18.7 dB margin);
+//                                  next-quietest rat distortion=0 −50.4, then
+//                                  ac30 bass=0 −50.4 (the passive Vox stack still
+//                                  guts a low-heavy pluck with BASS at zero, but
+//                                  the §23-second-amendment gain-structure fix
+//                                  lifted it 13.7 dB — it used to be the quietest
+//                                  legit output at −64.1). The floor separates
+//                                  "authentically quiet" from "silenced" (a true
+//                                  kill measures −240).
 //   pedal peak ceiling 2.0 V      hottest measured: muff tone=0 (dark, LP leg)
 //                                  1.69 V; muff defaults 1.41 V (a Muff is LOUD —
 //                                  the downstream limiter owns the ceiling).
@@ -469,7 +473,9 @@ bool isDirtPedal(const Gear& g) { return g.isPedal; }
 //                                  measured: every level/volume/master pot (and
 //                                  the JCM's preamp-volume GAIN) kills to −240.
 //   Defaults RMS per gear: rat −16.6, sd1 −19.6, ts −22.1, muff −5.8,
-//   clean120 −41.1, jcm800 −33.5, twin −49.0, ac30 −46.9 dBFS.
+//   clean120 −41.1, jcm800 −33.5, twin −49.0, ac30 −33.6 dBFS (ac30 was −46.9
+//   before the §23 second amendment: its PI was starved, so the VOLUME knob
+//   could not reach the power section — see docs §23).
 // ---------------------------------------------------------------------------
 void testMinKnobUsability(const std::vector<Gear>& gear) {
     const auto pluck = standardPluck(1.5, kFs);
@@ -572,14 +578,16 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //   LEVEL dBFS (0/0.5/1): rat −240→−15.6→−9.6   sd1 −240→−12.8→−6.8
 //                ts −240→−14.9→−8.9   muff −240→−7.0→−1.0
 //                clean120 −240→−25.9→−23.0   jcm master −240→−18.4→−8.9
-//                twin −240→−34.5→−16.3   ac30 −240→−29.9→−13.7
+//                twin −240→−34.5→−16.3   ac30 −240→−17.8→−9.7 (docs §23 second
+//                amendment: the AC30 volume travel moved up ~12 dB when the
+//                starved phase inverter was fixed — the knob reaches the EL84s now)
 //   TONE, pedals (HF harmonic energy dB, dark→bright, gain maxed; bar ≥ +6):
 //                rat filter −19.8→−10.6 (inverted knob)   sd1 −16.0→−4.2
 //                ts −17.4→−6.2   muff −5.0→+10.1
 //   TONE, amps  (3 kHz level dB, dark→bright; bar ≥ +4):
 //                clean120 treble −36.7→−27.3   jcm800 treble −30.3→−15.7
-//                twin treble −52.3→−21.0   ac30 treble −58.8→−34.9
-//                ac30 CUT −49.5→−38.9 (inverted knob: 1 = darker — docs §23)
+//                twin treble −52.3→−21.0   ac30 treble −45.1→−21.8
+//                ac30 CUT −35.9→−25.5 (inverted knob: 1 = darker — docs §23)
 // ---------------------------------------------------------------------------
 void testKnobMonotonicity(const std::vector<Gear>& gear) {
     for (const auto& g : gear) {
@@ -688,7 +696,10 @@ void testKnobMonotonicity(const std::vector<Gear>& gear) {
 // Measured Δ RMS at defaults (2026-07, 48 kHz, pluck peak −20 dBFS / RMS −33.5):
 //   rat +18.6   sd1 +15.6   ts +13.1   muff +29.4 (the sustain wall lifts a
 //   DECAYING pluck's RMS by design — a fuzz that did NOT would be the bug)
-//   clean120 −6.0   jcm800 +1.7   twin −13.8   ac30 −11.7 (0.4 opening volume)
+//   clean120 −6.0   jcm800 +1.7   twin −13.8   ac30 +1.6 (0.4 opening volume —
+//   +13.3 dB vs the pre-§23-second-amendment −11.7: the Thirty's opening volume
+//   now sits at its edge-of-breakup sweet spot instead of 15 dB below it, which
+//   is exactly what a real AC30 at "4" does; it now sits level with the JCM)
 // One symmetric global bound cannot hold that honest spread, so the windows are
 // PER GEAR (measured ± ~10 dB, set in allGear()) — tight enough that the next
 // "no balls" (−20 dB drift) or blowout still fails loudly.
