@@ -7,6 +7,7 @@
 // during development by perturbing the model).
 
 #include "clipper/dsp/AmpModel.h"
+#include "clipper/dsp/Biquad.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/OutputLimiter.h"
@@ -1094,11 +1095,67 @@ void testCustomIrNormalization(double fs) {
 }
 
 // =============================================================================
-// M6.7 — spring-flavored reverb (clipper::dsp::ReverbModel, owned by AmpModel).
-// Deterministic, framework-free, run at 44.1 / 48 / 96 kHz like the rest.
+// M6.7-2 — TRUE DISPERSIVE SPRING reverb (clipper::dsp::ReverbModel, owned by
+// AmpModel). Deterministic, framework-free, run at 44.1 / 48 / 96 kHz like the rest.
+//
+// The load-bearing test is the CHIRP (testReverbChirp): a real spring smears each
+// echo into a DOWNWARD-swept "boing", which M6.7's comb bank could not do. The
+// anti-metallic test (testReverbAntiMetallic) proves the dispersive loop STRETCHES
+// its resonant modes (inharmonic) instead of stacking them into a metallic comb.
+// Both run the NEW model against an embedded OLD-M6.7 reference (OldSpringRef below)
+// as the A/B failing baseline, exactly as the milestone brief asks.
 // =============================================================================
 
 using clipper::dsp::ReverbModel;
+
+// --- Embedded OLD M6.7 reference (the "spring-flavored" Schroeder/Moorer comb bank)
+//     kept ONLY here in the test as the A/B baseline the new spring must beat: 4
+//     short parallel damped combs + 2 diffusers + 4 short allpasses + a steep 4.5 kHz
+//     lid. It is the algorithm M6.7-2 replaced; the tests below show it does NOT
+//     chirp and its modes are a harmonic (metallic) comb. Self-contained (mirrors the
+//     pre-M6.7-2 ReverbModel.cpp) so the shipping class carries no dead code. --------
+struct OldSpringRef {
+    struct DL { std::vector<float> b; int s = 0, i = 0;
+        void prep(int n) { s = n < 1 ? 1 : n; b.assign(s, 0.0f); i = 0; }
+        inline float f(float x) { float y = b[i]; b[i] = x; if (++i >= s) i = 0; return y; } };
+    struct Comb { std::vector<float> b; int s = 0, i = 0; float st = 0, fb = 0, dp = 0;
+        void prep(int n) { s = n < 1 ? 1 : n; b.assign(s, 0.0f); i = 0; st = 0; }
+        inline float f(float x) { float y = b[i]; st = y * (1 - dp) + st * dp + 1e-20f;
+            b[i] = x + st * fb; if (++i >= s) i = 0; return y; } };
+    struct AP { std::vector<float> b; int s = 0, i = 0; float g = 0.5f;
+        void prep(int n) { s = n < 1 ? 1 : n; b.assign(s, 0.0f); i = 0; }
+        inline float f(float x) {
+            float bb = b[i]; float o = -x + bb; b[i] = x + bb * g;
+            if (++i >= s) i = 0;
+            return o;
+        } };
+    DL pre; Comb c[4]; AP d[2]; AP ch[4];
+    clipper::dsp::Biquad h1, h2, l1, l2;
+    static int sc(int l, double fs) { int n = (int)std::lround(l * fs / 44100.0); return n < 1 ? 1 : n; }
+    void prepare(double fs) {
+        pre.prep(sc(441, fs));
+        int cl[4] = {1116, 1188, 1277, 1356};
+        for (int k = 0; k < 4; ++k) { c[k].prep(sc(cl[k], fs)); c[k].fb = 0.89f; c[k].dp = 0.28f; }
+        int dl[2] = {556, 441}; for (int k = 0; k < 2; ++k) { d[k].prep(sc(dl[k], fs)); d[k].g = 0.5f; }
+        int chl[4] = {67, 97, 131, 173}; for (int k = 0; k < 4; ++k) { ch[k].prep(sc(chl[k], fs)); ch[k].g = 0.6f; }
+        h1.setCoeffs(clipper::dsp::rbj::highPass(150, 0.7071, fs));
+        h2.setCoeffs(clipper::dsp::rbj::highPass(150, 0.7071, fs));
+        l1.setCoeffs(clipper::dsp::rbj::lowPass(4500, 0.7071, fs));
+        l2.setCoeffs(clipper::dsp::rbj::lowPass(4500, 0.7071, fs));
+        h1.reset(); h2.reset(); l1.reset(); l2.reset();
+    }
+    inline float f(float x) {
+        float p = pre.f(x); float s = 0; for (int k = 0; k < 4; ++k) s += c[k].f(p);
+        float w = s * 0.25f; for (int k = 0; k < 2; ++k) w = d[k].f(w);
+        for (int k = 0; k < 4; ++k) w = ch[k].f(w);
+        w = h1.process(w); w = h2.process(w); w = l1.process(w); w = l2.process(w);
+        return w * 0.6f;
+    }
+    std::vector<float> ir(double fs, double secs) {
+        int n = (int)(secs * fs); std::vector<float> o(n, 0.0f);
+        o[0] = f(1.0f); for (int i = 1; i < n; ++i) o[i] = f(0.0f); return o;
+    }
+};
 
 // Render the reverb's wet impulse response: park the MIX at 1.0 (settle the ~10 ms
 // smoother on silence first), then feed a unit impulse and capture `secs` of tail.
@@ -1128,6 +1185,91 @@ double bandEnergy(const std::vector<float>& h, const std::vector<double>& freqs,
     return e / static_cast<double>(freqs.size());
 }
 
+// |H(f)| over a windowed slice [start, start+len) of an IR (for per-echo analysis).
+double irMagWin(const std::vector<float>& h, double f, double fs, int start, int len) {
+    const double w = kTwoPi * f / fs;
+    double re = 0.0, im = 0.0;
+    for (int k = 0; k < len && start + k < static_cast<int>(h.size()); ++k) {
+        re += h[static_cast<size_t>(start + k)] * std::cos(w * k);
+        im -= h[static_cast<size_t>(start + k)] * std::sin(w * k);
+    }
+    return std::sqrt(re * re + im * im);
+}
+
+// Sample index of the first strong echo (peak of a 2 ms energy envelope).
+int firstEchoStart(const std::vector<float>& h, double fs) {
+    const int win = static_cast<int>(0.002 * fs);
+    double emax = 0.0;
+    std::vector<double> env;
+    for (int b = 0; b + win < static_cast<int>(0.6 * fs); b += win) {
+        double e = 0.0;
+        for (int i = b; i < b + win; ++i) e += static_cast<double>(h[static_cast<size_t>(i)]) * h[static_cast<size_t>(i)];
+        env.push_back(e);
+        emax = std::max(emax, e);
+    }
+    for (int b = 1; b < static_cast<int>(env.size()) - 1; ++b)
+        if (env[b] > env[b - 1] && env[b] >= env[b + 1] && env[b] > 0.05 * emax) return b * win;
+    return win;
+}
+
+// Spectral centroid (energy-weighted mean frequency, 200..5000 Hz) of a slice — used
+// to read a chirp's downward sweep robustly across sample rates.
+double echoCentroid(const std::vector<float>& h, int start, int len, double fs) {
+    double num = 0.0, den = 0.0;
+    for (double f = 200.0; f <= 5000.0; f += 50.0) {
+        const double m = irMagWin(h, f, fs, start, len);
+        num += f * m;
+        den += m;
+    }
+    return num / (den + 1e-30);
+}
+
+// Local resonant-mode spacing (Hz) in a sub-band, via the autocorrelation of the
+// log-magnitude spectrum sampled on a LINEAR grid over the [0.15, 0.55] s tail. For
+// a plain comb the spacing is CONSTANT across frequency; a dispersive spring's group
+// delay shrinks with frequency, so its high-band modes are more widely spaced.
+double modeSpacing(const std::vector<float>& h, double fs, double flo, double fhi) {
+    const int NF = 400;
+    const double df = (fhi - flo) / (NF - 1);
+    const int start = static_cast<int>(0.15 * fs), len = static_cast<int>(0.40 * fs);
+    std::vector<double> ls(NF);
+    for (int k = 0; k < NF; ++k) ls[k] = std::log(irMagWin(h, flo + df * k, fs, start, len) + 1e-9);
+    double mean = 0.0; for (double v : ls) mean += v; mean /= NF;
+    for (auto& v : ls) v -= mean;
+    double norm = 0.0; for (double v : ls) norm += v * v; norm += 1e-30;
+    double mx = 0.0; int bestLag = 1;
+    for (int lag = 2; lag < NF / 2; ++lag) {
+        double s = 0.0;
+        for (int k = 0; k + lag < NF; ++k) s += ls[k] * ls[k + lag];
+        const double r = s / norm;
+        if (r > mx) { mx = r; bestLag = lag; }
+    }
+    return bestLag * df;
+}
+
+// Dominant echo-repetition period (ms) from the energy envelope's autocorrelation.
+double envelopePeriodMs(const std::vector<float>& h, double fs) {
+    const int hop = static_cast<int>(0.001 * fs);
+    std::vector<double> e;
+    for (int b = 0; b + hop < static_cast<int>(0.5 * fs); b += hop) {
+        double s = 0.0;
+        for (int i = b; i < b + hop; ++i) s += static_cast<double>(h[static_cast<size_t>(i)]) * h[static_cast<size_t>(i)];
+        e.push_back(s);
+    }
+    const int NE = static_cast<int>(e.size());
+    double mean = 0.0; for (double v : e) mean += v; mean /= NE;
+    for (auto& v : e) v -= mean;
+    double norm = 0.0; for (double v : e) norm += v * v; norm += 1e-30;
+    double mx = 0.0; int bestLag = 20;
+    for (int lag = 15; lag < 70 && lag < NE / 2; ++lag) {  // 15..70 ms
+        double s = 0.0;
+        for (int k = 0; k + lag < NE; ++k) s += e[k] * e[k + lag];
+        const double r = s / norm;
+        if (r > mx) { mx = r; bestLag = lag; }
+    }
+    return bestLag * 1.0;  // hop == 1 ms
+}
+
 // --- Test R1: reverb == 0 is a BIT-EXACT dry passthrough. ---------------------
 void testReverbPassthrough(double fs) {
     auto in = sine(440.0, 0.3f, 0.2, fs);
@@ -1154,10 +1296,11 @@ void testReverbPassthrough(double fs) {
 
 // --- Test R2: decay time (T30->RT60) in the design window + a stable, monotone
 //     tail (no infinite/unstable ring). --------------------------------------
-// RT60 design target ~1.5 s (feedback tuned via RT60 ~= -3*D/(fs*log10(g)); at the
-// shortest comb D=1116, fs=44100, g=0.89 => ~1.5 s). Measured broadband via a
-// Schroeder energy-decay curve; asserted in a documented [0.9, 2.5] s band (the
-// 1.2-2.0 s design range plus measurement tolerance).
+// RT60 design target ~1.7-1.8 s (springs ring longer than the plate-ish 1.5 s M6.7
+// used): the loop gain g=0.90 over a ~30 ms round trip gives RT60 ~= -3*T_rt/log10(g)
+// ~= 1.7 s at the spring's mid band. Measured broadband via a Schroeder energy-decay
+// curve; asserted in a documented [0.9, 2.5] s band (the 1.6-2.2 s design range plus
+// measurement tolerance and the mild cross-rate drift of the fixed-length cascade).
 void testReverbDecay(double fs) {
     auto ir = reverbIR(fs, 4.0);
     assert(!hasNaN(ir) && "reverb IR NaN/inf");
@@ -1201,8 +1344,12 @@ void testReverbDecay(double fs) {
                 rt60, t30, windows, fs);
 }
 
-// --- Test R3: band-limited voice (spring passband ~150 Hz .. 4.5 kHz), NOT a
-//     bright plate. Tail energy above 6 kHz and below 100 Hz is well down. ------
+// --- Test R3: band character — the transducer passband (~150 Hz .. 5.2 kHz), but
+//     GENTLER on top than M6.7. Above 6 kHz is DOWN but NOT DEAD (the "underwater"
+//     fix), below 100 Hz is well down. Documented bounds:
+//       >6 kHz:  in [-26, -5] dB re mid — rolled off (not a bright plate) yet keeps
+//                air (M6.7's steep 4th-order lid sat near -20 dB and sounded dull).
+//       <100 Hz: < -14 dB re mid — no boom. --------------------------------------
 void testReverbBandLimit(double fs) {
     auto ir = reverbIR(fs, 2.0);
     const double mid = bandEnergy(ir, {500.0, 700.0, 1000.0, 1500.0, 2000.0}, fs);
@@ -1210,12 +1357,75 @@ void testReverbBandLimit(double fs) {
     const double lo = bandEnergy(ir, {50.0, 70.0, 100.0}, fs);
     const double hiDb = 10.0 * std::log10(hi / (mid + 1e-30) + 1e-30);
     const double loDb = 10.0 * std::log10(lo / (mid + 1e-30) + 1e-30);
-    // Documented bounds: the 4th-order transducer band-limit puts both edges well
-    // below the mid band. >6 kHz and <100 Hz must be at least 12 dB down.
-    assert(hiDb < -12.0 && "reverb tail not dark above 6 kHz (sounds like a bright plate)");
-    assert(loDb < -12.0 && "reverb tail low end (<100 Hz) not rolled off (boomy, not spring)");
-    std::printf("  [ok] reverb band-limit: >6kHz %.1f dB, <100Hz %.1f dB re mid (both <-12, spring passband) (fs=%g)\n",
+    assert(hiDb < -5.0 && "reverb tail not rolled off above 6 kHz (bright plate, not a spring)");
+    assert(hiDb > -26.0 && "reverb tail dead above 6 kHz (the M6.7 'underwater' failure)");
+    assert(loDb < -14.0 && "reverb tail low end (<100 Hz) not rolled off (boomy, not spring)");
+    std::printf("  [ok] reverb band: >6kHz %.1f dB (in [-26,-5], down-but-not-dead), <100Hz %.1f dB (<-14) (fs=%g)\n",
                 hiDb, loDb, fs);
+}
+
+// --- Test R_CHIRP (the load-bearing spring signature): a single impulse produces a
+//     first echo that is a DOWNWARD-swept chirp — the spring "boing". Measured as the
+//     spectral centroid of the echo's first half vs its second half: it drops. The
+//     embedded OLD M6.7 comb bank does NOT chirp (centroid ~flat), so the NEW model
+//     must sweep markedly more. Also checks the echo period is a plausible spring
+//     round trip. This is exactly what M6.7 could not do. -----------------------
+void testReverbChirp(double fs) {
+    auto ir = reverbIR(fs, 2.0);
+    assert(!hasNaN(ir) && "reverb chirp IR NaN/inf");
+    const int es = firstEchoStart(ir, fs);
+    const double echoMs = es * 1000.0 / fs;
+    assert(echoMs > 12.0 && echoMs < 50.0 && "first echo outside the spring round-trip range");
+
+    const int half = static_cast<int>(0.008 * fs);  // 8 ms half-echo window
+    const double cEarly = echoCentroid(ir, es, half, fs);
+    const double cLate = echoCentroid(ir, es + half, half, fs);
+    const double descent = cEarly / (cLate + 1e-9);  // >1 == downward sweep
+
+    // OLD M6.7 reference: the same measurement on the comb bank (no chirp).
+    OldSpringRef old;
+    old.prepare(fs);
+    auto oir = old.ir(fs, 2.0);
+    const int oes = firstEchoStart(oir, fs);
+    const double oDescent = echoCentroid(oir, oes, half, fs) / (echoCentroid(oir, oes + half, half, fs) + 1e-9);
+
+    // The new spring sweeps clearly downward AND much more than the old comb bank.
+    assert(descent > 1.4 && "reverb first echo is not a downward chirp (no spring boing)");
+    assert(descent > oDescent * 1.4 && "reverb chirp no stronger than the OLD M6.7 comb bank");
+
+    // Echo period: a plausible spring round trip (design ~30 ms).
+    const double periodMs = envelopePeriodMs(ir, fs);
+    assert(periodMs > 20.0 && periodMs < 45.0 && "echo period outside the designed loop-period window");
+
+    std::printf("  [ok] reverb chirp: echo@%.1fms centroid %.0f->%.0f Hz (descent %.2fx vs OLD %.2fx), period %.0fms (fs=%g)\n",
+                echoMs, cEarly, cLate, descent, oDescent, periodMs, fs);
+}
+
+// --- Test R_ANTIMETALLIC (no comb-like harmonic stack): the dispersive loop makes
+//     the round-trip delay frequency-dependent, so its resonant modes are STRETCHED
+//     — the high-band mode spacing is much wider than the low-band. A plain comb bank
+//     (M6.7) has CONSTANT (harmonic) spacing that fuses into a metallic pitch. Metric
+//     = high-band spacing / low-band spacing. Asserted against the embedded OLD M6.7
+//     reference measured identically: NEW >> 1 (dispersive), OLD ~1 (comb). --------
+void testReverbAntiMetallic(double fs) {
+    auto ir = reverbIR(fs, 2.0);
+    const double loSp = modeSpacing(ir, fs, 300.0, 1200.0);
+    const double hiSp = modeSpacing(ir, fs, 2500.0, 4500.0);
+    const double ratio = hiSp / (loSp + 1e-9);
+
+    OldSpringRef old;
+    old.prepare(fs);
+    auto oir = old.ir(fs, 2.0);
+    const double oRatio = modeSpacing(oir, fs, 2500.0, 4500.0) / (modeSpacing(oir, fs, 300.0, 1200.0) + 1e-9);
+
+    // NEW: modes stretch strongly with frequency (dispersive spring, not a comb).
+    assert(ratio > 1.8 && "reverb modes not stretched — a harmonic (metallic) comb");
+    // OLD reference: a comb bank has ~constant (harmonic) spacing.
+    assert(oRatio < 1.4 && "OLD-M6.7 reference did not read as a harmonic comb (metric broken)");
+    assert(ratio > oRatio * 1.5 && "reverb no less comb-like than OLD M6.7");
+
+    std::printf("  [ok] reverb anti-metallic: mode-spacing stretch %.2fx (low %.0f -> high %.0f Hz) vs OLD comb %.2fx (fs=%g)\n",
+                ratio, loSp, hiSp, oRatio, fs);
 }
 
 // --- Test R4: diffuse tail, not discrete slapback (echo-density proxy: the tail's
@@ -1305,7 +1515,13 @@ void testReverbChainPlacement(double fs) {
                 wetL, wetR, dryL, dryR, fs);
 }
 
-// --- Test R7: CPU budget — the reverb is well under the chorus + 2x cab cost. ---
+// --- Test R7: CPU budget. The dispersive spring is a long sequential allpass chain,
+//     so it is dearer than M6.7's cheap comb bank — it lands COMPARABLE to the chorus
+//     + 2x cab stage it feeds (a few % of one core), not far under it. That is the
+//     irreducible cost of real dispersion (the whole point of M6.7-2); we reduced the
+//     cascade to ~32 sections/spring to pay for it (see docs §16). The bound here
+//     just proves it is comfortably real-time (< 0.1x real time) with margin for a
+//     slow CI box; the measured fraction is printed for the record. ---------------
 void testReverbPerf(double fs) {
     ReverbModel rv;
     rv.prepare(fs);
@@ -1323,8 +1539,8 @@ void testReverbPerf(double fs) {
     const auto t1 = std::chrono::high_resolution_clock::now();
     const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     assert(!hasNaN(out) && "reverb perf run produced NaN");
-    assert(ms < 60.0 && "reverb slower than 0.06x real time (should be tiny vs chorus+2xcab)");
-    std::printf("  [ok] reverb perf: 1 s in %.1f ms (%.2f%% of one core, << chorus+2xcab, fs=%g)\n",
+    assert(ms < 100.0 && "reverb slower than 0.1x real time (dispersion chain too long)");
+    std::printf("  [ok] reverb perf: 1 s in %.1f ms (%.2f%% of one core, dispersive spring, fs=%g)\n",
                 ms, ms / 1000.0 * 100.0, fs);
 }
 
@@ -1355,10 +1571,12 @@ int main() {
         testChorusChorus(fs);
         testChorusVibrato(fs);
         testChorusPerf(fs);
-        // M6.7 spring-flavored reverb.
+        // M6.7-2 true dispersive spring.
         testReverbPassthrough(fs);
         testReverbDecay(fs);
+        testReverbChirp(fs);          // load-bearing: the downward spring chirp
         testReverbBandLimit(fs);
+        testReverbAntiMetallic(fs);   // stretched modes, not a harmonic comb
         testReverbDensity(fs);
         testReverbStability(fs);
         testReverbChainPlacement(fs);

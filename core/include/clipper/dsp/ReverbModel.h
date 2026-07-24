@@ -1,22 +1,23 @@
-// Clipper — portable DSP core (M6.7).
+// Clipper — portable DSP core (M6.7-2).
 //
-// ReverbModel: an ALGORITHMIC, spring-FLAVORED reverb standing in the JC-120's
-// authentic spring-tank position — AFTER the preamp/tone/volume and BEFORE the
-// stereo chorus split (see AmpModel), so the tail blooms in stereo through the
-// chorus exactly like the real amp's spring tank feeding the stereo power section.
-// It is MONO (the split comes after) and owned by AmpModel, which routes its one
-// param here.
+// ReverbModel: a TRUE DISPERSIVE SPRING reverb standing in the JC-120's authentic
+// spring-tank position — AFTER the preamp/tone/volume and BEFORE the stereo chorus
+// split (see AmpModel), so the tail blooms in stereo through the chorus exactly like
+// the real amp's spring tank feeding the stereo power section. It is MONO (the split
+// comes after) and owned by AmpModel, which routes its one param here.
 //
-// SCOPE (M6.7): this is a compact Schroeder/Moorer network TUNED to read as
-// "spring-ish" — NOT the full dispersive-waveguide spring (that is M6.7-2, which
-// swaps THIS core out behind the same one-knob interface). What makes it spring-
-// flavored rather than a bright plate:
-//   * a band-limited voice (the loop + output are cut to roughly a real spring
-//     transducer's ~150 Hz .. 4.5 kHz passband — thin, not full-range),
-//   * a FIXED medium decay (~1.5 s; "dwell" is fixed, matching the real amp whose
-//     single REVERB control is a MIX, not a time),
-//   * a short all-pass "chirp" cascade that hints at the spring's dispersive boing
-//     without modeling the waveguide (documented approximation).
+// SCOPE (M6.7-2): this replaces M6.7's Schroeder/Moorer "spring-flavored" comb bank
+// with a Parker/Välimäki-style dispersive waveguide — a feedback loop whose delay is
+// a long cascade of first-order allpass filters. That cascade IS the physics: a
+// broadband transient exits smeared into a DOWNWARD-swept chirp ("boing"), and the
+// frequency-dependent round-trip delay STRETCHES the resonant modes so they never
+// stack into M6.7's metallic pitch. Same one-knob MIX interface (PARAM_REVERB=9),
+// same position, same bit-exact-dry-at-0 guarantee. What makes it a real spring:
+//   * two detuned dispersive springs in parallel (the dual-tank shimmer),
+//   * gentle in-loop damping (a soft HF shelf + a low-cut) — NOT M6.7's steep 4.5 kHz
+//     in-loop lid that made it sound "underwater",
+//   * a transducer band-limit (~150 Hz .. 5.2 kHz) that keeps some air on top.
+// See ReverbModel.cpp for the full topology and the metallic/underwater postmortem.
 //
 // ONE parameter: reverb (0..1), an EQUAL-POWER dry/wet MIX (like the amp's single
 // REVERB knob). reverb == 0 is a BIT-EXACT dry passthrough (asserted): the network

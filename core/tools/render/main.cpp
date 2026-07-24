@@ -25,9 +25,11 @@
 #include "clipper/dsp/Jcm800Preamp.h"
 #include "clipper/dsp/SdModel.h"
 #include "clipper/dsp/AmpModel.h"
+#include "clipper/dsp/Biquad.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/OutputLimiter.h"
+#include "clipper/dsp/ReverbModel.h"
 #include "measure/AliasMetric.h"
 
 #include <cmath>
@@ -57,6 +59,8 @@ struct Args {
     bool idealOpAmp = false;      // M6.5: bypass the LM308 op-amp model (A/B)
     std::string chain = "rat";    // "rat" (pedal) or "clean" (amp+cab+limiter)
     std::string cab = "clean212"; // clean chain cab: "clean212" or "brit412"
+    float reverb = 0.0f;          // M6.7-2: clean-chain spring reverb MIX (0..1)
+    std::string reverbAlgo = "new";  // "new" (dispersive spring) or "old" (M6.7 A/B)
     std::string pedal = "rat";    // M8: "rat" or "sd1" (SD-1 overdrive)
     float limThresh = 0.97f;      // M6.5: output soft-limiter threshold (clean chain)
     bool triode = false;          // M9.1: run a single 12AX7 TriodeStage (stage alone)
@@ -80,6 +84,56 @@ float softLimit(float x, float t) {
     return x;
 }
 
+// Embedded OLD M6.7 "spring-flavored" reverb (4 short combs + 2 diffusers + 4 short
+// allpasses + a steep 4.5 kHz lid), kept here ONLY as the A/B baseline for the M6.7-2
+// listening pack: `--reverb-algo old` renders it so the user can hear the metallic /
+// underwater original against the new dispersive spring (`--reverb-algo new`). It is
+// a faithful copy of the pre-M6.7-2 ReverbModel.cpp core.
+struct OldSpringReverb {
+    struct DL { std::vector<float> b; int s = 0, i = 0;
+        void prep(int n) { s = n < 1 ? 1 : n; b.assign(s, 0.0f); i = 0; }
+        float f(float x) { float y = b[i]; b[i] = x; if (++i >= s) i = 0; return y; } };
+    struct Comb { std::vector<float> b; int s = 0, i = 0; float st = 0, fb = 0, dp = 0;
+        void prep(int n) { s = n < 1 ? 1 : n; b.assign(s, 0.0f); i = 0; st = 0; }
+        float f(float x) { float y = b[i]; st = y * (1 - dp) + st * dp + 1e-20f;
+            b[i] = x + st * fb; if (++i >= s) i = 0; return y; } };
+    struct AP { std::vector<float> b; int s = 0, i = 0; float g = 0.5f;
+        void prep(int n) { s = n < 1 ? 1 : n; b.assign(s, 0.0f); i = 0; }
+        float f(float x) {
+            float bb = b[i]; float o = -x + bb; b[i] = x + bb * g;
+            if (++i >= s) i = 0;
+            return o;
+        } };
+    DL pre; Comb c[4]; AP d[2]; AP ch[4];
+    clipper::dsp::Biquad h1, h2, l1, l2;
+    static int sc(int l, double fs) { int n = (int)std::lround(l * fs / 44100.0); return n < 1 ? 1 : n; }
+    void prepare(double fs) {
+        pre.prep(sc(441, fs));
+        int cl[4] = {1116, 1188, 1277, 1356};
+        for (int k = 0; k < 4; ++k) { c[k].prep(sc(cl[k], fs)); c[k].fb = 0.89f; c[k].dp = 0.28f; }
+        int dl[2] = {556, 441}; for (int k = 0; k < 2; ++k) { d[k].prep(sc(dl[k], fs)); d[k].g = 0.5f; }
+        int chl[4] = {67, 97, 131, 173}; for (int k = 0; k < 4; ++k) { ch[k].prep(sc(chl[k], fs)); ch[k].g = 0.6f; }
+        h1.setCoeffs(clipper::dsp::rbj::highPass(150, 0.7071, fs));
+        h2.setCoeffs(clipper::dsp::rbj::highPass(150, 0.7071, fs));
+        l1.setCoeffs(clipper::dsp::rbj::lowPass(4500, 0.7071, fs));
+        l2.setCoeffs(clipper::dsp::rbj::lowPass(4500, 0.7071, fs));
+        h1.reset(); h2.reset(); l1.reset(); l2.reset();
+    }
+    float wet(float x) {
+        float p = pre.f(x); float s = 0; for (int k = 0; k < 4; ++k) s += c[k].f(p);
+        float w = s * 0.25f; for (int k = 0; k < 2; ++k) w = d[k].f(w);
+        for (int k = 0; k < 4; ++k) w = ch[k].f(w);
+        w = h1.process(w); w = h2.process(w); w = l1.process(w); w = l2.process(w);
+        return w * 0.6f;
+    }
+    // Equal-power dry/wet, matching the shipping ReverbModel's mix law.
+    void processMix(float* buf, int n, float mix) {
+        const float dg = std::cos(mix * 1.5707963267948966f);
+        const float wg = std::sin(mix * 1.5707963267948966f);
+        for (int i = 0; i < n; ++i) { const float dry = buf[i]; buf[i] = dg * dry + wg * wet(dry); }
+    }
+};
+
 [[noreturn]] void usage(const char* argv0) {
     std::fprintf(stderr,
         "Usage:\n"
@@ -96,6 +150,9 @@ float softLimit(float x, float t) {
         "          --chain rat|clean (clean = amp+cab+limiter, pedal-bypassed path),\n"
         "          --cab clean212|brit412 (clean-chain cab; brit412 = the darker 4x12),\n"
         "          --limiter-thresh T (clean-chain output soft-limiter threshold, default 0.97).\n"
+        "M6.7-2:   --reverb MIX (clean-chain spring reverb wet mix 0..1, default 0 = dry),\n"
+        "          --reverb-algo new|old (new = dispersive spring [default]; old = M6.7 A/B),\n"
+        "          --gen impulse:SECONDS (single-impulse 'drip' test signal).\n"
         "M9.1:     --triode (render a single 12AX7 common-cathode stage alone),\n"
         "          --triode-drive D (input-gain multiplier into the grid, default 3.0),\n"
         "          --triode-cathode UF (cathode bypass cap in uF: 0.68 default, 0 unbypassed, 22 full),\n"
@@ -136,6 +193,14 @@ bool generate(const Args& a, std::vector<float>& sig) {
         for (int i = 0; i < n; ++i)
             sig[static_cast<size_t>(i)] =
                 amp * static_cast<float>(std::sin(kTwoPi * f * i / fs));
+        return true;
+    }
+    if (parts[0] == "impulse" && parts.size() == 2) {
+        // A single unit impulse then silence — the reverb "drip" test signal.
+        const double secs = std::atof(parts[1].c_str());
+        const int n = static_cast<int>(secs * fs);
+        sig.assign(static_cast<size_t>(n), 0.0f);
+        if (n > 0) sig[0] = amp;
         return true;
     }
     if (parts[0] == "pluck" && parts.size() == 3) {
@@ -258,6 +323,8 @@ int main(int argc, char** argv) {
         else if (s == "--chain") a.chain = need("--chain");
         else if (s == "--limiter-thresh") a.limThresh = std::atof(need("--limiter-thresh"));
         else if (s == "--cab") a.cab = need("--cab");
+        else if (s == "--reverb") a.reverb = std::atof(need("--reverb"));
+        else if (s == "--reverb-algo") a.reverbAlgo = need("--reverb-algo");
         else if (s == "--triode") a.triode = true;
         else if (s == "--triode-drive") a.triodeDrive = std::atof(need("--triode-drive"));
         else if (s == "--triode-cathode") a.triodeCathodeUf = std::atof(need("--triode-cathode"));
@@ -414,6 +481,21 @@ int main(int argc, char** argv) {
         amp.setParameter(clipper::dsp::AmpModel::PARAM_BRIGHT, 0.0f);
         if (!input.empty())
             amp.process(input.data(), out.data(), static_cast<int>(input.size()));
+        // M6.7-2: spring reverb on the (mono) preamp voice, BEFORE the cab — the
+        // real JC-120 spring-tank position. --reverb-algo picks the new dispersive
+        // spring (shipping ReverbModel) or the OLD M6.7 comb bank (A/B baseline).
+        if (a.reverb > 0.0f && !out.empty()) {
+            if (a.reverbAlgo == "old") {
+                OldSpringReverb old;
+                old.prepare(fs);
+                old.processMix(out.data(), static_cast<int>(out.size()), a.reverb);
+            } else {
+                clipper::dsp::ReverbModel rv;
+                rv.prepare(fs);
+                rv.setMix(a.reverb);
+                rv.process(out.data(), out.data(), static_cast<int>(out.size()));
+            }
+        }
         auto ir = a.cab == "brit412" ? clipper::dsp::generateBrit4x12IR(fs)
                                      : clipper::dsp::generateDefaultCab2x12IR(fs);
         clipper::dsp::CabConvolver cab;
@@ -502,8 +584,9 @@ int main(int argc, char** argv) {
         const double tailDb = 20.0 * std::log10(tailRms / (rms + 1e-30) + 1e-30);
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (chain=clean amp:vol0.4/treble0.6+cab=%s, "
-            "limiter-thresh=%.2f)\n  peak=%.4f  rms=%.4f  post-attack residual=%.6f (%.1f dB re rms)\n",
-            out.size(), fs, a.outFile.c_str(), a.cab.c_str(), a.limThresh, peak, rms, tailRms, tailDb);
+            "reverb=%.2f[%s], limiter-thresh=%.2f)\n  peak=%.4f  rms=%.4f  post-attack residual=%.6f (%.1f dB re rms)\n",
+            out.size(), fs, a.outFile.c_str(), a.cab.c_str(), a.reverb,
+            a.reverbAlgo.c_str(), a.limThresh, peak, rms, tailRms, tailDb);
     } else if (a.pedal == "sd1") {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (pedal=sd1 drive=%.2f tone=%.2f level=%.2f "

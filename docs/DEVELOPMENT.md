@@ -2326,19 +2326,31 @@ cd web && npm run build && npx playwright test   # 35 specs incl. 5 new cab test
 core/build/clipper-render --gen pluck:82.4:2.0 out.wav --chain clean --cab brit412
 ```
 
-## 16. M6.7 — Spring-flavored reverb (the JC-120's missing tank)
+## 16. M6.7 / M6.7-2 — Spring reverb (the JC-120's tank)
 
 M5 shipped the Clean 120 with **no reverb** — the real Roland JC-120 has a spring
-tank, and the panel had no knob because the block did not exist. M6.7 adds an
-**algorithmic, spring-flavored** reverb in the amp's **authentic position** with a
-single **REVERB** knob.
+tank, and the panel had no knob because the block did not exist. M6.7 added an
+algorithmic reverb in the amp's **authentic position** with a single **REVERB** knob.
+**M6.7-2 replaced the algorithm inside `ReverbModel` with a TRUE DISPERSIVE SPRING**
+(same class, same one-knob interface, same position, same bit-exact-dry-at-0), which
+is what this section now describes. The interface story (position, C ABI, RigState,
+UI, assistant, native) is unchanged from M6.7; only the DSP core changed.
 
-> **Scope.** This is a compact Schroeder/Moorer network *tuned to read as
-> spring-ish* — **not** the full dispersive-waveguide spring. That physics (chirped
-> echo trains, dual detuned springs, transducer resonances — the true "boing" and
-> "drip") is parked as **M6.7-2**, which swaps out *only this core* behind the same
-> one-knob interface. M6.7 gives the JC its ambience now; M6.7-2 gives it the exact
-> physics later.
+> **The metallic/underwater postmortem (why M6.7-2 exists).** M6.7 was a bank of **4
+> short parallel feedback combs** + a **steep 4th-order 4.5 kHz in-loop lid**. The
+> user heard its two textbook weaknesses immediately:
+> * **"too metallic"** — 4 short combs ring on **harmonically-spaced** modes (each
+>   comb resonates at integer multiples of `1/delay`). Evenly-spaced modes fuse into
+>   a pitched, clangy "sproing". A real spring does not do this.
+> * **"underwater"** — a **steep 4.5 kHz lowpass *inside* the feedback loop** plus an
+>   allpass smear made a dull, phasey wash with no air on top.
+>
+> M6.7-2 fixes both by modelling the actual physics: a spring is a **dispersive**
+> waveguide (wave speed varies with frequency), so a transient arrives smeared into a
+> **downward-swept chirp** ("boing"), and — because the round-trip delay varies with
+> frequency — its modes are **stretched (inharmonic)** and never stack into a metallic
+> pitch. The steep in-loop lid is replaced by **gentle** damping, so the top stays
+> alive.
 
 ### Position — why it lives inside `AmpModel::processStereo`
 
@@ -2357,87 +2369,135 @@ stereo through the chorus and both per-side cabs** — exactly like the hardware
 feeding the stereo section. The mono legacy `AmpModel::process()` path is left
 untouched (reverb is a stereo-path feature; it is the real amp's stereo voice).
 
-### DSP (`core/src/dsp/ReverbModel.{h,cpp}`)
+### DSP (`core/src/dsp/ReverbModel.{h,cpp}`) — the dispersive spring
 
 A mono network, in signal order:
 
 ```
-in ─► predelay 10 ms ─► [4 parallel damped combs] ─►×0.25
-   ─► [2 series Schroeder allpass diffusers]
-   ─► [4 short "spring chirp" allpasses]
-   ─► band-limit: 2× HP @150 Hz + 2× LP @4.5 kHz ─► wet
-out = cos(mix·π/2)·dry + sin(mix·π/2)·(0.6·wet)     [equal-power mix]
+in ─► transducer band-limit (2nd-order HP 150 Hz + 2nd-order LP 5.2 kHz)
+   ─► [ spring 1 ]  +  [ spring 2 ]      (0.5·sum; two detuned dispersive springs)
+   ─► transducer band-limit (HP 150 Hz + LP 5.2 kHz) ─► ×3.0 ─► wet
+out = cos(mix·π/2)·dry + sin(mix·π/2)·wet             [equal-power mix]
+
+each spring = FEEDBACK LOOP:
+  loopIn ─► bulk delay Dₖ ─► [ N first-order dispersion allpasses ]
+         ─► gentle in-loop damping (HF high-shelf + 120 Hz low-cut) ─► loopOut
+  feedback = g·loopOut ;  loopIn = band(dry) + feedback
 ```
 
-- **Predelay 10 ms** — the pickup-to-first-return travel; separates the dry pluck
-  from the wet bloom without reading as a delay.
-- **4 damped combs** (Freeverb-style, lowpass **in** the feedback loop). Delays are
-  mutually prime-ish (`1116/1188/1277/1356` @44.1k, scaled by `fs`) so their modes
-  interleave into a dense, non-periodic tail. The in-loop lowpass (`damp = 0.28`)
-  makes **highs decay faster than lows** — springs are dark and get darker as they
-  ring, the opposite of a bright plate. **Decay is FIXED** (the knob is a MIX, like
-  the real amp's single REVERB pot): the feedback (`g = 0.89`) is tuned for a
-  broadband **RT60 ≈ 1.5 s** via `RT60 ≈ −3·D / (fs·log₁₀ g)` (shortest comb
-  `D=1116`, `fs=44100`, `g=0.89` ⇒ ~1.5 s).
-- **2 series allpass diffusers** (Schroeder, `g = 0.5`) — smear the comb output into
-  a diffuse tail (raise echo density) without touching the magnitude spectrum.
-- **4 short "spring chirp" allpasses** (`67/97/131/173` @44.1k, `g = 0.6`). A
-  cascade of short allpasses has strongly frequency-dependent group delay, so
-  different frequencies exit at slightly different times — a **taste** of the
-  dispersive spring boing without modeling the waveguide. Explicitly a *flavor*, not
-  the real dispersion (that's M6.7-2).
-- **Band-limit — 4th-order HP @150 Hz + 4th-order LP @4.5 kHz.** A real spring is a
-  pair of narrowband electromechanical transducers passing roughly **150 Hz .. 4.5
-  kHz**. This steep cut is the line between "spring-ish" and "generic bright digital
-  reverb": it keeps the sub-150 Hz from booming and the >4.5 kHz from fizzing.
+- **Dispersion allpass cascade** — the heart. Each section is a **first-order allpass
+  in the DOWNWARD form** `H(z) = (z⁻¹ − a)/(1 − a·z⁻¹)` (pole at `+a`). Its group
+  delay **decreases with frequency** (≈ `(1+a)/(1−a)` samples at DC, `(1−a)/(1+a)` at
+  Nyquist), so **low frequencies are delayed more than highs** — a broadband impulse
+  exits as a **high→low descending chirp**. Cascading `N` of them accumulates the
+  sweep into an audible boing and makes the loop's round-trip delay
+  frequency-dependent, which **stretches the mode spacing** and kills M6.7's harmonic
+  (metallic) stacking. `a = 0.740 / 0.728` (in the 0.6–0.75 window); `N = 32 / 34`
+  sections per spring.
+- **Bulk delay** (`Dₖ = 1150 / 1219` @44.1k, scaled by `fs`) sets the round-trip
+  **echo period** together with the cascade's low-frequency group delay — **≈ 30 ms**.
+  This is deliberately the **short end** of the spring range: lengthening the loop
+  toward the 40–56 ms of a big tank let the *constant* bulk delay dominate the
+  *fixed-length* dispersion, and the modes **collapsed back to a harmonic comb**
+  (measured mode-spacing stretch fell from **≈3.3× to ≈1.0×** — the exact metallic
+  failure we are fixing). At ~30 ms the dispersion stays a large enough fraction of
+  the loop to keep the modes stretched, and successive ~12 ms chirps overlap into a
+  wash rather than discrete pings.
+- **Two detuned springs** — loop lengths differ ~6% with a slight coefficient
+  difference (`0.740` vs `0.728`); their sum gives the dual-tank shimmer/beat and
+  de-correlates the two mode series.
+- **In-loop damping — GENTLE.** A high-**shelf** (`−2.5 dB` above ~6 kHz, so the
+  spring loses a little top per pass) + a `120 Hz` low-cut (no boom). This is
+  deliberately **not** M6.7's steep 4.5 kHz in-loop lid — that lid was the
+  "underwater" culprit.
+- **Transducer band-limit** — 2nd-order HP `150 Hz` + 2nd-order LP `5.2 kHz` at input
+  **and** output. Gentler (2nd- vs 4th-order) and higher (5.2 vs 4.5 kHz) than M6.7,
+  so the tail keeps air (>6 kHz **down but not dead**) instead of sounding dull.
+- **Decay is FIXED** (the knob is a MIX, like the real REVERB pot): loop gain
+  `g = 0.90` over the ~30 ms round trip gives **RT60 ≈ 1.7 s** via
+  `RT60 ≈ −3·T_rt / log₁₀ g` — springs ring a touch longer than the plate-ish 1.5 s
+  M6.7 used.
 - **One parameter — `reverb` (0..1), an equal-power wet MIX.** `dryGain = cos(mix·π/2)`,
   `wetGain = sin(mix·π/2)`. At `mix == 0`, `cos(0)==1` and `sin(0)==0` **exactly**
   (IEEE), and the network is **skipped entirely** (fast path), so `reverb == 0` is a
-  **bit-exact dry passthrough** — adding this block leaves a reverb-off rig unchanged
-  sample-for-sample (asserted). Deterministic and allocation-free in `process()`; a
-  ~1e-20 anti-denormal offset in each comb store keeps a decaying tail off the
-  denormal CPU cliff (>100 dB below anything audible).
+  **bit-exact dry passthrough** (asserted). Deterministic and allocation-free in
+  `process()` (all delay lines / allpass state sized in `prepare()`); a `1e-20`
+  anti-denormal offset injected at each spring's loop input keeps a decaying tail off
+  the denormal CPU cliff (removed by the 120 Hz / 150 Hz high-passes, so no audible
+  DC; >100 dB below anything audible).
+
+**Cross-rate note.** The dispersion is defined in **samples** (`N` fixed across `fs`);
+only the bulk delay scales with `fs`. So at 96 kHz the chirp sweep is a little faster
+and RT60 drifts from 1.77 s → 1.63 s — well inside tolerance — while the mode-stretch
+fingerprint holds (3.33× → 3.11×). Scaling `N` with `fs` would double the 96 kHz CPU
+for an inaudible gain, so it is left fixed and the drift is asserted within band.
+
+**Modulation — measured, not needed.** The brief allowed a small (<±0.3 sample) slow
+delay modulation *if* the tail still showed comb clustering. It does not: the
+dispersion alone already stretches the modes **3.3×** vs a comb's **1.0×**, so no
+modulation is used — keeping the model fully deterministic and cheaper.
+
+**The CPU tradeoff.** A genuine dispersion cascade is a long **sequential** allpass
+chain (each section depends on the previous, per sample) — latency-bound, not
+cheap like M6.7's combs. The brief targeted 100–200 sections; at `a ≈ 0.74` (upper
+end) each section carries enough group delay that **~32 sections/spring** reproduce
+the dispersion a lower-coefficient 150-section chain would, at ~1/4 the cost. That is
+the documented **chirp-rate/CPU tradeoff**: fewer sections → a slightly shorter chirp
+sweep, but the mode-stretch and boing survive (see the perf row below).
 
 ### Validation (`testReverb*` in `core/tests/test_amp_model.cpp`, 44.1/48/96 kHz)
 
 The sound-validation house style — deterministic, framework-free, run at all three
-rates. Measured numbers (44.1 kHz shown; 48/96 k within a hair):
+rates. Several tests run the new model **against an embedded OLD-M6.7 reference**
+(`OldSpringRef` in the test) as the A/B failing baseline, exactly as the brief asks.
+Measured numbers (44.1 kHz shown; 48/96 k in parens where they differ):
 
-| Test | Metric | Measured | Bound |
-|---|---|---|---|
-| Passthrough | `reverb=0` vs dry | **bit-exact** (separate + in-place) | `==` |
-| Decay | RT60 via Schroeder T30 | **1.52 s** | design 1.2–2.0 s; assert 0.9–2.5 s |
-| Decay | tail energy (100 ms windows) | **monotone** over 38 windows | non-increasing (±2 %) |
-| Band-limit | tail energy >6 kHz re mid | **−20.4 dB** | < −12 dB |
-| Band-limit | tail energy <100 Hz re mid | **−26.2 dB** | < −12 dB |
-| Density | mid-tail crest factor | **6.17** | < 8 (diffuse, not slapback) |
-| Stability | ±1 slam + white noise | no NaN, **peak 4.09** | bounded, < 20 |
-| Placement | tail after input stops, L / R | **0.049 / 0.051** | both > 1e-3 (blooms in stereo) |
-| Placement | `reverb=0` tail, L / R | **0 / 0** | < 1e-5 (clean bypass) |
+| Test | Metric | NEW spring | OLD M6.7 | Bound |
+|---|---|---|---|---|
+| Passthrough | `reverb=0` vs dry | **bit-exact** | — | `==` |
+| Decay | RT60 (Schroeder T30) | **1.77 s** (1.75 / 1.63) | 1.52 | 0.9–2.5 s (design 1.6–2.2) |
+| Decay | tail energy, 100 ms windows | **monotone** ×38 | — | non-increasing (±2 %) |
+| **Chirp** | echo-1 centroid early→late | **1.85×** down (1.71 / 1.82) | **1.04×** (flat) | > 1.4 **and** > 1.4× OLD |
+| **Chirp** | echo period | **30 ms** | — | 20–45 ms |
+| Band | tail >6 kHz re mid | **−19.7 dB** (−18.5 / −8.2) | −20.4 | in [−26, −5] (down, not dead) |
+| Band | tail <100 Hz re mid | **−28.3 dB** | −26.2 | < −14 dB |
+| **Anti-metallic** | mode-spacing stretch hi/lo | **3.33×** (3.33 / 3.11) | **0.97×** | > 1.8 **and** > 1.5× OLD |
+| Density | mid-tail crest factor | **4.32** (4.34 / 4.77) | 6.17 | < 8 (diffuse) |
+| Stability | ±1 slam + noise | no NaN, **peak 1.9** | — | bounded, < 20 |
+| Placement | tail after input stops, L / R | **0.022 / 0.023** | — | both > 1e-3 (stereo bloom) |
+| Placement | `reverb=0` tail, L / R | **0 / 0** | — | < 1e-5 (clean bypass) |
 
-RT60 is a **Schroeder backward energy-decay** curve: integrate the wet impulse
-response's energy from the tail forward, read the `−5 dB → −35 dB` slope (T30), and
-extrapolate `RT60 = 2·T30`. Band energy is averaged `|H(f)|²` over several probes
-per band (a single DTFT bin of a reverb IR is spiky; a few points smooth the modes).
-Echo density is proxied by the mid-tail **crest factor** (peak/RMS over `[0.2, 0.6] s`):
-a dense, diffuse tail is noise-like (crest ~4–6), a discrete slapback would spike
-(≫10). The placement test drives the whole `AmpModel::processStereo` with **chorus on
-and reverb up**, feeds a 100 ms burst then silence, and confirms a real wet tail in
-**both** channels afterward — and none at all with `reverb=0`.
+- **Chirp (the load-bearing test).** A single impulse → the first echo's **spectral
+  centroid drops** from its first half to its second (a downward sweep). The OLD comb
+  bank is essentially flat (1.04×), so the new spring must sweep **> 1.4×** *and*
+  markedly more than OLD. This is precisely what M6.7 could not do.
+- **Anti-metallic.** The dispersive loop's round-trip delay is frequency-dependent, so
+  its resonant modes **stretch**: high-band mode spacing ÷ low-band spacing ≈ **3.3×**.
+  A plain comb bank has **constant (harmonic) spacing ≈ 1.0×** — the metric is measured
+  identically on the embedded OLD reference (**0.97×**) as the failing baseline. Mode
+  spacing is read from the autocorrelation of the log-magnitude spectrum on a linear
+  grid, in a low (300–1200 Hz) vs high (2500–4500 Hz) sub-band.
+- RT60 is a **Schroeder backward energy-decay** curve (`−5 → −35 dB` T30, `RT60 =
+  2·T30`). Band energy is averaged `|H(f)|²` over several probes per band. Density is
+  the mid-tail **crest factor** over `[0.2, 0.6] s`. Placement drives the whole
+  `AmpModel::processStereo` with chorus on and reverb up.
 
 ### CPU
 
-From `testReverbPerf` (1 s of audio through the reverb alone):
+From `testReverbPerf` (1 s of audio through the reverb alone, plain `-O3` release):
 
 | Sample rate | Time for 1 s | Fraction of one core |
 |---|---|---|
-| 44.1 kHz | ~1.4 ms | ~0.14 % |
-| 48 kHz | ~1.7 ms | ~0.17 % |
-| 96 kHz | ~3.2 ms | ~0.32 % |
+| 44.1 kHz | ~11.6 ms | ~1.2 % |
+| 48 kHz | ~12.5 ms | ~1.3 % |
+| 96 kHz | ~24.1 ms | ~2.4 % |
 
-Well under the chorus + 2×cab budget (`testChorusPerf`: ~6.3 ms @44.1k / ~14 ms
-@96k — the reverb is **~4–5×** cheaper than the stereo cab pair it feeds), so it is
-a negligible add to the audio thread.
+This is **comparable to** the chorus + 2×cab stage it feeds (`testChorusPerf`:
+~10 ms @44.1k / ~26 ms @96k), not far under it — the honest price of a real
+sequential dispersion cascade (M6.7's combs were ~1.7 ms). It is still a small
+fraction of one core (the whole rig stays ~2–3 % of a core), i.e. comfortably
+real-time with large headroom; the perf test bounds it at < 0.1× real time so a slow
+CI box cannot flake. Section count was cut to ~32/spring precisely to keep it here.
 
 ### Integration
 

@@ -146,10 +146,18 @@ Field feedback from real playing, prioritized ahead of new pedals:
   "spring chirp" allpass cascade, and a 150 Hz–4.5 kHz transducer band-limit.
   Validated offline (RT60, band bounds, echo density, stability, stereo placement)
   at 44.1/48/96 k. See docs §16.
-- **M6.7-2 — True dispersive spring** — replace M6.7's core with the
-  Parker-style dispersive-waveguide spring (allpass-cascade chirped echoes,
-  dual detuned springs, transducer band-limit): the "boing" and the drip,
-  measured via chirp-train spectrogram assertions. Same knob, better physics.
+- **M6.7-2 — True dispersive spring** *(S)* — **SHIPPED** — replaced M6.7's
+  Schroeder/Moorer comb bank with a Parker/Välimäki-style **dispersive waveguide**:
+  two detuned feedback springs, each a **cascade of ~32 first-order allpass sections**
+  (coefficient `a ≈ 0.74`) whose frequency-dependent group delay smears every echo
+  into a **downward-swept chirp** ("boing") and **stretches the resonant modes** so
+  they never stack into M6.7's metallic comb. Gentle in-loop damping (soft HF shelf +
+  120 Hz cut) and a gentler 150 Hz–5.2 kHz transducer band replace M6.7's steep
+  4.5 kHz in-loop lid (the "underwater" fix). Same **REVERB** MIX knob
+  (`PARAM_REVERB=9`, bit-exact dry at 0), same position, **no UI/ABI change**.
+  Validated at 44.1/48/96 k with the chirp-descent and mode-stretch assertions run
+  against the OLD M6.7 as the A/B baseline (chirp **1.85× vs 1.04×**, mode stretch
+  **3.3× vs 1.0×**). See docs §16.
 
 ### M7 — Tuner *(S)* — **SHIPPED**
 
