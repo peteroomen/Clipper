@@ -21,7 +21,8 @@ constexpr double kDeclickSeconds = 0.006;
 constexpr double kDeclickHoldSeconds = 0.006;
 constexpr float  kPi = 3.14159265358979323846f;
 // The stable serialization keys, indexed by PedalType.
-const char* const kPedalKeys[PEDAL_TYPE_COUNT] = {"rat", "sd1", "ts", "muff", "phaser"};
+const char* const kPedalKeys[PEDAL_TYPE_COUNT] = {"rat",    "sd1",  "ts",
+                                                  "muff",   "phaser", "gold"};
 constexpr int   kCabPartition = 128;  // == worklet render quantum / cab partition
 // The JCM's fixed internal oversampling — matches the C ABI (docs §18: 4× ships;
 // 8× buys nothing at the composed max-gain floor). Independent of the pedal OS.
@@ -58,6 +59,7 @@ bool Params::pedalOn(int type) const {
         case PEDAL_TS:     return tsOn;
         case PEDAL_MUFF:   return muffOn;
         case PEDAL_PHASER: return phaserOn;
+        case PEDAL_GOLD:   return goldOn;
         default:           return false;
     }
 }
@@ -89,6 +91,13 @@ void ClipperEngine::applyParamsToModels() {
     muff_.setParameter(clipper::dsp::MuffModel::PARAM_VOLUME, p.muffVolume);
 
     phaser_.setParameter(clipper::dsp::PhaserModel::PARAM_SPEED, p.phaserSpeed);
+
+    // GOLD "Myth" (v1.1 item 6) — the same positional 0/1/2 slot ABI, reading as
+    // Gain/Treble/Output. Its measurement hooks (diode flavour, clean-blend defeat,
+    // ideal op-amp) are NOT user knobs and are deliberately left at their defaults.
+    gold_.setParameter(clipper::dsp::GoldModel::PARAM_GAIN, p.goldGain);
+    gold_.setParameter(clipper::dsp::GoldModel::PARAM_TREBLE, p.goldTreble);
+    gold_.setParameter(clipper::dsp::GoldModel::PARAM_OUTPUT, p.goldLevel);
 
     // Amp tone stack + volume + bright, then the routed chorus params.
     amp_.setParameter(clipper::dsp::AmpModel::PARAM_VOLUME, p.volume);
@@ -177,6 +186,7 @@ bool ClipperEngine::chainEditPending() const {
 void ClipperEngine::updateParams(const Params& p) {
     using clipper::dsp::Ac30Amp;
     using clipper::dsp::AmpModel;
+    using clipper::dsp::GoldModel;
     using clipper::dsp::Jcm800Amp;
     using clipper::dsp::MuffModel;
     using clipper::dsp::PhaserModel;
@@ -200,6 +210,9 @@ void ClipperEngine::updateParams(const Params& p) {
     if (p.muffTone != o.muffTone)   muff_.setParameter(MuffModel::PARAM_TONE, p.muffTone);
     if (p.muffVolume != o.muffVolume) muff_.setParameter(MuffModel::PARAM_VOLUME, p.muffVolume);
     if (p.phaserSpeed != o.phaserSpeed) phaser_.setParameter(PhaserModel::PARAM_SPEED, p.phaserSpeed);
+    if (p.goldGain != o.goldGain)     gold_.setParameter(GoldModel::PARAM_GAIN, p.goldGain);
+    if (p.goldTreble != o.goldTreble) gold_.setParameter(GoldModel::PARAM_TREBLE, p.goldTreble);
+    if (p.goldLevel != o.goldLevel)   gold_.setParameter(GoldModel::PARAM_OUTPUT, p.goldLevel);
 
     // Amp knobs + toggles. VOLUME feeds clean120 + twin + ac30.
     if (p.volume != o.volume) {
@@ -286,6 +299,7 @@ void ClipperEngine::setPedalOversampling(int factor) {
     sd_.setOversampling(factor);
     ts_.setOversampling(factor);
     muff_.setOversampling(factor);
+    gold_.setOversampling(factor);
     // The phaser is a LINEAR time-varying stage (allpass sweep) — no nonlinearity,
     // so it has no oversampler and no group delay. The web C ABI's
     // phaser_set_oversampling is likewise a no-op.
@@ -298,6 +312,7 @@ void ClipperEngine::processPedal(int type, const float* in, float* out, int numF
         case PEDAL_TS:     ts_.process(in, out, numFrames); break;
         case PEDAL_MUFF:   muff_.process(in, out, numFrames); break;
         case PEDAL_PHASER: phaser_.process(in, out, numFrames); break;
+        case PEDAL_GOLD:   gold_.process(in, out, numFrames); break;
         default: break;
     }
 }
@@ -314,6 +329,7 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     ts_.prepare(sampleRate_, maxBlock_);
     muff_.prepare(sampleRate_, maxBlock_);
     phaser_.prepare(sampleRate_);  // linear: no block-size scratch to size
+    gold_.prepare(sampleRate_, maxBlock_);
     amp_.prepare(sampleRate_, maxBlock_);
     // The JCM runs at its fixed 4× internally (set BEFORE prepare so its stages
     // size to it), independent of the pedal OS selector — matches the C ABI.
@@ -470,6 +486,9 @@ int ClipperEngine::latencySamples() const {
             case PEDAL_SD:   n += sd_.latencySamples(); break;
             case PEDAL_TS:   n += ts_.latencySamples(); break;
             case PEDAL_MUFF: n += muff_.latencySamples(); break;
+            // The gold overdrive oversamples its germanium clipper like the other
+            // dirt boxes, so it carries the same OS group delay.
+            case PEDAL_GOLD: n += gold_.latencySamples(); break;
             // The phaser is linear — zero group delay.
             case PEDAL_PHASER: break;
             default: break;

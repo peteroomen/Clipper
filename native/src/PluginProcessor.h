@@ -43,6 +43,12 @@ inline constexpr const char* muffTone    = "muffTone";
 inline constexpr const char* muffVolume  = "muffVolume";
 inline constexpr const char* phaserOn    = "phaserOn";
 inline constexpr const char* phaserSpeed = "phaserSpeed";
+// v1.1 item 6: the GOLD "Myth" transparent overdrive. Same three-knob shape as the
+// other dirt boxes; defaults mirror web GOLD_KNOB_DEFAULTS.
+inline constexpr const char* goldOn      = "goldOn";
+inline constexpr const char* goldGain    = "goldGain";
+inline constexpr const char* goldTreble  = "goldTreble";
+inline constexpr const char* goldLevel   = "goldLevel";
 inline constexpr const char* ampOn       = "ampOn";
 inline constexpr const char* volume      = "volume";
 inline constexpr const char* bass        = "bass";
@@ -104,8 +110,12 @@ public:
     // session with everything else (getStateInformation is the whole tree).
     //
     // The audio thread never reads the ValueTree: setChainOrder also publishes a
-    // PACKED snapshot into an atomic (3 bits of length + 5 × 3 bits of type), which
-    // snapshotParams() unpacks lock-free.
+    // PACKED snapshot into an atomic (a 4-bit length + kMaxChain × 4-bit type
+    // slots), which snapshotParams() unpacks lock-free. The fields were widened
+    // from 3 bits when the GOLD pedal made the board six deep: 3-bit slots would
+    // still have fitted six types, but only just, and a seventh would have silently
+    // aliased. Four bits keeps a whole spare type per slot and still fits a single
+    // uint32 — so the publish stays ONE relaxed atomic store, never a lock.
     std::vector<int> chainOrder() const;
     void setChainOrder(const std::vector<int>& types);
     // Bumped on every board change (including a host state load), so the editor can

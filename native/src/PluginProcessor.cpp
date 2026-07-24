@@ -26,15 +26,26 @@ std::unique_ptr<juce::AudioParameterFloat> knob(const char* id, const char* name
 const juce::Identifier kBoardNode{"board"};
 const juce::Identifier kBoardOrder{"order"};
 
-// Pack a chain into a uint32 the audio thread can read atomically: bits 0..2 hold
-// the length, then five 3-bit type slots. 5 slots × 3 bits + 3 = 18 bits.
+// Pack a chain into a uint32 the audio thread can read atomically: a 4-bit length
+// in bits 0..3, then kMaxChain 4-bit type slots above it. With six pedal types the
+// board is 4 + 6 × 4 = 28 bits — comfortably one lock-free word, with a spare type
+// value per slot and room for a seventh slot before this needs revisiting.
+constexpr int kChainField = 4;                       // bits per length/type field
+constexpr juce::uint32 kChainMask = (1u << kChainField) - 1u;
+static_assert(PEDAL_TYPE_COUNT <= (1 << kChainField),
+              "a pedal type id no longer fits its packed field");
+static_assert(kMaxChain <= (1 << kChainField),
+              "the chain length no longer fits its packed field");
+static_assert(kChainField * (kMaxChain + 1) <= 32,
+              "the packed chain no longer fits a lock-free uint32");
+
 juce::uint32 packChain(const std::vector<int>& types) {
     juce::uint32 v = static_cast<juce::uint32>(
         juce::jlimit<int>(0, kMaxChain, static_cast<int>(types.size())));
     for (int i = 0; i < static_cast<int>(types.size()) && i < kMaxChain; ++i) {
         const juce::uint32 t = static_cast<juce::uint32>(
             juce::jlimit(0, PEDAL_TYPE_COUNT - 1, types[static_cast<size_t>(i)]));
-        v |= t << (3 + 3 * i);
+        v |= t << (kChainField * (i + 1));
     }
     return v;
 }
@@ -105,6 +116,14 @@ ClipperAudioProcessor::makeLayout() {
     // lying about what the pedal does, so they are simply not here.
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::phaserOn, 1}, "Ninety On", true));
     layout.add(knob(pid::phaserSpeed, "Ninety Speed", 0.35f));
+
+    // v1.1 item 6 — the GOLD "Myth" transparent overdrive. Defaults mirror the web's
+    // GOLD_KNOB_DEFAULTS: a mostly-clean 0.35 gain, flat (0.5) treble, and a 0.7
+    // output that opens as a modest boost, which is what this box is for.
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::goldOn, 1}, "Myth On", true));
+    layout.add(knob(pid::goldGain, "Myth Gain", 0.35f));
+    layout.add(knob(pid::goldTreble, "Myth Treble", 0.5f));
+    layout.add(knob(pid::goldLevel, "Myth Output", 0.7f));
 
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::ampOn, 1}, "Amp Power", true));
     // M9.4 amp voice (default index 0 == Clean 120).
@@ -199,18 +218,22 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.muffVolume = f(pid::muffVolume);
     p.phaserOn = f(pid::phaserOn) >= 0.5f;
     p.phaserSpeed = f(pid::phaserSpeed);
+    p.goldOn = f(pid::goldOn) >= 0.5f;
+    p.goldGain = f(pid::goldGain);
+    p.goldTreble = f(pid::goldTreble);
+    p.goldLevel = f(pid::goldLevel);
 
     // The board: unpack the lock-free snapshot the message thread published (never
     // touch the ValueTree here — this runs on the audio thread).
     {
         const juce::uint32 v = packedChain_.load();
-        const int len = juce::jlimit(0, kMaxChain, static_cast<int>(v & 0x7u));
+        const int len = juce::jlimit(0, kMaxChain, static_cast<int>(v & kChainMask));
         p.chainLength = len;
         for (int i = 0; i < kMaxChain; ++i)
-            p.chain[i] = i < len
-                             ? juce::jlimit(0, PEDAL_TYPE_COUNT - 1,
-                                            static_cast<int>((v >> (3 + 3 * i)) & 0x7u))
-                             : 0;
+            p.chain[i] = i < len ? juce::jlimit(0, PEDAL_TYPE_COUNT - 1,
+                                                static_cast<int>(
+                                                    (v >> (kChainField * (i + 1))) & kChainMask))
+                                 : 0;
     }
     p.ampOn = f(pid::ampOn) >= 0.5f;
     p.ampModel = static_cast<int>(f(pid::ampModel));  // choice index == model id

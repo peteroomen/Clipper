@@ -8,9 +8,12 @@
 // sample-for-sample (within a tight float tolerance).
 //
 // NATIVE PARITY: the reference chain now walks the SAME user-ordered board the
-// engine walks — every pedal type (RAT, SD-1, TS, Muff, Phaser) composed by hand
-// from the core classes, in the order the Params carry — so an arbitrary chain must
-// still come out bit-exact. Three board cases join the four amp-voice cases below.
+// engine walks — every pedal type (RAT, SD-1, TS, Muff, Phaser, Gold) composed by
+// hand from the core classes, in the order the Params carry — so an arbitrary chain
+// must still come out bit-exact. Four board cases join the four amp-voice cases
+// below, the last of them carrying the GOLD "Myth" overdrive: a parallel clean/dirt
+// blend with germanium clippers, which is architecturally unlike every other pedal
+// on the board and therefore the one most likely to be wrapped wrong.
 //
 // M9.4/M10.1/M10.2: the check now runs for ALL FOUR amp voices. The Clean 120 case
 // exercises the linear stereo-chorus platform; the JCM800 case exercises the mono
@@ -47,6 +50,7 @@
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
+#include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/PhaserModel.h"
@@ -229,6 +233,37 @@ Params reorderedBoardParams() {
     return p;
 }
 
+// NATIVE PARITY case 4 (v1.1 item 6) — a board carrying the GOLD "Myth" overdrive:
+// Gold -> RAT -> Phaser -> AC30. The gold box is the odd architecture out (a parallel
+// clean/dirt blend cross-faded by the dual-ganged gain pot, germanium clippers, its
+// own oversampled section), so it gets a board of its own to prove the native wrap
+// routes its three knobs, its engaged flag, its chain slot and its oversampling group
+// delay exactly as the hand-composed core chain does. It sits FIRST — the always-on
+// boost position the pedal is actually used in — with the RAT bypassed-but-on-board
+// behind it and the linear phaser after, into the class-A chime.
+Params goldBoardParams() {
+    Params p;
+    p.inputTrim = 0.5f;
+    p.chain[0] = clipper::native::PEDAL_GOLD;
+    p.chain[1] = clipper::native::PEDAL_RAT;
+    p.chain[2] = clipper::native::PEDAL_PHASER;
+    p.chainLength = 3;
+    p.goldOn = true;  p.goldGain = 0.45f; p.goldTreble = 0.6f; p.goldLevel = 0.75f;
+    p.ratOn = false;  // on the board but BYPASSED — a true pass-through
+    p.phaserOn = true; p.phaserSpeed = 0.4f;
+    p.muffOn = true;   // ON, but NOT on the board — must be inaudible
+    p.tsOn = true;     // likewise
+    p.sdOn = true;     // likewise
+    p.ampModel = kAmpAc30;
+    p.ampOn = true;  p.volume = 0.65f; p.bass = 0.5f; p.middle = 0.5f; p.treble = 0.55f;
+    p.bright = false; p.cab = true;
+    p.chorusMode = 0;
+    p.reverb = 0.2f;
+    p.jcmPresence = 0.35f;  // → AC30 TOP CUT
+    p.oversampling = 4;
+    return p;
+}
+
 // M2-style 220 Hz sine * exponential pluck envelope.
 std::vector<float> makeSignal() {
     std::vector<float> x(static_cast<size_t>(kNumFrames));
@@ -262,6 +297,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     TsModel ts;
     MuffModel muff;
     PhaserModel phaser;
+    GoldModel gold;      // the "Myth" transparent overdrive
     AmpModel amp;        // Clean 120
     Jcm800Amp jcm;       // JCM800 head
     TwinAmp twinAmp;     // Twin combo
@@ -283,6 +319,9 @@ void renderReference(const Params& p, const std::vector<float>& in,
     muff.setParameter(MuffModel::PARAM_TONE, p.muffTone);
     muff.setParameter(MuffModel::PARAM_VOLUME, p.muffVolume);
     phaser.setParameter(PhaserModel::PARAM_SPEED, p.phaserSpeed);
+    gold.setParameter(GoldModel::PARAM_GAIN, p.goldGain);
+    gold.setParameter(GoldModel::PARAM_TREBLE, p.goldTreble);
+    gold.setParameter(GoldModel::PARAM_OUTPUT, p.goldLevel);
 
     if (jcm800) {
         // Mirror ClipperEngine::applyParams' JCM order exactly.
@@ -330,6 +369,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     ts.prepare(kFs, kBlock);
     muff.prepare(kFs, kBlock);
     phaser.prepare(kFs);   // linear: no block-size scratch
+    gold.prepare(kFs, kBlock);
     amp.prepare(kFs, kBlock);
     // The JCM runs at its fixed 4x internally (set BEFORE prepare so its stages size
     // to it), independent of the pedal OS selector — matches ClipperEngine.
@@ -343,6 +383,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     sd.setOversampling(p.oversampling);
     ts.setOversampling(p.oversampling);
     muff.setOversampling(p.oversampling);
+    gold.setOversampling(p.oversampling);
     // (the phaser has no oversampler — it is linear)
 
     const std::vector<float> ir = generateDefaultCab2x12IR(kFs);
@@ -373,6 +414,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
                 case clipper::native::PEDAL_TS:     ts.process(cur, other, n); break;
                 case clipper::native::PEDAL_MUFF:   muff.process(cur, other, n); break;
                 case clipper::native::PEDAL_PHASER: phaser.process(cur, other, n); break;
+                case clipper::native::PEDAL_GOLD:   gold.process(cur, other, n); break;
                 default: continue;
             }
             std::swap(cur, other);
@@ -414,6 +456,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
             case clipper::native::PEDAL_SD:   pedalLatency += sd.latencySamples(); break;
             case clipper::native::PEDAL_TS:   pedalLatency += ts.latencySamples(); break;
             case clipper::native::PEDAL_MUFF: pedalLatency += muff.latencySamples(); break;
+            case clipper::native::PEDAL_GOLD: pedalLatency += gold.latencySamples(); break;
             default: break;  // the phaser is linear — no group delay
         }
     }
@@ -447,6 +490,8 @@ void renderPlugin(const Params& p, const std::vector<float>& in,
     set(muffOn, p.muffOn ? 1.0f : 0.0f);
     set(muffSustain, p.muffSustain); set(muffTone, p.muffTone); set(muffVolume, p.muffVolume);
     set(phaserOn, p.phaserOn ? 1.0f : 0.0f); set(phaserSpeed, p.phaserSpeed);
+    set(goldOn, p.goldOn ? 1.0f : 0.0f);
+    set(goldGain, p.goldGain); set(goldTreble, p.goldTreble); set(goldLevel, p.goldLevel);
     // The BOARD is state, not a parameter: push it through the processor's chain API
     // (which also publishes the packed snapshot the audio thread reads).
     {
@@ -581,11 +626,13 @@ int main() {
     ok &= runCase("Board: TS -> Phaser -> JCM800", tsPhaserJcmParams(), in);
     ok &= runCase("Board: Phaser -> Muff -> TS -> (RAT bypassed) -> Clean 120",
                   reorderedBoardParams(), in);
+    // v1.1 item 6: the GOLD "Myth" overdrive on the native board.
+    ok &= runCase("Board: Gold -> (RAT bypassed) -> Phaser -> AC30", goldBoardParams(), in);
 
     if (ok) {
         std::printf(
-            "\nPASS: all four amp voices AND every multi-pedal board are sample-identical "
-            "across plugin + engine + core.\n");
+            "\nPASS: all four amp voices AND every multi-pedal board (including the "
+            "GOLD box) are sample-identical across plugin + engine + core.\n");
         return 0;
     }
     std::printf("\nFAIL: identical-core mismatch (see cases above).\n");

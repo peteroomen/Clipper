@@ -2,8 +2,8 @@
 //
 // This is the SINGLE place the native plugin composes the portable C++ core into
 // the rig signal chain. It uses the core classes DIRECTLY (RatModel, SdModel,
-// TsModel, MuffModel, PhaserModel, AmpModel + owned ChorusModel, CabConvolver x2,
-// OutputLimiter) — NOT the C ABI. The chain mirrors
+// TsModel, MuffModel, PhaserModel, GoldModel, AmpModel + owned ChorusModel,
+// CabConvolver x2, OutputLimiter) — NOT the C ABI. The chain mirrors
 // web/worklet/clipper-processor.js exactly:
 //
 //   mono in
@@ -23,11 +23,11 @@
 // worklet's _bypassAmp branch.
 //
 // NATIVE PARITY (was: a FIXED two-pedal chain, RAT then SD-1). The board is now
-// DYNAMIC, exactly like the web app: any of the five audio pedal types (RAT, SD-1,
-// TS, Muff, Phaser) may sit on it, in ANY user-chosen order, each engaged or true-
-// bypassed independently. Each type is instantiable ONCE (the board is a subset +
-// permutation of the five), which keeps every DSP instance a plain member — no
-// allocation, no handle table, and a reorder is a memcpy of five ints.
+// DYNAMIC, exactly like the web app: any of the six audio pedal types (RAT, SD-1,
+// TS, Muff, Phaser, Gold) may sit on it, in ANY user-chosen order, each engaged or
+// true-bypassed independently. Each type is instantiable ONCE (the board is a subset
+// + permutation of the six), which keeps every DSP instance a plain member — no
+// allocation, no handle table, and a reorder is a memcpy of six ints.
 //
 // Chain edits (add / remove / reorder / swap / engage-toggle) are DECLICKED with
 // the worklet's 6 ms raised-cosine output fade: the output ramps to zero, the
@@ -66,6 +66,7 @@
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
+#include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/OutputLimiter.h"
@@ -86,7 +87,11 @@ enum PedalType : int {
     PEDAL_TS = 2,
     PEDAL_MUFF = 3,
     PEDAL_PHASER = 4,
-    PEDAL_TYPE_COUNT = 5,
+    // v1.1 item 6: the GOLD "transparent" overdrive ("Myth"). APPENDED, never
+    // inserted — these integers are the packed-snapshot encoding, and renumbering
+    // an existing type would silently re-point a board mid-session.
+    PEDAL_GOLD = 5,
+    PEDAL_TYPE_COUNT = 6,
 };
 
 // Each type is instantiable once, so the board can never be longer than this.
@@ -138,6 +143,15 @@ struct Params {
     bool  phaserOn = true;
     float phaserSpeed = 0.35f;
 
+    // GOLD "Myth" transparent overdrive (v1.1 item 6). Same three-knob shape as the
+    // dirt pedals, its slots reading as Gain/Treble/Output; defaults mirror web
+    // GOLD_KNOB_DEFAULTS (a mostly-clean blend with a little grit, flat treble, and
+    // an output above unity — the way the box is actually used).
+    bool  goldOn = true;
+    float goldGain = 0.35f;
+    float goldTreble = 0.5f;
+    float goldLevel = 0.7f;
+
     // THE BOARD: which pedal types are on it, in signal order (guitar -> chain[0]
     // -> ... -> amp). Each type appears at most once. This is the parity feature —
     // it replaces the old fixed RAT-then-SD-1 pair.
@@ -146,7 +160,7 @@ struct Params {
     // hand and only sets ratOn/sdOn (the pre-parity tests, the reference renders)
     // keeps its exact old routing. The PLUGIN's shipped default board is the web
     // app's DEFAULT_RIG instead — a single RAT (see PluginProcessor).
-    int   chain[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0};
+    int   chain[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0};
     int   chainLength = 2;
 
     // Amp voice (M9.4/M10.1/M10.2): 0 = Clean 120, 1 = JCM800, 2 = Twin, 3 = AC30.
@@ -259,9 +273,9 @@ private:
 
     // The COMMITTED topology — what process() actually runs. It only ever changes
     // at a declick fade zero, so the audio never sees a mid-block reorder.
-    int  activeChain_[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0};
+    int  activeChain_[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0};
     int  activeLength_ = 2;
-    bool activeOn_[PEDAL_TYPE_COUNT] = {true, false, true, true, true};
+    bool activeOn_[PEDAL_TYPE_COUNT] = {true, false, true, true, true, true};
 
     // Declick state machine (mirrors the worklet's): a linear ramp position in
     // [0,1] mapped through a raised cosine, ~6 ms each way.
@@ -277,6 +291,7 @@ private:
     clipper::dsp::TsModel  ts_;
     clipper::dsp::MuffModel muff_;
     clipper::dsp::PhaserModel phaser_;
+    clipper::dsp::GoldModel gold_;    // the "Myth" transparent overdrive (v1.1 item 6)
     clipper::dsp::AmpModel amp_;      // Clean 120
     clipper::dsp::Jcm800Amp jcm_;     // JCM800 2204 (mono head, M9.4)
     clipper::dsp::TwinAmp twin_;      // Fender blackface Twin (mono combo, M10.1)
