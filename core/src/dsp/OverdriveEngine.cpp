@@ -10,6 +10,8 @@
 
 #include "clipper/dsp/OverdriveEngine.h"
 
+#include "clipper/dsp/Denormal.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -158,7 +160,9 @@ void OverdriveEngine::processChunk(const float* in, float* out, int numFrames) {
     for (int i = 0; i < osN; ++i) {
         const float x = w[i];
         // Mid-hump high-pass: hp = x - LP720(x)  (unity at HF, 0 at DC).
-        midLpState_ += hc * (x - midLpState_);
+        // Anti-denormal (Denormal.h): flush the one-pole state at -600 dB so a
+        // silent tail can never park it in the float subnormal range.
+        midLpState_ = flushDenormal(midLpState_ + hc * (x - midLpState_));
         const float hp = x - midLpState_;
         float u = K * hp;                       // amplified feedback drive
         if (!idealOpAmp_) u = opAmp_.processSample(u);  // 4558 BW + slew
@@ -176,7 +180,7 @@ void OverdriveEngine::processChunk(const float* in, float* out, int numFrames) {
         dcX1_ = v;
         dcY1_ = y;
         // Treble tilt: scale the HF half (y - LP_pivot) by the tilt gain.
-        toneLpState_ += toneCoef_ * (y - toneLpState_);
+        toneLpState_ = flushDenormal(toneLpState_ + toneCoef_ * (y - toneLpState_));
         const float hpTone = y - toneLpState_;
         const float toned = toneLpState_ + toneTilt_.next() * hpTone;
         out[i] = toned * level_.next();

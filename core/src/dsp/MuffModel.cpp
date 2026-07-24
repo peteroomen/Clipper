@@ -19,6 +19,7 @@
 #include "clipper/dsp/MuffModel.h"
 
 #include "clipper/dsp/BjtStage.h"
+#include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/OnePoleSmoother.h"
 #include "clipper/dsp/Oversampler.h"
 
@@ -63,10 +64,12 @@ void MuffToneStack::reset() { lpState_ = 0.0f; hpLpState_ = 0.0f; }
 void MuffToneStack::setTone(float tone01) { tone_ = clamp01(tone01); }
 
 float MuffToneStack::processSample(float x) {
-    // Low-pass leg (bass/dark side).
-    lpState_ += static_cast<float>(aLp_) * (x - lpState_);
+    // Low-pass leg (bass/dark side). Both one-pole states are flushed through the
+    // anti-denormal guard (Denormal.h) so a silent tail can never park them in the
+    // float subnormal range.
+    lpState_ = flushDenormal(lpState_ + static_cast<float>(aLp_) * (x - lpState_));
     // High-pass leg = x − LP_hp(x) (treble/buzz side).
-    hpLpState_ += static_cast<float>(aHp_) * (x - hpLpState_);
+    hpLpState_ = flushDenormal(hpLpState_ + static_cast<float>(aHp_) * (x - hpLpState_));
     const float hp = x - hpLpState_;
     return (1.0f - tone_) * lpState_ + tone_ * hp;
 }

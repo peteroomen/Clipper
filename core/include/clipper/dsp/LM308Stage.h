@@ -37,6 +37,8 @@
 
 #include <cmath>
 
+#include "clipper/dsp/Denormal.h"
+
 namespace clipper::dsp {
 
 class LM308Stage {
@@ -74,7 +76,10 @@ public:
     // One op-amp sample: closed-loop bandwidth limit, then slew-rate limit.
     inline float processSample(float x) {
         // 1. Closed-loop bandwidth: one-pole low-pass (corner = GBW / A_noise).
-        lpState_ += lpCoeff_ * (x - lpState_);
+        // Anti-denormal flush (Denormal.h): keeps the state out of the float
+        // subnormal range on a silent tail. slewState_ needs no guard — once
+        // lpState_ flushes to 0 the (unclamped) slew step lands it exactly on 0.
+        lpState_ = flushDenormal(lpState_ + lpCoeff_ * (x - lpState_));
         // 2. Slew-rate limit: clamp the per-sample change of the output node.
         float d = lpState_ - slewState_;
         if (d > maxDeltaPerSample_) d = maxDeltaPerSample_;

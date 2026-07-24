@@ -53,6 +53,7 @@
 
 #include "clipper/dsp/PhaserModel.h"
 
+#include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/OnePoleSmoother.h"
 
 #include <algorithm>
@@ -197,7 +198,9 @@ void PhaserModel::process(const float* in, float* out, int numFrames) {
             const double fcs = d.detune ? fc * kDetune[s] : fc;
             const double a = d.coeffForCorner(fcs);
             const double x = y;
-            const double yn = a * x + d.x1[s] - a * d.y1[s];
+            // Anti-denormal (Denormal.h): the allpass memory rings down through
+            // the DOUBLE subnormal range on a silent tail — flush it at -600 dB.
+            const double yn = flushDenormal(a * x + d.x1[s] - a * d.y1[s]);
             d.x1[s] = x;
             d.y1[s] = yn;
             y = yn;

@@ -224,6 +224,19 @@ if(NOT EMSCRIPTEN)
     endif()
     add_test(NAME clipper_ac30_tests COMMAND clipper_ac30_tests)
 
+    # --- Perf diagnosis: anti-denormal guard tests ----------------------------
+    # Proves Biquad / OnePoleSmoother never leave recursive state in the subnormal
+    # float range on a decaying tail (the amp-independent WASM crackle — see
+    # Denormal.h and docs §25). Header-only guard, so this links clipper_dsp only
+    # for the rbj:: coefficient designers.
+    add_executable(clipper_denormal_tests tests/test_denormal.cpp)
+    target_link_libraries(clipper_denormal_tests PRIVATE clipper_dsp)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_denormal_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_denormal_tests COMMAND clipper_denormal_tests)
+
     # --- CLI render harness (native only, NOT part of the WASM build) ---------
     add_executable(clipper-render tools/render/main.cpp)
     target_link_libraries(clipper-render PRIVATE clipper_dsp)
