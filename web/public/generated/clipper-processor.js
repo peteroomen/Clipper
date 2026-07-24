@@ -18,6 +18,9 @@
 // process()), then ramps back up. Because the discontinuity always lands at
 // output-zero there is no step/pop and no zipper. A plain PARAMETER change (knob)
 // is NOT bracketed — the core's ~5 ms one-pole smoothing already declicks those.
+// M11: STOMP toggles (pedal bypass / amp power) ride the SAME declick bracket —
+// pre-M11 they flipped the signal path instantly and popped audibly (caught by
+// web/tests/expectations.spec.ts; see docs §26).
 //
 // Authored as plain JS (no bundler transform): build-wasm.sh copies this next to
 // the generated clipper.js so the static import below resolves as a sibling. The
@@ -185,6 +188,13 @@ class ClipperProcessor extends AudioWorkletProcessor {
     // amps mid-signal is click-free. The index is passed through opaquely to
     // _amp_set_model.
     this._pendingAmpModel = null;
+    // M11: pending STOMP toggles (pedal bypass + amp power), applied at the SAME
+    // declick fade-out zero. Pre-M11 a stomp flipped the signal path instantly
+    // between two waveforms mid-sample — an audible pop the player-expectations
+    // suite caught (a clean −20 dBFS tone vs a driven pedal output can step by
+    // hundreds of millivolts in one sample). [{ pedalId, on }] / true|false|null.
+    this._pendingBypass = [];
+    this._pendingAmpBypass = null;
 
     // Tuner mute (M7). An engaged tuner mutes the whole chain output (true tuner-
     // pedal behavior: stomp = mute). `_muteActive` is derived from the chain (any
@@ -334,19 +344,37 @@ class ClipperProcessor extends AudioWorkletProcessor {
   _onMessage(data) {
     if (!data) return;
 
-    // Bypass is worklet-local; apply immediately regardless of WASM readiness.
+    // Bypass (stomp) is worklet-local. Before WASM is ready it applies
+    // immediately (no audio is running — nothing can click). Once live, a stomp
+    // is a topology change like any other (M11): it is STAGED and applied at the
+    // declick fade-out zero, so engaging/disengaging a pedal (or amp power)
+    // mid-note no longer steps the waveform (the pre-M11 instant flip measured
+    // as an audible pop — see web/tests/expectations.spec.ts).
     // unit:'amp' powers the amp; unit:'pedal' (default) toggles a pedal instance
     // (by pedalId, else the first pedal — back-compat).
     if (data.type === 'bypass') {
-      if (data.unit === 'amp') {
-        this._bypassAmp = !!data.on;
-        if (this._ready) this._postLatency();
-      } else {
-        const node = this._pedalById(data.pedalId);
-        if (node) node.engaged = !data.on; // bypass on => not engaged
-        this._refreshMute(); // a tuner toggle changes the mute state
-        if (this._ready) this._postLatency();
+      if (!this._ready) {
+        if (data.unit === 'amp') {
+          this._bypassAmp = !!data.on;
+        } else {
+          const node = this._pedalById(data.pedalId);
+          if (node) node.engaged = !data.on; // bypass on => not engaged
+          this._refreshMute(); // a tuner toggle changes the mute state
+        }
+        return;
       }
+      // If an earlier edit is still fading, commit it first (same discipline as
+      // chain/cab/ampModel), then stage this stomp on a fresh fade.
+      if (this._hasPendingEdit()) this._commitPending();
+      if (data.unit === 'amp') {
+        this._pendingAmpBypass = !!data.on;
+      } else {
+        this._pendingBypass.push({ pedalId: data.pedalId, on: !!data.on });
+      }
+      this._declickPhase = 'out';
+      // The latency echo stays SYNCHRONOUS — it is the tests' delivery barrier
+      // (and _commitPending republishes it once the flip lands).
+      this._postLatency();
       return;
     }
 
@@ -395,8 +423,14 @@ class ClipperProcessor extends AudioWorkletProcessor {
   // the fade-out zero, or up front if a new edit arrives while one is still
   // fading. Runs during the output-zero of the declick, so the (non-RT-safe) cab
   // regeneration/free here is inaudible.
+  // Any topology edit staged for the next declick fade-out zero?
+  _hasPendingEdit() {
+    return !!this._pending || !!this._pendingCab || this._pendingAmpModel != null ||
+           this._pendingBypass.length > 0 || this._pendingAmpBypass != null;
+  }
+
   _commitPending() {
-    if (!this._pending && !this._pendingCab && this._pendingAmpModel == null) return;
+    if (!this._hasPendingEdit()) return;
     if (this._pending) {
       for (const node of this._pending.removed) this._destroyPedal(node);
       this._chain = this._pending.nodes;
@@ -420,6 +454,19 @@ class ClipperProcessor extends AudioWorkletProcessor {
       this._module._amp_set_model(this._amp, this._pendingAmpModel | 0);
       this._pendingAmpModel = null;
     }
+    if (this._pendingBypass.length) {
+      // M11: stomp toggles land at the fade zero, exactly like a chain edit.
+      for (const b of this._pendingBypass) {
+        const node = this._pedalById(b.pedalId);
+        if (node) node.engaged = !b.on; // bypass on => not engaged
+      }
+      this._pendingBypass.length = 0;
+      this._refreshMute(); // a tuner stomp changes the mute state
+    }
+    if (this._pendingAmpBypass != null) {
+      this._bypassAmp = this._pendingAmpBypass;
+      this._pendingAmpBypass = null;
+    }
     this._postLatency();
   }
 
@@ -440,14 +487,14 @@ class ClipperProcessor extends AudioWorkletProcessor {
     } else if (data.type === 'chain') {
       // A new topology. If an edit is still fading, commit it first so the diff
       // is against the current committed chain, then prepare + start a new fade.
-      if (this._pending || this._pendingCab || this._pendingAmpModel != null) this._commitPending();
+      if (this._hasPendingEdit()) this._commitPending();
       this._pending = this._prepareChain(data.pedals || []);
       this._declickPhase = 'out'; // ramp to zero, swap at the bottom, ramp back
     } else if (data.type === 'cab') {
       // Cab expansion: swap the cab IR click-free. Stage it here (the malloc +
       // heap copy of a custom IR is fine in the message handler) and apply it at
       // the declick fade-out zero (in _commitPending), exactly like a chain edit.
-      if (this._pending || this._pendingCab || this._pendingAmpModel != null) this._commitPending();
+      if (this._hasPendingEdit()) this._commitPending();
       if (data.custom && data.custom.length) {
         const arr = data.custom; // transferred Float32Array (mono, engine-rate)
         const len = arr.length | 0;
@@ -461,7 +508,7 @@ class ClipperProcessor extends AudioWorkletProcessor {
     } else if (data.type === 'ampModel') {
       // M9.4/M10.1: swap the amp voice (0 = Clean 120, 1 = JCM800, 2 = Twin) click-
       // free — staged here and applied at the declick fade-out zero, like a cab swap.
-      if (this._pending || this._pendingCab || this._pendingAmpModel != null) this._commitPending();
+      if (this._hasPendingEdit()) this._commitPending();
       this._pendingAmpModel = (data.model | 0) || 0;
       this._declickPhase = 'out';
     }
