@@ -3527,3 +3527,183 @@ A clean strummed E-major chord (`make_chord.py`) rendered at `phaser_slow.wav`
 (speed 0.12 ≈ 0.11 Hz), `phaser_medium.wav` (0.42 ≈ 0.47 Hz), `phaser_fast.wav`
 (0.85 ≈ 3.84 Hz), and `phaser_post_rodent.wav` (through the RAT first — the post-dirt
 swoosh). All peak-safe (linear pedal, no clipping).
+
+## 23. M10.2 — Ac30Amp (the Vox AC30 "top boost" — class-A chime, cathode bias, no NFB)
+
+M10 continues with the **class-A chime**: a Vox AC30 "top boost"-style combo — the
+jangly, compressed counterpoint to the JCM's crunch and the Twin's headroom. It joins
+the registry as the **fourth amp voice, `ac30`**, end-to-end (C ABI, worklet, rig,
+React face, assistant, native). Built bottom-up from the valve toolbox (`TriodeStage`,
+the `LtpInverter`, the shared Koren pentode law, `ReverbModel`) plus a **new EL84 fit**
+and **new power-amp physics**, and MEASURED against analytic targets (same discipline
+as M9/M10.1). This milestone exists to build FOUR new pieces of machinery: **(a) EL84s,
+(b) CATHODE bias with real dynamics, (c) NO negative feedback, (d) tube-rectifier
+(GZ34) sag deeper than the JCM/Twin.**
+
+### The model (canon values; every simplification in the ledger)
+
+New portable core (platform-free C++17):
+
+```
+core/include/clipper/dsp/Ac30Preamp.h      1x 12AX7 + the interactive top-boost stack + volume (+ TopBoostToneStack)
+core/include/clipper/dsp/Ac30PowerAmp.h    hot 12AX7 LTP PI -> TOP CUT -> cathode-biased EL84 quad -> OT -> NO NFB -> GZ34 sag
+core/include/clipper/dsp/Ac30Amp.h         composed: preamp -> power -> spring reverb
+core/src/dsp/{Ac30Preamp,Ac30PowerAmp,Ac30Amp}.cpp
+core/tests/test_ac30_amp.cpp               measurement suite (clipper_ac30_tests)
+```
+
+**Signal order:** `guitar → Ac30Preamp → (interstage trim) → Ac30PowerAmp → [spring REVERB]`.
+
+- **Preamp (top boost)** (`Ac30Preamp`): one 12AX7 common-cathode gain stage (Ra 100k,
+  Rk 1.5k ∥ 25 µF, B+ 300 V) → the **TOP BOOST tone stack** → channel VOLUME (audio
+  taper). Contrast with the Marshall/Fender preamps: a SINGLE gain stage feeding an
+  interactive treble/bass network — the chime and jangle come from that bright lossy
+  stack plus the class-A power section, not stacked preamp gain. **On the AC30 the
+  VOLUME knob IS the overdrive** (it drives the hot phase inverter harder).
+- **Top-boost tone stack** (`TopBoostToneStack`): the Vox interactive treble/bass
+  "brilliance" network — MNA with trapezoidal cap companions, validated against the
+  analytic `H(jω)` derived from the SAME netlist (like the Marshall/Fender stacks).
+  Canon values: slope **100k**, treble pot **500k**, bass pot **1M**, caps **47 pF /
+  0.022 µF / 0.022 µF** (treble cap / bass cap / series input coupling). NO mid control.
+  Its signature: a **gain LOSS** through the passive stack (midband ~−4 dB at flat; no
+  makeup gain in the network) and a **strong treble/bass interaction** (the wiper taps
+  between the treble-cap node and the bass network — moving one knob shifts the other's
+  band). Driven from V1's PLATE (a high-Z source ≈ Ra‖rp, no cathode follower).
+- **Phase inverter** (reuses `LtpInverter` with the Koren 12AX7 fit — no new triode
+  fit): run HOT off a lower B+ node and DELIBERATELY less balanced than the Twin's
+  laser-matched PI (asymmetric 100k/110k plates) so it (i) clips early — its own
+  asymmetric soft clip is part of the sound — and (ii) leaves a residual even-harmonic
+  imbalance that, with the class-A power stage, is a source of the AC30's **chime**.
+- **TOP CUT** (the centerpiece control): the post-PI treble-cut — a pot + cap ACROSS
+  the PI outputs, modelled as a one-pole low-pass on each anti-phase PI plate AC drive
+  whose corner LOWERS as the knob rises (kTopCutHiHz 8 k → kTopCutLoHz 850 Hz, log
+  map). **CLOCKWISE = MORE CUT** (authentic INVERTED sense — the UI labels it **CUT**).
+  It sits AFTER the PI, so it tames the top WITHOUT touching the preamp stack's chime
+  the way turning the treble knob down would.
+- **EL84 push-pull quad, CATHODE-BIASED, class A — the CENTERPIECE.** Four EL84
+  pentodes via the shared Koren pentode law (same equations as the M9.3 EL34 / M10.1
+  6L6; only the six constants differ). **New EL84 fit** (documented community Koren
+  set, kg1/kg2 trimmed to land the operating point): `mu 20, ex 1.35, kg1 1300, kp 42,
+  kvb 24, kg2 2400` (±10 % pentode band). Modelled as a PP pair of super-tubes
+  (kTubesPerSide = 2). **CATHODE bias:** NO fixed negative supply — the grids sit at
+  0 V DC through their grid leaks, and the whole quad shares ONE cathode network
+  (**Rk = 50 Ω ∥ Ck = 50 µF**, canon AC30) to ground. The cathode voltage Vk = Rk·(total
+  cathode current), so each tube's bias is Vg1k = Vg − Vk (≈ −Vk ≈ −9.5 V at idle). The
+  network is modelled EXPLICITLY (a backward-Euler Rk∥Ck node) so the **bias moves with
+  the signal**: under sustained drive the average cathode current grows, the cap charges,
+  Vk RISES → the bias cools → the famous class-A **bloom** then squash, recovering on
+  Rk·Ck (τ = 2.5 ms).
+- **NO negative feedback:** `kFeedbackBeta = 0`. The forward path stands alone (the raw,
+  immediate voicing IS the point). `setFeedbackEnabled()` is retained ONLY as the test
+  seam for the **anti-NFB assertion** (the mirror of the JCM/Twin sign-catcher): toggling
+  it leaves the output BIT-EXACT because there is no loop.
+- **GZ34 tube-rectifier SAG (deeper than JCM > Twin).** Physics point that shaped the
+  model: a BALANCED class-A push-pull draws a **near-constant total B+ current** (the two
+  anti-phase tubes swap conduction; their SUM is flat), so — unlike the JCM's fixed-bias
+  class-AB, whose average current surges — the AC30's plate rail can't sag from average
+  draw. What the valve rectifier actually can't supply is the **delivered signal current**
+  (the differential push-pull current into the OT primary, which swells with output). So
+  the model is TWO parts: (a) the PHYSICAL rail/screen/cathode integration (a modest
+  soft-knee plate-rail droop + the cathode-bias dynamic above), and (b) the **GZ34 sag
+  proper** — a demand-envelope COMPRESSION of the delivered output (Idemand = idle draw +
+  |differential current|, fast-attack/slow-release, sag = 1/(1 + kSagCompGain·(Idemand −
+  Iidle))). Applying the rectifier sag to the delivered output rather than starving the
+  tube DC bias keeps the class-A cathode bloom intact — a **documented simplification**
+  (the rectifier's peak-current limit, not a full diode+reservoir SPICE). Sag lands in a
+  documented **4–8 dB window, DEEPER than the JCM's ~3.4 dB and MUCH deeper than the
+  Twin's ~2.1 dB** (ordering Twin < JCM < AC30, asserted).
+- **Output transformer** LINEAR v1 (Raa 8 k, n ≈ 31.6, LF 80 Hz / HF 11 kHz; core
+  saturation deferred, same as M9.3/M10.1). **Reverb** reuses `ReverbModel` (mono, after
+  the power amp; a usability add — the real top-boost channel has none — same call and
+  placement as the JCM's added reverb, docs §19; mix 0 = bit-exact passthrough).
+
+### Documented simplifications (the ledger)
+
+- The push-pull quad is a **PP pair of super-tubes** (2 paralleled EL84/side), matched,
+  no per-tube variance — same as the Twin's 6L6 quad.
+- The **EL84 Koren fit** is a community parameter set with kg1/kg2 trimmed to the operating
+  point (pentode fits are loose → ±10 % band); bias is DERIVED to the fit, not a datasheet.
+- OT is **linear** (core saturation deferred).
+- **GZ34 sag is an envelope model** (the rectifier's peak-current limit voiced as a
+  demand-envelope output compression), not a first-principles diode+reservoir SPICE —
+  chosen after establishing that a balanced class-A push-pull's near-constant average B+
+  current makes a literal rail-droop model produce almost no sag (see §6 in the header).
+- TOP CUT is a one-pole per-leg low-pass (the pot+cap across the PI outputs), not a full
+  component model; TOP BOOST stack is MNA with the canon values (analytic-H validated).
+- The reverb (usability add) has no analog in the real top-boost channel.
+
+### Validation — `clipper_ac30_tests` (deterministic, 44.1 / 48 / 96 k; MEASURED)
+
+Every number is asserted against an analytic target derived IN THE TEST.
+
+1. **DC operating points**: V1 on the self-bias load line (Va 202 V, Vk 1.46 V, Iq 0.98 mA);
+   **EL84 Iq 34.9 mA/tube** = the analytic shared-cathode Koren fixed point (±10 %), **Vk
+   9.52 V** = the analytic self-bias fixed point (±5 %), rail 309.5 V, screen 285.7 V,
+   **Pdiss 10.8 W** (< the ~12 W EL84 max — class A runs hot but bounded); PI balanced.
+2. **Top-boost stack** vs analytic `H(jω)`: discrete-vs-analytic worst **< 0.5 dB**; the
+   signature **GAIN LOSS** (midband ~−4 dB, |H| never > 0 dB); **treble/bass interaction**
+   present (moving bass shifts the treble/mid band); treble knob controls the top over a
+   **~20 dB** range.
+3. **NO NFB** (the anti-NFB catcher): open == closed **BIT-EXACT** (β = 0); the forward
+   voicing stands alone.
+4. **Cathode bias** (the centerpiece): idle Vk == analytic fixed point; under sustained
+   drive **Vk RISES ~0.75 V** (bias cools → the bloom); after the drive stops it recovers
+   toward idle with **τ ≈ 1.0–1.5 ms** vs the Rk·Ck = 2.5 ms RC (0.3–3× band — the demand +
+   cap dynamics).
+5. **TOP CUT** (inverted sense): 3 kHz drops **−9 → −11.3 → −17.6 dB** as CUT goes 0/.5/1
+   (MORE cut = darker), while 150 Hz is untouched (Δ < 0.1 dB).
+6. **Sag ordering + window**: **Twin ~2.1 < JCM ~3.5 < AC30 ~4.3 dB**, AC30 in the
+   documented 4–8 dB window (same hard-burst attack-vs-settle metric into all three).
+7. **Chime**: at moderate drive the AC30's **2nd harmonic (−27.6 dBc) is prominently above
+   the fixed-bias Twin's (−31.4 dBc)** at comparable output — the class-A even-harmonic chime.
+8. **The product**: chimey-clean THD 0.31 % at low volume, **monotonic** growth to real
+   breakup **31.9 %** at max (peak **0.858 ≈ 0.9**); ±10 V slam finite/bounded.
+9. **Aliasing** at MAX volume (M2 sweep 4186 Hz): shipped **4× = −159 / −169 / −171 dB** at
+   44.1 / 48 / 96 k — far below the −60 dB M2 bar (the smooth top-boost + sag compression
+   alias little); 8× buys nothing → **4× ships** (the M2 budget, same as M9/M10.1).
+10. All **10 prior ctest suites** still pass, incl. the M9/M10.1 suites bit-exact.
+
+### Integration (the M9.4 pattern, extended to four voices)
+
+- **C ABI** (`AmpChain`): fourth voice `ac30` (`amp_set_model` 0|1|2|3), created + prepared
+  up front (4× OS) so the swap is a lock-free int flip. Param routing (all four voices kept
+  current): VOLUME → clean120 + twin + **ac30**; BASS/TREBLE → all tone stacks incl. ac30's
+  top boost; **MIDDLE → NOT ac30** (the top boost has no mid — the knob is hidden on the
+  face); REVERB (9) → all four; **PRESENCE (id 11) is REUSED as the AC30's TOP CUT** (both
+  are power-amp HF controls — documented reuse + the inverted-sense mapping); GAIN/MASTER →
+  jcm only; BRIGHT/CHORUS → not ac30. The AC30 is a **mono 2×12 combo → dual-mono** into the
+  shared cab pair; the app hints at the **clean212** cab (closest 2×12 platform; a future
+  alnico 2×12 IR is ledgered) when switching to ac30 with brit412 active.
+- **rig.ts / params.ts / audio.ts**: `ac30` in `AmpType`/`AVAILABLE_AMP_TYPES` and
+  `AMP_MODEL_INDEX` (index 3); **no new params** (reuses volume/bass/treble/presence→cut/
+  reverb/cab). Migration coerces unknown types to clean120; old rigs round-trip.
+- **Worklet**: model index 3 passed opaquely, declick-bracketed swap, latency re-published.
+- **UI face** (doctrine §17): `Ac30Face` — model line **COMBO Nº4 · TOP-BOOST**, wordmark
+  **"Thirty"**, a warm **COPPER/tan accent** (`--accent-ac30`, all 4 theme blocks — the
+  diamond-grille brown wink without trade dress). Controls: VOLUME · TREBLE · BASS · **CUT**
+  · REVERB + cab + power; hidden middle/gain/master/bright/chorus. The CUT knob reuses the
+  presence param slot (labelled CUT, inverted sense). Trademark-safe naming (no "Vox/AC30").
+- **Assistant**: `set_amp` gains `ac30`; coaching for the chime/jangle, that the **VOLUME
+  knob IS the overdrive**, that **CUT tames the top WITHOUT losing chime** the way turning
+  treble down would, and the Rickenbacker/Beatles-to-Radiohead lore.
+- **Native**: `ClipperEngine`/APVTS gain the ac30 voice (Amp Model choice index 3); the
+  identical-core test gains a **fourth bit-exact case** (AC30: top boost + cathode-biased
+  EL84 + TOP CUT + reverb).
+
+### Render harness (`clipper-render --ac30`)
+
+```bash
+# Chime chord at moderate volume with a touch of spring, through the clean212 2x12:
+./build/clipper-render --gen pluck:110:3.0 --amp 0.2 --sr 48000 --ac30 --ac30-cab \
+    --ac30-volume 0.45 --ac30-treble 0.7 --ac30-cut 0.2 --ac30-reverb 0.2 chime.wav
+# Cranked bloom/compression (VOLUME maxed — the volume knob IS the overdrive):
+./build/clipper-render --gen pluck:82:4.0 --amp 0.5 --sr 48000 --ac30 --ac30-cab \
+    --ac30-volume 1.0 --ac30-drive 1.5 breakup.wav
+# TOP CUT swept dark (higher = darker, the inverted sense):
+./build/clipper-render --gen pluck:147:2.0 --amp 0.3 --sr 48000 --ac30 --ac30-cab \
+    --ac30-volume 0.7 --ac30-cut 0.8 topcut.wav
+```
+
+`--ac30` renders the FULL composed amp (output normalized, 1.0 == full scale); `--ac30-cab`
+runs the clean212 2×12 with the shipped limiter. `--ac30-cut` is the TOP CUT (inverted:
+higher = darker). Reuses `--os`.

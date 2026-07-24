@@ -34,7 +34,11 @@ export type PedalType = 'rat' | 'sd1' | 'ts' | 'phaser' | 'tuner';
 // tremolo (reusing the speed/depth mod knobs as tremolo SPEED/INTENSITY). All three
 // share the cab pair; all three now have a REVERB knob (the JCM's is a usability
 // add — the real 2204 has none). No new params: the Twin reuses existing knobs.
-export type AmpType = 'clean120' | 'jcm800' | 'twin';
+// v1.1 adds 'ac30' — a Vox AC30 "top boost" style class-A combo (the CHIME/JANGLE
+// voice): VOLUME is the overdrive (crank it for the class-A grind), bass/treble drive
+// the top-boost stack, and the shared 'presence' param (id 11) is REUSED as the AC30's
+// top CUT control. Reuses existing knobs (no new AmpParams).
+export type AmpType = 'clean120' | 'jcm800' | 'twin' | 'ac30';
 
 // Cab expansion: which speaker cabinet IR the amp runs. 'clean212' is the
 // built-in Clean 2x12 (the JC-120 platform), 'brit412' the darker/thicker Brit
@@ -55,7 +59,7 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412', number> = {
 export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'phaser', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
-export const AVAILABLE_AMP_TYPES: readonly AmpType[] = ['clean120', 'jcm800', 'twin'];
+export const AVAILABLE_AMP_TYPES: readonly AmpType[] = ['clean120', 'jcm800', 'twin', 'ac30'];
 
 export type ParamName = 'distortion' | 'filter' | 'level';
 export type AmpParamName =
@@ -360,7 +364,10 @@ export function normalizeRig(raw: unknown): RigState {
   // else (incl. an old rig with no type) coerces to the Clean 120, so pre-M9.4 saved
   // rigs load unchanged.
   const ampType: AmpType =
-    a.type === 'jcm800' ? 'jcm800' : a.type === 'twin' ? 'twin' : 'clean120';
+    a.type === 'jcm800' ? 'jcm800'
+    : a.type === 'twin' ? 'twin'
+    : a.type === 'ac30' ? 'ac30'
+    : 'clean120';
 
   return {
     input: { trim: clamp01(inp.trim, d.input.trim) },

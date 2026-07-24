@@ -86,6 +86,9 @@ add_library(clipper_dsp STATIC
     src/dsp/TwinPreamp.cpp
     src/dsp/TwinPowerAmp.cpp
     src/dsp/TwinAmp.cpp
+    src/dsp/Ac30Preamp.cpp
+    src/dsp/Ac30PowerAmp.cpp
+    src/dsp/Ac30Amp.cpp
 )
 target_include_directories(clipper_dsp PUBLIC include)
 target_link_libraries(clipper_dsp PUBLIC chowdsp_wdf)
@@ -197,6 +200,17 @@ if(NOT EMSCRIPTEN)
         target_compile_options(clipper_twin_tests PRIVATE -Wall -Wextra -UNDEBUG)
     endif()
     add_test(NAME clipper_twin_tests COMMAND clipper_twin_tests)
+
+    # --- M10.2: AC30 (Vox top boost) amp tests --------------------------------
+    add_executable(clipper_ac30_tests tests/test_ac30_amp.cpp)
+    target_link_libraries(clipper_ac30_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (aliasing metric) under tools/measure.
+    target_include_directories(clipper_ac30_tests PRIVATE tools)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_ac30_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_ac30_tests COMMAND clipper_ac30_tests)
 
     # --- CLI render harness (native only, NOT part of the WASM build) ---------
     add_executable(clipper-render tools/render/main.cpp)

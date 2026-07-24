@@ -58,7 +58,7 @@ export interface StartOptions {
   inputTrim: number; // 0..1 knob position, rig-level pre-pedal input trim
   pedals: PedalInstance[]; // the ordered pedal chain (may be empty)
   amp: AmpParams; // amp knob positions (0..1)
-  ampType: AmpType; // which amp voice (clean120 | jcm800 | twin)
+  ampType: AmpType; // which amp voice (clean120 | jcm800 | twin | ac30)
   ampEngaged: boolean; // false = amp+cab bypassed
   cabModel: CabChoice; // which cab IR (built-in or 'custom')
   // Mono custom-cab samples + the rate they're stored at, when cabModel is
@@ -246,6 +246,9 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   // ABI routes reverb id 9 to all three voices and speed/depth to the twin tremolo).
   if (opts.ampType === 'jcm800') engine.setAmpModel('jcm800');
   else if (opts.ampType === 'twin') engine.setAmpModel('twin');
+  // v1.1: the AC30 "top boost" is voice 3. It reuses the STABLE amp_* exports, so
+  // volume/bass/treble/presence(=top cut)/reverb already sent above reach it.
+  else if (opts.ampType === 'ac30') engine.setAmpModel('ac30');
   engine.setAmpBypass(!opts.ampEngaged);
 
   // Cab: the worklet's amp_create loads the Clean 2x12 by default. Apply the

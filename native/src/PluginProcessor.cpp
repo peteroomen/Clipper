@@ -9,9 +9,9 @@ namespace {
 const juce::StringArray kOversampleChoices{"1x", "2x", "4x", "8x"};
 constexpr int kOversampleFactors[] = {1, 2, 4, 8};
 const juce::StringArray kChorusChoices{"Off", "Chorus", "Vibrato"};
-// M9.4/M10.1 amp voice: choice index 0 == Clean 120, 1 == JCM800, 2 == Twin
-// (matches Params::ampModel).
-const juce::StringArray kAmpModelChoices{"Clean 120", "JCM800", "Twin Sixty-Five"};
+// M9.4/M10.1/M10.2 amp voice: choice index 0 == Clean 120, 1 == JCM800, 2 == Twin,
+// 3 == AC30 (matches Params::ampModel).
+const juce::StringArray kAmpModelChoices{"Clean 120", "JCM800", "Twin Sixty-Five", "AC30"};
 
 // A plain 0..1 knob parameter (the core owns the taper law, so the host sees a
 // linear normalized position — identical to the web knobs).

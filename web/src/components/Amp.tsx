@@ -24,6 +24,13 @@
 //     no gain/master/presence (this amp makes clean headroom, not preamp gain) and
 //     no chorus mode. Cab lever + Power rocker stay.
 //
+//   AC30 (amp.type === 'ac30'): the Vox AC30 "top boost" class-A CHIME/JANGLE combo —
+//     a knowing homage "Thirty" (model line COMBO Nº4 · TOP-BOOST) · a warm COPPER
+//     accent · the control row VOLUME · BASS · TREBLE · CUT · REVERB. VOLUME is the
+//     overdrive (crank for class-A grind); CUT binds to the shared 'presence' param
+//     (the C ABI routes id 11 to the AC30 top cut) but is LABELED "Cut". No middle/
+//     gain/master/bright/chorus. Cab lever + Power rocker stay (no bright switch).
+//
 // When powered off the jewel goes dark and the value arcs dim (via `.amp.on`), and
 // the worklet bypasses amp+cab. Everything reads/writes the RigState the parent
 // owns; nothing is stored locally.
@@ -419,6 +426,82 @@ function TwinFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
   );
 }
 
+// The AC30 face — a Vox "top boost" class-A CHIME/JANGLE combo. Modeled on the
+// TwinFace (its closest sibling — a bright clean/crunch combo). A knowing homage
+// "Thirty" (model line COMBO Nº4 · TOP-BOOST) · a warm COPPER accent (--accent-ac30).
+// Control row: VOLUME · BASS · TREBLE · CUT · REVERB. The VOLUME knob IS the
+// overdrive (crank it for the class-A grind). The CUT knob binds to the shared
+// 'presence' param (the C ABI routes id 11 to the AC30's top CUT) but is LABELED
+// "Cut". Hidden: middle, gain, master, bright, chorus (the top-boost face has none
+// of those). Cab lever + Power rocker stay (showBright={false} — no bright switch).
+function Ac30Face({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
+  const { params } = amp;
+  return (
+    <div
+      className={`amp raised ac30${amp.engaged ? ' on' : ''}`}
+      data-testid="amp"
+      data-engaged={amp.engaged}
+      data-amp-type="ac30"
+    >
+      <div className="amp-head">
+        <div className="amp-name display" data-testid="amp-name">
+          Thirty<small>Combo Nº4 · Top-Boost</small>
+        </div>
+      </div>
+
+      {/* Top-boost panel order: Volume · Bass · Treble · Cut · Reverb. */}
+      <div className="amp-controls">
+        <Knob
+          name="Vol"
+          ariaLabel="Volume"
+          value={params.volume}
+          defaultValue={AMP_KNOB_DEFAULTS.volume}
+          onChange={(v) => onParam('volume', v)}
+          testId="knob-volume"
+        />
+        <Knob
+          name="Bass"
+          ariaLabel="Bass"
+          value={params.bass}
+          defaultValue={AMP_KNOB_DEFAULTS.bass}
+          onChange={(v) => onParam('bass', v)}
+          testId="knob-bass"
+        />
+        <Knob
+          name="Treble"
+          ariaLabel="Treble"
+          value={params.treble}
+          defaultValue={AMP_KNOB_DEFAULTS.treble}
+          onChange={(v) => onParam('treble', v)}
+          testId="knob-treble"
+        />
+        {/* CUT (top cut): reuses the shared 'presence' AmpParams field/param name —
+            the C ABI routes id 11 to the AC30's top CUT — but is LABELED "Cut". It is
+            INVERTED in feel: higher CUT = darker (tames the top without losing chime). */}
+        <Knob
+          name="Cut"
+          ariaLabel="Cut"
+          value={params.presence}
+          defaultValue={AMP_KNOB_DEFAULTS.presence}
+          onChange={(v) => onParam('presence', v)}
+          testId="knob-presence"
+        />
+        <Knob
+          name="Reverb"
+          ariaLabel="Reverb"
+          value={params.reverb}
+          defaultValue={AMP_KNOB_DEFAULTS.reverb}
+          onChange={(v) => onParam('reverb', v)}
+          testId="knob-reverb"
+        />
+
+        {/* Cab lever + Power rocker only — no Bright (the top-boost face has none). */}
+        <AmpRight amp={amp} onToggle={onToggle} onTogglePower={onTogglePower} showBright={false} />
+      </div>
+    </div>
+  );
+}
+
 export function Amp(props: AmpProps) {
   return (
     <div className="amp-wing">
@@ -426,6 +509,8 @@ export function Amp(props: AmpProps) {
         <Jcm800Face {...props} />
       ) : props.amp.type === 'twin' ? (
         <TwinFace {...props} />
+      ) : props.amp.type === 'ac30' ? (
+        <Ac30Face {...props} />
       ) : (
         <Clean120Face {...props} />
       )}

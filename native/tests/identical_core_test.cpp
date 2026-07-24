@@ -7,13 +7,16 @@
 // settings, then asserts the plugin's LEFT-channel output matches the reference
 // sample-for-sample (within a tight float tolerance).
 //
-// M9.4/M10.1: the check now runs for ALL THREE amp voices. The Clean 120 case
+// M9.4/M10.1/M10.2: the check now runs for ALL FOUR amp voices. The Clean 120 case
 // exercises the linear stereo-chorus platform; the JCM800 case exercises the mono
 // valve head (preamp cascade + power section) rendered dual-mono, now WITH its M10.1
 // spring reverb engaged; the Twin case exercises the Fender-blackface mono combo
 // with its full AB763 chain (spring reverb + optical tremolo) dual-mono into the same
-// cab pair. All paths must be bit-exact, proving the amp-model switch + per-voice
-// param routing are wrapped identically in the plugin and the raw engine.
+// cab pair; the AC30 case exercises the Vox class-A "top boost" combo (preamp gain +
+// top-boost stack + PI/TOP CUT + EL84 quad + spring reverb) dual-mono into the same
+// cab pair, with the presence field reused as TOP CUT. All paths must be bit-exact,
+// proving the amp-model switch + per-voice param routing are wrapped identically in
+// the plugin and the raw engine.
 //
 // Both paths use the SAME core code and the SAME internal delays (JCM oversampling
 // group delay + cab 128 + limiter 64), so their outputs are time-aligned — no
@@ -35,6 +38,7 @@
 #include "ClipperEngine.h"
 #include "PluginProcessor.h"
 
+#include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
@@ -53,8 +57,10 @@ constexpr int kBlock = 128;
 constexpr int kNumFrames = 48000;  // 1.0 s
 constexpr int kJcmOversampling = 4;  // matches ClipperEngine/C ABI (docs §18)
 constexpr int kTwinOversampling = 4; // matches ClipperEngine/C ABI (docs §20)
+constexpr int kAc30Oversampling = 4; // matches ClipperEngine/C ABI (docs §23)
 constexpr int kAmpJcm800 = 1;        // Params::ampModel value for the JCM head
 constexpr int kAmpTwin = 2;          // Params::ampModel value for the Twin combo
+constexpr int kAmpAc30 = 3;          // Params::ampModel value for the AC30 combo
 
 // The CLEAN 120 parameter set (both pedals on, cab + bright, stereo chorus + spring
 // reverb, 4x OS) — the linear clean-platform path.
@@ -118,6 +124,27 @@ Params twinParams() {
     return p;
 }
 
+// The AC30 parameter set (M10.2) — the Vox "top boost" chime, exercising the full
+// class-A chain (preamp gain stage + top-boost tone stack + PI/TOP CUT + EL84 quad +
+// spring reverb) dual-mono into the same cab pair. RAT on as a light edge in front;
+// the AC30's own VOLUME is the overdrive. Reuses the shared knobs — volume + bass/
+// treble + reverb — and REUSES the presence field (jcmPresence) as the AC30's TOP CUT.
+// The 'middle' slot is UNUSED (top-boost has no mid).
+Params ac30Params() {
+    Params p;
+    p.inputTrim = 0.5f;
+    p.ratOn = true;  p.ratDist = 0.3f; p.ratFilter = 0.5f; p.ratLevel = 0.8f;  // light edge
+    p.sdOn = false;  p.sdDrive = 0.5f; p.sdTone = 0.5f;    p.sdLevel = 0.7f;
+    p.ampModel = kAmpAc30;  // AC30
+    p.ampOn = true;  p.volume = 0.7f;  p.bass = 0.5f; p.middle = 0.5f; p.treble = 0.6f;
+    p.bright = false; p.cab = true;
+    p.chorusMode = 0;            // no chorus on the AC30
+    p.reverb = 0.25f;           // usability spring reverb
+    p.jcmPresence = 0.3f;       // → AC30 TOP CUT (presence field reused)
+    p.oversampling = 4;
+    return p;
+}
+
 // M2-style 220 Hz sine * exponential pluck envelope.
 std::vector<float> makeSignal() {
     std::vector<float> x(static_cast<size_t>(kNumFrames));
@@ -144,12 +171,14 @@ void renderReference(const Params& p, const std::vector<float>& in,
     using namespace clipper::dsp;
     const bool jcm800 = p.ampModel == kAmpJcm800;
     const bool twin = p.ampModel == kAmpTwin;
+    const bool ac30 = p.ampModel == kAmpAc30;
 
     RatModel rat;
     SdModel sd;
     AmpModel amp;        // Clean 120
     Jcm800Amp jcm;       // JCM800 head
     TwinAmp twinAmp;     // Twin combo
+    Ac30Amp ac30Amp;     // AC30 combo
     CabConvolver cabL, cabR;
     OutputLimiter limiter;
 
@@ -179,6 +208,15 @@ void renderReference(const Params& p, const std::vector<float>& in,
         twinAmp.setParameter(TwinAmp::PARAM_REVERB, p.reverb);
         twinAmp.setParameter(TwinAmp::PARAM_SPEED, p.chorusSpeed);
         twinAmp.setParameter(TwinAmp::PARAM_INTENSITY, p.chorusDepth);
+    } else if (ac30) {
+        // Mirror ClipperEngine::applyParams' AC30 routing exactly: volume/bass/treble
+        // + reverb from the shared knobs, and the presence field reused as TOP CUT.
+        // The AC30 top-boost has NO mid — 'middle' is not routed.
+        ac30Amp.setParameter(Ac30Amp::PARAM_VOLUME, p.volume);
+        ac30Amp.setParameter(Ac30Amp::PARAM_BASS, p.bass);
+        ac30Amp.setParameter(Ac30Amp::PARAM_TREBLE, p.treble);
+        ac30Amp.setParameter(Ac30Amp::PARAM_TOPCUT, p.jcmPresence);  // presence → TOP CUT
+        ac30Amp.setParameter(Ac30Amp::PARAM_REVERB, p.reverb);
     } else {
         amp.setParameter(AmpModel::PARAM_VOLUME, p.volume);
         amp.setParameter(AmpModel::PARAM_BASS, p.bass);
@@ -200,6 +238,8 @@ void renderReference(const Params& p, const std::vector<float>& in,
     jcm.prepare(kFs, kBlock);
     twinAmp.setOversampling(kTwinOversampling);
     twinAmp.prepare(kFs, kBlock);
+    ac30Amp.setOversampling(kAc30Oversampling);
+    ac30Amp.prepare(kFs, kBlock);
     rat.setOversampling(p.oversampling);
     sd.setOversampling(p.oversampling);
 
@@ -231,6 +271,9 @@ void renderReference(const Params& p, const std::vector<float>& in,
             } else if (twin) {
                 twinAmp.process(cur, l.data(), n);               // mono combo
                 for (int i = 0; i < n; ++i) r[static_cast<size_t>(i)] = l[static_cast<size_t>(i)];  // dual-mono
+            } else if (ac30) {
+                ac30Amp.process(cur, l.data(), n);               // mono combo
+                for (int i = 0; i < n; ++i) r[static_cast<size_t>(i)] = l[static_cast<size_t>(i)];  // dual-mono
             } else {
                 amp.processStereo(cur, l.data(), r.data(), n);   // stereo split
             }
@@ -251,6 +294,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
                  (p.sdOn ? sd.latencySamples() : 0) +
                  (p.ampOn && jcm800 ? jcm.latencySamples() : 0) +
                  (p.ampOn && twin ? twinAmp.latencySamples() : 0) +
+                 (p.ampOn && ac30 ? ac30Amp.latencySamples() : 0) +
                  (p.ampOn && p.cab ? cabL.latencySamples() : 0) +
                  limiter.latencySamples();
 }
@@ -394,9 +438,10 @@ int main() {
     ok &= runCase("Clean 120", cleanParams(), in);
     ok &= runCase("JCM800", jcmParams(), in);
     ok &= runCase("Twin", twinParams(), in);
+    ok &= runCase("AC30", ac30Params(), in);
 
     if (ok) {
-        std::printf("\nPASS: all three amp voices are sample-identical across plugin + engine + core.\n");
+        std::printf("\nPASS: all four amp voices are sample-identical across plugin + engine + core.\n");
         return 0;
     }
     std::printf("\nFAIL: identical-core mismatch (see cases above).\n");

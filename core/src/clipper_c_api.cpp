@@ -11,6 +11,7 @@
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/TwinAmp.h"
+#include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/SdModel.h"
@@ -262,15 +263,17 @@ constexpr int kAmpParamJcmPresence = 11;
 constexpr int kAmpParamJcmMaster = 12;
 
 // Which amp model the chain's single handle is currently voicing. M10.1 adds the
-// Twin as the THIRD voice (index 2), purely additive — clean120/jcm ids unchanged.
-enum AmpModelId { kAmpClean120 = 0, kAmpJcm800 = 1, kAmpTwin = 2 };
+// Twin as the THIRD voice (index 2); M10.2 adds the AC30 as the FOURTH voice (index
+// 3), purely additive — clean120/jcm/twin ids unchanged.
+enum AmpModelId { kAmpClean120 = 0, kAmpJcm800 = 1, kAmpTwin = 2, kAmpAc30 = 3 };
 
-// The JCM's (and Twin's) fixed internal oversampling. Docs §18/§20 measured 4× as
-// the requirement (8× buys nothing at the composed max-gain floor), so the tube
-// amps run at 4× regardless of the rig's pedal-oversampling selector — a deliberate
-// design constant, never silently reduced for perf.
+// The tube amps' fixed internal oversampling. Docs §18/§20/§23 measured 4× as the
+// requirement (8× buys nothing at the composed max-gain floor), so the tube amps run
+// at 4× regardless of the rig's pedal-oversampling selector — a deliberate design
+// constant, never silently reduced for perf.
 constexpr int kJcmOversampling = 4;
 constexpr int kTwinOversampling = 4;
+constexpr int kAc30Oversampling = 4;
 
 struct AmpChain {
     // Three amp voices behind ONE handle (M9.4 → M10.1). All are created + prepared
@@ -280,6 +283,7 @@ struct AmpChain {
     clipper::dsp::AmpModel amp;         // clean 120 (JC-120 style, linear, stereo)
     clipper::dsp::Jcm800Amp jcm;        // Marshall JCM800 2204 (mono head)
     clipper::dsp::TwinAmp twin;         // Fender blackface Twin (mono combo head)
+    clipper::dsp::Ac30Amp ac30;         // Vox AC30 top boost (mono combo head)
     int model = kAmpClean120;
     // M6.3: the amp goes STEREO from the chorus stage on, so the cab IR runs PER
     // SIDE. Two independent CabConvolver instances (same IR) — the wet R side is
@@ -323,6 +327,9 @@ void* amp_create(float sample_rate) {
     // Prepare the Twin up front as well (M10.1) — same lock-free-swap discipline.
     c->twin.setOversampling(kTwinOversampling);
     c->twin.prepare(sr, 128);
+    // Prepare the AC30 up front as well (M10.2) — same lock-free-swap discipline.
+    c->ac30.setOversampling(kAc30Oversampling);
+    c->ac30.prepare(sr, 128);
     const std::vector<float> ir = clipper::dsp::generateDefaultCab2x12IR(sr);
     loadIrBothSides(c, ir);
     return c;
@@ -337,9 +344,10 @@ EMSCRIPTEN_KEEPALIVE
 void amp_set_model(void* handle, int which) {
     if (!handle) return;
     auto* c = static_cast<AmpChain*>(handle);
-    // 0 = Clean 120, 1 = JCM800, 2 = Twin. Unknown values fall back to Clean 120.
+    // 0 = Clean 120, 1 = JCM800, 2 = Twin, 3 = AC30. Unknown → Clean 120.
     c->model = (which == kAmpJcm800) ? kAmpJcm800
              : (which == kAmpTwin)   ? kAmpTwin
+             : (which == kAmpAc30)   ? kAmpAc30
                                      : kAmpClean120;
 }
 
@@ -401,28 +409,39 @@ void amp_set_param(void* handle, int param_id, float value) {
     //   - REVERB (9)               -> ALL THREE (clean120 + jcm + twin all have springs;
     //                                 the JCM's is a usability add, docs §19 note).
     //   - GAIN/PRESENCE/MASTER (10/11/12) -> JCM only.
+    // M10.2 AC30 (voice 3) routing (docs §23): volume → AC30 channel volume;
+    // bass/treble → the top-boost stack; the 'middle' slot is UNUSED (the AC30 top-
+    // boost has no mid control — never reaches ac30); reverb → AC30 (usability add);
+    // and the 'presence' slot (kAmpParamJcmPresence, id 11) is REUSED as the AC30's
+    // TOP CUT — both are power-amp HF controls (documented reuse; the UI labels it CUT
+    // and inverts the sense). gain/master/bright/chorus never reach the AC30.
     using A = clipper::dsp::AmpModel;
     using J = clipper::dsp::Jcm800Amp;
     using T = clipper::dsp::TwinAmp;
+    using X = clipper::dsp::Ac30Amp;
     switch (param_id) {
         case A::PARAM_VOLUME:
             c->amp.setParameter(A::PARAM_VOLUME, value);
             c->twin.setParameter(T::PARAM_VOLUME, value);
+            c->ac30.setParameter(X::PARAM_VOLUME, value);
             break;
         case A::PARAM_BASS:
             c->amp.setParameter(A::PARAM_BASS, value);
             c->jcm.setParameter(J::PARAM_BASS, value);
             c->twin.setParameter(T::PARAM_BASS, value);
+            c->ac30.setParameter(X::PARAM_BASS, value);
             break;
         case A::PARAM_MIDDLE:
             c->amp.setParameter(A::PARAM_MIDDLE, value);
             c->jcm.setParameter(J::PARAM_MID, value);
             c->twin.setParameter(T::PARAM_MID, value);
+            // AC30 top-boost has NO mid control — the 'middle' slot never reaches it.
             break;
         case A::PARAM_TREBLE:
             c->amp.setParameter(A::PARAM_TREBLE, value);
             c->jcm.setParameter(J::PARAM_TREBLE, value);
             c->twin.setParameter(T::PARAM_TREBLE, value);
+            c->ac30.setParameter(X::PARAM_TREBLE, value);
             break;
         case A::PARAM_BRIGHT:
             c->amp.setParameter(A::PARAM_BRIGHT, value);
@@ -443,9 +462,13 @@ void amp_set_param(void* handle, int param_id, float value) {
             c->amp.setParameter(A::PARAM_REVERB, value);
             c->jcm.setParameter(J::PARAM_REVERB, value);
             c->twin.setParameter(T::PARAM_REVERB, value);
+            c->ac30.setParameter(X::PARAM_REVERB, value);
             break;
         case kAmpParamJcmGain:     c->jcm.setParameter(J::PARAM_GAIN, value); break;
-        case kAmpParamJcmPresence: c->jcm.setParameter(J::PARAM_PRESENCE, value); break;
+        case kAmpParamJcmPresence:
+            c->jcm.setParameter(J::PARAM_PRESENCE, value);
+            c->ac30.setParameter(X::PARAM_TOPCUT, value);  // AC30 reuses the slot as TOP CUT
+            break;
         case kAmpParamJcmMaster:   c->jcm.setParameter(J::PARAM_MASTER, value); break;
         default:
             c->amp.setParameter(param_id, value);
@@ -464,6 +487,7 @@ int amp_latency_samples(void* handle) {
     int n = 0;
     if (c->model == kAmpJcm800) n = c->jcm.latencySamples();
     else if (c->model == kAmpTwin) n = c->twin.latencySamples();
+    else if (c->model == kAmpAc30) n = c->ac30.latencySamples();
     if (c->cabOn) n += c->cabL.latencySamples();
     return n;
 }
@@ -477,6 +501,7 @@ void amp_process(void* handle, const float* in_ptr, float* out_ptr,
     auto* c = static_cast<AmpChain*>(handle);
     if (c->model == kAmpJcm800) c->jcm.process(in_ptr, out_ptr, num_frames);
     else if (c->model == kAmpTwin) c->twin.process(in_ptr, out_ptr, num_frames);
+    else if (c->model == kAmpAc30) c->ac30.process(in_ptr, out_ptr, num_frames);
     else c->amp.process(in_ptr, out_ptr, num_frames);
     if (c->cabOn) c->cabL.process(out_ptr, out_ptr, num_frames);  // in-place ok
 }
@@ -501,6 +526,12 @@ void amp_process_stereo(void* handle, const float* in_ptr, float* out_l_ptr,
         // identical cab pair (any stereo width here would be fake). The natural cab
         // pairing is the clean212 (a real Twin is a 2×12); the app hints at it.
         c->twin.process(in_ptr, out_l_ptr, num_frames);
+        for (int i = 0; i < num_frames; ++i) out_r_ptr[i] = out_l_ptr[i];
+    } else if (c->model == kAmpAc30) {
+        // The AC30 is a 2×12 COMBO but modelled as a mono head → dual-mono into the
+        // identical cab pair (M10.2). Natural pairing is the clean212 (closest 2×12
+        // platform; a future alnico 2×12 IR is ledgered) — the app hints at it.
+        c->ac30.process(in_ptr, out_l_ptr, num_frames);
         for (int i = 0; i < num_frames; ++i) out_r_ptr[i] = out_l_ptr[i];
     } else {
         c->amp.processStereo(in_ptr, out_l_ptr, out_r_ptr, num_frames);
