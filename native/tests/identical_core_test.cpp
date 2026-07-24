@@ -3,18 +3,24 @@
 // Proves the JUCE plugin is a re-wrap, not a re-implementation: it renders a known
 // signal through the REAL ClipperAudioProcessor and, independently, through a
 // from-scratch chain built from the portable core classes DIRECTLY (RatModel,
-// SdModel, AmpModel, CabConvolver x2, OutputLimiter) with identical settings, then
-// asserts the plugin's LEFT-channel output matches the reference sample-for-sample
-// (within a tight float tolerance).
+// SdModel, AmpModel / Jcm800Amp, CabConvolver x2, OutputLimiter) with identical
+// settings, then asserts the plugin's LEFT-channel output matches the reference
+// sample-for-sample (within a tight float tolerance).
 //
-// Both paths use the SAME core code and the SAME internal delays (cab 128 +
-// limiter 64), so their outputs are time-aligned — no latency offset is applied in
-// the comparison. The reported plugin latency is separately checked against the
-// sum of the models' latency accessors.
+// M9.4: the check now runs for BOTH amp voices. The Clean 120 case exercises the
+// linear stereo-chorus platform; the JCM800 case exercises the mono valve head
+// (preamp cascade + power section) rendered dual-mono into the same cab pair. Both
+// paths must be bit-exact, proving the amp-model switch + JCM param routing are
+// wrapped identically in the plugin and the raw engine.
+//
+// Both paths use the SAME core code and the SAME internal delays (JCM oversampling
+// group delay + cab 128 + limiter 64), so their outputs are time-aligned — no
+// latency offset is applied in the comparison. The reported plugin latency is
+// separately checked against the sum of the models' latency accessors.
 //
 // Test signal: an M2-style 220 Hz sine under an exponential pluck envelope at
-// 48 kHz. Parameter set exercises the whole chain: both dirt pedals engaged, amp
-// powered with cab + bright, chorus (stereo bloom) on, 4x oversampling.
+// 48 kHz. The Clean 120 set engages both dirt pedals, cab + bright, chorus and
+// reverb, 4x oversampling; the JCM800 set runs an SD-1 boost into a cranked head.
 
 #include <cassert>
 #include <cmath>
@@ -30,6 +36,7 @@
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
+#include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/OutputLimiter.h"
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/SdModel.h"
@@ -41,18 +48,45 @@ namespace {
 constexpr double kFs = 48000.0;
 constexpr int kBlock = 128;
 constexpr int kNumFrames = 48000;  // 1.0 s
+constexpr int kJcmOversampling = 4;  // matches ClipperEngine/C ABI (docs §18)
+constexpr int kAmpJcm800 = 1;        // Params::ampModel value for the JCM head
 
-// The known parameter set (both pedals on, cab + bright, stereo chorus, 4x OS).
-Params testParams() {
+// The CLEAN 120 parameter set (both pedals on, cab + bright, stereo chorus + spring
+// reverb, 4x OS) — the linear clean-platform path.
+Params cleanParams() {
     Params p;
     p.inputTrim = 0.5f;
     p.ratOn = true;  p.ratDist = 0.7f; p.ratFilter = 0.4f; p.ratLevel = 0.8f;
     p.sdOn = true;   p.sdDrive = 0.5f; p.sdTone = 0.5f;    p.sdLevel = 0.7f;
+    p.ampModel = 0;  // Clean 120
     p.ampOn = true;  p.volume = 0.5f;  p.bass = 0.5f; p.middle = 0.5f; p.treble = 0.6f;
     p.bright = true; p.cab = true;
     p.chorusMode = 1;  // chorus (stereo bloom)
     p.chorusSpeed = 0.3f; p.chorusDepth = 0.5f;
     p.reverb = 0.5f;   // M6.7 spring reverb engaged (exercises the wet stereo path)
+    p.oversampling = 4;
+    return p;
+}
+
+// The JCM800 parameter set — the canonical SD-1 boost into a cranked Marshall head.
+// RAT off; SD-1 on as a clean-ish boost (low drive, higher level) shoving the JCM's
+// front end. The JCM makes its own distortion (gain/master), so it is the amp doing
+// the work. bass/middle/treble are the SHARED tone knobs; the JCM ignores volume/
+// bright/chorus/reverb. Cab on (would pair with brit412 in the app, but the test's
+// bit-exactness is IR-agnostic, so the default IR is fine here).
+Params jcmParams() {
+    Params p;
+    p.inputTrim = 0.5f;
+    p.ratOn = false; p.ratDist = 0.7f; p.ratFilter = 0.4f; p.ratLevel = 0.8f;
+    p.sdOn = true;   p.sdDrive = 0.25f; p.sdTone = 0.6f;   p.sdLevel = 0.85f;  // boost
+    p.ampModel = kAmpJcm800;  // JCM800
+    p.ampOn = true;
+    p.bass = 0.55f; p.middle = 0.45f; p.treble = 0.65f;  // shared tone stack
+    p.bright = false; p.cab = true;
+    p.chorusMode = 0; p.reverb = 0.0f;  // ignored by the JCM anyway
+    p.jcmGain = 0.7f;      // cranked preamp
+    p.jcmMaster = 0.5f;    // power-amp pushed
+    p.jcmPresence = 0.6f;  // HF lift
     p.oversampling = 4;
     return p;
 }
@@ -74,15 +108,19 @@ std::vector<float> makeSignal() {
 
 // The REFERENCE chain: mirrors ClipperEngine::process using core classes directly.
 // Set params -> prepare (snaps smoothers) -> set oversampling, exactly as the
-// engine does, then render the whole signal block by block.
-void renderReference(const std::vector<float>& in, std::vector<float>& outL,
-                     std::vector<float>& outR, int& latencyOut) {
+// engine does, then render the whole signal block by block. Handles BOTH amp voices:
+// the Clean 120 splits to a stereo pair (chorus); the JCM800 is a mono head whose
+// single output is mirrored to both sides (dual-mono) ahead of the identical cabs.
+void renderReference(const Params& p, const std::vector<float>& in,
+                     std::vector<float>& outL, std::vector<float>& outR,
+                     int& latencyOut) {
     using namespace clipper::dsp;
-    const Params p = testParams();
+    const bool jcm800 = p.ampModel == kAmpJcm800;
 
     RatModel rat;
     SdModel sd;
-    AmpModel amp;
+    AmpModel amp;        // Clean 120
+    Jcm800Amp jcm;       // JCM800 head
     CabConvolver cabL, cabR;
     OutputLimiter limiter;
 
@@ -92,19 +130,34 @@ void renderReference(const std::vector<float>& in, std::vector<float>& outL,
     sd.setParameter(SdModel::PARAM_DRIVE, p.sdDrive);
     sd.setParameter(SdModel::PARAM_TONE, p.sdTone);
     sd.setParameter(SdModel::PARAM_LEVEL, p.sdLevel);
-    amp.setParameter(AmpModel::PARAM_VOLUME, p.volume);
-    amp.setParameter(AmpModel::PARAM_BASS, p.bass);
-    amp.setParameter(AmpModel::PARAM_MIDDLE, p.middle);
-    amp.setParameter(AmpModel::PARAM_TREBLE, p.treble);
-    amp.setParameter(AmpModel::PARAM_BRIGHT, p.bright ? 1.0f : 0.0f);
-    amp.setParameter(AmpModel::PARAM_CHORUS_SPEED, p.chorusSpeed);
-    amp.setParameter(AmpModel::PARAM_CHORUS_DEPTH, p.chorusDepth);
-    amp.setParameter(AmpModel::PARAM_CHORUS_MODE, static_cast<float>(p.chorusMode));
-    amp.setParameter(AmpModel::PARAM_REVERB, p.reverb);
+
+    if (jcm800) {
+        // Mirror ClipperEngine::applyParams' JCM order exactly.
+        jcm.setParameter(Jcm800Amp::PARAM_GAIN, p.jcmGain);
+        jcm.setParameter(Jcm800Amp::PARAM_MASTER, p.jcmMaster);
+        jcm.setParameter(Jcm800Amp::PARAM_BASS, p.bass);
+        jcm.setParameter(Jcm800Amp::PARAM_MID, p.middle);
+        jcm.setParameter(Jcm800Amp::PARAM_TREBLE, p.treble);
+        jcm.setParameter(Jcm800Amp::PARAM_PRESENCE, p.jcmPresence);
+    } else {
+        amp.setParameter(AmpModel::PARAM_VOLUME, p.volume);
+        amp.setParameter(AmpModel::PARAM_BASS, p.bass);
+        amp.setParameter(AmpModel::PARAM_MIDDLE, p.middle);
+        amp.setParameter(AmpModel::PARAM_TREBLE, p.treble);
+        amp.setParameter(AmpModel::PARAM_BRIGHT, p.bright ? 1.0f : 0.0f);
+        amp.setParameter(AmpModel::PARAM_CHORUS_SPEED, p.chorusSpeed);
+        amp.setParameter(AmpModel::PARAM_CHORUS_DEPTH, p.chorusDepth);
+        amp.setParameter(AmpModel::PARAM_CHORUS_MODE, static_cast<float>(p.chorusMode));
+        amp.setParameter(AmpModel::PARAM_REVERB, p.reverb);
+    }
 
     rat.prepare(kFs, kBlock);
     sd.prepare(kFs, kBlock);
     amp.prepare(kFs, kBlock);
+    // The JCM runs at its fixed 4x internally (set BEFORE prepare so its stages size
+    // to it), independent of the pedal OS selector — matches ClipperEngine.
+    jcm.setOversampling(kJcmOversampling);
+    jcm.prepare(kFs, kBlock);
     rat.setOversampling(p.oversampling);
     sd.setOversampling(p.oversampling);
 
@@ -130,7 +183,12 @@ void renderReference(const std::vector<float>& in, std::vector<float>& outL,
         if (!p.ampOn) {
             for (int i = 0; i < n; ++i) { l[static_cast<size_t>(i)] = cur[i]; r[static_cast<size_t>(i)] = cur[i]; }
         } else {
-            amp.processStereo(cur, l.data(), r.data(), n);       // stereo split
+            if (jcm800) {
+                jcm.process(cur, l.data(), n);                   // mono head
+                for (int i = 0; i < n; ++i) r[static_cast<size_t>(i)] = l[static_cast<size_t>(i)];  // dual-mono
+            } else {
+                amp.processStereo(cur, l.data(), r.data(), n);   // stereo split
+            }
             if (p.cab) {
                 cabL.process(l.data(), l.data(), n);             // per-side cab
                 cabR.process(r.data(), r.data(), n);
@@ -146,15 +204,17 @@ void renderReference(const std::vector<float>& in, std::vector<float>& outL,
 
     latencyOut = (p.ratOn ? rat.latencySamples() : 0) +
                  (p.sdOn ? sd.latencySamples() : 0) +
+                 (p.ampOn && jcm800 ? jcm.latencySamples() : 0) +
                  (p.ampOn && p.cab ? cabL.latencySamples() : 0) +
                  limiter.latencySamples();
 }
 
-// Drive the REAL plugin over the same signal, mono in -> stereo out.
-void renderPlugin(const std::vector<float>& in, std::vector<float>& outL,
-                  std::vector<float>& outR, int& latencyOut) {
+// Drive the REAL plugin over the same signal, mono in -> stereo out, for the given
+// parameter set (either amp voice).
+void renderPlugin(const Params& p, const std::vector<float>& in,
+                  std::vector<float>& outL, std::vector<float>& outR,
+                  int& latencyOut) {
     clipper::native::ClipperAudioProcessor proc;
-    const Params p = testParams();
 
     // Push the known set into the APVTS BEFORE prepareToPlay, so the engine snaps
     // its smoothers to these targets (steady state from sample 0). convertTo0to1
@@ -165,13 +225,16 @@ void renderPlugin(const std::vector<float>& in, std::vector<float>& outL,
     };
     using namespace clipper::native::pid;
     set(inputTrim, p.inputTrim);
-    set(ratOn, 1.0f);  set(ratDist, p.ratDist); set(ratFilter, p.ratFilter); set(ratLevel, p.ratLevel);
-    set(sdOn, 1.0f);   set(sdDrive, p.sdDrive); set(sdTone, p.sdTone);       set(sdLevel, p.sdLevel);
-    set(ampOn, 1.0f);  set(volume, p.volume); set(bass, p.bass); set(middle, p.middle); set(treble, p.treble);
-    set(bright, 1.0f); set(cab, 1.0f);
-    set(chorusMode, static_cast<float>(p.chorusMode));  // choice index 1 == Chorus
+    set(ratOn, p.ratOn ? 1.0f : 0.0f); set(ratDist, p.ratDist); set(ratFilter, p.ratFilter); set(ratLevel, p.ratLevel);
+    set(sdOn, p.sdOn ? 1.0f : 0.0f);   set(sdDrive, p.sdDrive); set(sdTone, p.sdTone); set(sdLevel, p.sdLevel);
+    set(ampOn, p.ampOn ? 1.0f : 0.0f);
+    set(ampModel, static_cast<float>(p.ampModel));  // choice index == model id
+    set(volume, p.volume); set(bass, p.bass); set(middle, p.middle); set(treble, p.treble);
+    set(bright, p.bright ? 1.0f : 0.0f); set(cab, p.cab ? 1.0f : 0.0f);
+    set(chorusMode, static_cast<float>(p.chorusMode));
     set(chorusSpeed, p.chorusSpeed); set(chorusDepth, p.chorusDepth);
     set(reverb, p.reverb);
+    set(jcmGain, p.jcmGain); set(jcmMaster, p.jcmMaster); set(jcmPresence, p.jcmPresence);
     set(oversampling, 2.0f);  // choice index 2 == 4x
 
     proc.setPlayConfigDetails(1, 2, kFs, kBlock);
@@ -200,19 +263,15 @@ void renderPlugin(const std::vector<float>& in, std::vector<float>& outL,
     latencyOut = proc.getLatencySamples();
 }
 
-}  // namespace
-
-int main() {
-    std::printf("=== Clipper identical-core test ===\n");
-    std::printf("signal: 220 Hz sine + pluck, %d samples @ %.0f Hz, block %d\n",
-                kNumFrames, kFs, kBlock);
-
-    const std::vector<float> in = makeSignal();
+// Run the full identical-core comparison for one parameter set (one amp voice).
+// Returns true on PASS.
+bool runCase(const char* label, const Params& p, const std::vector<float>& in) {
+    std::printf("\n--- case: %s ---\n", label);
 
     std::vector<float> refL, refR, plL, plR;
     int refLat = 0, plLat = 0;
-    renderReference(in, refL, refR, refLat);
-    renderPlugin(in, plL, plR, plLat);
+    renderReference(p, in, refL, refR, refLat);
+    renderPlugin(p, in, plL, plR, plLat);
 
     // Secondary cross-check: render straight through ClipperEngine (no JUCE glue),
     // set once + prepared (snapped), and confirm it too is bit-exact against the
@@ -220,7 +279,7 @@ int main() {
     double engMax = 0.0;
     {
         clipper::native::ClipperEngine eng;
-        eng.setParams(testParams());
+        eng.setParams(p);
         eng.prepare(kFs, kBlock);
         int off = 0;
         std::vector<float> il(kBlock), ol(kBlock), orr(kBlock);
@@ -247,8 +306,8 @@ int main() {
     }
     const double rms = std::sqrt(sumSq / kNumFrames);
 
-    // Also confirm the RIGHT channel matches (proves the stereo chorus bloom path
-    // is wired identically), and that the reference actually produced signal.
+    // Also confirm the RIGHT channel matches (proves the stereo path — chorus bloom
+    // for the Clean 120, dual-mono for the JCM — is wired identically).
     double maxDiffR = 0.0;
     for (int i = 0; i < kNumFrames; ++i)
         maxDiffR = std::max(maxDiffR,
@@ -272,9 +331,27 @@ int main() {
     if (maxDiffR > kTol) { std::printf("FAIL: R channel exceeds tolerance %.1e\n", kTol); ok = false; }
     if (plLat != refLat) { std::printf("FAIL: latency mismatch\n"); ok = false; }
 
+    if (ok) std::printf("PASS: %s output is sample-identical to the direct core chain.\n", label);
+    return ok;
+}
+
+}  // namespace
+
+int main() {
+    std::printf("=== Clipper identical-core test ===\n");
+    std::printf("signal: 220 Hz sine + pluck, %d samples @ %.0f Hz, block %d\n",
+                kNumFrames, kFs, kBlock);
+
+    const std::vector<float> in = makeSignal();
+
+    bool ok = true;
+    ok &= runCase("Clean 120", cleanParams(), in);
+    ok &= runCase("JCM800", jcmParams(), in);
+
     if (ok) {
-        std::printf("PASS: plugin output is sample-identical to the direct core chain.\n");
+        std::printf("\nPASS: both amp voices are sample-identical across plugin + engine + core.\n");
         return 0;
     }
+    std::printf("\nFAIL: identical-core mismatch (see cases above).\n");
     return 1;
 }

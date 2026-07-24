@@ -128,6 +128,17 @@ public:
     void setOversampling(int factor);
     int oversampling() const { return oversampling_; }
 
+    // Round-trip oversampling-filter group delay in base-rate samples (0 at 1x).
+    // Every 12AX7 triode stage oversamples independently and runs SERIALLY, so the
+    // four stages' halfband group delays accumulate; the passive TMB tone stack is
+    // a linear IIR (no counted latency). Sums the per-stage accessors.
+    int latencySamples() const {
+        int n = 0;
+        for (int s = V1A; s <= V2B; ++s)
+            n += stage_[static_cast<size_t>(s)].latencySamples();
+        return n;
+    }
+
     // Normalized parameter in [0,1], clamped.
     void setParameter(int paramId, float value);
 

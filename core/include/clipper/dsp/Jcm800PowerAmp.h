@@ -211,6 +211,13 @@ public:
     void setOversampling(int factor);
     int oversampling() const { return os_.factor(); }
 
+    // Round-trip oversampling-filter group delay in base-rate samples (0 at 1x).
+    // The single power-section Oversampler wraps the whole PI→EL34→OT solve; its
+    // halfband up/down FIRs are the only linear-phase delay in the stage (the
+    // internal explicit-loop unit delay is a sub-sample z^-1 at the OS rate, not
+    // counted). Mirrors RatModel::latencySamples() so the chain sums it.
+    int latencySamples() const { return os_.latencySamples(); }
+
     void setParameter(int paramId, float value);
 
     // Enable/disable global NFB (open-loop A/B for the closed-vs-open gain test).

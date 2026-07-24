@@ -9,6 +9,8 @@ namespace {
 const juce::StringArray kOversampleChoices{"1x", "2x", "4x", "8x"};
 constexpr int kOversampleFactors[] = {1, 2, 4, 8};
 const juce::StringArray kChorusChoices{"Off", "Chorus", "Vibrato"};
+// M9.4 amp voice: choice index 0 == Clean 120, 1 == JCM800 (matches Params::ampModel).
+const juce::StringArray kAmpModelChoices{"Clean 120", "JCM800"};
 
 // A plain 0..1 knob parameter (the core owns the taper law, so the host sees a
 // linear normalized position — identical to the web knobs).
@@ -40,12 +42,20 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::sdLevel, "SD-1 Level", 0.7f));
 
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::ampOn, 1}, "Amp Power", true));
+    // M9.4 amp voice (default index 0 == Clean 120).
+    layout.add(std::make_unique<Choice>(juce::ParameterID{pid::ampModel, 1},
+                                        "Amp Model", kAmpModelChoices, 0));
     layout.add(knob(pid::volume, "Volume", 0.4f));
     layout.add(knob(pid::bass, "Bass", 0.5f));
     layout.add(knob(pid::middle, "Middle", 0.5f));
     layout.add(knob(pid::treble, "Treble", 0.6f));
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::bright, 1}, "Bright", false));
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::cab, 1}, "Cab", true));
+
+    // M9.4 JCM800-only knobs (bass/middle/treble above are shared with the Clean 120).
+    layout.add(knob(pid::jcmGain, "JCM Gain", 0.5f));
+    layout.add(knob(pid::jcmMaster, "JCM Master", 0.4f));
+    layout.add(knob(pid::jcmPresence, "JCM Presence", 0.5f));
 
     layout.add(std::make_unique<Choice>(juce::ParameterID{pid::chorusMode, 1},
                                         "Chorus Mode", kChorusChoices, 0));
@@ -83,6 +93,7 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.sdTone = f(pid::sdTone);
     p.sdLevel = f(pid::sdLevel);
     p.ampOn = f(pid::ampOn) >= 0.5f;
+    p.ampModel = static_cast<int>(f(pid::ampModel));  // choice index == model id
     p.volume = f(pid::volume);
     p.bass = f(pid::bass);
     p.middle = f(pid::middle);
@@ -93,6 +104,9 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.chorusSpeed = f(pid::chorusSpeed);
     p.chorusDepth = f(pid::chorusDepth);
     p.reverb = f(pid::reverb);
+    p.jcmGain = f(pid::jcmGain);
+    p.jcmMaster = f(pid::jcmMaster);
+    p.jcmPresence = f(pid::jcmPresence);
     p.oversampling = kOversampleFactors[static_cast<int>(f(pid::oversampling)) & 3];
     return p;
 }

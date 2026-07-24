@@ -14,6 +14,7 @@ import {
   type SourceKind,
   type PedalType,
   type CabChoice,
+  type AmpType,
 } from './rig';
 import {
   processIrFile,
@@ -281,6 +282,23 @@ export default function App() {
     setAmpEngaged(!rigRef.current.amp.engaged);
   }
 
+  // Swap the amp voice (clean120 | jcm800). Updates the rig and, if running, the
+  // engine (click-free in the worklet). When switching TO the JCM with the clean
+  // 2×12 still loaded, drop a one-line hint suggesting the Brit 4×12 — but never
+  // auto-switch the cab (the player's choice stays theirs).
+  function setAmpType(type: AmpType) {
+    if (rigRef.current.amp.type === type) return;
+    setRig((r) => ({ ...r, amp: { ...r.amp, type } }));
+    engineRef.current?.setAmpModel(type);
+    if (type === 'jcm800' && rigRef.current.amp.cabModel === 'clean212') {
+      setCabNote('JCM800 loaded — try the Brit 4×12 cab for a thicker, darker rock voicing.');
+    } else {
+      setCabNote(null);
+    }
+    const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
+    if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastAmpModel = type;
+  }
+
   // ---- cab selection + custom IR upload (cab expansion) ----
 
   // Missing-custom-IR fallback: a restored rig may say cabModel:'custom' while the
@@ -390,6 +408,10 @@ export default function App() {
       setCab: (cab) => {
         if (cab === 'clean212' || cab === 'brit412') setCabModel(cab);
       },
+      // M9.4: the coach may swap the amp voice (clean120 | jcm800).
+      setAmp: (type) => {
+        if (type === 'clean120' || type === 'jcm800') setAmpType(type);
+      },
       addPedal: (type, position) => addPedal((type as PedalType) ?? 'rat', position),
       removePedal: (index) => {
         const id = pedalIdAt(index);
@@ -424,6 +446,7 @@ export default function App() {
         inputTrim: r.input.trim,
         pedals: r.pedals,
         amp: r.amp.params,
+        ampType: r.amp.type,
         ampEngaged: r.amp.engaged,
         cabModel: r.amp.cabModel,
         customIr:
@@ -527,6 +550,7 @@ export default function App() {
             onAmpParam={setAmpParam}
             onAmpToggle={toggleAmp}
             onAmpPower={toggleAmpPower}
+            onAmpModelSelect={setAmpType}
             onChorusMode={setChorusMode}
             onCabSelect={setCabModel}
             onUploadIr={uploadIr}

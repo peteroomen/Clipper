@@ -29,6 +29,7 @@ import {
   type PedalInstance,
   type PedalType,
   type AmpState,
+  type AmpType,
   type ParamName,
   type AmpParamName,
   type CabChoice,
@@ -48,6 +49,8 @@ export interface BoardProps {
   onAmpParam: (name: AmpParamName, value: number) => void;
   onAmpToggle: (name: 'bright' | 'cab') => void;
   onAmpPower: () => void;
+  // M9.4: swap the amp voice (clean120 | jcm800).
+  onAmpModelSelect: (type: AmpType) => void;
   onChorusMode: (mode: number) => void;
   // Cab expansion: pick a built-in/custom cab, or upload a user IR (.wav).
   onCabSelect: (cab: CabChoice) => void;
@@ -62,6 +65,7 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
 };
 const AMP_TYPE_LABEL: Record<string, string> = {
   clean120: 'Clean 120 (JC-120 style)',
+  jcm800: 'JCM800 (Marshall style)',
 };
 const CAB_LABEL: Record<'clean212' | 'brit412', string> = {
   clean212: 'Clean 2×12 (JC platform)',
@@ -89,6 +93,7 @@ export function Board({
   onAmpParam,
   onAmpToggle,
   onAmpPower,
+  onAmpModelSelect,
   onChorusMode,
   onCabSelect,
   onUploadIr,
@@ -410,13 +415,16 @@ export function Board({
                     role="menuitemradio"
                     aria-checked={t === amp.type}
                     className={`unit-menu-item${t === amp.type ? ' current' : ''}`}
-                    onClick={() => setAmpMenuOpen(false)}
+                    data-testid={`amp-${t}`}
+                    onClick={() => {
+                      if (t !== amp.type) onAmpModelSelect(t);
+                      setAmpMenuOpen(false);
+                    }}
                   >
                     {AMP_TYPE_LABEL[t]}
                     {t === amp.type ? ' ✓' : ''}
                   </button>
                 ))}
-                <div className="unit-menu-note">More amps coming (JCM800…)</div>
 
                 {/* Cab expansion: pick the speaker cab IR or upload a user IR. */}
                 <div className="unit-menu-head">Cab</div>

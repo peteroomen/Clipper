@@ -261,8 +261,24 @@ is one of the most canonical pairings in rock.
    (`clipper_jcm800_power_tests`) with an explicit NFB-inversion catcher; the power
    section clears the −60 dB M2 alias bar at 4× (composed max-gain floor ~−58 dB at
    48 k, measured, 8× no better). Rendered via `clipper-render --jcm` / `--jcm-cab`.
-4. Amp-panel UI (preamp/master volume era-correct), oversampling per stage
-   budgeted like M2, A/B render harness.
+4. **Integration — the JCM joins the amp registry** ✅ *(phase 4 done — see docs
+   §19, M9.4)* — `Jcm800Amp` wired in end-to-end as a second selectable amp voice
+   alongside the Clean 120: the C ABI hosts both voices behind one `AmpChain` handle
+   (realtime-safe `amp_set_model` int flip; shared cab pair; JCM mono head →
+   dual-mono; explicit per-id param routing with gain/presence/master ids 10/11/12
+   and shared bass/mid/treble; latency reported per voice), a declick-bracketed
+   `ampModel` worklet swap, `rig.ts` additive `gain/presence/master` with migration
+   + exact round-trip, the era-correct **Eight Hundred** JCM face (§17 doctrine: dark
+   chassis + gold accent, PRESENCE·BASS·MIDDLE·TREBLE·MASTER·GAIN, no
+   bright/chorus/reverb, brit412 hint on switch, never auto-switched), a `set_amp`
+   assistant tool + SD-1-boost coaching, and the native JUCE plugin (APVTS Amp Model
+   choice + JCM knobs). The **identical-core test is bit-exact on BOTH amp models**
+   (0.0 diff, latency 336/624 matched); a Playwright perf smoke reports the jcm800
+   WASM offline-render wall-time (~1.14× real-time, ~43× the linear clean amp in
+   headless CI). ctest (7 core + native identical-core) green; 44 Playwright specs
+   green; server 11 + history 10 unchanged.
+
+**M9 COMPLETE** — the Marshall JCM800 2204 is a fully playable, selectable amp voice.
 
 ### M10 — Amp expansion (locked lineup, ordered)
 

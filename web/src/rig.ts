@@ -21,7 +21,11 @@ export type SourceKind = 'test' | 'live';
 // (the Pedal component relabels them), so distortion==Drive and filter==Tone.
 // One param shape keeps the chain/worklet/serializer pedal-agnostic.
 export type PedalType = 'rat' | 'sd1' | 'tuner';
-export type AmpType = 'clean120';
+// M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
+// is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
+// here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
+// treble/presence — no chorus/reverb/bright/volume). Both share the cab pair.
+export type AmpType = 'clean120' | 'jcm800';
 
 // Cab expansion: which speaker cabinet IR the amp runs. 'clean212' is the
 // built-in Clean 2x12 (the JC-120 platform), 'brit412' the darker/thicker Brit
@@ -40,9 +44,9 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412', number> = {
 
 // The pedal types that can be added from the gear tray (M6.4).
 export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'tuner'];
-// The amp types that can be selected in the amp slot (M6.4). Currently just the
-// Clean 120; M9's JCM800 appends here.
-export const AVAILABLE_AMP_TYPES: readonly AmpType[] = ['clean120'];
+// The amp types that can be selected in the amp slot (M6.4 / M9.4): the Clean 120
+// and the Marshall JCM800.
+export const AVAILABLE_AMP_TYPES: readonly AmpType[] = ['clean120', 'jcm800'];
 
 export type ParamName = 'distortion' | 'filter' | 'level';
 export type AmpParamName =
@@ -55,7 +59,11 @@ export type AmpParamName =
   | 'speed'
   | 'depth'
   | 'chorusMode'
-  | 'reverb';
+  | 'reverb'
+  // M9.4 JCM800-only knobs (ignored by clean120).
+  | 'gain'
+  | 'presence'
+  | 'master';
 
 export interface PedalParams {
   distortion: number; // 0..1 knob position
@@ -101,6 +109,13 @@ export interface AmpParams {
   depth: number; // 0..1 chorus/vibrato sweep-depth knob
   chorusMode: number; // 0 off | 1 chorus | 2 vibrato
   reverb: number; // 0..1 spring-reverb wet/dry mix (M6.7; 0 = dry)
+  // M9.4 JCM800 knobs (additive; clean120 ignores these, jcm800 ignores
+  // volume/bright/speed/depth/chorusMode/reverb). bass/middle/treble are SHARED —
+  // both amps use them. gain = preamp drive, master = power-amp drive (how hard
+  // the phase inverter is pushed), presence = power-amp HF feedback lift.
+  gain: number; // 0..1 JCM preamp GAIN (drive)
+  presence: number; // 0..1 JCM power-amp presence
+  master: number; // 0..1 JCM MASTER volume
 }
 
 export interface AmpState {
@@ -171,6 +186,12 @@ export const AMP_KNOB_DEFAULTS: AmpParams = {
   depth: 0.5,
   chorusMode: 0,
   reverb: 0,
+  // M9.4 JCM800 defaults: a musical crunch opening — GAIN/PRESENCE at noon, MASTER
+  // at 0.4 (matches the JCM's real "cranked but not slammed" full-send region).
+  // bass/middle/treble default 0.5/0.5/0.6 above, shared with the clean amp.
+  gain: 0.5,
+  presence: 0.5,
+  master: 0.4,
 };
 
 // Default input trim: unity (0 dB).
@@ -300,11 +321,16 @@ export function normalizeRig(raw: unknown): RigState {
   const customCabLabel =
     typeof a.customCabLabel === 'string' ? a.customCabLabel : undefined;
 
+  // Amp type migration (M9.4): a known 'jcm800' round-trips; anything else (incl.
+  // an old rig with no type) coerces to the Clean 120, so pre-M9.4 saved rigs load
+  // unchanged.
+  const ampType: AmpType = a.type === 'jcm800' ? 'jcm800' : 'clean120';
+
   return {
     input: { trim: clamp01(inp.trim, d.input.trim) },
     pedals,
     amp: {
-      type: 'clean120',
+      type: ampType,
       engaged: typeof a.engaged === 'boolean' ? a.engaged : d.amp.engaged,
       cabModel,
       ...(customCabLabel !== undefined ? { customCabLabel } : {}),
@@ -323,6 +349,11 @@ export function normalizeRig(raw: unknown): RigState {
         // Migration seam: a pre-M6.7 rig has no reverb field — old saved rigs
         // load with reverb at 0 (dry).
         reverb: clamp01(ar.reverb, d.amp.params.reverb),
+        // Migration seam: a pre-M9.4 rig has no JCM fields — old saved rigs load
+        // with the JCM defaults (harmless: they only matter when type is jcm800).
+        gain: clamp01(ar.gain, d.amp.params.gain),
+        presence: clamp01(ar.presence, d.amp.params.presence),
+        master: clamp01(ar.master, d.amp.params.master),
       },
     },
     oversampling,

@@ -22,6 +22,20 @@ export const AMP_PARAM_CHORUS_MODE = 8;
 // (0 = dry). Routed into the owned ReverbModel by the C ABI, in the JC-120
 // spring-tank position (preamp -> reverb -> chorus split).
 export const AMP_PARAM_REVERB = 9;
+// M9.4 JCM800 amp-specific ids (10/11/12), placed ABOVE every clean-120 id so the
+// ABI stays purely additive. GAIN/PRESENCE/MASTER are JCM-only; the JCM's
+// BASS/MIDDLE/TREBLE REUSE the clean-120 tone ids (1/2/3). The C ABI routes these
+// to the active amp model (clean120 ignores 10/11/12; jcm800 ignores volume/bright/
+// chorus/reverb). Must mirror kAmpParamJcm* in core/src/clipper_c_api.cpp.
+export const AMP_PARAM_JCM_GAIN = 10;
+export const AMP_PARAM_JCM_PRESENCE = 11;
+export const AMP_PARAM_JCM_MASTER = 12;
+
+// The worklet's amp-model index (mirrors AmpModelId in clipper_c_api.cpp).
+export const AMP_MODEL_INDEX: Record<'clean120' | 'jcm800', number> = {
+  clean120: 0,
+  jcm800: 1,
+};
 
 // Chorus mode enum (mirrors ChorusModel::Mode). Kept as plain numbers so it flows
 // through the numeric param ABI untouched.
@@ -49,6 +63,10 @@ export const AMP_PARAM_ID = {
   depth: AMP_PARAM_CHORUS_DEPTH,
   chorusMode: AMP_PARAM_CHORUS_MODE,
   reverb: AMP_PARAM_REVERB,
+  // M9.4 JCM800 knobs.
+  gain: AMP_PARAM_JCM_GAIN,
+  presence: AMP_PARAM_JCM_PRESENCE,
+  master: AMP_PARAM_JCM_MASTER,
 } as const;
 
 // Valid oversampling factors for the nonlinear stage (default 4x). Other values

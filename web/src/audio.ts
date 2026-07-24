@@ -11,11 +11,15 @@ import {
   AMP_PARAM_CHORUS_DEPTH,
   AMP_PARAM_CHORUS_MODE,
   AMP_PARAM_REVERB,
+  AMP_PARAM_JCM_GAIN,
+  AMP_PARAM_JCM_PRESENCE,
+  AMP_PARAM_JCM_MASTER,
+  AMP_MODEL_INDEX,
   WORKLET_URL,
   trimKnobToGain,
 } from './params';
 import { PitchDetector } from 'pitchy';
-import type { SourceKind, AmpParams, PedalInstance, CabChoice } from './rig';
+import type { SourceKind, AmpParams, AmpType, PedalInstance, CabChoice } from './rig';
 import { CAB_BUILTIN_INDEX } from './rig';
 import { resampleMono } from './cab';
 import { TUNER_FRAME_SIZE, analyzePitch, type TunerReading } from './tuner';
@@ -54,6 +58,7 @@ export interface StartOptions {
   inputTrim: number; // 0..1 knob position, rig-level pre-pedal input trim
   pedals: PedalInstance[]; // the ordered pedal chain (may be empty)
   amp: AmpParams; // amp knob positions (0..1)
+  ampType: AmpType; // which amp voice (clean120 | jcm800)
   ampEngaged: boolean; // false = amp+cab bypassed
   cabModel: CabChoice; // which cab IR (built-in or 'custom')
   // Mono custom-cab samples + the rate they're stored at, when cabModel is
@@ -86,6 +91,9 @@ export interface Engine {
   setPedalParam(pedalId: string, id: number, value: number): void;
   setPedalBypass(pedalId: string, on: boolean): void; // per-instance bypass
   setAmpParam(id: number, value: number): void; // amp param
+  // M9.4: swap the amp voice (clean120 | jcm800) — applied click-free in the
+  // worklet via the declick fade, exactly like a cab swap.
+  setAmpModel(type: AmpType): void;
   setInputTrim(knob: number): void; // 0..1 knob -> linear gain, applied pre-pedal
   setOversampling(factor: number): void;
   setAmpBypass(on: boolean): void; // amp power off = bypass
@@ -165,6 +173,9 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
     setAmpParam(id, value) {
       node.port.postMessage({ type: 'param', unit: 'amp', id, value });
     },
+    setAmpModel(type) {
+      node.port.postMessage({ type: 'ampModel', model: AMP_MODEL_INDEX[type] });
+    },
     setInputTrim(knob) {
       node.port.postMessage({ type: 'input', gain: trimKnobToGain(knob) });
     },
@@ -224,6 +235,14 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   engine.setAmpParam(AMP_PARAM_CHORUS_DEPTH, opts.amp.depth);
   engine.setAmpParam(AMP_PARAM_CHORUS_MODE, opts.amp.chorusMode);
   engine.setAmpParam(AMP_PARAM_REVERB, opts.amp.reverb);
+  // M9.4 JCM800 knobs — sent every start; the C ABI keeps both amp voices current,
+  // so these reach the JCM whether or not it is the active model yet.
+  engine.setAmpParam(AMP_PARAM_JCM_GAIN, opts.amp.gain);
+  engine.setAmpParam(AMP_PARAM_JCM_PRESENCE, opts.amp.presence);
+  engine.setAmpParam(AMP_PARAM_JCM_MASTER, opts.amp.master);
+  // Select the amp voice (default clean120 needs no swap, but sending is harmless
+  // and keeps the worklet's model + reported latency in sync from sample 0).
+  if (opts.ampType === 'jcm800') engine.setAmpModel('jcm800');
   engine.setAmpBypass(!opts.ampEngaged);
 
   // Cab: the worklet's amp_create loads the Clean 2x12 by default. Apply the
