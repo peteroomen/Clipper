@@ -2211,6 +2211,172 @@ the expected cost of the per-sample tube Newton solves at 4× OS. The test asser
 accidental 8× OS), not a tight budget; an analytic plate-solve Jacobian remains the
 obvious future optimization (docs §18).
 
+### M10.1 addendum — the JCM800 gets a spring reverb (usability > authenticity)
+
+The real 2204 has **no reverb**. M10.1 nonetheless gives the JCM a **spring REVERB knob**
+— the deliberate house call that **authenticity yields to usability** here: the user wants
+the normal amp conveniences even where the original hardware lacked them (this is the ONE
+place we knowingly break the replica). It reuses `ReverbModel` (mono), placed **after the
+power amp, before the C-ABI dual-mono split** — the same placement logic as the Twin
+below. `Jcm800Amp::PARAM_REVERB` defaults to mix 0, which is a **bit-exact passthrough**, so
+every M9.3 power-section number is unchanged and the suite stays green. The face gains a
+Reverb knob; the identical-core JCM case now renders with reverb engaged and stays
+bit-exact.
+
+## 20. M10.1 — TwinAmp (the Fender blackface "Twin-style" clean benchmark)
+
+M10 opens with the **clean-headroom king**: a Fender blackface AB763-style **vibrato
+channel** — the glassy, high-headroom counterpoint to the JCM's crunch and the JC-120's
+solid-state clean. It joins the registry as the **third amp voice, `twin`**, end-to-end
+(C ABI, worklet, rig, React face, assistant, native). Built bottom-up from the proven valve
+toolbox (`TriodeStage`, the `LtpInverter`, the Koren pentode law, `ReverbModel`) plus one
+new reusable block (`OptoTremolo`), and MEASURED against analytic targets, same discipline
+as M9.
+
+### The model (canon values; every simplification in the ledger)
+
+New portable core (platform-free C++17):
+
+```
+core/include/clipper/dsp/OptoTremolo.h    reusable AB763 optical tremolo (LFO + LDR)
+core/include/clipper/dsp/TwinPreamp.h     2x 12AX7 + pre-gain Fender TMB stack (+FenderToneStack)
+core/include/clipper/dsp/TwinPowerAmp.h   12AT7 LTP PI (reused) + 6L6GC quad + OT + NFB + light sag
+core/include/clipper/dsp/TwinAmp.h        composed: preamp -> reverb -> tremolo -> power
+core/src/dsp/{OptoTremolo,TwinPreamp,TwinPowerAmp,TwinAmp}.cpp
+core/tests/test_twin_amp.cpp              measurement suite (clipper_twin_tests)
+```
+
+**Signal order (authentic AB763):** `guitar → TwinPreamp → [spring REVERB] → [optical
+TREMOLO] → (interstage trim) → TwinPowerAmp`. Reverb is blended AFTER the recovery stage /
+volume and BEFORE the tremolo and the PI; the tremolo modulates the blended signal; both run
+mono at the base rate.
+
+- **Preamp** (`TwinPreamp`): V1 12AX7 common-cathode (Ra 100k, Rk 1.5k ∥ 25 µF, B+ 410 V) →
+  **Fender TMB stack in the PRE-GAIN position** → recovery 12AX7 (same warm biasing) → VOLUME
+  (audio taper) + a BRIGHT treble-bleed. Contrast with the Marshall preamp: only two gain
+  stages, both **warmly** biased (no cold cathode, no follower), and the tone stack sits
+  BEFORE the recovery/volume. The two triode stages each antialias themselves (4× OS).
+- **Fender tone stack** (`FenderToneStack`): the FMV network — SAME MNA topology as the
+  Marshall stack — with **blackface values** (treble cap 250 pF, mid 0.047 µF, bass 0.1 µF;
+  treble pot 250k, bass 250k, mid 10k; **slope 100k** — Fender's, the deeper scoop), driven
+  from V1's **plate** (a HIGH source impedance ≈ Ra‖rp ≈ 32 kΩ — no cathode follower, so it
+  LOADS differently than the follower-driven Marshall stack). The signature **deep mid scoop**
+  exists even at "flat".
+- **Reverb**: reuses `ReverbModel` (the dispersive spring IS period-correct Fender-style),
+  mono here, mix 0 = bit-exact passthrough.
+- **Tremolo — the famous "vibrato" misnomer** (`OptoTremolo`): the AB763 optical tremolo. An
+  LFO (SPEED knob **log map ~1–10 Hz**) drives a neon lamp; an LDR "roach" follows the lamp
+  with **ASYMMETRIC lag — fast attack ≈ 5 ms, slow release ≈ 55 ms** (photocells darken fast,
+  recover slow), so the gain envelope is a soft-throb, NOT a pure sine. INTENSITY = modulation
+  depth. Built as a small reusable class (future amps want it).
+- **Power amp** (`TwinPowerAmp`): a 12AT7 **long-tailed-pair PI** — REUSES the M9.3
+  `LtpInverter` with a 12AT7 device fit (a **widely-circulated Koren 12AT7 set**: mu 60,
+  ex 1.35, kg1 460, kp 300, kvb 300 — a lower-mu, higher-current triode than the JCM's 12AX7
+  PI). The legs are **balanced to ~1 %** (a long 22k tail + a 100k/142k asymmetric plate pair,
+  measured swing ratio 1.007) — this cancellation is what keeps the push-pull's **even
+  harmonics down**, the key to a clean stage. **4× 6L6GC** push-pull via the **Koren pentode**
+  law (a widely-circulated 6L6GC fit: mu 8.7, ex 1.35, kg1 1460, kp 48, kvb 12, kg2 4500;
+  modelled as a PP pair of paralleled super-tubes, `kTubesPerSide = 2`). Fixed bias
+  **−50.5 V** (nominal Twin is ≈ −52 V; this Koren fit needs −50.5 V for the ~29 mA/tube
+  operating point — derived, not asserted against a datasheet), B+ ≈ 459 V loaded. OT linear
+  v1: **Raa ≈ 2 k** (4 tubes), n = √(Raa/8) ≈ 15.8, corners LF 40 Hz / HF 14 kHz. **Global
+  NFB (β_eff 0.16 on the modelled secondary), NO presence control** — the blackface Twin has
+  none (authenticity). SS-rectifier supply → **LIGHT sag** (~1–2 dB window, and asserted
+  SMALLER than the JCM's).
+- **Headroom is the product**: at typical settings the amp is CLEAN; breakup arrives late and
+  mostly from the PI/power stage.
+
+### Documented simplifications (the ledger)
+
+- The push-pull quad is modelled as a **PP pair of super-tubes** (2 paralleled 6L6 per side),
+  not four independent devices — the per-tube reflected plate load is `Raa/2` and currents
+  scale by `kTubesPerSide`; matched-tube assumption (no per-tube variance).
+- **Fixed bias derived to the fit** (−50.5 V lands ~29 mA), not the datasheet's −52 V; the
+  6L6/12AT7 Koren fits are **community parameter sets** (pentode fits looser → the ±10 % band).
+- OT is **linear** (core saturation deferred; the nonlinearity lives in the tubes), same as
+  M9.3.
+- The **bright switch** is a one-pole treble-bleed shelf whose boost rises as volume falls (a
+  faithful stand-in for the cap across the volume pot), not a full component model.
+- NFB carries a **unit delay at the OS rate** (explicit-loop decoupling), same as M9.3; β is an
+  **effective** divider referred to the modelled 8 Ω secondary (the real 820 Ω/100 Ω network
+  taps a speaker tap).
+- The tremolo runs at the **base rate** (a slow amplitude multiply — no aliasing to guard).
+
+### Validation — `clipper_twin_tests` (deterministic, 44.1 / 48 / 96 k; MEASURED)
+
+Every number is asserted against an analytic target derived IN THE TEST.
+
+1. **DC operating points** vs load-line analysis: V1/V2 on the self-bias load line
+   (B+ = Va + Ra·Iq, Vk = Iq·Rk) — **Va = 274 V, Iq = 1.36 mA**; 6L6 quiescent
+   **28.9 mA/tube** (= the analytic Koren fixed point, ±10 %) at rail **458.8 V**, screen
+   447.4 V, Pdiss 13.3 W (< 30 W); PI balanced **Va1 386.8 / Va2 381.5 V**.
+2. **Fender stack** vs analytic H(jω): discrete-vs-analytic worst **< 0.07 dB** at flat and
+   scooped; the **mid notch** at **339 Hz (flat) / 202 Hz (scooped)**, each below both
+   shoulders — the scoop is real even "flat", asserted ±1.5 dB.
+3. **NFB** sign + magnitude: open −18.7 dB → **closed −22.0 dB = −3.24 dB** (analytic −3.19),
+   gain goes DOWN, **no presence** shaping (flat). A sign flip fails the assert.
+4. **Tremolo**: DEPTH monotonic with INTENSITY (0 = bit-exact unity); RATE follows SPEED
+   (**1.0 / 3.16 / 10.0 Hz** at knob 0 / 0.5 / 1, the log-map midpoint); gain-waveform
+   **rise/fall asymmetry 2.16** (fast dip / slow recovery — NOT a sine), consistent with
+   τ_attack < τ_release.
+5. **Reverb placement**: mix 0 is a **bit-exact passthrough**; with reverb > 0 the wet tail
+   persists in the OUTPUT after the input stops (present **pre-PI**, running through the power
+   amp).
+6. **The product**: clean **THD 2.96 %** at volume 0.5 / hot input (the documented clean bar
+   < 4 %), **monotonic** growth to real breakup **40 %** at max volume (peak **0.89 ≈ 0.9**,
+   ≥ 6× dirtier than clean); **sag Twin ≈ 2.1 dB < JCM ≈ 3.5 dB** (light + stiff), same hard
+   burst; ±10 V slam finite/bounded.
+7. **Aliasing** at MAX volume (M2 sweep 4186 Hz): shipped **4× = −70 / −77 / −85 dB** at
+   44.1 / 48 / 96 k — the Twin is a CLEAN amp, so it clears the −60 dB M2 bar by a wide margin;
+   8× buys nothing → **4× ships**.
+8. All **7 existing ctest suites** still pass, incl. the M9 suites bit-exact (the JCM reverb
+   defaults to passthrough).
+
+### Integration (the M9.4 pattern, extended to three voices)
+
+- **C ABI** (`AmpChain`): third voice `twin` (`amp_set_model` 0|1|2), created + prepared up
+  front (4× OS) so the swap is a lock-free int flip. Param routing (all three voices kept
+  current): BASS/MID/TREBLE → all three; VOLUME → clean120 + twin; BRIGHT → clean120 + twin;
+  SPEED/DEPTH (6/7) → clean120 chorus **and** twin tremolo SPEED/INTENSITY; **REVERB (9) →
+  ALL THREE**; GAIN/PRESENCE/MASTER → jcm only; CHORUS_MODE → clean only. The Twin is a
+  **mono combo → dual-mono** into the shared cab pair; the app hints at the **clean212** cab
+  (a real Twin is a 2×12) when switching to twin with brit412 active.
+- **rig.ts / params.ts / audio.ts**: `twin` in `AmpType`/`AVAILABLE_AMP_TYPES` and
+  `AMP_MODEL_INDEX` (index 2); **no new params** (reuses volume/bass/middle/treble/bright/cab/
+  reverb/speed/depth). Migration coerces unknown types to clean120; old rigs round-trip.
+- **Worklet**: the model index is passed opaquely (2 = Twin), declick-bracketed swap, latency
+  re-published.
+- **UI face** (doctrine): `TwinFace` — model line **COMBO Nº3 · BLACK-PANEL**, wordmark **"Twin
+  Sixty-Five"**, a cool **silver-blue accent** (`--accent-twin`, all 4 theme blocks; the panel
+  stays light/bench-style like the Eight Hundred face). Controls: VOLUME · BASS · MIDDLE ·
+  TREBLE · REVERB + BRIGHT + a TREMOLO row (SPEED · INTENSITY) + cab + power; hidden
+  gain/master/presence/chorus-mode. A **REVERB knob was also added to the Eight Hundred face**
+  (the JCM usability add). Trademark-safe naming throughout (no "Fender/Twin Reverb").
+- **Assistant**: `set_amp` gains `twin`; coaching for the clean-headroom king, the
+  reverb-and-tremolo combo, and the bright switch that bites at low volume; the JCM reverb is
+  documented.
+- **Native**: `ClipperEngine`/APVTS gain the twin voice (Amp Model choice "Twin Sixty-Five",
+  index 2); the identical-core test gains a **third bit-exact case** (Twin: spring reverb +
+  tremolo) and the JCM case now exercises its reverb.
+
+### Render harness (`clipper-render --twin` / `--jcm-reverb`)
+
+```bash
+# Clean shimmer with spring reverb, through the clean212 2x12:
+./build/clipper-render --gen pluck:110:3.0 --amp 0.18 --sr 48000 --twin --twin-cab \
+    --twin-volume 0.5 --twin-reverb 0.3 clean.wav
+# Tremolo demo (~5 Hz, deep) with a touch of spring:
+./build/clipper-render --gen pluck:147:4.0 --amp 0.2 --sr 48000 --twin --twin-cab \
+    --twin-reverb 0.2 --twin-speed 0.7 --twin-intensity 0.7 trem.wav
+# Pushed-hard breakup at max volume (low E):
+./build/clipper-render --gen pluck:82:3.0 --amp 0.5 --sr 48000 --twin --twin-cab \
+    --twin-volume 1.0 breakup.wav
+```
+
+`--twin` renders the FULL composed amp (output normalized, 1.0 == full scale); `--twin-cab`
+runs the clean212 2×12 with the shipped limiter. `--jcm-reverb R` engages the JCM's new
+spring reverb. Reuses `--os`.
+
 ## Built DSP artifacts are committed
 
 `web/public/generated/` (the Emscripten-built WASM engine + the worklet copy)
