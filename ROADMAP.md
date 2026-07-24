@@ -264,6 +264,30 @@ is one of the most canonical pairings in rock.
 4. Amp-panel UI (preamp/master volume era-correct), oversampling per stage
    budgeted like M2, A/B render harness.
 
+### Pre-commercialization checklist (if that day comes)
+
+Circuit modeling itself is legally safe (topologies aren't copyrightable;
+the vintage patents are long expired — the whole amp-sim industry rests on
+this). The real items, from an IP review of the current app:
+
+- **Trademark scrub of user-facing surfaces**: the amp menu still says
+  "JC-120 style"; "Super Drive" is uncomfortably close to Boss's "SUPER
+  OverDrive" mark — rename both. Docs/code references to real gear are fine
+  (descriptive); product UI and marketing must use our fantasy names only,
+  plus the standard "trademarks of their respective owners" disclaimer.
+- **Trade dress**: keep the M6.8.1 doctrine (homage never replica) — it is
+  the correct legal posture, not just the correct aesthetic one.
+- **JUCE commercial license** — the native shell dual-licenses; closed-source
+  commercial distribution requires a paid JUCE tier. Budget for it.
+- **Steinberg VST3 agreement** (free, but must be signed) for VST3 binaries.
+- Everything else ships permissive: chowdsp_wdf (BSD), pitchy (MIT), dr_wav
+  (public domain), React/Electron (MIT); IRs are synthesized in-house.
+- Get an actual IP lawyer for an hour before launch. This list is homework,
+  not counsel.
+
+Note: VST3 + AU already ship from native/ (Logic hosts AU, not VST3 — the AU
+is the Logic path and exists today).
+
 ### v1.1 gear candidates (validated, ordered by reuse)
 
 External suggestions (Gemini) validated against the codebase; effort reflects
