@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace clipper::native {
 
@@ -9,6 +10,13 @@ namespace {
 // Mirrors web/src/params.ts INPUT_TRIM_MIN_DB / MAX_DB.
 constexpr float kTrimMinDb = -12.0f;
 constexpr float kTrimMaxDb = 24.0f;
+// Chain-edit declick fade, each way. Mirrors DECLICK_SECONDS in
+// web/worklet/clipper-processor.js — long enough to be inaudible as a transient,
+// short enough that a reorder feels instant.
+constexpr double kDeclickSeconds = 0.006;
+constexpr float  kPi = 3.14159265358979323846f;
+// The stable serialization keys, indexed by PedalType.
+const char* const kPedalKeys[PEDAL_TYPE_COUNT] = {"rat", "sd1", "ts", "muff", "phaser"};
 constexpr int   kCabPartition = 128;  // == worklet render quantum / cab partition
 // The JCM's fixed internal oversampling — matches the C ABI (docs §18: 4× ships;
 // 8× buys nothing at the composed max-gain floor). Independent of the pedal OS.
@@ -26,6 +34,29 @@ float trimKnobToGain(float knob01) {
     return std::pow(10.0f, db / 20.0f);
 }
 
+const char* pedalTypeKey(int type) {
+    if (type < 0 || type >= PEDAL_TYPE_COUNT) return nullptr;
+    return kPedalKeys[type];
+}
+
+int pedalTypeFromKey(const char* key) {
+    if (key == nullptr) return -1;
+    for (int i = 0; i < PEDAL_TYPE_COUNT; ++i)
+        if (std::strcmp(key, kPedalKeys[i]) == 0) return i;
+    return -1;
+}
+
+bool Params::pedalOn(int type) const {
+    switch (type) {
+        case PEDAL_RAT:    return ratOn;
+        case PEDAL_SD:     return sdOn;
+        case PEDAL_TS:     return tsOn;
+        case PEDAL_MUFF:   return muffOn;
+        case PEDAL_PHASER: return phaserOn;
+        default:           return false;
+    }
+}
+
 ClipperEngine::ClipperEngine() = default;
 
 void ClipperEngine::applyParamsToModels() {
@@ -40,6 +71,19 @@ void ClipperEngine::applyParamsToModels() {
     sd_.setParameter(clipper::dsp::SdModel::PARAM_DRIVE, p.sdDrive);
     sd_.setParameter(clipper::dsp::SdModel::PARAM_TONE, p.sdTone);
     sd_.setParameter(clipper::dsp::SdModel::PARAM_LEVEL, p.sdLevel);
+
+    // The parity pedals — same positional 0/1/2 slot ABI as the RAT/SD-1, reading
+    // as Drive/Tone/Level (TS), Sustain/Tone/Volume (Muff) and Speed (phaser: the
+    // shared slot 0; slots 1/2 are unused and therefore never exposed natively).
+    ts_.setParameter(clipper::dsp::TsModel::PARAM_DRIVE, p.tsDrive);
+    ts_.setParameter(clipper::dsp::TsModel::PARAM_TONE, p.tsTone);
+    ts_.setParameter(clipper::dsp::TsModel::PARAM_LEVEL, p.tsLevel);
+
+    muff_.setParameter(clipper::dsp::MuffModel::PARAM_SUSTAIN, p.muffSustain);
+    muff_.setParameter(clipper::dsp::MuffModel::PARAM_TONE, p.muffTone);
+    muff_.setParameter(clipper::dsp::MuffModel::PARAM_VOLUME, p.muffVolume);
+
+    phaser_.setParameter(clipper::dsp::PhaserModel::PARAM_SPEED, p.phaserSpeed);
 
     // Amp tone stack + volume + bright, then the routed chorus params.
     amp_.setParameter(clipper::dsp::AmpModel::PARAM_VOLUME, p.volume);
@@ -94,14 +138,45 @@ void ClipperEngine::applyParamsToModels() {
 void ClipperEngine::setParams(const Params& p) {
     params_ = p;
     applyParamsToModels();
+    // Setup path (not a live edit): adopt the topology immediately and leave the
+    // declick idle, so the first processed block is already the requested chain and
+    // is NOT multiplied by any envelope (the bit-exactness contract).
+    commitChain();
+    declickPhase_ = Declick::Idle;
+    declickGain_ = 1.0f;
+}
+
+void ClipperEngine::commitChain() {
+    const Params& p = params_;
+    activeLength_ = std::max(0, std::min(kMaxChain, p.chainLength));
+    for (int i = 0; i < activeLength_; ++i) activeChain_[i] = p.chain[i];
+    for (int t = 0; t < PEDAL_TYPE_COUNT; ++t) activeOn_[t] = p.pedalOn(t);
+}
+
+bool ClipperEngine::chainEditPending() const {
+    const Params& p = params_;
+    const int want = std::max(0, std::min(kMaxChain, p.chainLength));
+    if (want != activeLength_) return true;
+    for (int i = 0; i < want; ++i)
+        if (p.chain[i] != activeChain_[i]) return true;
+    // An engage/bypass toggle is a topology change too: switching a high-gain pedal
+    // in or out is a hard step the core's knob smoothing does NOT cover, so the web
+    // worklet's immediate flip can tick. Native brackets it with the same fade —
+    // only for pedals actually ON the board (an off-board flag changes nothing).
+    for (int i = 0; i < want; ++i)
+        if (p.pedalOn(p.chain[i]) != activeOn_[p.chain[i]]) return true;
+    return false;
 }
 
 void ClipperEngine::updateParams(const Params& p) {
     using clipper::dsp::Ac30Amp;
     using clipper::dsp::AmpModel;
     using clipper::dsp::Jcm800Amp;
+    using clipper::dsp::MuffModel;
+    using clipper::dsp::PhaserModel;
     using clipper::dsp::RatModel;
     using clipper::dsp::SdModel;
+    using clipper::dsp::TsModel;
     using clipper::dsp::TwinAmp;
     const Params& o = params_;  // old snapshot
 
@@ -112,6 +187,13 @@ void ClipperEngine::updateParams(const Params& p) {
     if (p.sdDrive != o.sdDrive)     sd_.setParameter(SdModel::PARAM_DRIVE, p.sdDrive);
     if (p.sdTone != o.sdTone)       sd_.setParameter(SdModel::PARAM_TONE, p.sdTone);
     if (p.sdLevel != o.sdLevel)     sd_.setParameter(SdModel::PARAM_LEVEL, p.sdLevel);
+    if (p.tsDrive != o.tsDrive)     ts_.setParameter(TsModel::PARAM_DRIVE, p.tsDrive);
+    if (p.tsTone != o.tsTone)       ts_.setParameter(TsModel::PARAM_TONE, p.tsTone);
+    if (p.tsLevel != o.tsLevel)     ts_.setParameter(TsModel::PARAM_LEVEL, p.tsLevel);
+    if (p.muffSustain != o.muffSustain) muff_.setParameter(MuffModel::PARAM_SUSTAIN, p.muffSustain);
+    if (p.muffTone != o.muffTone)   muff_.setParameter(MuffModel::PARAM_TONE, p.muffTone);
+    if (p.muffVolume != o.muffVolume) muff_.setParameter(MuffModel::PARAM_VOLUME, p.muffVolume);
+    if (p.phaserSpeed != o.phaserSpeed) phaser_.setParameter(PhaserModel::PARAM_SPEED, p.phaserSpeed);
 
     // Amp knobs + toggles. VOLUME feeds clean120 + twin + ac30.
     if (p.volume != o.volume) {
@@ -179,14 +261,39 @@ void ClipperEngine::updateParams(const Params& p) {
 
     // Oversampling change: reset only the pedals' OS filter state (like the web
     // worklet's per-node setOversampling), not a full re-prepare.
-    if (p.oversampling != o.oversampling) {
-        rat_.setOversampling(p.oversampling);
-        sd_.setOversampling(p.oversampling);
-    }
+    if (p.oversampling != o.oversampling) setPedalOversampling(p.oversampling);
 
-    // The remaining fields (inputTrim gain, ratOn/sdOn/ampOn/cab) are consumed
-    // directly in process()/latencySamples() from params_, so just store them.
+    // The remaining fields (inputTrim gain, the per-pedal engaged flags, the chain,
+    // ampOn/cab) are consumed directly in process()/latencySamples(), so just store
+    // them...
     params_ = p;
+
+    // ...and if the store changed the TOPOLOGY (board membership, order, or an
+    // engaged flag), start the declick fade. The swap itself happens at the fade
+    // zero inside process(); nothing is allocated or freed here or there, since
+    // every pedal instance is a plain member that simply stops being visited.
+    if (chainEditPending() && declickPhase_ != Declick::Out) declickPhase_ = Declick::Out;
+}
+
+void ClipperEngine::setPedalOversampling(int factor) {
+    rat_.setOversampling(factor);
+    sd_.setOversampling(factor);
+    ts_.setOversampling(factor);
+    muff_.setOversampling(factor);
+    // The phaser is a LINEAR time-varying stage (allpass sweep) — no nonlinearity,
+    // so it has no oversampler and no group delay. The web C ABI's
+    // phaser_set_oversampling is likewise a no-op.
+}
+
+void ClipperEngine::processPedal(int type, const float* in, float* out, int numFrames) {
+    switch (type) {
+        case PEDAL_RAT:    rat_.process(in, out, numFrames); break;
+        case PEDAL_SD:     sd_.process(in, out, numFrames); break;
+        case PEDAL_TS:     ts_.process(in, out, numFrames); break;
+        case PEDAL_MUFF:   muff_.process(in, out, numFrames); break;
+        case PEDAL_PHASER: phaser_.process(in, out, numFrames); break;
+        default: break;
+    }
 }
 
 void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
@@ -198,6 +305,9 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
 
     rat_.prepare(sampleRate_, maxBlock_);
     sd_.prepare(sampleRate_, maxBlock_);
+    ts_.prepare(sampleRate_, maxBlock_);
+    muff_.prepare(sampleRate_, maxBlock_);
+    phaser_.prepare(sampleRate_);  // linear: no block-size scratch to size
     amp_.prepare(sampleRate_, maxBlock_);
     // The JCM runs at its fixed 4× internally (set BEFORE prepare so its stages
     // size to it), independent of the pedal OS selector — matches the C ABI.
@@ -212,8 +322,14 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     ac30_.setOversampling(kAc30Oversampling);
     ac30_.prepare(sampleRate_, maxBlock_);
 
-    rat_.setOversampling(params_.oversampling);
-    sd_.setOversampling(params_.oversampling);
+    setPedalOversampling(params_.oversampling);
+
+    // Declick step: one full fade takes ~6 ms, exactly like the worklet.
+    declickStep_ = 1.0f / static_cast<float>(std::max(
+                              1L, std::lround(kDeclickSeconds * sampleRate_)));
+    declickPhase_ = Declick::Idle;
+    declickGain_ = 1.0f;
+    commitChain();  // prepare() adopts the requested board with no fade
 
     const std::vector<float> ir = clipper::dsp::generateDefaultCab2x12IR(sampleRate_);
     cabL_.prepare(sampleRate_, ir.data(), static_cast<int>(ir.size()), sampleRate_,
@@ -250,14 +366,15 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
     float* other = bufB_.data();
     for (int i = 0; i < numFrames; ++i) cur[i] = in[i] * g;
 
-    // 2. Fixed pedal chain: RAT then SD-1, each only if engaged. Ping-pong so a
-    // bypassed pedal is a true pass-through (its buffer is simply not swapped in).
-    if (p.ratOn) {
-        rat_.process(cur, other, numFrames);
-        std::swap(cur, other);
-    }
-    if (p.sdOn) {
-        sd_.process(cur, other, numFrames);
+    // 2. The USER-ORDERED pedal board: walk the COMMITTED chain in order and run
+    // each engaged pedal. Ping-pong so a bypassed pedal is a true pass-through (its
+    // buffer is simply not swapped in) — identical to the worklet's `continue`.
+    // Reading activeChain_ (not params_.chain) is what makes a reorder land only at
+    // the declick zero, never mid-block.
+    for (int i = 0; i < activeLength_; ++i) {
+        const int type = activeChain_[i];
+        if (!activeOn_[type]) continue;
+        processPedal(type, cur, other, numFrames);
         std::swap(cur, other);
     }
 
@@ -291,15 +408,60 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
         }
     }
 
-    // 4. Final safety limiter (stereo, one shared gain — image-preserving).
+    // 4. Chain-edit DECLICK, applied to the amp output BEFORE the limiter (exactly
+    // where the worklet applies it). When nothing is in flight the envelope is
+    // skipped entirely rather than multiplied by 1.0 — a steady chain must stay
+    // bit-for-bit identical to a single-shot core render.
+    if (declickPhase_ != Declick::Idle || declickGain_ < 1.0f) {
+        float dg = declickGain_;
+        for (int i = 0; i < numFrames; ++i) {
+            if (declickPhase_ == Declick::Out) {
+                dg -= declickStep_;
+                if (dg <= 0.0f) {
+                    dg = 0.0f;
+                    commitChain();  // the topology swap happens exactly at zero
+                    declickPhase_ = Declick::In;
+                }
+            } else if (declickPhase_ == Declick::In) {
+                dg += declickStep_;
+                if (dg >= 1.0f) {
+                    dg = 1.0f;
+                    declickPhase_ = Declick::Idle;
+                }
+            }
+            // Raised-cosine map of the linear ramp (C1-smooth at both ends).
+            const float env = dg >= 1.0f ? 1.0f : 0.5f - 0.5f * std::cos(kPi * dg);
+            outL[i] *= env;
+            outR[i] *= env;
+        }
+        declickGain_ = dg;
+    }
+
+    // 5. Final safety limiter (stereo, one shared gain — image-preserving).
     limiter_.processStereo(outL, outR, numFrames);
 }
 
 int ClipperEngine::latencySamples() const {
     const Params& p = params_;
     int n = 0;
-    if (p.ratOn) n += rat_.latencySamples();
-    if (p.sdOn) n += sd_.latencySamples();
+    // Every ENGAGED pedal ON THE BOARD adds its oversampling group delay (they run
+    // in series). Off-board pedals contribute nothing however their flags read —
+    // this is the parity change: latency now follows the chain, not two fixed slots.
+    // Read from the TARGET chain so the host learns about an edit immediately.
+    const int len = std::max(0, std::min(kMaxChain, p.chainLength));
+    for (int i = 0; i < len; ++i) {
+        const int type = p.chain[i];
+        if (!p.pedalOn(type)) continue;
+        switch (type) {
+            case PEDAL_RAT:  n += rat_.latencySamples(); break;
+            case PEDAL_SD:   n += sd_.latencySamples(); break;
+            case PEDAL_TS:   n += ts_.latencySamples(); break;
+            case PEDAL_MUFF: n += muff_.latencySamples(); break;
+            // The phaser is linear — zero group delay.
+            case PEDAL_PHASER: break;
+            default: break;
+        }
+    }
     // The JCM/Twin add their own oversampling group delay when the powered voice;
     // the linear Clean 120 adds nothing.
     if (p.ampOn && p.ampModel == kAmpJcm800) n += jcm_.latencySamples();
