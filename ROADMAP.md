@@ -414,8 +414,22 @@ how much existing machinery each reuses:
 5. **Fuzz Face (silicon)** *(M)* — 2-transistor minimalism, but its soul is
    PICKUP LOADING (cleans up with guitar volume): requires adding a source-
    impedance model to the chain input — design that first or don't bother.
-6. **Klon Centaur** *(M)* — our addition (the famous omission): parallel
-   clean/dirt blend, germanium clippers; the most-cloned pedal alive.
+6. ~~**Klon Centaur** *(M)* — our addition (the famous omission): parallel
+   clean/dirt blend, germanium clippers; the most-cloned pedal alive.~~ ✅
+   *(shipped as the 'gold' pedal "Myth" — see docs §27. The parallel clean/dirt
+   blend is modelled literally: a dual-ganged GAIN pot cross-fades a
+   full-bandwidth CLEAN path against a germanium-clipped one (`clean = 1−0.55g`
+   vs `clip = g`, drive amp `1 + g·100k/1.5k` = up to 67.7×), with the lows
+   high-passed at 106 Hz BEFORE the clipper and a 1N34A-class chowdsp_wdf diode
+   pair (Is 200 nA, n 1.3, knee 0.29 V) as the only thing in the box that clips —
+   the charge-pump ±9 V rails are modelled as headroom and never engage.
+   Measured: flat within **0.138 dB** and **0.0000 % THD** at GAIN 0 (unity at
+   OUTPUT noon), THD 0.00→11.66→20.60→26.31→31.73 % with the clipped share rising
+   0.00→0.85 across the knob, germanium THD ×23 over a 20 dB sweep vs silicon's
+   ×736 (the soft knee, as a number), 4× aliasing −93.3 dB, hum −30.1 dB at min
+   gain (the physical ceiling for a linear pedal). Gold `plate` face with an
+   engraved "MYTH" nameplate — no Klon/Centaur text, no centaur figure; assistant
+   add_pedal + always-on / push-a-breaking-up-amp / stacking coaching.)*
 7. **Deluxe Memory Man** *(L)* — BBD delay + compander + degradation;
    replaces the parked DD-3 as the delay milestone (analog > digital DSP-wise).
 

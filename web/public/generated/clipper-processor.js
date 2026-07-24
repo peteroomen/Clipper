@@ -264,10 +264,11 @@ class ClipperProcessor extends AudioWorkletProcessor {
     // Each pedal type binds to a C-ABI export prefix; every pedal shares the
     // identical opaque-handle ABI (create / set_param 0/1/2 / set_oversampling /
     // latency / process), so routing is by prefix. 'sd1'=SD-1, 'ts'=TS Screamer
-    // (both the SD-1 engine family), 'phaser'=Ninety (linear allpass sweep:
-    // set_oversampling is a no-op, latency 0), anything else = RAT.
-    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'muff' ? 'muff' : type === 'phaser' ? 'phaser' : 'rat';
-    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'muff' ? '_muff' : t === 'phaser' ? '_phaser' : '_rat';
+    // (both the SD-1 engine family), 'muff'=Pi fuzz, 'gold'=the GOLD clean-blend
+    // overdrive (slots read GAIN/TREBLE/OUTPUT), 'phaser'=Ninety (linear allpass
+    // sweep: set_oversampling is a no-op, latency 0), anything else = RAT.
+    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'muff' ? 'muff' : type === 'gold' ? 'gold' : type === 'phaser' ? 'phaser' : 'rat';
+    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'muff' ? '_muff' : t === 'gold' ? '_gold' : t === 'phaser' ? '_phaser' : '_rat';
     const handle = mod[P + '_create'](this._sr);
     mod[P + '_set_oversampling'](handle, this._oversampling | 0);
     if (params) {
@@ -279,9 +280,10 @@ class ClipperProcessor extends AudioWorkletProcessor {
     return { id, type: t, handle, engaged: !!engaged };
   }
 
-  // C-ABI export prefix for a node's type ('_sd' | '_ts' | '_phaser' | '_rat').
+  // C-ABI export prefix for a node's type
+  // ('_sd' | '_ts' | '_muff' | '_gold' | '_phaser' | '_rat').
   _prefix(node) {
-    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'muff' ? '_muff' : node.type === 'phaser' ? '_phaser' : '_rat';
+    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'muff' ? '_muff' : node.type === 'gold' ? '_gold' : node.type === 'phaser' ? '_phaser' : '_rat';
   }
 
   _destroyPedal(node) {

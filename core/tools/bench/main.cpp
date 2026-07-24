@@ -14,6 +14,7 @@
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/Jcm800Amp.h"
+#include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/OutputLimiter.h"
 #include "clipper/dsp/PhaserModel.h"
@@ -125,6 +126,15 @@ int main(int argc, char** argv) {
         m.prepare(kSr, kBlock);
         m.setParameter(clipper::dsp::MuffModel::PARAM_SUSTAIN, 0.7f);
         benchUnit("muff (BJT fuzz)", riff,
+                  [&](const float* i, float* o, int n) { m.process(i, o, n); });
+    }
+    if (want("gold")) {
+        clipper::dsp::GoldModel m;
+        m.prepare(kSr, kBlock);
+        m.setParameter(clipper::dsp::GoldModel::PARAM_GAIN, 0.35f);
+        m.setParameter(clipper::dsp::GoldModel::PARAM_TREBLE, 0.5f);
+        m.setParameter(clipper::dsp::GoldModel::PARAM_OUTPUT, 0.7f);
+        benchUnit("gold (clean-blend drive)", riff,
                   [&](const float* i, float* o, int n) { m.process(i, o, n); });
     }
     if (want("phaser")) {

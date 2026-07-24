@@ -245,6 +245,13 @@ export const TOOLS = [
       'with a signature mid-SCOOP tone control; this is FUZZ, not overdrive, and far ' +
       'more compressed/saturated than the RAT/SD-1/TS — its knobs are SUSTAIN, TONE, ' +
       'VOLUME. Sounds best into a CLEAN amp with headroom, e.g. the Twin), ' +
+      "'gold' (the GOLD 'Myth' overdrive — the gold-box legend: it blends a " +
+      'full-bandwidth CLEAN signal in parallel with a germanium-clipped one, and its ' +
+      'GAIN knob cross-fades between them, so at low gain it is famously TRANSPARENT ' +
+      '(a clean boost that keeps your amp and guitar sounding like themselves) and at ' +
+      'high gain it is thick but still articulate. Knobs are GAIN, TREBLE, OUTPUT; ' +
+      'huge headroom, so it is the classic always-on pedal and the classic way to shove ' +
+      'an already-breaking-up amp over the edge), ' +
       "'phaser' (a script-era 4-stage phaser — the classic swirling/whooshing " +
       'modulation with ONE knob, SPEED: placed AFTER the dirt it gives the vocal ' +
       'EVH swoosh, before the dirt it is subtler; slow = tape-warble, fast = ' +
@@ -255,7 +262,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'phaser', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'phaser', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -425,11 +432,12 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'phaser' | 'tuner' =
+    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'phaser' | 'tuner' =
       input.type === 'tuner' ? 'tuner'
       : input.type === 'sd1' ? 'sd1'
       : input.type === 'ts' ? 'ts'
       : input.type === 'muff' ? 'muff'
+      : input.type === 'gold' ? 'gold'
       : input.type === 'phaser' ? 'phaser'
       : 'rat';
     const rawPos = input.position;
@@ -441,8 +449,9 @@ export function executeTool(
         : type === 'sd1' ? 'SD-1'
           : type === 'ts' ? 'Screamer'
             : type === 'muff' ? 'Pi Fuzz'
-              : type === 'phaser' ? 'Phaser'
-                : 'RAT';
+              : type === 'gold' ? 'Myth'
+                : type === 'phaser' ? 'Phaser'
+                  : 'RAT';
     return {
       content: JSON.stringify({ applied: { added: type, index } }),
       chip: `+ ${label} #${index + 1}`,

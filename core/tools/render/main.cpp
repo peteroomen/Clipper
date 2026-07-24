@@ -30,6 +30,7 @@
 #include "clipper/dsp/SdModel.h"
 #include "clipper/dsp/TsModel.h"
 #include "clipper/dsp/MuffModel.h"
+#include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/Biquad.h"
@@ -69,6 +70,11 @@ struct Args {
     float reverb = 0.0f;          // M6.7-2: clean-chain spring reverb MIX (0..1)
     std::string reverbAlgo = "new";  // "new" (dispersive spring) or "old" (M6.7 A/B)
     std::string pedal = "rat";    // M8: "rat" or "sd1" (SD-1 overdrive)
+    // v1.1 item 6 (--pedal gold): measurement hooks for the GOLD overdrive's two
+    // counterfactuals — silicon diodes instead of germanium, and the clean half of
+    // the ganged blend switched out.
+    bool goldSilicon = false;
+    bool goldNoClean = false;
     float limThresh = 0.97f;      // M6.5: output soft-limiter threshold (clean chain)
     bool triode = false;          // M9.1: run a single 12AX7 TriodeStage (stage alone)
     float triodeDrive = 3.0f;     // input-gain multiplier into the grid (volts)
@@ -174,7 +180,10 @@ struct OldSpringReverb {
         "M2 flags: --os 1|2|4|8 (oversampling, default 4), --stage2 wdf|adaa (default wdf),\n"
         "          --alias-report (print the aliasing metric table for os=1/2/4/8 and exit).\n"
         "M6.5:     --ideal-opamp (bypass the op-amp model: ideal op-amp A/B),\n"
-        "M8/v1.1:  --pedal rat|sd1|ts|muff|phaser (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
+        "M8/v1.1:  --pedal rat|sd1|ts|muff|gold|phaser (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
+        "          gold = the GOLD 'transparent' overdrive (parallel clean/dirt blend +\n"
+        "          germanium clippers; --distortion=GAIN, --filter=TREBLE, --level=OUTPUT;\n"
+        "          A/B hooks --gold-silicon (silicon diodes) and --gold-no-clean (clean half out));\n"
         "          ts = TS808 Screamer soft/SYMMETRIC; muff = 4-transistor Muff fuzz\n"
         "          (--distortion=SUSTAIN, --filter=TONE, --level=VOLUME); phaser = script\n"
         "          4-stage phaser (--distortion = SPEED 0..1); for sd1/ts the knob flags map\n"
@@ -371,6 +380,8 @@ int main(int argc, char** argv) {
         else if (s == "--stage2") a.stage2 = need("--stage2");
         else if (s == "--ideal-opamp") a.idealOpAmp = true;
         else if (s == "--pedal") a.pedal = need("--pedal");
+        else if (s == "--gold-silicon") a.goldSilicon = true;
+        else if (s == "--gold-no-clean") a.goldNoClean = true;
         else if (s == "--chain") a.chain = need("--chain");
         else if (s == "--limiter-thresh") a.limThresh = std::atof(need("--limiter-thresh"));
         else if (s == "--cab") a.cab = need("--cab");
@@ -703,6 +714,25 @@ int main(int argc, char** argv) {
         model.setParameter(clipper::dsp::TsModel::PARAM_LEVEL, a.level);
         if (!input.empty())
             model.process(input.data(), out.data(), static_cast<int>(input.size()));
+    } else if (a.pedal == "gold") {
+        // v1.1 item 6: the GOLD "transparent" overdrive — parallel clean/dirt blend
+        // driven by the dual-ganged GAIN pot, germanium (1N34A-class) WDF clipper.
+        // Knob flags map positionally: --distortion -> GAIN, --filter -> TREBLE,
+        // --level -> OUTPUT. The two measurement hooks make the A/B renders honest:
+        // --gold-silicon swaps the diode flavour, --gold-no-clean removes the clean
+        // half of the blend (what the pedal would be WITHOUT its defining trait).
+        clipper::dsp::GoldModel model;
+        model.prepare(fs, 128);
+        model.setOversampling(a.os);
+        model.setIdealOpAmp(a.idealOpAmp);
+        model.setDiodeType(a.goldSilicon ? clipper::dsp::GoldModel::DIODE_SILICON
+                                         : clipper::dsp::GoldModel::DIODE_GERMANIUM);
+        model.setCleanBlendEnabled(!a.goldNoClean);
+        model.setParameter(clipper::dsp::GoldModel::PARAM_GAIN, a.distortion);
+        model.setParameter(clipper::dsp::GoldModel::PARAM_TREBLE, a.filter);
+        model.setParameter(clipper::dsp::GoldModel::PARAM_OUTPUT, a.level);
+        if (!input.empty())
+            model.process(input.data(), out.data(), static_cast<int>(input.size()));
     } else if (a.pedal == "muff") {
         // v1.1 item 4: the four-transistor Muff fuzz. Knob flags map positionally:
         // --distortion -> SUSTAIN, --filter -> TONE (the mid-scoop), --level -> VOLUME.
@@ -808,6 +838,12 @@ int main(int argc, char** argv) {
             "  peak=%.4f  rms=%.4f\n",
             out.size(), fs, a.outFile.c_str(), a.distortion,
             clipper::dsp::PhaserModel::speedKnobToHz(a.distortion), peak, rms);
+    } else if (a.pedal == "gold") {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (pedal=gold gain=%.2f treble=%.2f "
+            "output=%.2f os=%dx diodes=%s clean-blend=%s)\n  peak=%.4f  rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.distortion, a.filter, a.level, a.os,
+            a.goldSilicon ? "silicon" : "germanium", a.goldNoClean ? "OFF" : "on", peak, rms);
     } else if (a.pedal == "muff") {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (pedal=muff sustain=%.2f tone=%.2f "

@@ -4476,3 +4476,190 @@ barrier) is preserved.
   (including the four new expectations tests); no DSP source touched (the WASM
   module is unchanged — only the authored worklet JS changed, re-copied to
   `web/public/generated/` exactly as `build-wasm.sh` does).
+
+## 27. v1.1 item 6 — Klon Centaur "Myth": the parallel clean/dirt blend (germanium WDF)
+
+ROADMAP v1.1's famous omission, made real: the gold-boxed "transparent"
+overdrive whose whole reputation comes from an architecture no other pedal in
+this app has — it does **not** run your signal through a clipper. It **splits**
+it: a full-bandwidth CLEAN path and a germanium-clipped one, cross-faded by a
+**dual-ganged GAIN pot**. That is why it measures transparent at low gain and
+still sounds articulate when pushed, and it is why this is a bespoke model
+instead of another `OverdriveEngine` config (the TS-family engine expresses a
+feedback clipper with a clean *pedestal*, not a *crossfade*). Files:
+`core/include/clipper/dsp/GoldModel.h` + `core/src/dsp/GoldModel.cpp`; tests
+`core/tests/test_gold_model.cpp` (`clipper_gold_tests`); C ABI `gold_*` in
+`clipper_c_api.cpp`; `--pedal gold` (+ `--gold-silicon` / `--gold-no-clean`) in
+the render CLI; a `gold` bench unit; worklet `gold` dispatch; `rig.ts` / Pedal /
+gear-tray / assistant wiring; M11 harness entry (blocks A + B) and the web sim.
+Trademark-safe throughout: wordmark **"Myth"**, model line **`DRIVE Nº6 · GOLD`**,
+and **no** Klon / Centaur / KTR text and **no centaur-and-rider figure** anywhere
+on a user surface — that figure is the actual mark; the colour is not.
+
+### Sources — and an honest gap
+
+The intended reference is Jatin Chowdhury, *"A Comparison of Virtual Analog
+Modelling Techniques for Desktop and Embedded Implementations"* (arXiv:2009.02833),
+which models this exact pedal section-by-section with nodal analysis and Wave
+Digital Filters — the same author whose `chowdsp_wdf` we vendor. **The PDF was not
+reachable from this environment**: the egress proxy refuses `arxiv.org` and
+`ccrma.stanford.edu` (403 on CONNECT), as it did every mirror tried. So this model
+follows the paper's **method** (a section per circuit block; WDF for the diode
+root; analytic/nodal transfer functions for the linear blocks) while its
+**component values** come from the widely published reverse-engineered schematic
+and are each flagged as an approximation in `GoldModel.cpp`. The topology is the
+claim; the digits are correctable. When the paper becomes reachable, diff its
+values against the constants block at the top of that file — nothing else moves.
+
+### The circuit → the model
+
+- **Section 1 — the always-on input buffer.** This pedal buffers even when it is
+  switched out, which is why it is famous as a line driver. Modelled as the unity
+  op-amp follower it is, carrying only the input network's DC-blocking corner:
+  `f_in = 1/(2π·1 MΩ·0.022 µF) ≈ 7.2 Hz`. *Documented omission:* the follower's own
+  ~3 MHz corner is far above audio and is not modelled.
+- **Section 2 — the ganged GAIN pot (the soul).** One knob, three mapped
+  quantities, summed as
+  `out = 2·( cleanBlend(g)·x + clipBlend(g)·clip(A(g)·HP₁₀₆(x)) )`:
+  - **the crossfade** — `cleanBlend(g) = 1 − 0.55·g` (1.00 → **0.45**: the clean core
+    never leaves) against `clipBlend(g) = g` (a linear wiper on the clipped
+    signal). At GAIN 0 the clipped half is **switched out**, so the box is a clean
+    buffer/boost — not "quiet dirt", *no* dirt. *Approximation:* the real network's
+    second wiper law is more interactive than a straight line.
+  - **the drive amp** — the other gang in the feedback leg: `A = 1 + g·P/R_g` with
+    `P = 100 kΩ` (dual-ganged) and `R_g = 1.5 kΩ`, so `A(0) = 1.00` … `A(1) = 67.67×`
+    (**+36.6 dB**). Unlike the TS family, minimum gain is *exactly* unity.
+  - **the lows skip the clipper** — the drive path is high-passed *before* the
+    diodes at `1/(2π·15 kΩ·0.1 µF) ≈ 106 Hz`, so the bottom end reaches the summing
+    node only through the clean half. This is the "it never gets mushy" trait, and
+    it is also why the pedal's hum figure *improves* as you turn up.
+  - **the op-amp** — TL07x-class (3 MHz GBW, 13 V/µs), via the house op-amp model
+    (`LM308Stage.h`, generic despite its name). Closed-loop corner at max gain
+    `3e6/67.67 ≈ 44 kHz` — above the band, so unlike the RAT's LM308 (which collapses
+    to ~500 Hz) it colours nothing; it is here for honesty and antialiasing.
+  - **the germanium pair (WDF)** — antiparallel 1N34A-class diodes, driven through
+    the stage's output resistance and shunted by its small cap, built exactly as the
+    RAT's silicon clipper is: `R_s = 2.2 kΩ`, `C_p = 4.7 nF` (HF corner ≈ 15.4 kHz),
+    root `chowdsp::wdft::DiodePairT`. Device: `Is = 200 nA`, ideality `n = 1.3`
+    (carried through the library's `nDiodes` multiplier, i.e. `Vt_eff = n·Vt =
+    33.6 mV`), knee ≈ **0.29 V** at 1 mA — about half silicon's, and far more
+    importantly a **much softer** knee. `DIODE_SILICON` (1N914-class, `Is = 2.52 nA`,
+    `n = 1.0`) exists as a MEASUREMENT-ONLY counterfactual.
+  - **the charge pump** — the real box generates a negative rail so its op-amps run
+    on ±9 V. Here that is a **headroom statement**: the summing node and the tone
+    stage carry a ±8.6 V clamp that, at any playing level, never engages. The
+    germanium pair is the only thing in the box that clips — and the suite asserts
+    it (1 V in, wide open, peaks 1.60 V).
+- **Section 3 — TREBLE.** A shelving tilt about a ~1 kHz pivot, ±12 dB, exactly flat
+  at noon, **normal sense: clockwise BRIGHTENS** (contrast the RAT's FILTER and the
+  AC30's CUT, both inverted). *Approximation:* the hardware's active tone network
+  interacts slightly with the output pot; this is a first-order stand-in with the
+  same pivot and range.
+- **Section 4 — output stage.** Output buffer + OUTPUT pot (identity linear map,
+  the house convention) + the coupling cap's 8 Hz DC block. **OUTPUT at noon is
+  exactly unity** (the summing amp's ×2 against a 0.5 pot) — the pedal's calibration
+  point, and the reason "GAIN 0 / OUTPUT 50" is a true bypass-alike.
+
+Parameter mapping (normalized knobs, one-pole smoothed ~5 ms as everywhere):
+
+| Param (id) | Knob 0 | Knob 1 | Mapping | Notes |
+|---|---|---|---|---|
+| `PARAM_GAIN` (0) | clean only (A = 1.00, clip weight 0) | A = 67.67× (+36.6 dB), clip weight 1 | the DUAL-GANGED pot: `A = 1 + g·100k/1.5k`, `clean = 1 − 0.55g`, `clip = g` | one knob, a crossfade — not an amount |
+| `PARAM_TREBLE` (1) | −12 dB HF | +12 dB HF | tilt about a 1 kHz pivot | flat at 0.5; clockwise BRIGHTENS (normal sense) |
+| `PARAM_OUTPUT` (2) | 0.0 | 1.0 | identity linear gain | **0.5 == unity** (the ×2 summing amp) |
+
+### Validation (ctest `clipper_gold_tests`, 44.1 k + 48 k + 96 k, assert-backed)
+
+- **Transparency at GAIN 0 (the whole reputation, as a number):** response flat
+  within **0.138 dB** across 60 Hz–10 kHz (worst at 60 Hz — the coupling corners),
+  THD **0.0000 %** on a hot 0.3 V note, and **0.000 dB** (unity) at OUTPUT noon. A
+  1 V input at GAIN 0 still measures **0.0001 %** THD: the charge-pump headroom,
+  audible as "it doesn't do anything to my sound".
+- **The ganged crossfade:** THD **0.00 → 11.66 → 20.60 → 26.31 → 31.73 %** across GAIN
+  0/0.25/0.5/0.75/1.0 (44.1 k), with the **clipped share** of the output RMS (measured
+  against the clean-half-off counterfactual) rising **0.00 → 0.37 → 0.61 → 0.76 → 0.85**
+  — a genuine progressive blend, with the clean core still 0.45 at max.
+- **Germanium soft knee, distinguished from silicon:** identical circuit, identical
+  drive, only the diode parameters change. Over a 20 dB input sweep at a low gain
+  (A = 7.7) the germanium goes **0.22 % → 5.16 % (×23)** while the silicon
+  counterfactual goes **0.01 % → 6.15 % (×736)**: germanium bends **~26× earlier** and
+  **~30× more gently**. That ratio *is* the "bloom" players describe, and it is the
+  test that catches someone quietly swapping in a silicon knee.
+- **TREBLE (normal sense):** 6 kHz **−9.42 dB** (dark) → **+11.43 dB** (bright) with the
+  low end unmoved (**+0.71 dB** at 120 Hz); on the harmonics the pedal itself makes,
+  high-band energy **−17.9 → −5.7 dB** (M11's metric; bar ≥ +6 dB).
+- **Aliasing (M2 bar):** shipped **4× worst-alias −93.3 dB** (44.1 k) / **−123.6 dB**
+  (96 k) at max GAIN with the brightest treble, far under the −60 dB bar; 1× is
+  −20.2 dB and 8× buys −112.1 dB, i.e. nothing audible over 4× — **4× ships**.
+- **Headroom + OUTPUT:** 1 V in, wide open → peak **1.60 V** against 8.6 V rails (the
+  clamps never engage); OUTPUT linear to **2.000×** per doubling.
+- **Hygiene:** ±10 V slam finite and bounded (peak 9.07 V — the rails, as designed),
+  silence → silence, deterministic, finite across the knob grid, all three rates.
+
+### M11 conformance (docs §26, additive to the pedal tables only)
+
+- **A1 min-knob:** defaults **−22.0 dBFS** RMS / peak 0.273; `gain=0` **−32.3 dBFS**
+  (audible — a clean pedal, not a silenced one), `treble=0` −22.3, `output=0` a
+  clean kill (−240).
+- **A2 hum torture:** 60 Hz sits **−30.1 dB** below the note at min gain and
+  **−32.9 dB** at default (bar −28). This is the **tightest margin of any gear in the
+  suite, and necessarily so**: at GAIN 0 this pedal is *linear*, so it can only
+  preserve the input's own −30 dB hum-to-note ratio — −30.1 dB *is* the physical
+  ceiling for a transparent pedal. The 2.8 dB improvement at default gain comes from
+  the 106 Hz pre-clip high-pass keeping hum out of the clipper.
+- **A3 monotonicity:** GAIN THD **0.0 → 23.4 → 30.6 %**; OUTPUT −240 → −17.1 → −11.0 dBFS;
+  TREBLE HF harmonics −17.9 → −5.7 dB in the documented (clockwise-brightens) direction.
+- **A4 level sanity:** **+13.2 dB** RMS delta at defaults (window +3…+23) — between the
+  Screamer (+13.1) and the SD-1 (+15.6), which is exactly where a mostly-clean blend
+  with a ×2 summing amp belongs.
+- **Block B:** `gold_ ABI` renders **bit-identically** (max |Δ| 0.000e+00) in-place at
+  128 frames vs separate buffers in one block.
+- **Block D (web sim):** **−22.8 dBFS** at defaults through the default clean rig, peak
+  0.106 — the quietest of the five dirt boxes, 9 dB inside the −32…−4 window.
+
+### A/B render commands (the two counterfactuals are the point)
+
+```
+# The two settings the pedal is actually used at:
+clipper-render --gen pluck:110:2.0 klon_transparent.wav --pedal gold --distortion 0.15 --filter 0.50 --level 0.85 --sr 48000
+clipper-render --gen pluck:110:2.0 klon_pushed.wav      --pedal gold --distortion 0.85 --filter 0.55 --level 0.70 --sr 48000
+#   -> transparent peak 0.805 / rms 0.125 (a clean, tightened boost — the always-on sound);
+#      pushed      peak 0.863 / rms 0.256 (rms doubles while the peak barely moves: the
+#      clipped half does the work, the clean half holds the transient shape).
+# What the pedal would be WITHOUT its defining trait (clean half removed):
+clipper-render --gen pluck:110:2.0 klon_pushed_noclean.wav --pedal gold --distortion 0.85 --filter 0.55 --level 0.70 --sr 48000 --gold-no-clean
+#   -> peak 0.574 / rms 0.225: the same dirt with the attack flattened — the transient
+#      collapses from 0.86 to 0.57 while the body stays. The clean blend IS the pick attack.
+# Germanium vs silicon, same drive:
+clipper-render --gen pluck:110:2.0 klon_pushed_silicon.wav --pedal gold --distortion 0.85 --filter 0.55 --level 0.70 --sr 48000 --gold-silicon
+#   -> peak 0.917 / rms 0.295: silicon clips later and harder — louder and stiffer, the
+#      softer germanium bloom replaced with a firmer edge.
+```
+
+### Integration notes
+
+- **One param shape, additive registries.** `PedalParams {distortion, filter, level}`
+  reading as **Gain / Treble / Output**; each registry gains exactly one entry
+  (`rig.ts` `PedalType` + `AVAILABLE_PEDAL_TYPES` + `GOLD_KNOB_DEFAULTS` gain 0.35 /
+  treble 0.5 / output 0.7 + the normalizer; worklet `_gold` prefix; the single
+  `EXPORTED_FUNCTIONS` list; gear tray; `add_pedal` enum; `Pedal.tsx` FACES;
+  `tokens.css` `--accent-gold` in all four theme blocks). Old rigs load unchanged.
+- **Visual identity (doctrine §17).** Dark chassis in both themes, **GOLD accent**
+  (arcs / readouts / LED). Its own **`plate` face**: knob row over a milled, recessed
+  **NAMEPLATE** band with hairline gold rules and *engraved* (cut-in, not embossed)
+  lettering, round stomp below. The original is remembered for an *engraved*
+  enclosure, so we take the engraving idea and put **type only** on the plate — the
+  figure it is famous for is the trademark and is deliberately absent. Wordmark
+  **"Myth"** (the pedal that became a legend, hoarded and flipped), model line
+  **`DRIVE Nº6 · GOLD`**. Gold is deliberately warmer/browner than the SD-1's lemon
+  `--accent-sd` and the amp's brass `--accent-jcm`, and the `plate` silhouette
+  separates it from every other face in grayscale.
+- **Assistant.** `add_pedal` gains `'gold'`; the coach knows this is the transparent
+  one, that its GAIN knob is a **blend** and not an amount, and the three classic
+  moves: always-on at low gain with output up; shoving an already-breaking-up amp
+  over the edge (the amp distorts, the pedal supplies the push and the tightness);
+  and stacking either side of another dirt box.
+- Core suites all green (**ctest 16/16**, +`clipper_gold_tests`); `web` tsc + vite
+  build green; Playwright +2 (`gold worklet: transparent at min gain…` and
+  `assistant: add_pedal adds the GOLD transparent overdrive…`) plus the M11 web sim
+  extended to five dirt pedals (4/4 green).
