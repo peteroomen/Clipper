@@ -1,6 +1,7 @@
 # Build outputs
 core/build/
 native/build/
+build/
 web/dist/
 web/node_modules/
 
