@@ -69,7 +69,9 @@ FetchContent_MakeAvailable(chowdsp_wdf)
 #   - Jcm800Amp.cpp    : M9.3 composed full 2204 (preamp -> power section)
 add_library(clipper_dsp STATIC
     src/dsp/RatModel.cpp
+    src/dsp/OverdriveEngine.cpp
     src/dsp/SdModel.cpp
+    src/dsp/TsModel.cpp
     src/dsp/AmpModel.cpp
     src/dsp/ChorusModel.cpp
     src/dsp/ReverbModel.cpp
@@ -119,6 +121,16 @@ if(NOT EMSCRIPTEN)
         target_compile_options(clipper_sd_tests PRIVATE -Wall -Wextra -UNDEBUG)
     endif()
     add_test(NAME clipper_sd_tests COMMAND clipper_sd_tests)
+
+    # --- v1.1: TS808-style "Screamer" model tests -----------------------------
+    add_executable(clipper_ts_tests tests/test_ts_model.cpp)
+    target_link_libraries(clipper_ts_tests PRIVATE clipper_dsp)
+    # Shares the tools/measure aliasing metric with the RAT/SD-1 tests.
+    target_include_directories(clipper_ts_tests PRIVATE tools)
+    if(NOT MSVC)
+        target_compile_options(clipper_ts_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_ts_tests COMMAND clipper_ts_tests)
 
     # --- M5: amp + cab tests --------------------------------------------------
     add_executable(clipper_amp_tests tests/test_amp_model.cpp)

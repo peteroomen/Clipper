@@ -900,6 +900,93 @@ test('SD-1 worklet: adds harmonics (changes the sound) with a strong even harmon
   expect(result.h2).toBeGreaterThan(result.h3 * 0.2);
 });
 
+// v1.1: routed through the worklet's `chain` dispatch (ts_* exports), a TS808
+// "Screamer" CHANGES the sound (it clips — odd 3rd harmonic present), AND — the
+// mirror of the SD-1 — its SYMMETRIC feedback clip makes essentially NO even (2nd)
+// harmonic, where the SD-1 on the identical stimulus makes a strong one. Both
+// pedals are rendered in the same page so the symmetric-vs-asymmetric spectral
+// difference is measured directly (the 2nd-harmonic ratio).
+test('TS worklet: Screamer clips SYMMETRICALLY — strong 3rd, ~no 2nd vs the SD-1', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    async function renderPedal(type: string) {
+      const sampleRate = 48000;
+      const seconds = 0.5;
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') {
+            clearTimeout(t);
+            resolve();
+          } else if (e.data?.type === 'error') {
+            clearTimeout(t);
+            reject(new Error(e.data.message));
+          }
+        };
+      });
+      // Amp OFF -> a pure pedal proof. Same knobs for both pedals (drive 0.6).
+      const P = { id: 'p', type, engaged: true, params: { distortion: 0.6, filter: 0.5, level: 0.8 } };
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') resolve();
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true });
+        node.port.postMessage({ type: 'chain', pedals: [P] });
+        node.port.postMessage({ type: 'oversampling', factor: 4 });
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: 0.3 });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      const data = buffer.getChannelData(0);
+      function goertzel(freq: number): number {
+        const start = Math.floor(sampleRate * 0.15);
+        const N = data.length - start;
+        const w = (2 * Math.PI * freq) / sampleRate;
+        const c = 2 * Math.cos(w);
+        let s1 = 0, s2 = 0, s0 = 0;
+        for (let i = start; i < data.length; i++) {
+          s0 = data[i] + c * s1 - s2;
+          s2 = s1;
+          s1 = s0;
+        }
+        const re = s1 - s2 * Math.cos(w);
+        const im = s2 * Math.sin(w);
+        return (2 * Math.sqrt(re * re + im * im)) / N;
+      }
+      return { f1: goertzel(220), h2: goertzel(440), h3: goertzel(660) };
+    }
+    const ts = await renderPedal('ts');
+    const sd1 = await renderPedal('sd1');
+    return { ts, sd1 };
+  });
+
+  // The TS produced real signal and CHANGED it — it clips (odd 3rd harmonic).
+  expect(result.ts.f1).toBeGreaterThan(0.05);
+  expect(result.ts.h3).toBeGreaterThan(result.ts.f1 * 0.02);
+  // SYMMETRIC clip: the TS's 2nd (even) harmonic is a tiny fraction of its
+  // fundamental — essentially absent (the mirror of the SD-1's asymmetry).
+  const tsEvenRatio = result.ts.h2 / result.ts.f1;
+  const sdEvenRatio = result.sd1.h2 / result.sd1.f1;
+  expect(tsEvenRatio).toBeLessThan(0.01);
+  // The SD-1 on the identical stimulus makes a MUCH larger even harmonic — the
+  // spectral difference is measurable in the render (the family contrast).
+  expect(sdEvenRatio).toBeGreaterThan(tsEvenRatio * 10);
+});
+
 test('UI exposes M4 controls: pedal, three knobs, footswitch, source, oversampling', async ({
   page,
 }) => {

@@ -20,7 +20,10 @@ export type SourceKind = 'test' | 'live';
 // ABI (id 0/1/2); for an SD-1 those three knobs READ as Drive / Tone / Level
 // (the Pedal component relabels them), so distortion==Drive and filter==Tone.
 // One param shape keeps the chain/worklet/serializer pedal-agnostic.
-export type PedalType = 'rat' | 'sd1' | 'tuner';
+// v1.1 adds 'ts' (a TS808-style "Screamer" overdrive) — the SYMMETRIC-clipping
+// sibling of the SD-1, sharing the exact same three-knob param shape + ABI (its
+// slots also READ as Drive / Tone / Level).
+export type PedalType = 'rat' | 'sd1' | 'ts' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
@@ -43,7 +46,7 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412', number> = {
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'tuner'];
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4): the Clean 120
 // and the Marshall JCM800.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = ['clean120', 'jcm800'];
@@ -163,10 +166,21 @@ export const SD1_KNOB_DEFAULTS: PedalParams = {
   level: 0.7,
 };
 
+// TS808 "Screamer" (v1.1) opening state. Same param slots (distortion==Drive,
+// filter==Tone, level==Level): a moderate Drive, Tone at noon (transparent), and
+// a slightly hotter Level than the SD-1 (0.75) — the Screamer's calling card is
+// the mid-hump clean BOOST into a pushed amp, so it opens ready to push.
+export const TS_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.5,
+  filter: 0.5,
+  level: 0.75,
+};
+
 // Per-type opening knob positions (gear tray "add" / swap use this).
 export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   rat: KNOB_DEFAULTS,
   sd1: SD1_KNOB_DEFAULTS,
+  ts: TS_KNOB_DEFAULTS,
   // The tuner has no knobs; params are unused but keep the shared shape.
   tuner: KNOB_DEFAULTS,
 };
@@ -266,7 +280,7 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
   const id = typeof p.id === 'string' && p.id.length > 0 ? p.id : fallbackId;
   // Known types round-trip; anything else coerces to the RAT.
   const type: PedalType =
-    p.type === 'tuner' ? 'tuner' : p.type === 'sd1' ? 'sd1' : 'rat';
+    p.type === 'tuner' ? 'tuner' : p.type === 'sd1' ? 'sd1' : p.type === 'ts' ? 'ts' : 'rat';
   return {
     id,
     type,

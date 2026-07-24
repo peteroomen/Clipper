@@ -43,7 +43,7 @@ interface KnobSpec {
   param: ParamName;
   testId: string;
 }
-type FaceLayout = 'stack' | 'compact';
+type FaceLayout = 'stack' | 'compact' | 'slim';
 interface PedalFace {
   layout: FaceLayout;
   model: string; // small model line (top eyebrow)
@@ -78,11 +78,26 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Level', aria: 'Level', param: 'level', testId: 'knob-level' },
     ],
   },
+  // v1.1 TS808 "Screamer": the GREEN box. "Screamer" + "GREEN" wink at the most
+  // famous overdrive without the trademark. Its OWN 'slim' face (an Ibanez-format
+  // box — knob row across the top, a rectangular footswitch PAD in the lower body,
+  // slimmer than the RAT stack) sets it apart from the Boss-compact SD-1 treadle
+  // at a glance. Green accent (arcs/readouts/LED — the green box, everyone gets it).
+  ts: {
+    layout: 'slim',
+    model: 'DRIVE Nº3 · GREEN',
+    wordmark: 'Screamer',
+    knobs: [
+      { name: 'Drive', aria: 'Drive', param: 'distortion', testId: 'knob-drive' },
+      { name: 'Tone', aria: 'Tone', param: 'filter', testId: 'knob-tone' },
+      { name: 'Level', aria: 'Level', param: 'level', testId: 'knob-level' },
+    ],
+  },
 };
 
 export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
   const { engaged, params, type } = pedal;
-  const face: PedalFace = type === 'sd1' ? FACES.sd1 : FACES.rat;
+  const face: PedalFace = (type !== 'tuner' && FACES[type]) || FACES.rat;
   const defaults = PEDAL_KNOB_DEFAULTS[type] ?? PEDAL_KNOB_DEFAULTS.rat;
 
   const knobs = (
@@ -102,11 +117,14 @@ export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
   );
 
   // The footswitch is shared behavior (role/testid/aria identical across faces);
-  // only its SHAPE changes — round stomp on 'stack', wide treadle pad on 'compact'.
+  // only its SHAPE changes — round stomp on 'stack', wide treadle pad on 'compact',
+  // a rectangular hinged PAD on 'slim' (the Ibanez-format stomp).
+  const fswShape =
+    face.layout === 'compact' ? ' fsw-treadle' : face.layout === 'slim' ? ' fsw-pad' : '';
   const footswitch = (
     <button
       type="button"
-      className={`fsw${face.layout === 'compact' ? ' fsw-treadle' : ''}`}
+      className={`fsw${fswShape}`}
       role="switch"
       aria-checked={engaged}
       aria-label="Bypass footswitch"
@@ -146,6 +164,16 @@ export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
             {footswitch}
             <span className="fsw-label">Stomp</span>
           </div>
+        </>
+      ) : face.layout === 'slim' ? (
+        // Ibanez-format 'slim' box (the GREEN Screamer): a knob row across the TOP,
+        // the script wordmark on the mid body, and a RECTANGULAR hinged stomp pad
+        // in the lower body — slimmer than the RAT stack and unmistakably NOT the
+        // Boss-compact SD-1 treadle at a glance.
+        <>
+          {knobs}
+          <div className="slim-wordmark display">{face.wordmark}</div>
+          <div className="fsw-zone pad-zone">{footswitch}</div>
         </>
       ) : (
         // Boss-compact homage: knobs ride the top edge with air; the treadle owns

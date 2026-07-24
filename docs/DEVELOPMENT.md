@@ -3143,3 +3143,101 @@ none of which the rename touched, and the "Clipper" heading assertions target th
 segments and green screen show). **No core / C-ABI / worklet / engine change** —
 this remains a pure web visual pass.
 
+## 21. v1.1 item 1 — TS808 "Screamer": the symmetric sibling of the SD-1 (one shared engine)
+
+ROADMAP v1.1's first gear candidate, made real: **the SD-1 IS the Tube-Screamer
+topology**, so the TS808-style "Screamer" ships as a *separate pedal* (`ts`, not
+an SD-1 "mode") that reuses **all** of the SD-1's machinery. The two are literally
+one engine with two configs. Files: shared `core/include/clipper/dsp/OverdriveEngine.h`
++ `core/src/dsp/OverdriveEngine.cpp`; thin `core/include/clipper/dsp/TsModel.h`
++ `core/src/dsp/TsModel.cpp`; tests `core/tests/test_ts_model.cpp`
+(`clipper_ts_tests`); C ABI `ts_*` in `clipper_c_api.cpp`; `--pedal ts` in the
+render CLI; worklet `ts` dispatch; `rig.ts` / Pedal / gear-tray / assistant wiring.
+Trademark-safe throughout (no Ibanez/TS808/Tube Screamer on any user surface).
+
+### Reuse approach — refactor, don't copy-paste
+
+The M8 SD-1's processing guts were **extracted verbatim** into a shared
+`OverdriveEngine` parameterized by an `OverdriveConfig` (mid-hump corner, DRIVE
+plateau min/max dB, the two diode knees, 4558 op-amp GBW/slew, tone pivot/tilt,
+DC-block corner). `SdModel` and `TsModel` are now ~70-line wrappers that own an
+engine built from their config and forward every call. The SD-1 config reproduces
+the former in-line constants **exactly**, so the M8 suite passes **byte-for-byte
+unchanged** — verified: 2nd harmonic −20.9 dBc, op-amp corner 14 308 Hz, 4× ADAA
+worst-alias −116.5 dB all reproduced to the digit. Zero DSP duplication: the two
+pedals share the oversampled ADAA clip, the LM308Stage op-amp model, the mid-hump
+high-pass, and the tone/level/DC-block chain. The engine gains one measurement
+hook the family needs — `setDiodeKnees(vp, vn)` — so the symmetric TS can install
+the SD-1's asymmetric knees (and vice versa) for the harmonic A/B without touching
+production behaviour.
+
+### The circuit → the model (the TWO differences; everything else SHARED)
+
+- **SHARED family trait — the mid-hump.** Same to-ground leg `Zg = 4.7 kΩ +
+  0.047 µF`, so the same non-inverting-gain corner
+  `f_mid = 1/(2π·4.7k·0.047µF) = 720.5 Hz`, unity at DC rising to the HF plateau
+  `1 + K`. Same `V_out = V_in + f(K·HP720(V_in))` clean-pedestal topology, same
+  4558-class op-amp (3 MHz GBW / 1.7 V/µs slew), same tone tilt + LEVEL + DC block.
+- **DIFFERENCE 1 — SYMMETRIC clipping.** ONE silicon diode each way (1-vs-1), both
+  `Vf ≈ 0.60 V`, so `Vp == Vn == 0.60`. An ODD transfer curve ⇒ the 2nd (even)
+  harmonic is ~ABSENT — the **mirror** of the SD-1's 2-vs-1 asymmetry (`0.95 / 0.50`,
+  whose even harmonic is its warmth). Smoother, glassier grind.
+- **DIFFERENCE 2 — DRIVE pot 500 kΩ** (vs the SD-1's 1 MΩ). Max plateau
+  `1 + Zf/R_g = 1 + 500k/4.7k = 107.4×` = **+40.6 dB** (vs the SD-1's +46.6 dB —
+  6 dB less top gain). DRIVE maps linear-in-dB over `[12, 40.6] dB`; as with the
+  SD-1 the minimum is NOT unity (grinds lightly even at DRIVE 0). The 4558
+  closed-loop corner `GBW/A` at max DRIVE ≈ `3e6 / 107.4 ≈ 27.9 kHz` — above the
+  audio band, so (unlike the SD-1's 14 kHz) the op-amp adds no audible top-octave
+  softening.
+
+### Validation (ctest `clipper_ts_tests`, 44.1 k + 48 k + 96 k, assert-backed)
+
+- **Mid-hump corner ≈ 720 Hz (SHARED):** matches the analytic `1 + K·HP720` within
+  **0.04 dB worst** (44.1 k) / 0.07 dB (96 k), well inside the ±1.5 dB bar; 720 Hz
+  measures **−2.87 dB** below the plateau (the −3 dB corner), 82 Hz **−18.1 dB**.
+- **SYMMETRY → no even harmonic (the mirror of the SD-1's asymmetry):** 220 Hz at
+  moderate drive → 2nd harmonic **−159.6 dBc** (44.1 k) / −156.8 dBc (96 k) for the
+  symmetric TS, vs the SD-1's **−20.9 dBc** asymmetric warmth on the identical
+  stimulus — a ~139 dB contrast, entirely symmetry-driven (forcing the TS to the
+  SD-1's asymmetric knees restores the 2nd harmonic to **−19.1 dBc**, confirming
+  the curve).
+- **Max-DRIVE plateau ≈ 40.6 dB analytic:** measured **40.37 / 40.39 / 40.46 dB**
+  (44.1 / 48 / 96 k) vs the analytic `1 + 500k/4.7k` = **40.60 dB** (< 0.25 dB),
+  and distinctly below the SD-1's +46.6 dB (the 500k-vs-1M pot).
+- **Aliasing (M2 bar):** shipped 4× ADAA at max DRIVE worst-alias **−117.8 dB**
+  (44.1 k) / −123.2 dB (96 k), far below the −60 dB bar; ADAA beats naive by
+  ~8 dB at 1×. Soft-knee THD rises gradually 1.7 % → 10.3 % → 20.0 % across input
+  0.05 / 0.15 / 0.30; min-DRIVE THD 0.8 % at a 0.30 V input (light, not clean).
+
+### A/B render commands (ts vs sd1, same settings)
+
+```
+# Screamer (symmetric) vs SD-1 (asymmetric), same knobs, plucked low A:
+clipper-render --gen pluck:110:2.0 ts.wav  --pedal ts  --distortion 0.6 --filter 0.5 --level 0.8 --sr 48000
+clipper-render --gen pluck:110:2.0 sd1.wav --pedal sd1 --distortion 0.6 --filter 0.5 --level 0.8 --sr 48000
+#   -> TS  peak 0.98 / rms 0.147 (less top gain, symmetric — smoother);
+#      SD-1 peak 1.22 / rms 0.200 (more gain + asymmetric pedestal push).
+# Even-harmonic (symmetry) A/B on a 220 Hz sine (Goertzel of the render):
+#   -> TS 2nd harmonic -236.7 dBc (~absent) vs SD-1 -23.5 dBc; both share the odd 3rd (~-13 dBc).
+```
+
+### Integration notes
+
+- **One param shape, additive registries.** The Screamer keeps `PedalParams
+  {distortion, filter, level}` reading as **Drive / Tone / Level** (like the SD-1);
+  the shared registries each gain exactly one entry (`rig.ts` `PedalType` +
+  gear tray + `TS_KNOB_DEFAULTS` drive 0.5 / tone 0.5 / level 0.75; worklet `ts`
+  dispatch; `add_pedal` enum + coaching; `Pedal.tsx` FACES; `tokens.css`
+  `--accent-ts`). The worklet routes per-node by C-ABI prefix (`_rat`/`_sd`/`_ts`).
+- **Visual identity (doctrine §17).** Dark chassis (both themes), **GREEN accent**
+  (arcs / readouts / LED — the green box). Its own **`slim` face**: an Ibanez-format
+  box — knob row across the top, script **"Screamer"** wordmark, a **rectangular
+  hinged stomp pad** in the lower body — slimmer than the RAT stack and clearly NOT
+  the Boss-compact SD-1 treadle at a glance (grayscale too). Wordmark **"Screamer"**,
+  model line **`DRIVE Nº3 · GREEN`**. No trademarks.
+- **Assistant.** `add_pedal` gains `'ts'`; the coach knows the Screamer is THE
+  stacking pedal (low drive / high level as a mid-forward clean boost into a pushed
+  amp; symmetric/smoother vs the SD-1's asymmetric/warmer).
+- Core suites all green (M0 + RAT + **SD-1 (unchanged)** + **TS** + amp + triode +
+  JCM800, 44.1 k + 96 k); web tsc + vite build; Playwright +2 (`TS worklet:
+  Screamer clips SYMMETRICALLY…` and `assistant: add_pedal adds a TS Screamer…`).

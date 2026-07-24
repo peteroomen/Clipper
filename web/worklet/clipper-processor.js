@@ -249,47 +249,45 @@ class ClipperProcessor extends AudioWorkletProcessor {
       return { id, type: 'tuner', handle: 0, engaged: !!engaged };
     }
     const mod = this._module;
-    const isSd = type === 'sd1';
-    const handle = isSd ? mod._sd_create(this._sr) : mod._rat_create(this._sr);
-    const setOs = isSd ? mod._sd_set_oversampling : mod._rat_set_oversampling;
-    const setParam = isSd ? mod._sd_set_param : mod._rat_set_param;
-    setOs(handle, this._oversampling | 0);
+    // Each dirt type binds to a C-ABI export prefix; every dirt pedal shares the
+    // identical opaque-handle ABI (create / set_param 0/1/2 / set_oversampling /
+    // latency / process), so routing is by prefix. 'sd1'=SD-1, 'ts'=TS Screamer
+    // (both the SD-1 engine family), anything else = RAT.
+    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : 'rat';
+    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : '_rat';
+    const handle = mod[P + '_create'](this._sr);
+    mod[P + '_set_oversampling'](handle, this._oversampling | 0);
     if (params) {
-      setParam(handle, 0, +params.distortion);
-      setParam(handle, 1, +params.filter);
-      setParam(handle, 2, +params.level);
+      mod[P + '_set_param'](handle, 0, +params.distortion);
+      mod[P + '_set_param'](handle, 1, +params.filter);
+      mod[P + '_set_param'](handle, 2, +params.level);
     }
-    return { id, type: isSd ? 'sd1' : 'rat', handle, engaged: !!engaged };
+    return { id, type: t, handle, engaged: !!engaged };
+  }
+
+  // C-ABI export prefix for a node's type ('_sd' | '_ts' | '_rat').
+  _prefix(node) {
+    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : '_rat';
   }
 
   _destroyPedal(node) {
     if (!node || !node.handle) return;
-    if (node.type === 'sd1') this._module._sd_destroy(node.handle);
-    else this._module._rat_destroy(node.handle);
+    this._module[this._prefix(node) + '_destroy'](node.handle);
   }
 
-  // Per-node ABI routing (sd_* for an SD-1, rat_* otherwise). Keeps the chain
-  // dispatch type-agnostic everywhere below.
+  // Per-node ABI routing (sd_*/ts_* for the SD-1 family, rat_* otherwise). Keeps
+  // the chain dispatch type-agnostic everywhere below.
   _pedalSetParam(node, id, value) {
-    const mod = this._module;
-    if (node.type === 'sd1') mod._sd_set_param(node.handle, id, value);
-    else mod._rat_set_param(node.handle, id, value);
+    this._module[this._prefix(node) + '_set_param'](node.handle, id, value);
   }
   _pedalSetOversampling(node, factor) {
-    const mod = this._module;
-    if (node.type === 'sd1') mod._sd_set_oversampling(node.handle, factor);
-    else mod._rat_set_oversampling(node.handle, factor);
+    this._module[this._prefix(node) + '_set_oversampling'](node.handle, factor);
   }
   _pedalLatency(node) {
-    const mod = this._module;
-    return node.type === 'sd1'
-      ? mod._sd_latency_samples(node.handle)
-      : mod._rat_latency_samples(node.handle);
+    return this._module[this._prefix(node) + '_latency_samples'](node.handle);
   }
   _pedalProcess(node, inPtr, outPtr, n) {
-    const mod = this._module;
-    if (node.type === 'sd1') mod._sd_process(node.handle, inPtr, outPtr, n);
-    else mod._rat_process(node.handle, inPtr, outPtr, n);
+    this._module[this._prefix(node) + '_process'](node.handle, inPtr, outPtr, n);
   }
 
   // Recompute the tuner mute state from the current chain: muted iff any tuner
