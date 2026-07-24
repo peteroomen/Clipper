@@ -1,8 +1,9 @@
-// Tuner (M7 · restyled M6.8) — a chromatic tuner in the CLIPPER pedal format,
-// re-skinned "TC-style": a segmented LED meter and a segmented-display note
-// readout, both in the shared neumorphic chassis.
+// Tuner (M7 · restyled M6.8 · M6.8.1 doctrine) — a chromatic tuner in the CLIPPER
+// pedal format, "TC-style": a segmented LED meter and a segmented-display note
+// readout on the SAME shared charcoal chassis as every other pedal. Its identity
+// cue is its GREEN accent (the lock colour) + the knowing "IN-TUNE" name.
 //
-//   model line "TUNE Nº0 · CHROMATIC" · lock LED (green in tune / red off) ·
+//   model line "IN-TUNE Nº0 · CHROMATIC" · lock LED (green in tune / red off) ·
 //   a big 7-SEGMENT note letter on a recessed dark "screen" (unlit segments stay
 //   faintly visible) with an octave + sharp indicator · a SEGMENTED METER — a
 //   horizontal strip of discrete LEDs in recessed neumorphic wells: RED segments
@@ -143,7 +144,7 @@ export function Tuner({ reading, engaged, onToggleEngaged }: TunerProps) {
       data-cents={showReading ? cents : ''}
     >
       <div className="pedal-top">
-        <span className="pedal-model">TUNE Nº0 · CHROMATIC</span>
+        <span className="pedal-model">IN-TUNE Nº0 · CHROMATIC</span>
         <span className={`led tuner-led ${led}`} data-testid="tuner-led" data-led={led} aria-hidden="true" />
       </div>
 

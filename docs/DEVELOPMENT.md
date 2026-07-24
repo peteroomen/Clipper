@@ -2733,45 +2733,101 @@ For distribution (not needed for local play) you would sign with a Developer ID
 and notarize. Standalone `.app` runs the same core through JUCE's own audio
 device I/O for a quick check without a host.
 
-## 17. M6.8 — Pedal visual identity: shared chassis, distinct souls
+## 17. M6.8 / M6.8.1 — Pedal visual identity: dark chassis for all, reference via accent
 
-Field feedback: the SD-1 "looks the same as the RAT" and the tuner should be "more
-TC-electronic — segmented display, red/green lines for the meter." The pass keeps
-**one sculpted neumorphic chassis family** (the `.pedal raised` shell, both themes)
-and gives each pedal a **soul** on three declared axes — with **homage, never
-replica** (no real trademarks/logos/exact trade dress).
+### M6.8.1 — the doctrine revision (current)
+
+M6.8 shipped "shared chassis, distinct souls" with **full-body enclosure tints**
+(amber SD-1, slate tuner). Field review rejected the tints: *"the yellow is weird
+looking due to the saturation, but real yellow breaks the neumorphism… maybe we
+keep the darker, neumorphic RAT color for all pedals/amps (looks nice against the
+lighter background) and we reference the gear more subtly, like the rubber stomp
+pad on the SD-1 and color (yellow for the knob readings?)."* The revised doctrine —
+**the recipe for every future pedal with a real-world analog**:
+
+> **Dark chassis for all** (one shared charcoal wash, the RAT's colour); reference
+> the original gear via **(1) a small-area ACCENT colour** on the knob value arcs +
+> value readouts + LED, **(2) one MORPHOLOGY cue**, and **(3) a knowing NAME** a
+> pedal-lover will get. Homage, never replica — no trademarks/exact names.
+
+Why an accent is neumorphic-safe where a full-body hue is not: a saturated colour
+over a *small area* on a dark sculpted surface reads as a lit indicator, not a
+painted enclosure — the M4 RAT proved it with its floating red value arcs. A full
+body of the same saturation flattens the light/shadow that *is* the neumorphism.
+
+**What changed from M6.8:**
+
+- **One chassis colour.** `--chassis-tint` (the old RAT charcoal, both themes) is
+  composited over `--panel-grad` by `.pedal.raised` for **every** pedal type. The
+  per-enclosure `--rat-tint` / `--sd1-tint` / `--tuner-tint` slots are **retained
+  but neutralized to `transparent`** in all four theme blocks of `tokens.css`, so
+  nothing that referenced them breaks and future pedals still have a home.
+- **Per-pedal ACCENT tokens** (`tokens.css`, all four theme blocks):
+  `--accent-rat` (red/orange, = `--led`), `--accent-sd` (**yellow** — a readable
+  gold `#B58900` on light porcelain, a bright `#FFC94D` glow on the dark board),
+  `--accent-tuner` (green, = `--seg-green`, the lock colour) + `-glow` pairs.
+  `pedal.css` assigns `--pedal-accent` per `data-pedal-type`; the knob **value arc**
+  (`.k-arc`), the **value readout** (`.k-val`, now accent-coloured + semibold, dims
+  on bypass), and the **LED** all read `var(--pedal-accent, var(--led))` — so amp
+  knobs (no `--pedal-accent`) fall back to the original red/faint-ink.
+- **SD-1 morphology fixes.** The treadle now owns the **lower body and sits at the
+  bottom** (was riding too high). The `.treadle-zone` gains top margin and the pad
+  is taller; the compact face **drops the "Stomp" caption** — nothing sits below
+  the treadle (the wordmark is embossed on the pad itself). Knob spacing was
+  flagged cramped: the compact `.knob-row` gap goes `14px → 30px` and the pedal
+  widens `320 → 336px` so three knobs get real air.
+- **Tuner spacing fixes.** The lock LED sat right after the model line because the
+  centered flex column let `.pedal-top` shrink to content (so `space-between` did
+  nothing); `.pedal.tuner .pedal-top { width: 100% }` pushes the LED to the right
+  edge. The model line letter-spacing tightens to `.18em` to fit the longer name,
+  and the vertical rhythm (header → screen → strip → cents → footswitch) is
+  normalized to an even ~16px.
+- **Insider names** (homage, no trademarks): the RAT-type is wordmark **"Rodent"**
+  (the wink; "Clipper" is the *app* brand, not this pedal) with model line
+  `DIRT Nº1 · RODENT-TYPE`; the SD-1 is wordmark **"Super Drive"** with model line
+  `DRIVE Nº2 · YELLOW` (winks at the classic yellow overdrive and the new yellow
+  accent); the tuner is `IN-TUNE Nº0 · CHROMATIC` (winks at the poly-tuner family).
+  No test asserts these strings (selectors use testids + aria labels), so they stay
+  free to evolve.
 
 ### The identity system — how a future pedal declares its face
 
 Every knob pedal's identity lives in one `PedalFace` entry in
 `web/src/components/Pedal.tsx` (`FACES: Record<…, PedalFace>`). A face declares:
 
-1. **Enclosure tint** — a per-type CSS custom prop (`--rat-tint` / `--sd1-tint` /
-   `--tuner-tint`, defined in **all four** theme blocks of `tokens.css`). It is a
-   *desaturated wash* composited **over** the neumorphic `--panel-grad` by
-   `.pedal.raised` (`background: linear-gradient(tint,tint), var(--panel-grad)`),
-   so the sculpted light/shadow survives in both light and dark while the body hue
-   shifts. `.pedal[data-pedal-type="…"]` assigns the tint (and, for the SD-1, swaps
-   the LED/arc accent to amber). Specificity `.pedal.raised` (0,2,0) beats the base
-   `.raised` recipe (0,1,0), so the tint always wins.
+1. **Accent colour** (was: enclosure tint) — the chassis is now identical for all;
+   identity is the small-area accent. Add an `--accent-<type>` (+ `-glow`) pair to
+   the four theme blocks of `tokens.css` and map it via `--pedal-accent` in the
+   `.pedal[data-pedal-type="…"]` rule of `pedal.css`. It colours the value arcs,
+   value readouts, and LED.
 2. **Face layout** — a `layout: 'stack' | 'compact'` field, surfaced as
    `data-face` on the enclosure and styled in `pedal.css`:
-   - `stack` (RAT — *it is the reference*): tall charcoal box, big centered
-     3-knob trio, stark condensed **Anton** wordmark, a round stomp.
-   - `compact` (SD-1 — Boss-compact **homage**): a warm-amber body, a tight knob
-     row (`--kd: 54px`) riding the top edge over a **wide flat hinged treadle**
-     (`.fsw-treadle` — the footswitch *is* the treadle, with grip ribs at the toe
-     and an embossed wordmark), a small model line. Distinct from the RAT at a
-     glance **even in grayscale**, because the geometry — not just the hue —
-     differs; the tints are luminance-similar by design, so the *shape* carries the
-     grayscale read.
-3. **Typography** — the `wordmark` field + treatment: the RAT's condensed Anton
-   logo vs the SD-1's bold Avenir treadle plate.
+   - `stack` (RAT — *it is the reference*): tall box, big centered 3-knob trio,
+     stark condensed **Anton** wordmark, a round stomp, red accent.
+   - `compact` (SD-1 — Boss-compact **homage**): a knob row with clear air
+     (`--kd: 56px`, `gap: 30px`) riding the top edge over a **wide flat hinged
+     treadle** at the bottom (`.fsw-treadle` — the footswitch *is* the treadle,
+     grip ribs at the toe, embossed wordmark, nothing below it), a small model
+     line, yellow accent. Distinct from the RAT at a glance **even in grayscale**
+     (all pedals now share the chassis colour, so the *morphology* carries the
+     grayscale read entirely).
+3. **Name/typography** — the `model` line + `wordmark` field: the knowing homage
+   (RAT's condensed Anton "Rodent" logo vs the SD-1's bold Avenir "Super Drive"
+   treadle plate).
 
-To add a pedal: append a `FACES` entry (tint token in `tokens.css` ×4 blocks,
-`data-pedal-type` rule, and — only if it needs a new geometry — a `[data-face]`
-variant in `pedal.css`). The footswitch keeps one shared `data-testid="footswitch"`
-+ `role="switch"` across faces; only its *shape* changes.
+To add a pedal: append a `FACES` entry (an `--accent-*` token pair in `tokens.css`
+×4 blocks, a `--pedal-accent` map in the `data-pedal-type` rule, and — only if it
+needs a new geometry — a `[data-face]` variant in `pedal.css`). The chassis is
+free. The footswitch keeps one shared `data-testid="footswitch"` + `role="switch"`
+across faces; only its *shape* changes. The recipe extends to **amps** too (they
+already sit on the neutral neumorphic chassis; a future amp accents the same way).
+
+### M6.8 (superseded) — original three-axis system
+
+The original pass used a full-body **enclosure tint** per type (`--rat-tint` cool
+graphite, `--sd1-tint` warm amber, `--tuner-tint` slate) as axis 1 and typography
+as axis 3. Both were revised above (tint → one chassis; typography → the *name*).
+The tuner TC-style face and the board's measured-cable layout below are unchanged.
 
 ### TC-style tuner face (`Tuner.tsx`, `tuner.css`)
 
@@ -2817,17 +2873,20 @@ in both themes with RAT + SD-1 + tuner on the board.
 segmented meter/screen can be driven without a live audio path — used by the new
 face test and screenshot capture.
 
-### Build and test (M6.8)
+### Build and test (M6.8 / M6.8.1)
 
 ```bash
-cd web && npm run build && npm test   # tsc + vite clean; 36 Playwright (35 + the
-                                      # new segmented-meter face test)
+cd web && npm run build && npm test   # tsc + vite clean; full Playwright green
 ```
 
-New coverage (`tests/tuner.spec.ts`): a pushed flat reading lights red wells on the
-left only, a sharp reading on the right only, and an in-tune (0 c) reading lights
-the green center (after the hold) with reds dark. The tuner accuracy + mute audio
-tests are untouched and pass. Both themes were screenshotted (board with RAT +
-SD-1 + tuner; the tuner engaged on a −24 c flat reading so the red segments show).
-**No core / C-ABI / worklet / engine change** — this is a pure web visual pass.
+The segmented-meter face test (`tests/tuner.spec.ts`) is unchanged and passes: a
+pushed flat reading lights red wells on the left only, a sharp reading on the right
+only, and an in-tune (0 c) reading lights the green center (after the hold) with
+reds dark. **M6.8.1 touched no selector or assertion** — the suite drives pedals
+by `data-testid` + aria labels (`Distortion`, `Drive`, `footswitch`, `tuner-*`),
+none of which the rename touched, and the "Clipper" heading assertions target the
+*app* `<h1>`, not the RAT wordmark (now "Rodent"). Both themes were screenshotted
+(board with all three pedals; the tuner engaged on a −18 c flat reading so the red
+segments and green screen show). **No core / C-ABI / worklet / engine change** —
+this remains a pure web visual pass.
 
