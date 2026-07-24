@@ -13,6 +13,7 @@
 #include "clipper/dsp/TwinAmp.h"
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/PhaserModel.h"
+#include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/SdModel.h"
@@ -281,6 +282,52 @@ void muff_process(void* handle, const float* in_ptr, float* out_ptr,
                   int num_frames) {
     if (!handle) return;
     static_cast<clipper::dsp::MuffModel*>(handle)->process(in_ptr, out_ptr,
+                                                           num_frames);
+}
+
+// --- v1.1 item 6: GOLD overdrive exports -------------------------------------
+//
+// Additive alongside rat_*/sd_*/ts_*/muff_*/phaser_*, byte-for-byte the same
+// opaque-handle ABI so the worklet drives it exactly like any other dirt pedal
+// (param slots 0=GAIN, 1=TREBLE, 2=OUTPUT; oversampling + latency shared). Under
+// the hood it is the parallel clean/dirt blend with the germanium WDF clipper
+// (GoldModel), but the ABI is identical — a chain can mix any of them.
+
+EMSCRIPTEN_KEEPALIVE
+void* gold_create(float sample_rate) {
+    auto* m = new clipper::dsp::GoldModel();
+    m->prepare(static_cast<double>(sample_rate), 128);
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void gold_destroy(void* handle) {
+    delete static_cast<clipper::dsp::GoldModel*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void gold_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    static_cast<clipper::dsp::GoldModel*>(handle)->setParameter(param_id, value);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void gold_set_oversampling(void* handle, int factor) {
+    if (!handle) return;
+    static_cast<clipper::dsp::GoldModel*>(handle)->setOversampling(factor);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int gold_latency_samples(void* handle) {
+    if (!handle) return 0;
+    return static_cast<clipper::dsp::GoldModel*>(handle)->latencySamples();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void gold_process(void* handle, const float* in_ptr, float* out_ptr,
+                  int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::GoldModel*>(handle)->process(in_ptr, out_ptr,
                                                            num_frames);
 }
 

@@ -11,7 +11,7 @@
 //
 // This suite therefore tests THE PLAYER'S EXPECTATIONS, not the circuit:
 //   A. Universal gear invariants — one parameterized harness over EVERY dirt pedal
-//      (rat/sd1/ts/muff) and EVERY amp voice (clean120/jcm800/twin/ac30):
+//      (rat/sd1/ts/muff/gold) and EVERY amp voice (clean120/jcm800/twin/ac30):
 //      min-knob usability, the hum-torture standard, knob monotonicity
 //      spot-checks, and default-settings level sanity.
 //   B. Live-convention processing — every C-ABI entry point exercised the way the
@@ -37,6 +37,7 @@
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/FFT.h"
+#include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/PhaserModel.h"
@@ -80,6 +81,10 @@ void* muff_create(float);  void muff_destroy(void*);
 void  muff_set_param(void*, int, float);
 void  muff_set_oversampling(void*, int);
 void  muff_process(void*, const float*, float*, int);
+void* gold_create(float);  void gold_destroy(void*);
+void  gold_set_param(void*, int, float);
+void  gold_set_oversampling(void*, int);
+void  gold_process(void*, const float*, float*, int);
 void* phaser_create(float); void phaser_destroy(void*);
 void  phaser_set_param(void*, int, float);
 void  phaser_process(void*, const float*, float*, int);
@@ -360,6 +365,7 @@ std::vector<float> defaults(const Gear& g) {
 std::vector<Gear> allGear() {
     using clipper::dsp::Ac30Amp;
     using clipper::dsp::AmpModel;
+    using clipper::dsp::GoldModel;
     using clipper::dsp::Jcm800Amp;
     using clipper::dsp::MuffModel;
     using clipper::dsp::RatModel;
@@ -371,6 +377,7 @@ std::vector<Gear> allGear() {
     // A4 level-sanity windows (RMS delta dB, standard pluck at defaults), each
     // measured value ± ~10 dB. Measured 2026-07 @ 48 kHz (input RMS −33.5 dBFS):
     //   rat +18.6   sd1 +15.6   ts +13.1   muff +29.4 (fuzz sustain wall — by design)
+    //   gold +13.2 (v1.1 item 6: clean blend + the summing amp's ×2)
     //   clean120 −6.0   jcm800 +1.7   twin −13.8   ac30 −11.7 (0.4 opening volume)
     auto window = [&](const char* name, double lo, double hi) {
         for (auto& g : gear)
@@ -399,6 +406,16 @@ std::vector<Gear> allGear() {
         K{"sustain", MuffModel::PARAM_SUSTAIN, 0.6f, K::GAIN, true, 0.0f, 0.6f, 1.0f},
         K{"tone", MuffModel::PARAM_TONE, 0.5f, K::TONE, true},
         K{"volume", MuffModel::PARAM_VOLUME, 0.6f, K::LEVEL},
+    }));
+    // GOLD (v1.1 item 6): the clean-blend overdrive. GAIN is a true crossfade, so
+    // at 0 it is honestly CLEAN (THD ~0) rather than "quiet" — GAIN semantics, and
+    // the min-knob bar treats it like any other gain knob (audible, not silenced).
+    // TREBLE is a NORMAL-sense treble tilt (clockwise brightens), unlike the RAT's
+    // FILTER or the AC30's CUT.
+    gear.push_back(makePedalGear<GoldModel>("gold", {
+        K{"gain", GoldModel::PARAM_GAIN, 0.35f, K::GAIN},
+        K{"treble", GoldModel::PARAM_TREBLE, 0.5f, K::TONE, true},
+        K{"output", GoldModel::PARAM_OUTPUT, 0.7f, K::LEVEL},
     }));
     gear.push_back(makeAmpGear<AmpModel>("clean120", {
         K{"volume", AmpModel::PARAM_VOLUME, 0.4f, K::LEVEL},
@@ -437,6 +454,7 @@ std::vector<Gear> allGear() {
     window("sd1", 4.0, 24.0);
     window("ts", 1.0, 21.0);
     window("muff", 18.0, 38.0);
+    window("gold", 3.0, 23.0);  // v1.1 item 6: measured +13.2 dB at its defaults
     window("clean120", -17.0, 3.0);
     window("jcm800", -10.0, 10.0);
     window("twin", -25.0, -5.0);
@@ -468,7 +486,7 @@ bool isDirtPedal(const Gear& g) { return g.isPedal; }
 //   LEVEL knob at min             must actually attenuate ≥ 6 dB below default —
 //                                  measured: every level/volume/master pot (and
 //                                  the JCM's preamp-volume GAIN) kills to −240.
-//   Defaults RMS per gear: rat −16.6, sd1 −19.6, ts −22.1, muff −5.8,
+//   Defaults RMS per gear: rat −16.6, sd1 −19.6, ts −22.1, muff −5.8, gold −22.0,
 //   clean120 −41.1, jcm800 −33.5, twin −49.0, ac30 −46.9 dBFS.
 // ---------------------------------------------------------------------------
 void testMinKnobUsability(const std::vector<Gear>& gear) {
@@ -523,6 +541,11 @@ void testMinKnobUsability(const std::vector<Gear>& gear) {
 // REGRESSION FLOOR: ≥ 28 dB below the note. Measured (2026-07, 48 kHz):
 //   rat  min −36.0 / def −41.6 dB     sd1  min −33.1 / def −39.3 dB
 //   ts   min −33.1 / def −38.2 dB     muff min −51.1 / def −55.8 dB
+//   gold min −30.1 / def −32.9 dB  ← the TIGHTEST, and necessarily so: at GAIN 0
+//        this pedal is a LINEAR buffer, so it can only PRESERVE the input's own
+//        −30 dB hum-to-note ratio (−30.1 measured == the physical ceiling for a
+//        transparent pedal, 2.1 dB of margin). Turning up improves it, because the
+//        drive path's 106 Hz pre-clip high-pass keeps 60 Hz out of the clipper.
 // Context: the INPUT hum sits 30 dB below the note, and a perfectly linear pedal
 // preserves that — so ~−33 dB at min drive (near-linear SD-1/TS) is the physical
 // ceiling of what "min gain" can do; compression + input filtering IMPROVE it at
@@ -569,13 +592,15 @@ void testHumTorture(const std::vector<Gear>& gear) {
 // Measured (2026-07, 48 kHz, references for future failures):
 //   GAIN THD %:  rat 0.0→22.4→37.1   sd1 0.1→11.5→36.7   ts 0.1→5.7→31.9
 //                muff 36.2→38.3→147.3 (probes 0/0.6/1.0)   jcm800 0.0→11.1→46.5
+//                gold 0.0→23.4→30.6 (0.0 % at GAIN 0 is the crossfade: the clipped
+//                half is switched OUT, not merely quiet)
 //   LEVEL dBFS (0/0.5/1): rat −240→−15.6→−9.6   sd1 −240→−12.8→−6.8
 //                ts −240→−14.9→−8.9   muff −240→−7.0→−1.0
 //                clean120 −240→−25.9→−23.0   jcm master −240→−18.4→−8.9
 //                twin −240→−34.5→−16.3   ac30 −240→−29.9→−13.7
 //   TONE, pedals (HF harmonic energy dB, dark→bright, gain maxed; bar ≥ +6):
 //                rat filter −19.8→−10.6 (inverted knob)   sd1 −16.0→−4.2
-//                ts −17.4→−6.2   muff −5.0→+10.1
+//                ts −17.4→−6.2   muff −5.0→+10.1   gold treble −17.9→−5.7
 //   TONE, amps  (3 kHz level dB, dark→bright; bar ≥ +4):
 //                clean120 treble −36.7→−27.3   jcm800 treble −30.3→−15.7
 //                twin treble −52.3→−21.0   ac30 treble −58.8→−34.9
@@ -773,6 +798,8 @@ void testLiveConvention() {
          ts_process, 0.5f, 0.5f, 0.75f},
         {"muff_ ABI", muff_create, muff_destroy, muff_set_param, muff_set_oversampling,
          muff_process, 0.6f, 0.5f, 0.6f},
+        {"gold_ ABI", gold_create, gold_destroy, gold_set_param, gold_set_oversampling,
+         gold_process, 0.35f, 0.5f, 0.7f},
         {"phaser_ ABI", phaser_create, phaser_destroy, phaser_set_param, nullptr,
          phaser_process, 0.35f, 0.5f, 0.5f},
     };
