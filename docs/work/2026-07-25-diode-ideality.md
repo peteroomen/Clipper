@@ -175,8 +175,9 @@ Core DSP (the whole fix is four constants and their documentation):
 Tests:
 - `core/tests/test_rat_model.cpp` — `testClippingCeiling` gains an absolute band;
   `testAdaaTracksWdf` new; `testFactorOneRegression` samples regenerated
-- `core/tests/test_gold_model.cpp` — `testGermaniumKnee` re-baselined (looser bounds,
-  order-of-magnitude better margins); `testDiodeLevelContrast` new
+- `core/tests/test_gold_model.cpp` — `testGermaniumKnee` re-baselined (bounds TIGHTENED
+  5×→20× and 0.25×→0.05×; the *margin* to the measurement widened because the measured
+  ratios improved by an order of magnitude); `testDiodeLevelContrast` new
 
 Docs:
 - `docs/DEVELOPMENT.md` — new §36; §6 bullet 2 and §7's ADAA bullet corrected

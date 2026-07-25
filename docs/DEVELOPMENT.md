@@ -6502,10 +6502,15 @@ table above and decide. See §31.
   −0.63336, +5.05 dB), which is the check that nothing *else* moved with it. Precedent:
   it was regenerated the same way for M6.5.
 - **`test_gold_model.cpp` `testGermaniumKnee`** — **re-baselined, and its bounds got
-  LOOSER.** Neither assertion was pinning the bug; both were genuine properties that
-  the bug made *harder* to satisfy, because a dropped ideality factor pulled the
-  silicon knee toward the germanium's. Onset ratio `5.0×` → `20.0×` (measured 26× →
-  **189×**); slope ratio `0.25×` → `0.05×` (measured 0.032 → **0.0063**).
+  TIGHTER, not looser.** Say it precisely, because the sloppy version of this sentence
+  reads as the one thing CLAUDE.md forbids ("don't loosen a bound to go green"): as
+  *assertions* both bounds are now strictly harder to satisfy — onset ratio `5.0×` →
+  `20.0×` and slope ratio `0.25×` → `0.05×`. What got looser is the **margin between
+  the bound and the measurement** (onset 26×/5× = 5.2× of headroom → 189×/20× = 9.4×),
+  which is the point: neither assertion was pinning the bug, both were genuine
+  properties that the bug made *harder* to satisfy, because a dropped ideality factor
+  pulled the silicon knee toward the germanium's. Measured 26× → **189×** onset and
+  0.032 → **0.0063** slope ratio.
 - **`test_gold_model.cpp` `testDiodeLevelContrast` (new)** — the knee test compares
   *shapes* via ratios and passed happily while the two ceilings sat 1 dB apart. This
   asserts the thing the A/B is for, against the external ~6 dB 1N34A-vs-1N4148

@@ -223,10 +223,15 @@ void testGermaniumKnee(double fs) {
     // have been: the onset ratio measured ~26x and the slope ratio ~0.032. With the
     // real 1N4148 device (n = 1.752) the two diodes are properly far apart and both
     // ratios improve by an order of magnitude — measured onset **189x** and slope
-    // ratio **0.0063**. These bounds are therefore LOOSER than the measurement by a
-    // wider margin than before, deliberately: they are the "these are clearly
-    // different devices" floor, not a fit. Neither assertion was pinning the bug —
-    // both were genuine properties that the bug made harder to satisfy.
+    // ratio **0.0063**.
+    //
+    // Both bounds below are therefore TIGHTER than they were (5x -> 20x, 0.25x ->
+    // 0.05x): as assertions they are strictly harder to satisfy. What widened is the
+    // MARGIN between bound and measurement (5.2x of headroom -> 9.4x), which is
+    // deliberate — these are the "these are clearly different devices" floor, not a
+    // fit to the measurement. Neither assertion was pinning the bug; both were genuine
+    // properties that the bug made harder to satisfy. Do not read this as loosening a
+    // bound to go green (CLAUDE.md forbids that, and rightly).
     assert(geLo > siLo * 20.0 && "germanium does not bend earlier than silicon");
     // Slope: across the same 20 dB the germanium THD grows by a far smaller factor
     // (measured ~23x vs silicon's ~3672x) — that is the soft knee, as a number.
