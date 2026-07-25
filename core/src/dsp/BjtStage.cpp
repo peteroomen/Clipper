@@ -23,11 +23,14 @@
 //   r3 (emitter)   = Ie − Ve/Re
 //
 // Jacobian columns (Vb, Vc, Ve): gf = dIf/dVbe, gr = dIr/dVbc, gd = dId/dv.
-// Newton: solve J·Δ = −r, damp Δ, iterate to |Δ|<tol or the cap. A clamped exp +
-// per-iteration step clamps keep it slam-proof (see kMaxNewtonIter, the ±10 V test).
+// Newton: solve J·Δ = −r, damp Δ, iterate until the RESIDUAL is at tolerance (see
+// kNewtonResidualTolA), or |Δ| stops moving, or the cap. A clamped exp +
+// per-iteration step clamps keep it slam-proof (see kMaxNewtonIter, the ±20 V test).
 // ---------------------------------------------------------------------------
 
 #include "clipper/dsp/BjtStage.h"
+
+#include "clipper/dsp/TubeSolverMode.h"
 
 #include <algorithm>
 #include <cmath>
@@ -156,22 +159,105 @@ inline double infNorm3(const double r[3]) {
     return std::max(std::fabs(r[0]), std::max(std::fabs(r[1]), std::fabs(r[2])));
 }
 
+// Convergence tolerance for the KCL residual ∞-norm, in AMPS — the residuals are
+// node currents, so this is a current, not a voltage and not a relative figure
+// (audit finding 12, docs §34). Scaled by tubeSolverTolScale() so the existing
+// test-only reference mode (TubeSolverMode.h) tightens it 1000x along with every
+// valve solver's, rather than this file growing a second knob.
+//
+// THIS IS AN ACCURACY TRADE, NOT A FREE LUNCH — read before touching the value.
+//
+// The pre-fix solver kept iterating until the STEP fell below 1e-9 V, and its line
+// search only accepts a strict residual decrease, so it drove the residual all the
+// way down to the floating-point floor. Any early-out that actually FIRES therefore
+// declines refinement the old solver performed. Bit-identity and the fix are
+// mutually exclusive, and that was measured rather than assumed — a sweep of this
+// constant against the pre-fix solver over 25 renders (5 sustain settings x 5 input
+// levels, 2 s each at 48 kHz):
+//
+//   tol     idle cost     worst difference vs the pre-fix solver
+//   1e-13   fixed         -81.8 dBFS abs / -89.0 dB rel
+//   1e-14   fixed        -104.3 dBFS abs / -111.8 dB rel
+//   1e-15   fixed        -108.5 dBFS abs / -116.0 dB rel
+//   1e-16   fixed        -124.3 dBFS abs / -129.5 dB rel
+//   1e-17   fixed        -127.4 dBFS abs / -134.1 dB rel   <-- chosen
+//   1e-18   NOT fixed    -132.5 dBFS abs / -137.7 dB rel
+//   1e-19   NOT fixed    bit-identical (never fires)
+//
+// The floor of the usable window is the IDLE RESIDUAL CEILING: the largest residual
+// the parked stage ever presents, measured at 2.0600e-18 A. Below that the early-out
+// stops firing and the pathology returns (the 1e-18 and 1e-19 rows). That ceiling is
+// astonishingly stable — 2.0600e-18 to five figures at every one of 44.1/48/88.2/96/
+// 192 kHz x 1/2/4/8 oversampling x sustain MIN/mid/MAX — because at the parked point
+// the two large companion terms gCin·(vin−Vb) and histCin cancel exactly, leaving the
+// residual set by the DC branch currents (~0.9 mA scale) and not by gCin = Cin/T. So
+// the margin does not erode with rate or oversampling factor.
+//
+// 1e-17 is chosen as the tightest value that still fires: 4.9x above the idle
+// ceiling, and 7.4 dB inside this project's established -120 dBFS solver-accuracy
+// gate (docs §25) — the same bar every valve solver's early exit is held to.
+// test_tube_solver.cpp measures exactly this number on every run, because reference
+// mode scales this to 1e-20, below the idle ceiling, so the reference render IS the
+// pre-fix solver.
+//
+// Per-sample, the error is far smaller than the output figure suggests: a residual
+// |r| bounds the node-voltage error by |r|/g with g the limiting node conductance
+// (the collector, gRc + gRf + gCf ~ 1.9e-4 S), so 1e-17 A is 53 femtovolts of node
+// error per solve. The -127 dBFS output figure is that 53 fV amplified by the Muff's
+// four cascaded high-gain stages and accumulated through their recursive state — it
+// is a cascade-gain figure, not a per-solve one. In device terms 1e-17 A is 2.5e-14
+// of the ~0.4 mA quiescent collector current.
+//
+// If you tighten this below ~2.1e-18 the Muff silently goes back to costing 3x more
+// CPU idle than playing; test_muff_model.cpp's "idle solver cost" block fails if it
+// stops firing, and test_tube_solver.cpp fails if it starts costing audible accuracy.
+// Both directions are pinned. Do not change it without re-running both.
+constexpr double kNewtonResidualTolA = 1e-17;
+
 // Damped Newton with backtracking line search on the residual ∞-norm — the
 // globalization that makes the STIFF diode-in-feedback system converge under a
 // hard slam (a bare Newton oscillates and stalls at the iteration cap, which is
-// what produced the pre-fix cascade blow-up). Returns iterations used. Warm-started
-// from (Vb,Vc,Ve); writes the solution back into them.
-int dampedNewton(const Sys& sys, double& Vb, double& Vc, double& Ve, int maxIter) {
+// what produced the pre-fix cascade blow-up). Warm-started from (Vb,Vc,Ve); writes
+// the solution back into them. Returns the number of iterations that actually took
+// a step (0 when the warm start was already the solution), never more than maxIter.
+//
+// `tol` is the residual early-out, in amps. The PER-SAMPLE solve passes
+// kNewtonResidualTolA; the DC operating-point solve passes 0.0, i.e. opts out.
+// That asymmetry is the point, not an oversight (docs §34):
+//
+//   * The early-out exists to remove per-sample work in the audio thread. The DC
+//     solve runs ONCE inside prepare(), so early-outing it buys nothing measurable.
+//   * It would not be free, either. The DC solve's final iterate seeds vbQ_/vcQ_/veQ_
+//     and settleDC(), so it sets the quiescent point every render is referenced to.
+//     Stopping it earlier moves that operating point in its last bits, and through
+//     the Muff's four cascaded high-gain stages the shift showed up as a MEASURED
+//     3x more output difference than the per-sample early-out alone contributes.
+//     Opting the DC solve out costs nothing and removes that term entirely.
+//
+// tol = 0.0 makes `cur <= tol` fire only on an exactly-zero residual, where the
+// Newton step is exactly zero and the iterate cannot move — so opting out preserves
+// the old behaviour exactly rather than approximately.
+int dampedNewton(const Sys& sys, double& Vb, double& Vc, double& Ve, int maxIter,
+                 double tol) {
     double r[3], J[3][3];
     sys.eval(Vb, Vc, Ve, r, J);
-    int it = 0;
-    for (; it < maxIter; ++it) {
+    int taken = 0;
+    for (int it = 0; it < maxIter; ++it) {
+        const double cur = infNorm3(r);
+        // ALREADY SOLVED -> return. Without this the line search below is
+        // unsatisfiable by construction at the quiescent point: the residual is at
+        // the floating-point floor, no trial step can make it STRICTLY smaller, so
+        // all 30 backtracks burn — 31 full Ebers-Moll system evaluations (4 exp
+        // each) per sample to reproduce the answer we already had. That is why the
+        // Muff cost 3x more CPU idle than playing (audit finding 12). Note this is
+        // `<=`, so tol = 0.0 (the DC solve) still short-circuits an exactly-zero
+        // residual, where the step is exactly zero and nothing could move anyway.
+        if (cur <= tol) break;
         const double b[3] = {-r[0], -r[1], -r[2]};
         double dx[3];
         if (!solve3x3(J, b, dx)) break;  // singular -> keep the iterate
         // Gross safety clamp (keeps the exp argument sane before the line search).
         for (double& v : dx) v = std::clamp(v, -10.0, 10.0);
-        const double cur = infNorm3(r);
         // Backtrack: halve the step until the residual norm drops (Armijo-ish).
         // Each trial evaluates the JACOBIAN alongside the residual — given the
         // Ebers-Moll/diode exponentials the J entries are a handful of extra adds
@@ -179,6 +265,14 @@ int dampedNewton(const Sys& sys, double& Vb, double& Vc, double& Ve, int maxIter
         // separate refresh eval that used to re-run the exponentials at the new
         // point every iteration (~2x fewer evals; §25 solver-perf pass; the Newton
         // path — every iterate, every accepted step — is unchanged bit for bit).
+        //
+        // Deliberately NOT also short-circuiting this loop on `cur <= tol`: `cur` is
+        // infNorm3(r) with r unchanged since the early-out above, so that branch is
+        // unreachable. The top-of-loop check subsumes it. Measured: after the
+        // early-out, ZERO iterations exhaust the 30 backtracks on any material —
+        // including a ±20 V slam at max sustain, which burned 10.9 % of iterations
+        // before. Every remaining backtrack is accepted well inside the 30, so the
+        // globalization that makes a slam converge is intact and untouched.
         double lam = 1.0, rt[3], Jt[3][3];
         double Vb2 = Vb, Vc2 = Vc, Ve2 = Ve;
         for (int bt = 0; bt < 30; ++bt) {
@@ -194,11 +288,16 @@ int dampedNewton(const Sys& sys, double& Vb, double& Vc, double& Ve, int maxIter
         r[0] = rt[0]; r[1] = rt[1]; r[2] = rt[2];
         for (int i = 0; i < 3; ++i)
             for (int j = 0; j < 3; ++j) J[i][j] = Jt[i][j];
+        taken = it + 1;
         if (std::fabs(lam * dx[0]) < 1e-9 && std::fabs(lam * dx[1]) < 1e-9 &&
             std::fabs(lam * dx[2]) < 1e-9)
             break;
     }
-    return it + 1;
+    // `taken` counts iterations that moved the iterate, so exhausting the loop
+    // reports exactly maxIter. The old `return it + 1` over-reported by one there,
+    // which let lastMaxNewtonIterations() read kMaxNewtonIter + 1 (audit finding 12,
+    // secondary note) — an iteration count above the cap it is compared against.
+    return taken;
 }
 
 }  // namespace
@@ -248,7 +347,10 @@ void BjtStage::solveOperatingPoint() {
     const Sys sys{cfg_, 1.0 / cfg_.Rc, 1.0 / cfg_.Rf, 1.0 / cfg_.Re,
                   0.0,  0.0,  // caps OPEN at DC
                   0.0,  0.0, 0.0};
-    dampedNewton(sys, Vb, Vc, Ve, 400);
+    // tol = 0.0: the DC solve opts OUT of the residual early-out. It runs once at
+    // prepare(), so there is no per-sample cost to remove, and its final iterate
+    // seeds the quiescent point every render is referenced to — see dampedNewton.
+    dampedNewton(sys, Vb, Vc, Ve, 400, 0.0);
     vbQ_ = Vb; vcQ_ = Vc; veQ_ = Ve;
     icQ_ = ebersMollIc(Vb - Ve, Vb - Vc, cfg_.bjt);
 }
@@ -297,7 +399,8 @@ float BjtStage::processSample(float vinF) {
                   gCin_, gCf_, vin, gCin_ * vCin_, gCf_ * vCf_};
 
     double Vb = vb_, Vc = vc_, Ve = ve_;  // warm start
-    const int iters = dampedNewton(sys, Vb, Vc, Ve, kMaxNewtonIter);
+    const int iters = dampedNewton(sys, Vb, Vc, Ve, kMaxNewtonIter,
+                                   kNewtonResidualTolA * tubeSolverTolScale());
     lastMaxIters_ = std::max(lastMaxIters_, iters);
 
     vb_ = Vb; vc_ = Vc; ve_ = Ve;      // warm start for the next sample
