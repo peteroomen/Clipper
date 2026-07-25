@@ -25,6 +25,7 @@
 #include "measure/AliasMetric.h"
 #include "support/AssertsLive.h"
 #include "support/DcOffset.h"
+#include "support/Xfail.h"
 
 #include <algorithm>
 #include <cassert>
