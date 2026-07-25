@@ -180,5 +180,11 @@ jobs:
       - name: Build console tests
         run: cmake --build native/build -j --target clipper_identical_test clipper_chain_edit_test
 
+      # The native CMakeLists pulls the core in, so native/build registers ALL 19
+      # core ctest targets alongside the two native ones. We only BUILD the native
+      # pair, so an unfiltered ctest reports the core tests as "Not Run" and exits
+      # 8 — which is what made this job fail on every run while continue-on-error
+      # hid it. Filter to the two tests this job exists to run; the core suite has
+      # its own job.
       - name: Run identical-core test
-        run: ctest --test-dir native/build --output-on-failure
+        run: ctest --test-dir native/build -R 'clipper_identical_core|clipper_chain_edit' --output-on-failure
