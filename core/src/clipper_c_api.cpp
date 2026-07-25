@@ -474,6 +474,13 @@ constexpr int kJcmOversampling = 4;
 constexpr int kTwinOversampling = 4;
 constexpr int kAc30Oversampling = 4;
 
+// One per-side cab convolver pair (L/R). Two of these live in every AmpChain so a
+// cab change can be BUILT into the spare while the render path keeps using the
+// other — see amp_prepare_cab_builtin / amp_commit_cab and ADR 003.
+struct CabPair {
+    clipper::dsp::CabConvolver l, r;
+};
+
 struct AmpChain {
     // Three amp voices behind ONE handle (M9.4 → M10.1). All are created + prepared
     // up front so amp_set_model is a realtime-safe int flip (no allocation on the
@@ -487,25 +494,49 @@ struct AmpChain {
     // M6.3: the amp goes STEREO from the chorus stage on, so the cab IR runs PER
     // SIDE. Two independent CabConvolver instances (same IR) — the wet R side is
     // genuinely a different signal from the dry L side in chorus mode, so a single
-    // mono cab AFTER a wet/dry sum would collapse the stereo bloom. cabL doubles
+    // mono cab AFTER a wet/dry sum would collapse the stereo bloom. `l` doubles
     // as the mono cab for the legacy amp_process() path. The JCM is a MONO head, so
     // its output is copied to both sides (dual-mono) before the identical cab pair.
-    clipper::dsp::CabConvolver cabL, cabR;
+    //
+    // 2026-07-25 (audit finding 2): the pair is DOUBLE-BUFFERED. `cabs[activeCab]`
+    // is what process() runs; `cabs[activeCab ^ 1]` is the spare that a cab change
+    // is prepared into off the render path. See the banner above
+    // amp_prepare_cab_builtin for why, and ADR 003.
+    CabPair cabs[2];
+    int activeCab = 0;
     bool cabOn = true;
     // Cab expansion: the engine rate is remembered so the cab can be regenerated
     // (built-in swap) or a user IR reloaded at the right rate on demand.
     double sr = 48000.0;
+
+    CabPair& active() { return cabs[activeCab]; }
+    CabPair& inactive() { return cabs[activeCab ^ 1]; }
 };
 
 // Built-in cab selector for amp_set_cab_builtin. Kept as small ints so the ABI
 // stays language-neutral (the worklet passes 0/1).
 enum CabBuiltin { kCabClean212 = 0, kCabBrit412 = 1 };
 
-// Load an IR into BOTH per-side convolvers at the chain's engine rate (same IR,
-// same 128-sample partition — latency/CPU unchanged from the single built-in).
-void loadIrBothSides(AmpChain* c, const std::vector<float>& ir) {
-    c->cabL.prepare(c->sr, ir.data(), static_cast<int>(ir.size()), c->sr, 128);
-    c->cabR.prepare(c->sr, ir.data(), static_cast<int>(ir.size()), c->sr, 128);
+// Synthesise a built-in cab IR at the chain rate into `out`. `which` selects;
+// anything other than kCabBrit412 falls back to the default 2x12 (matches the
+// pre-2026-07-25 amp_set_cab_builtin behaviour exactly).
+// Fills an out-param rather than returning the vector because everything in this
+// file sits inside `extern "C"`, and a C-linkage function returning a
+// user-defined type draws -Wreturn-type-c-linkage.
+void builtinIr(const AmpChain* c, int which, std::vector<float>& out) {
+    out = which == kCabBrit412 ? clipper::dsp::generateBrit4x12IR(c->sr)
+                               : clipper::dsp::generateDefaultCab2x12IR(c->sr);
+}
+
+// Load an IR into BOTH sides of `pair` at the chain's engine rate (same IR, same
+// 128-sample partition — latency/CPU unchanged from the single built-in).
+// ALLOCATES (FFT plan + partitioned spectra + FDL): never call this from a render
+// callback. Note that CabConvolver::prepare() also zeroes the FDL and overlap
+// history, which is what makes an activated pair start the new IR from silence —
+// the same side effect the pre-2026-07-25 in-place prepare() had.
+void loadIrBothSides(AmpChain* c, CabPair& pair, const std::vector<float>& ir) {
+    pair.l.prepare(c->sr, ir.data(), static_cast<int>(ir.size()), c->sr, 128);
+    pair.r.prepare(c->sr, ir.data(), static_cast<int>(ir.size()), c->sr, 128);
 }
 }  // namespace
 
@@ -529,8 +560,15 @@ void* amp_create(float sample_rate) {
     // Prepare the AC30 up front as well (M10.2) — same lock-free-swap discipline.
     c->ac30.setOversampling(kAc30Oversampling);
     c->ac30.prepare(sr, 128);
+    // Load the default IR into BOTH double-buffered pairs. Only the active pair is
+    // strictly needed at t=0, but preparing both means every pair is always a valid
+    // convolver — amp_commit_cab can never activate an unprepared one, even if a
+    // caller commits without a preceding prepare. Costs one extra IR synthesis at
+    // engine start (nowhere near the audio thread; amp_create already solves four
+    // tube DC operating points).
     const std::vector<float> ir = clipper::dsp::generateDefaultCab2x12IR(sr);
-    loadIrBothSides(c, ir);
+    loadIrBothSides(c, c->cabs[0], ir);
+    loadIrBothSides(c, c->cabs[1], ir);
     return c;
 }
 
@@ -550,32 +588,97 @@ void amp_set_model(void* handle, int which) {
                                      : kAmpClean120;
 }
 
-// Cab expansion: swap the BUILT-IN cab IR (0 = Clean 2x12, 1 = Brit 4x12) on both
-// per-side convolvers, regenerated at the engine rate. The worklet calls this at
-// the declick fade-out zero (never inside process()), so the topology swap is
-// click-free. Latency/CPU are unchanged (same partition, same convolver).
+// --- Cab change: PREPARE (heavy, off the render path) then COMMIT (O(1)) -------
+//
+// 2026-07-24 audit finding 2. A cab change used to be ONE call that synthesised an
+// IR, heap-copied it, peak-normalized it and ran CabConvolver::prepare twice (FFT
+// plan + one spectrum per partition per side) — and the worklet made that call from
+// inside its per-sample loop, at the declick fade-out zero. Measured on the shipped
+// WASM artifact against a 2.667 ms deadline (48 kHz / 128):
+//
+//     amp_process_stereo(128)      0.025 ms    0.9 % of the deadline
+//     amp_set_cab_builtin         11.4  ms     427 %
+//     amp_load_custom_ir(4096)    45.7  ms    1714 %   -> up to 17 dropped quanta
+//
+// The old design comment argued this was inaudible "because it runs at the
+// output-zero of the declick". That reasoning is wrong, and CLAUDE.md now says so:
+// output-zero prevents a STEP DISCONTINUITY; it does nothing about MISSING THE
+// RENDER DEADLINE. A dropout is not a click, but it is not inaudible either.
+//
+// The fix is the same trick amp_set_model already uses for the four amp voices:
+// keep TWO per-side convolver pairs and an active index. Building the new cab
+// happens in the inactive pair (amp_prepare_cab_*, still heavy — just not on the
+// render path), and the audio-thread step is a single integer write
+// (amp_commit_cab). Deliberately done HERE rather than inside CabConvolver so the
+// convolver itself is untouched (it is being rewritten for finding 3 in parallel).
+//
+// FIDELITY: strictly neutral, and the claim is BIT-IDENTITY. The activated pair was
+// prepared by the same CabConvolver::prepare with the same IR samples and the same
+// 128 partition, and prepare() zeroes the FDL/overlap — exactly what the old
+// in-place prepare() on the live convolver did. core/tests/test_cab_swap.cpp pins
+// max|new - old| == 0 over 128 000 samples per side (~2.7 s), across a scripted
+// session that includes a custom IR and a swap-and-swap-back.
+//
+// INVARIANT: every activation is preceded by a prepare() of the pair being
+// activated. Do NOT "optimise" the prepare away when the requested IR equals the
+// one already sitting in the inactive pair — that pair's FDL still holds history
+// from when it was last live, and activating it without a prepare would splice
+// stale convolution tail into the output.
+
+// Prepare the BUILT-IN cab IR (0 = Clean 2x12, 1 = Brit 4x12) into the INACTIVE
+// pair, regenerated at the engine rate. ALLOCATES and runs FFT setup: call this
+// from the message handler / UI thread, NEVER from a render callback. Nothing
+// audible changes until amp_commit_cab. Returns 1 on success, 0 on a bad handle.
 EMSCRIPTEN_KEEPALIVE
-void amp_set_cab_builtin(void* handle, int which) {
-    if (!handle) return;
+int amp_prepare_cab_builtin(void* handle, int which) {
+    if (!handle) return 0;
     auto* c = static_cast<AmpChain*>(handle);
-    const std::vector<float> ir = which == kCabBrit412
-        ? clipper::dsp::generateBrit4x12IR(c->sr)
-        : clipper::dsp::generateDefaultCab2x12IR(c->sr);
-    loadIrBothSides(c, ir);
+    std::vector<float> ir;
+    builtinIr(c, which, ir);
+    loadIrBothSides(c, c->inactive(), ir);
+    return 1;
 }
 
-// Cab expansion: load a USER IR (mono float samples already at/near the engine
-// rate; the convolver resamples if irSampleRate differs, but the worklet hands us
-// engine-rate samples). The core PEAK-NORMALIZES it (M6.6 — never trust the
-// file's level: a cab must not boost) before preparing both per-side convolvers.
-// Declick-bracketed by the worklet exactly like the built-in swap.
+// Prepare a USER IR (mono float samples already at/near the engine rate; the
+// convolver resamples if irSampleRate differs, but the worklet hands us engine-rate
+// samples) into the INACTIVE pair. The core PEAK-NORMALIZES it (M6.6 — never trust
+// the file's level: a cab must not boost). ALLOCATES: same threading rule as
+// amp_prepare_cab_builtin. Returns 1 on success, 0 if the arguments are unusable —
+// the caller MUST NOT commit on 0, or it would activate a pair holding the previous
+// IR and stale FDL history.
 EMSCRIPTEN_KEEPALIVE
-void amp_load_custom_ir(void* handle, const float* ir_ptr, int ir_len) {
-    if (!handle || !ir_ptr || ir_len <= 0) return;
+int amp_prepare_cab_custom(void* handle, const float* ir_ptr, int ir_len) {
+    if (!handle || !ir_ptr || ir_len <= 0) return 0;
     auto* c = static_cast<AmpChain*>(handle);
     std::vector<float> ir(ir_ptr, ir_ptr + ir_len);
     clipper::dsp::peakNormalizeIR(ir, c->sr);  // NEVER trust the file's level
-    loadIrBothSides(c, ir);
+    loadIrBothSides(c, c->inactive(), ir);
+    return 1;
+}
+
+// Make the most recently prepared cab the live one. This is the ONLY part of a cab
+// change that touches the render path: one integer write, no allocation, no FFT, no
+// loop. Safe to call from inside process() — the worklet calls it at the declick
+// fade-out zero so the IR change also lands without a step discontinuity.
+EMSCRIPTEN_KEEPALIVE
+void amp_commit_cab(void* handle) {
+    if (!handle) return;
+    auto* c = static_cast<AmpChain*>(handle);
+    c->activeCab ^= 1;
+}
+
+// Compatibility wrappers: the pre-2026-07-25 one-shot form, kept so the ABI stays
+// purely additive (core tests, the render/bench tools and any FFI keep working).
+// These are prepare+commit back to back, so they carry the full 11-46 ms cost and
+// are NOT render-callback safe. New callers should use the split pair.
+EMSCRIPTEN_KEEPALIVE
+void amp_set_cab_builtin(void* handle, int which) {
+    if (amp_prepare_cab_builtin(handle, which)) amp_commit_cab(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void amp_load_custom_ir(void* handle, const float* ir_ptr, int ir_len) {
+    if (amp_prepare_cab_custom(handle, ir_ptr, ir_len)) amp_commit_cab(handle);
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -589,7 +692,10 @@ void amp_destroy(void* handle) {
 // so a model swap lands on the right tone), and a poisoned inactive voice would
 // otherwise stay poisoned until it was switched to. Both per-side cab convolvers
 // are cleared too — the FDL holds a full IR's worth of history, so a NaN sample
-// keeps re-emerging for the length of the impulse response.
+// keeps re-emerging for the length of the impulse response. Both DOUBLE-BUFFERED
+// pairs are cleared, for the same reason the inactive amp voices are: an inactive
+// pair that has ever been live still holds its FDL history, and a poisoned one
+// would spray NaN the moment a cab change activated it.
 //
 // What is NOT touched: the loaded IR, the active model index, the cab on/off flag,
 // the engine rate, and every knob position. This un-bricks audio; it does not
@@ -602,8 +708,7 @@ void amp_reset(void* handle) {
     c->jcm.reset();
     c->twin.reset();
     c->ac30.reset();
-    c->cabL.reset();
-    c->cabR.reset();
+    for (auto& pair : c->cabs) { pair.l.reset(); pair.r.reset(); }
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -717,7 +822,10 @@ int amp_latency_samples(void* handle) {
     if (c->model == kAmpJcm800) n = c->jcm.latencySamples();
     else if (c->model == kAmpTwin) n = c->twin.latencySamples();
     else if (c->model == kAmpAc30) n = c->ac30.latencySamples();
-    if (c->cabOn) n += c->cabL.latencySamples();
+    // Both double-buffered pairs share the 128 partition, so a pending cab change
+    // never moves reported latency — but read the ACTIVE pair anyway so this stays
+    // correct if a future cab ever uses a different partition size.
+    if (c->cabOn) n += c->active().l.latencySamples();
     return n;
 }
 
@@ -732,7 +840,7 @@ void amp_process(void* handle, const float* in_ptr, float* out_ptr,
     else if (c->model == kAmpTwin) c->twin.process(in_ptr, out_ptr, num_frames);
     else if (c->model == kAmpAc30) c->ac30.process(in_ptr, out_ptr, num_frames);
     else c->amp.process(in_ptr, out_ptr, num_frames);
-    if (c->cabOn) c->cabL.process(out_ptr, out_ptr, num_frames);  // in-place ok
+    if (c->cabOn) c->active().l.process(out_ptr, out_ptr, num_frames);  // in-place ok
 }
 
 // M6.3 STEREO path. Clean 120: tone+volume -> chorus split -> a per-side cab on
@@ -766,8 +874,9 @@ void amp_process_stereo(void* handle, const float* in_ptr, float* out_l_ptr,
         c->amp.processStereo(in_ptr, out_l_ptr, out_r_ptr, num_frames);
     }
     if (c->cabOn) {
-        c->cabL.process(out_l_ptr, out_l_ptr, num_frames);  // in-place ok
-        c->cabR.process(out_r_ptr, out_r_ptr, num_frames);
+        CabPair& cab = c->active();
+        cab.l.process(out_l_ptr, out_l_ptr, num_frames);  // in-place ok
+        cab.r.process(out_r_ptr, out_r_ptr, num_frames);
     }
 }
 
