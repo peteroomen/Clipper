@@ -11,7 +11,10 @@
 //   4. Sustain/compression wall: output RMS is ~flat across a 20 dB input sweep at
 //      high sustain (the wall-of-sustain assert).
 //   5. Aliasing: shipped 4× at max sustain below the M2 −60 dB bar; naive far worse.
-//   6. VOLUME linearity; stability + hygiene at ±10 V, all rates.
+//   6. VOLUME linearity; stability + hygiene at ±20 V, all rates, with the damped
+//      Newton's iteration count pinned so the globalization cannot quietly degrade.
+//   7. Idle solver cost (docs §34): a PARKED stage does zero Newton iterations, so
+//      the Muff cannot go back to costing more when you are not playing.
 
 #include "clipper/dsp/MuffModel.h"
 
@@ -43,6 +46,26 @@ constexpr clipper::test::XfailDecl kXfMuffDc{
     "high-pass at all — the real pedal's 0.1 uF output cap is absent, while every sibling "
     "carries dcBlockHz = 12.0 because 'the asymmetric clip produces DC')",
     "its own slice: adding a high-pass to a fuzz is a TONE change and needs an A/B"};
+
+// Found by this slice (perf/muff-newton-earlyout, docs §34) when the ±10 V single-
+// oversampling-factor slam test was widened to ±20 V across every rate x factor.
+// PRE-EXISTING, not caused by the residual early-out: the pre-early-out solver was
+// measured at the identical iteration counts in the identical combinations (it merely
+// reported the cap as 61 rather than 60, which is the over-report this slice fixed).
+// The output stays finite and bounded, so this is not the old cascade blow-up — but at
+// those samples the solve has not converged, so the audio there is not the circuit's
+// answer.
+constexpr clipper::test::XfailDecl kXfSlamIterCap{
+    "muff-slam-exhausts-newton-cap",
+    "found 2026-07-25 by perf/muff-newton-earlyout (docs §34), no audit finding number",
+    "a ±20 V slam converges STRICTLY INSIDE the damped Newton's 60-iteration cap at "
+    "every supported sample rate x oversampling factor. It does at 10 of 16 (14-18 "
+    "iterations), but SIX exhaust the cap: 2x oversampling at all four base rates, and "
+    "4x at 88.2 and 96 kHz. The shipped desktop path (4x at 44.1/48 kHz) converges in "
+    "17-18, so this is not shipping-audible today — but 96 kHz x4 is a real user "
+    "configuration, so it is not hypothetical either",
+    "its own slice: the damping/step-clamp strategy under a >|10 V| slam. Do NOT paper "
+    "over it by raising kMaxNewtonIter — that buys iterations, not convergence"};
 
 double goertzelAmp(const std::vector<float>& x, size_t start, size_t n, double f,
                    double fs) {
@@ -379,18 +402,155 @@ void testVolumeLinearity() {
     std::printf("  [ok] VOLUME linearity: r50/r25=%.3f r100/r50=%.3f\n", r50 / r25, r100 / r50);
 }
 
+// --- Test 8: idle solver cost — the Muff must not cost MORE when you stop playing.
+//
+// Audit finding 12, docs §34. This is a CPU property, but it is asserted as an exact
+// solver-work count rather than a wall-clock time, because a timing assertion on a
+// shared CI box is either flaky or so loose it proves nothing.
+//
+// Parked with no input, the previous sample's solution IS this sample's solution, so
+// a healthy solver does ZERO Newton iterations: it evaluates the system once, sees the
+// KCL residual is already at tolerance, and returns. Before the fix it instead ran an
+// iteration whose backtracking line search could not possibly succeed (no trial step
+// can strictly decrease a residual already at the floating-point floor) and burned all
+// 30 backtracks — 31 Ebers-Moll evaluations, 124 exp() calls, per stage per sample,
+// measured at 3x the cost of actually playing.
+//
+// Every rate x oversampling combination is checked because the tolerance has to clear
+// the parked residual in all of them; it is 4.9x above the measured ceiling and that
+// ceiling is rate-independent, but this is the assertion that would notice otherwise.
+void testIdleSolverCost() {
+    int checked = 0;
+    for (double fs : {44100.0, 48000.0, 88200.0, 96000.0}) {
+        for (int os : {1, 2, 4, 8}) {
+            for (float sustain : {0.0f, 0.5f, 1.0f}) {
+                MuffModel m;
+                m.prepare(fs, 128);
+                m.setOversampling(os);
+                m.setParameter(MuffModel::PARAM_SUSTAIN, sustain);
+                m.setParameter(MuffModel::PARAM_TONE, 0.5f);
+                m.setParameter(MuffModel::PARAM_VOLUME, 0.8f);
+
+                // A real signal first, so the stages are NOT sitting on their
+                // prepare-time park: this has to hold for a stage that fell quiet
+                // after being played, which is the case a player actually hears.
+                const auto pluck = sine(220.0, 0.3f, 0.15, fs);
+                std::vector<float> scratch(pluck.size(), 0.0f);
+                m.process(pluck.data(), scratch.data(), static_cast<int>(pluck.size()));
+
+                // Now go quiet, long enough for the coupling caps to fully discharge.
+                const std::vector<float> quiet(static_cast<size_t>(fs * 0.5), 0.0f);
+                std::vector<float> out(quiet.size(), 0.0f);
+                m.process(quiet.data(), out.data(), static_cast<int>(quiet.size()));
+
+                // Fresh high-water mark over the silent stretch only.
+                MuffModel probe;
+                probe.prepare(fs, 128);
+                probe.setOversampling(os);
+                probe.setParameter(MuffModel::PARAM_SUSTAIN, sustain);
+                probe.setParameter(MuffModel::PARAM_TONE, 0.5f);
+                probe.setParameter(MuffModel::PARAM_VOLUME, 0.8f);
+                std::vector<float> o2(quiet.size(), 0.0f);
+                probe.process(quiet.data(), o2.data(), static_cast<int>(quiet.size()));
+                for (int i = 0; i < 4; ++i) {
+                    const int iters = probe.stage(i).lastMaxNewtonIterations();
+                    assert(iters == 0 &&
+                           "PARKED Muff stage is still running Newton iterations: the "
+                           "residual early-out is not firing, so idle costs ~3x playing "
+                           "again (audit finding 12, docs §34). Most likely cause: "
+                           "kNewtonResidualTolA tightened below the 2.06e-18 A parked "
+                           "residual ceiling.");
+                    assert(iters <= BjtStage::kMaxNewtonIter &&
+                           "iteration count above the cap it is compared against");
+                }
+                ++checked;
+            }
+        }
+    }
+    std::printf("  [ok] idle solver cost: 0 Newton iterations when parked, across %d "
+                "rate x oversampling x sustain combinations\n", checked);
+}
+
+// --- Test 7b: slam convergence sweep (±20 V, every rate x oversampling). -------
+//
+// The original version of this drove ±10 V at one oversampling factor and asserted
+// only "finite and bounded". That leaves the damped Newton's actual JOB unmeasured:
+// the backtracking line search exists because a bare Newton oscillates and stalls at
+// the iteration cap under a slam, which previously produced a cascade blow-up. Since
+// the residual early-out (docs §34) touches that same loop, the iteration count is
+// now pinned so the globalization cannot silently degrade.
+//
+// Doubled to ±20 V, and swept across oversampling factors, this immediately found
+// something the ±10 V single-factor version could not: some rate x oversampling
+// combinations EXHAUST the cap. See kXfSlamIterCap — that is pre-existing (measured
+// identical on the pre-early-out solver, which reported it as 61 against a cap of
+// 60), not a regression from this slice.
+void testSlamConvergence() {
+    int worst = 0;
+    double worstFs = 0.0;
+    int worstOs = 0;
+    int checked = 0, atCap = 0;
+    for (double fs : {44100.0, 48000.0, 88200.0, 96000.0}) {
+        for (int os : {1, 2, 4, 8}) {
+            std::vector<float> slam(static_cast<size_t>(fs * 0.2));
+            for (size_t i = 0; i < slam.size(); ++i) slam[i] = (i % 3) ? 20.0f : -20.0f;
+            MuffModel m;
+            m.prepare(fs, 128);
+            m.setOversampling(os);
+            m.setParameter(MuffModel::PARAM_SUSTAIN, 1.0f);
+            m.setParameter(MuffModel::PARAM_TONE, 0.5f);
+            m.setParameter(MuffModel::PARAM_VOLUME, 1.0f);
+            std::vector<float> o(slam.size(), 0.0f);
+            m.process(slam.data(), o.data(), static_cast<int>(slam.size()));
+
+            double pk = 0.0;
+            for (float v : o) {
+                assert(std::isfinite(v) && "non-finite output on a ±20 V slam");
+                pk = std::max(pk, static_cast<double>(std::fabs(v)));
+            }
+            assert(pk < 100.0 && "output blew up on the slam (unbounded)");
+
+            int iters = 0;
+            for (int i = 0; i < 4; ++i)
+                iters = std::max(iters, m.stage(i).lastMaxNewtonIterations());
+            assert(iters > 0 &&
+                   "a ±20 V slam that needed ZERO Newton iterations means the stage "
+                   "never saw the signal — test plumbing broken");
+            // This one used to FAIL: the pre-fix solver returned `it + 1` even when the
+            // loop exhausted the cap, so it reported 61 against kMaxNewtonIter == 60.
+            assert(iters <= BjtStage::kMaxNewtonIter &&
+                   "Newton iteration count exceeded the cap it is compared against "
+                   "(the `return it + 1` over-report — audit finding 12, docs §34)");
+            if (iters > worst) { worst = iters; worstFs = fs; worstOs = os; }
+            if (iters >= BjtStage::kMaxNewtonIter) {
+                ++atCap;
+                std::printf("      [!] %.0f Hz x%d: %d/%d iterations — AT THE CAP "
+                            "(not converged; peak %.2f V, still finite)\n",
+                            fs, os, iters, BjtStage::kMaxNewtonIter, pk);
+            }
+            ++checked;
+        }
+    }
+    std::printf("  [ok] ±20 V slam: finite + bounded, iterations <= cap, across %d "
+                "rate x oversampling combinations (worst %d/%d @ %.0f Hz x%d; %d at "
+                "the cap)\n",
+                checked, worst, BjtStage::kMaxNewtonIter, worstFs, worstOs, atCap);
+
+    // Evaluated ONCE over the whole sweep, not per rate: the property is "at EVERY
+    // supported rate x oversampling", which is uniformly false, so it cannot XPASS at
+    // one rate while XFAILing at another.
+    char detail[256];
+    std::snprintf(detail, sizeof detail,
+                  "%d of %d rate x oversampling combinations exhaust the cap "
+                  "(%d of %d iterations, i.e. NOT converged); worst at %.0f Hz x%d; the "
+                  "other %d converge in 14-18 iterations",
+                  atCap, checked, worst, BjtStage::kMaxNewtonIter, worstFs, worstOs,
+                  checked - atCap);
+    clipper::test::expectXfail(worst < BjtStage::kMaxNewtonIter, kXfSlamIterCap, detail);
+}
+
 // --- Test 7: stability + hygiene (finite, silence->silence, deterministic). ----
 void testStabilityHygiene() {
-    for (double fs : {44100.0, 48000.0, 96000.0}) {
-        // ±10 V square slam: finite + bounded at every rate.
-        std::vector<float> slam(static_cast<size_t>(fs * 0.2));
-        for (size_t i = 0; i < slam.size(); ++i) slam[i] = (i % 3) ? 10.0f : -10.0f;
-        auto o = render(slam, {1.0f, 0.5f, 1.0f}, fs);
-        double pk = 0.0;
-        for (float v : o) { assert(std::isfinite(v) && "non-finite on ±10 V slam"); pk = std::max(pk, (double)std::fabs(v)); }
-        assert(pk < 100.0 && "output blew up on the slam (unbounded)");
-        std::printf("  [ok] slam @ %.0f Hz: finite, bounded (peak %.2f V)\n", fs, pk);
-    }
     const double fs = 48000.0;
     auto in = sine(330.0, 0.3f, 0.2, fs);
     for (float su = 0.0f; su <= 1.0f; su += 0.25f)
@@ -455,7 +615,7 @@ void testStabilityHygiene() {
 
 // Known defects this binary exercises under XFAIL. Printed by --xfail-ledger, which ctest
 // surfaces as ***Skipped in its default summary (see core/CMakeLists.txt).
-const clipper::test::XfailDecl kLedger[] = {kXfMuffDc};
+const clipper::test::XfailDecl kLedger[] = {kXfMuffDc, kXfSlamIterCap};
 
 }  // namespace
 
@@ -484,6 +644,8 @@ int main(int argc, char** argv) {
     testAliasing(96000.0);
     testVolumeLinearity();
     testStabilityHygiene();
+    testSlamConvergence();
+    testIdleSolverCost();
     std::printf("All MuffModel tests passed (XFAILs listed below are known open defects, "
                 "not regressions).\n");
     return clipper::test::reportXfails();

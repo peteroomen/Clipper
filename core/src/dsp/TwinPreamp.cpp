@@ -5,6 +5,7 @@
 
 #include "clipper/dsp/TwinPreamp.h"
 
+#include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/ParamGuard.h"
 
 #include <algorithm>
@@ -121,12 +122,22 @@ void FenderToneStack::process(const float* in, float* out, int numFrames) {
         const double vTn = v[IN] - v[N2];
         const double vBn = v[N3] - v[N4];
         const double vMn = v[N4];
-        iT_ = geqT_ * vTn - IeqT;
-        iB_ = geqB_ * vBn - IeqB;
-        iM_ = geqM_ * vMn - IeqM;
-        vT_ = vTn;
-        vB_ = vBn;
-        vM_ = vMn;
+        // Anti-denormal (Denormal.h). The six trapezoidal cap companions are this
+        // stack's entire memory and every one of them RESTS AT ZERO, so on silence
+        // they ring down into DOUBLE subnormals (< 2.2e-308) and stick. Measured 18.6x
+        // slower on a silent tail than with hardware FTZ before these flushes — the
+        // worst cliff of any single component in the core after the Marshall stack's
+        // 68.2x. Nothing in the audio can see it: out[] is a float cast of a double
+        // node voltage, and float(1e-310) is 0.0f, which is exactly why it survived
+        // (audit finding 11, docs §33). The guard fires 278 orders of magnitude above
+        // the subnormal boundary and ~456 dB below the 24-bit noise floor, so no
+        // audible trajectory reaches it.
+        iT_ = flushDenormal(geqT_ * vTn - IeqT);
+        iB_ = flushDenormal(geqB_ * vBn - IeqB);
+        iM_ = flushDenormal(geqM_ * vMn - IeqM);
+        vT_ = flushDenormal(vTn);
+        vB_ = flushDenormal(vBn);
+        vM_ = flushDenormal(vMn);
         out[n] = static_cast<float>(v[OUT]);
     }
 }
@@ -242,7 +253,10 @@ void TwinPreamp::process(const float* in, float* out, int numFrames) {
             if (brightExtra > 0.0) {
                 // One-pole high-pass -> add scaled highs (treble bleed).
                 const double lp = brightS_ + brightA_ * (x - brightS_);
-                brightS_ = 2.0 * lp - brightS_;
+                // Anti-denormal (Denormal.h): TPT one-pole state, rests at zero, so a
+                // silent tail parks it in the double subnormal range (finding 11,
+                // docs §33). `lp` above is untouched, so this sample is bit-identical.
+                brightS_ = flushDenormal(2.0 * lp - brightS_);
                 const double hp = x - lp;
                 x += brightExtra * hp;
             }

@@ -4836,7 +4836,7 @@ core source); the *ranking* is the point. Post-pass numbers:
 | jcm800 (valve amp) | 1.96× | 51.1 % | 1.14× |
 | twin (valve amp) | 2.90× | 34.5 % | 1.14× |
 | ac30 (valve amp) | 3.80× | 26.3 % | 1.12× |
-| muff (BJT fuzz) | 4.10× | 24.4 % | 1.06× |
+| muff (BJT fuzz) | 4.94× | 20.3 % † | 1.06× |
 | rat (dist pedal) | 35.2× | 2.8 % | 1.80× |
 | sd1 / screamer (overdrive) | ~43× | 2.3 % | ~2.17× |
 | gold (clean-blend drive) | — | — | 1.80× |
@@ -4847,6 +4847,14 @@ core source); the *ranking* is the point. Post-pass numbers:
 | clean amp alone (JC-120, mono) | 1403.6× | 0.07 % | 1.00× |
 | output limiter | 1677.3× | 0.06 % | 1.00× |
 | oversampler alone, 4× (up+down) | — | — | 2.72× |
+
+† **muff row updated 2026-07-25** by the residual early-out (§34, audit finding 12).
+Measured interleaved against the pre-fix solver on the same idle machine in the same
+session, three runs each: **3.81–3.93× / 25.4–26.2 % → 4.78–4.94× / 20.3–20.9 %**.
+The row previously read 4.10× / 24.4 %, measured on different hardware — so take the
+before→after *pair* as the result and the absolute figure as machine-dependent. Note
+this bench riff decays to silence between plucks, so it under-reports the fix: the
+headline win is on **silence**, where the same change is ~13.7× (§34).
 
 Reading it: the **valve amps are the budget** — a valve head plus a dirt pedal,
 cab, and reverb is dominated by the head alone; everything linear is noise. The
@@ -6081,6 +6089,8 @@ asserting the check does *not* fire (a healthy tree; an edit under `core/tests/`
 that pin the toolchain sub-check as advisory, which call the exported `checkArtifact()`
 directly rather than the CLI.
 
+---
+
 ## 32. Audit perf item 2 — the halfband resampler's per-tap integer division
 
 **The finding** (`docs/audits/2026-07-24-project-audit.md:309`, "Fidelity-neutral
@@ -6272,6 +6282,397 @@ after both patch and restore, or `make` measures stale code) and observed to fai
   ~4× of the *calls* rather than making each call cheaper, and halves the JCM800's
   7.5 ms latency. It is a fidelity change (less repeated band-limiting), so it
   needs its own slice and its own argument.
+
+---
+
+## 33. Audit finding 11 — the anti-denormal guards the policy never reached
+
+**Slice:** `fix/denormal-guards` (2026-07-25). **ADR 006.** Fidelity-neutral: measured max
+deviation over the whole lineup is **1.0151e-30** (−600 dB), every sample of it inside a
+silent tail. Goldens untouched. Core ctest 24/24.
+
+### The situation
+
+§25 wrote the anti-denormal policy and `core/include/clipper/dsp/Denormal.h` to enforce it:
+WASM has **no flush-to-zero at all**, so a recursive state that asymptotes toward zero sticks
+in the subnormal range forever and becomes a permanent audio-thread denormal generator. §25
+then applied it to `Biquad` and `OnePoleSmoother` and stopped.
+
+The policy said *every* recursive accumulator. Many models later it had reached about half of
+them — and the tool built to watch for exactly this, `scripts/denormal_bench.cpp`, **only
+exercised the two classes §25 had already fixed**. So it reported a reassuring ~1.00× cliff on
+every run while a RAT ran **1.97× slower on silence than on a full-scale riff** and GOLD pushed
+**393 607 subnormal samples per 10 s of silence** into whatever came after it.
+
+That is the transferable lesson, and it is the same one as §29: *a benchmark that only covers
+the code you already fixed measures your fix, not your product.* The benchmark now has a
+section 2 that drives whole units.
+
+### How to tell a denormal cost from any other cost
+
+Compare a unit's silence time against **the same unit's silence time with hardware FTZ+DAZ
+forced on**, not against its signal time. FTZ changes nothing except the cost of subnormal
+arithmetic, so `silence >> hwFTZ silence` is a denormal cost and nothing else can explain it.
+
+Comparing silence against signal is the trap: a unit can be legitimately cheaper or dearer on
+silence because the tube and BJT Newton solves converge in a different number of iterations
+when nothing is moving. The **Muff** is the worked example — 3.01× dearer on silence than on
+signal, and **no denormal problem at all**, because its hwFTZ column shows the same 3.01×.
+(That cost is `BjtStage`'s Ebers-Moll Newton near the quiescent point. Separate question,
+recorded here so nobody "fixes" it with a flush.)
+
+### Measured, per 10 s at 48 kHz in 128-frame blocks (`build/denormal_bench`)
+
+| Unit | signal | silence **before** | hwFTZ silence | silence **after** | subnormal out **before → after** |
+| --- | --- | --- | --- | --- | --- |
+| RAT | 328 ms | **647 ms (1.97×)** | 305 ms | **309 ms** | 0 → 0 |
+| GOLD | 324 ms | **629 ms (1.94×)** | 296 ms | **305 ms** | **393 607 → 0** |
+| SD-1 | 291 ms | 341 ms (1.17×) | 267 ms | **272 ms** | **429 236 → 0** |
+| Screamer | 291 ms | 355 ms (1.22×) | 270 ms | **268 ms** | **428 761 → 0** |
+| AC30 (full amp) | 3177 ms | 1982 ms | 1584 ms | **1603 ms** | **1588 → 2** |
+| Processor (GAIN 0) | 42 ms | 23 ms | **2 ms** | **4 ms** | **427 187 → 0** |
+| JCM800 / Twin | — | — | (equal) | unchanged | 0 → 0 |
+| Muff | 2280 ms | 6855 ms | 6780 ms | unchanged | 0 → 0 (not denormals) |
+
+Every fixed unit's default-environment silence time now **meets its hardware-FTZ floor**,
+which is the whole point: on WASM the in-code flush is the only FTZ available.
+
+The two residual AC30 samples are a float-cast transient during the ring-down (a normal
+`double` secondary voltage whose `float` cast lands under 1.18e-38 for two samples), not
+parked state — the cliff itself is gone.
+
+**The `subnormal out` column is the part that matters beyond CPU.** A pedal emitting subnormal
+floats makes every stage *after* it slow too, so SD-1 / Screamer / GOLD were each handing the
+amp and the cab ~429 000 subnormal samples per 10 s of silence. It is a chain-wide cost, and it
+was invisible because subnormals are numerically fine — they are just slow.
+
+> Note on the SD-1 / Screamer figures: they read **0** subnormal output until the benchmark was
+> fixed to set their knobs. `prepare()` snaps the LEVEL smoother onto a 0 target, so a pedal
+> left at defaults renders digital silence into its own output and the column is meaningless.
+> Set every knob explicitly when benchmarking these.
+
+### What was unguarded, and what it cost
+
+1. **The output DC blockers** — `dcY1_` in `OverdriveEngine::processChunk` (SD-1, Screamer)
+   and `GoldModel::processChunk`. Every *other* one-pole state in those same loops was already
+   flushed; this one was missed. On silence the recursion degenerates to `y = dcR_ * dcY1_`
+   with `dcR_ ≈ 0.9984`, and in the subnormal range **that product rounds back to itself**, so
+   the state never reaches zero. `dcX1_` needs no guard: it is an input history (assigned,
+   never fed back).
+
+2. **The `chowdsp` WDF capacitor** (`RatModel`, `GoldModel`) — the RAT's entire 1.97×. See
+   ADR 006 for why the guard goes through the library's public API rather than a fork.
+
+3. **The three valve tone stacks' cap companions** — `FenderToneStack` (Twin),
+   `MarshallToneStack` (JCM800), `TopBoostToneStack` (AC30). Isolated and fed true digital
+   silence these measured **18.6×** and **68.2×** against hardware FTZ, the two largest
+   denormal cliffs in the core. The AC30 stack measured a clean 1.00× at knobs-at-noon but was
+   guarded anyway: its poles move with the knobs, and the `vC_`/`iC_` pair for its series input
+   coupling cap is a state the other two stacks do not even have (it was not on the audit's
+   list — the audit enumerated the states the *other* stacks share).
+
+4. **The AC30 power section's OT bandwidth pair** — `otLpS_`/`otHpS_`. Bisected in
+   `Ac30PowerAmp.cpp`; see below, because the result is not where you would guess.
+
+5. **`core/src/Processor.cpp`** — the one place in the tree that hand-rolls the
+   `OnePoleSmoother` recurrence instead of using the guarded primitive, so it never inherited
+   the guard. With GAIN at 0 the value asymptotes toward zero and sticks subnormal (its own ULP
+   shrinks with it, so the increment can never close the gap), and then **every sample is
+   multiplied by a subnormal, forever, including full-scale audio**: 427 187 subnormal output
+   samples and an 11–21× slowdown against FTZ. It now uses `OnePoleSmoother::next()`'s rule
+   verbatim — snap on the **residual**, not the value — so the duplicate and the primitive
+   finally agree. Collapsing the duplicate entirely is a refactor for another slice.
+
+### Three things the measurements corrected, that guessing would not have
+
+**(a) `TriodeStage`'s coupling caps do NOT decay to zero.** The audit's list expected `vCc_`
+to. It does not: the grid-leak node parks at the grid-current bias point, so `vCc_` measures
+**8.15e-4 V after 20 seconds of digital silence**, smallest nonzero magnitude 1.40e-5, zero
+subnormal blocks. `vCk_` parks at `vkQuiescent_` and `vCo_` at `vaQuiescent_` by construction.
+So the most-executed loop in the entire core correctly has **no flush at all**, and
+`TriodeStage.cpp` does not even include `Denormal.h` — with a comment saying why, and pointing
+at `couplingCapVoltage()`, which is public precisely so the claim can be rechecked.
+
+**(b) A guard that cannot fire is not free.** The general rule this slice adds: a state that
+rests at a **nonzero DC operating point** — a cathode cap at its bias voltage, a B+ rail, a
+screen node, a sag envelope at idle draw, a Newton warm start at 100–300 V — can never be
+subnormal, so it gets a comment rather than a flush. Measured, not assumed, at every such site.
+
+**(c) The AC30's cliff was in the OT states, not the TOP CUT states.** The TOP CUT one-poles
+filter `va1AC = va1 − quiescentPlate1()` and look like the obvious candidates. They are not:
+they rest at **2.84e-14** (one ULP of the LTP plate voltage — the Newton fixed point does not
+land exactly on the quiescent value), so they never go subnormal. The OT pair does, because
+this amp has **no global NFB loop**: its secondary settles at *exactly* zero on silence, while
+the JCM800's and the Twin's idle at ~1e-28 because their feedback loops keep a residual alive.
+Bisected on the isolated stage:
+
+| `Ac30PowerAmp` flushes | silence | hwFTZ | ratio | subnormal out |
+| --- | --- | --- | --- | --- |
+| none | 866 ms | 641 ms | **1.35×** | 1588 |
+| TOP CUT only | 834 ms | 629 ms | **1.33×** | 1588 |
+| OT pair only | 638 ms | 644 ms | 0.99× | 2 |
+| both (shipped) | 638 ms | 644 ms | 0.99× | 2 |
+
+The corollary is that the JCM800 and Twin power sections had **no** measured denormal cost
+(3038 vs 3010 ms; 2025 vs 2007 ms). Their OT / presence / feedback flushes are kept as
+guard-rails — `parkState()` *does* set those states to exactly zero, so a post-`reset()` amp
+fed silence is the case that could bite — but they are labelled as guard-rails, not fixes.
+
+### The masking effect, which is why this needs guarding even where it does not bite today
+
+`FenderToneStack` standalone reaches exactly zero and measured 18.6×. Wired up inside
+`TwinPreamp` it never gets there: V1 is a tube stage whose own coupling-cap state parks at a
+nonzero bias point, so it feeds the stack a small but **normal** residual forever instead of
+true digital silence. Measured inside the preamp, the stack idles at **5.7e-11** and the
+composed preamp measures **0.99×** — no cliff.
+
+So the bug is real, the fix is real, and today it is masked in-product by an upstream DC
+residual. That masking is incidental: it depends on a tube stage's idle offset and disappears
+the moment the stack is driven by anything that emits exact zeros — a bypassed stage, a muted
+chain, a `reset()`. Guard the component; assert the property where it holds unconditionally.
+
+### Proving fidelity-neutrality
+
+`flushDenormal` only acts below 1e-30 (−600 dB, ~456 dB under the 24-bit LSB), so the claim is
+that no audible trajectory reaches it. That was measured rather than argued, three ways:
+
+1. **Whole-lineup A/B.** All eleven units (six pedals, four amps, `Processor`) rendered over
+   program audio at knobs **min / noon / max**, pre-guard vs post-guard, compared byte for
+   byte. **99 671 of 4 752 000 samples differ; max |Δ| anywhere = 1.0151e-30**, i.e. the guard
+   floor. GOLD, SD-1, Screamer, Muff, Phaser, Clean 120, JCM800 and Twin are **bit-identical
+   everywhere**. The differences are RAT's silent tail (32–55 samples), `Processor` at GAIN 0
+   (the intended fix — exact zero instead of 1.7e-43), and the AC30 at VOLUME 0, whose entire
+   render peaks at 1.475e-15 and is therefore below the guard floor end to end.
+2. **The goldens and `clipper_player_expectations_tests`** — including its bit-identical
+   (tol 0.0) block B — pass **untouched**.
+3. **In-suite bit-transparency assertions** using `==`, not a tolerance: the WDF network
+   against a real unguarded `chowdsp` network, and `Processor` against the verbatim pre-guard
+   recurrence over 96 000 samples.
+
+### The tests, and how they were made to bite
+
+`clipper_denormal_tests` gains a block 2. It could not simply assert on output samples the way
+block 1 does, because **most of block 2's state is `double` and a double subnormal is invisible
+in the audio** — the models emit a float cast of a double node voltage, and `float(1e-310)` is
+exactly `0.0f`. An output-only test cannot distinguish a flushed model from one grinding
+through subnormals forever. That is the mechanism by which this defect survived both a green
+suite and a clean benchmark.
+
+So the affected classes expose one const diagnostic, `double maxAbsRestingState()` — the
+largest |value| among the states whose value **at rest is zero**, i.e. exactly the states
+`Denormal.h` must flush — and the test asserts it is **exactly 0.0** after a silent tail. It
+deliberately excludes state that rests at a nonzero DC point, and it is documented per class
+with the measurement behind the exclusion. Same role as `lastOutputPeak()` / `lastMaxIters()`;
+not used by the audio path. `TwinPowerAmp`, `Jcm800PowerAmp` and the composed `TwinPreamp`
+deliberately **do not** get one, because nothing in them rests at zero and the assertion would
+have had no teeth.
+
+Every new assertion was then perturbation-checked — remove exactly one flush, rebuild, require
+the suite to go red (`touch` after both patch and restore, per §29's hard-won note):
+
+| guard removed | result |
+| --- | --- |
+| `OverdriveEngine` `dcY1_` | suite fails |
+| `GoldModel` `dcY1_` | suite fails |
+| `FenderToneStack` companions | suite fails |
+| `MarshallToneStack` companions | suite fails |
+| `TopBoostToneStack` companions | suite fails |
+| `Ac30PowerAmp` OT low-pass | suite fails |
+| `Processor` residual snap | suite fails |
+
+The WDF test carries its own teeth internally: it asserts that the **unguarded reference
+network really does go subnormal**, so if a future `chowdsp` bump changes that, the test says
+"this no longer reproduces finding 11" instead of passing vacuously.
+
+### Still open after this slice
+
+- **The Muff's 3.01× silence cost** is `BjtStage`'s Ebers-Moll Newton, not denormals
+  (confirmed: hwFTZ shows the same ratio). Its own perf slice.
+- **`Processor` still duplicates `OnePoleSmoother`.** The recurrences now agree exactly, but
+  the duplication remains; collapsing it touches `Processor`'s prepare/reset/parameter seams.
+- **`web/public/generated/*` must be rebuilt** — `core/` changed, so the committed WASM
+  artifact is stale until `bash scripts/build-wasm.sh` runs. This slice fixes a cliff that is
+  *worst* on WASM (no FTZ at all), so it is worth nothing to a player until the artifact ships.
+
+---
+
+## 34. Audit finding 12 — the Muff cost more CPU when you were *not* playing
+
+**Slice:** `perf/muff-newton-earlyout` (2026-07-25). **Touches:** `core/src/dsp/BjtStage.cpp`,
+`core/include/clipper/dsp/BjtStage.h`, `core/include/clipper/dsp/TubeSolverMode.h`,
+`core/tests/test_muff_model.cpp`, `core/tests/test_tube_solver.cpp`. No component value, no
+Ebers-Moll change, no damping-strategy change. Goldens untouched.
+
+### The symptom, and why the two obvious explanations were both wrong
+
+The audit measured the Muff at **59 % of one core on silence vs 20 % while playing** — 3.2×
+*more* expensive idle than in use. It ruled out the two things one would reach for first:
+forcing hardware FTZ/DAZ changes nothing (so not denormals), and the iteration count does not
+rise (so not extra Newton iterations).
+
+Both rebuttals hold up, and the iteration count is even more damning than the audit thought.
+On this build a parked stage reports **1** Newton iteration (0 once the off-by-one below is
+fixed) against **8–13** on signal. Idle did *strictly less* Newton work than playing and still
+cost ~2.7× the wall time.
+
+### The cause: an unsatisfiable line search
+
+`dampedNewton` accepts a trial step only on a **strict** residual decrease:
+
+```cpp
+if (infNorm3(rt) < cur * (1.0 - 1e-4 * lam)) break;
+lam *= 0.5;
+```
+
+and its only exit was on **step size** (`|lam·dx| < 1e-9` V). There was no residual-based
+early-out. At the quiescent point the residual is already at the floating-point floor, so *no*
+trial step can make it strictly smaller — the search runs all 30 backtracks, every iteration,
+and each backtrack is a full Ebers-Moll + diode system evaluation with 4 `std::exp` calls.
+
+Instrumented, per solve (4 stages × 4× oversampling × every sample):
+
+| input | system evaluations / solve | iterations exhausting all 30 backtracks |
+|---|---|---|
+| silence | **31.00** | **100 %** |
+| tiny (0.001) | 4.10–5.41 | 1.5–2.1 % |
+| hot DI (0.20) | 6.05–6.65 | 1.9–2.0 % |
+| ±20 V slam | 9.92–13.47 | 6.2–10.9 % |
+
+31 evaluations, 124 `exp` calls, per stage per sample, to reproduce an answer already in hand.
+
+### The fix, and the tolerance
+
+A residual-norm early-out at the top of the iteration: if the KCL residual ∞-norm is at
+tolerance, return without solving or line-searching. The residuals are **node currents**, so
+the tolerance is a **current in amps** — `kNewtonResidualTolA`, scaled by the existing
+`tubeSolverTolScale()` rather than a second knob (`TubeSolverMode.h`'s scope note now covers
+the BJT solver too).
+
+The audit also suggested short-circuiting the backtracking when `cur` is already at tolerance.
+**That is dead code** once the top-of-loop check exists — `cur` is `infNorm3(r)` with `r`
+unchanged between the two points, so the branch is unreachable. Not added.
+
+**This is an accuracy trade, and the slice's main finding is that it cannot be otherwise.**
+The pre-fix solver drove the residual all the way to the floating-point floor, so *any*
+early-out that fires declines refinement it performed. Bit-identity was the acceptance bar and
+it is unreachable. Swept against the pre-fix solver over 25 renders (5 sustain × 5 input
+levels, 2 s each at 48 kHz, byte-compared):
+
+| `kNewtonResidualTolA` | fires when parked? | worst difference vs the pre-fix solver |
+|---|---|---|
+| 1e-13 | yes | −81.8 dBFS abs / −89.0 dB rel |
+| 1e-14 | yes | −104.3 / −111.8 |
+| 1e-15 | yes | −108.5 / −116.0 |
+| 1e-16 | yes | −124.3 / −129.5 |
+| **1e-17** | **yes** | **−127.4 / −134.1** ← chosen |
+| 1e-18 | **no** | −132.5 / −137.7 |
+| 1e-19 | **no** | bit-identical (never fires) |
+
+The floor of the window is the **idle residual ceiling**: the largest residual a parked stage
+ever presents, measured at **2.0600e-18 A**. Below that the early-out stops firing and the
+pathology returns. That ceiling is remarkably stable — 2.0600e-18 to five figures at every one
+of 44.1/48/88.2/96/192 kHz × 1/2/4/8 oversampling × sustain MIN/mid/MAX — because at the parked
+point the two large companion terms `gCin·(vin−Vb)` and `histCin` cancel exactly, leaving the
+residual set by the DC branch currents (~0.9 mA scale) and not by `gCin = Cin/T`. So the margin
+does not erode with rate or oversampling factor.
+
+**1e-17 is the tightest value that still fires**: 4.9× above the idle ceiling, and **7.4 dB
+inside the project's established −120 dBFS solver-accuracy gate** — the same bar every valve
+solver's early exit is held to (§25). Per solve the error is 1e-17 A ÷ ~1.9e-4 S ≈ **53
+femtovolts** of node voltage; the −127 dBFS output figure is that 53 fV amplified by the Muff's
+four cascaded high-gain stages and accumulated through their recursive state, i.e. a
+cascade-gain figure rather than a per-solve one.
+
+**The DC operating-point solve deliberately opts out** (`tol = 0.0`). It runs once inside
+`prepare()`, so early-outing it buys nothing measurable — and it is not free, because its final
+iterate seeds `vbQ_`/`vcQ_`/`veQ_` and `settleDC()`, so stopping it earlier shifts the quiescent
+point every render is referenced to. Measured, that shift contributed ~3× more output
+difference than the per-sample early-out alone. `tol = 0.0` makes `cur <= tol` fire only on an
+exactly-zero residual, where the Newton step is exactly zero, so opting out preserves the old
+behaviour exactly rather than approximately.
+
+### Secondary fix: an iteration count above its own cap
+
+`dampedNewton` returned `it + 1`, which over-reports by one when the loop exhausts `maxIter`.
+This was not hypothetical: a ±20 V slam at 96 kHz × 4 made `lastMaxNewtonIterations()` report
+**61** against `kMaxNewtonIter == 60`. It now counts iterations that actually moved the iterate,
+so a parked stage reports 0 and an exhausted loop reports exactly 60.
+
+### Measured results
+
+**Silence vs signal**, 10 s of audio at 48 kHz in 128-frame blocks, interleaved before/after on
+an idle machine, two passes (wall ms):
+
+| sustain | input | before | after | speedup |
+|---|---|---|---|---|
+| 0.00 | silence | 6797–6820 | 498–501 | **13.6×** |
+| 0.00 | hot 0.20 | 2375–2511 | 1857–1863 | 1.28× |
+| 0.60 | silence | 6871–7002 | 494–498 | **13.9×** |
+| 0.60 | hot 0.20 | 2479–2534 | 2007–2108 | 1.22× |
+| 1.00 | silence | 6837–6982 | 488–534 | **13.4×** |
+| 1.00 | hot 0.20 | 2598–2653 | 2114–2186 | 1.21× |
+
+**Silence/signal ratio 2.58–2.87× → 0.23–0.27×.** Idle is now *cheaper* than playing, which is
+the expected ordering; the audit's target of ~1.0 is beaten because the fix removes 30 of 31
+evaluations rather than merely equalising. System evaluations per solve on silence:
+**31.00 → 1.00**. Signal also improves (1.21–1.28×) because program material spends a lot of
+its time in decayed, already-converged samples.
+
+`clipper-bench --unit muff`: **3.81–3.93× realtime / 25.4–26.2 % → 4.78–4.94× / 20.3–20.9 %**
+(§25.3 table updated).
+
+### What is pinned, and proved to have teeth
+
+- **`clipper_muff_tests` → `testIdleSolverCost`** — a parked stage does **0** Newton iterations,
+  across 48 rate × oversampling × sustain combinations. Asserted as a solver-work count, not a
+  wall-clock time, so it is not flaky on a shared CI box. It is checked after driving real
+  signal through first, so it covers a stage that fell quiet after being played rather than one
+  sitting on its `prepare()`-time park.
+- **`clipper_tube_solver_tests`** — the Muff joins the production-vs-reference-mode −120 dBFS
+  gate. Reference mode scales the tolerance to 1e-20, *below* the idle ceiling, so the early-out
+  never fires there and the reference render **is** the pre-fix solver: this measures the
+  early-out's true audio cost on every run. Measured −138.5 to −228.8 dBFS across sustain
+  MIN/mid/MAX at hot-DI and loud input.
+- **Perturbation check** (both directions, confirmed red then restored green):
+  `kNewtonResidualTolA = 1e-19` → `clipper_muff_tests` RED (early-out stops firing);
+  `= 1e-11` → `clipper_tube_solver_tests` RED (truncates real work); restoring the `it + 1`
+  over-report → `clipper_muff_tests` RED.
+
+### Two traps this slice hit, recorded so the next person does not
+
+1. **A whole bit-identity sweep was vacuous.** `MuffModel`'s `PARAM_VOLUME` smoother defaults
+   to **0**, so a Muff driven only through `PARAM_SUSTAIN` renders **digital silence** — and 25
+   of 25 renders compared byte-identical for the wrong reason. The `assert(peak > 0.01)` guard
+   in `test_tube_solver.cpp` is what caught it and is commented to stay. Any harness that
+   renders a pedal must assert its output is non-silent before comparing anything.
+2. **The worst case was not the obvious one.** The early-out's audio cost at hot-DI level is
+   −228 dBFS; at a *loud* input (riff ×5) and sustain 0.70 it is −127 dBFS, 19 dB worse. A test
+   that only ever drove hot DI would have reported a number 100 dB better than the truth. The
+   gate now drives MIN/mid/MAX sustain at **both** levels.
+
+### Newly found, left as an XFAIL
+
+Widening the old ±10 V single-oversampling-factor slam test to **±20 V across every rate ×
+factor** exposed a pre-existing defect: **6 of 16 combinations exhaust the 60-iteration cap**
+(2× oversampling at all four base rates, and 4× at 88.2 and 96 kHz). Output stays finite and
+bounded — this is not the old cascade blow-up — but at those samples the solve has not
+converged, so the audio there is not the circuit's answer. Confirmed pre-existing by measuring
+the identical counts on the pre-early-out solver (which reported the cap as 61). The shipped
+desktop path (4× at 44.1/48 kHz) converges in 17–18 iterations, but 96 kHz × 4 is a real user
+configuration. Recorded as `muff-slam-exhausts-newton-cap` in `clipper_muff_tests`' XFAIL
+ledger; **do not** paper over it by raising `kMaxNewtonIter`, which buys iterations rather than
+convergence.
+
+### Not affected
+
+The control-rate parameter-sampling XFAIL still measures the Muff at **1.473 absolute inside
+25 ms**, unchanged — it is about which smoothed value a chunk keeps, not about the solver, so
+it stays open. The valve solvers (`TriodeStage`, the three power amps) use a plain step-size
+exit with **no** backtracking line search, so finding 12 does not apply to them.
+
+**The WASM artifact must be rebuilt** (`bash scripts/build-wasm.sh`) — `core/` changed.
+
+---
 
 ## 36. Audit finding 15 — the diode ideality factor, and a reference fitted to the bug
 

@@ -41,6 +41,7 @@
 #include <array>
 #include <vector>
 
+#include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/TriodeStage.h"
 
 namespace clipper::dsp {
@@ -81,6 +82,14 @@ public:
     void setSourceImpedance(double rs);          // follower output impedance (Ohm)
     void setKnobs(double bass, double mid, double treble);  // each in [0,1]
     void process(const float* in, float* out, int numFrames);
+
+    // Anti-denormal diagnostic (Denormal.h, docs §33) — not used by the audio path.
+    // All six cap companions rest at zero, so after a silent tail this must be EXACTLY
+    // 0.0. Measured 68.2x slower than hardware FTZ before the flush: the worst denormal
+    // cliff of any single component in the core.
+    double maxAbsRestingState() const {
+        return maxAbsState(vT_, iT_, vB_, iB_, vM_, iM_);
+    }
 
 private:
     void rebuild();  // recompute the 5x5 conductance matrix + its inverse

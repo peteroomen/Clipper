@@ -402,6 +402,14 @@ void RatModel::processChunk(const float* in, float* out, int numFrames) {
             d.diodes.incident(d.P1.reflected());
             d.P1.incident(d.diodes.reflected());
             w[i] = static_cast<float>(chowdsp::wdft::voltage<double>(d.Cp));
+            // Anti-denormal (Denormal.h): the WDF shunt cap's wave state is the
+            // network's recursive memory. On silence it rings down into DOUBLE
+            // subnormals and sticks there — the RAT's float output stays clean (the
+            // double->float cast of a subnormal is 0.0f) but the CPU pays for every
+            // sample: measured 328 ms of signal vs 658 ms of silence (2.01x) per 10 s
+            // before this flush. Flushed AFTER the voltage above is read, so this
+            // sample is bit-identical to the unguarded network. Finding 11, docs §33.
+            flushDenormalWdfCapacitor(d.Cp);
         }
     }
     d.os.downsample(out, numFrames);  // -> out (base rate)
