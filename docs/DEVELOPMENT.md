@@ -266,7 +266,14 @@ as the real LM308 stage does.
    bandwidth + slew limits (the LM308) are modeled as of **§11.4 M6.5** — placed
    at the op-amp output inside oversampling, before the diode clamp.
 2. **Clipper (WDF, `chowdsp_wdf`).** Antiparallel silicon diode pair to ground
-   (1N914-ish: Is = 2.52 nA, Vt = 25.85 mV, one diode/side → ±0.6 V knee), built
+   (the 1N4148/1N914 SPICE card: Is = 2.52 nA **with its ideality factor
+   n = 1.752**, Vt = 25.85 mV, one diode/side → a soft ±0.6–0.7 V knee; the
+   library carries `n` as its `nDiodes` argument, `Vt_eff = n·Vt = 45.29 mV`).
+   **The ideality factor was missing from M1 until 2026-07-25** and the clipper
+   actually topped out at 0.32–0.43 V, 5–6 dB below what this bullet claimed —
+   audit finding 15, fixed in **§36** (ADR 008), which carries the measured
+   before/after curve, the refit of `DiodeClipperADAA::kDefaultVk` (0.35 → 0.67)
+   and the level/THD consequence at realistic input. Built
    exactly like the library's RC diode-clipper example: a resistive voltage
    source (series Rs = 1 kΩ) in **parallel** with a shunt capacitor (Cp = 10 nF),
    feeding a `DiodePairT` root (Werner et al. "Best" model). Output is the
@@ -361,14 +368,22 @@ propagates from the cap.
 to compare first-order antiderivative antialiasing against oversampling — it is
 **not** the production clipper.
 
-- **Transfer curve match:** `f(x) = Vk·tanh(x/Vk)`, `Vk = 0.35`. The WDF diode
+- **Transfer curve match:** `f(x) = Vk·tanh(x/Vk)`, **`Vk = 0.67`**. The WDF diode
   node's *static* curve (measured by settling the WDF at DC) has small-signal
   slope ≈ 1 (diodes off) and a soft knee whose output saturates around
-  0.33–0.39 V under realistic overdrive (it keeps rising ~logarithmically rather
-  than hard-limiting at 0.6 V). `tanh(x/Vk)·Vk` matches the unity origin slope
-  exactly and limits at ±Vk; Vk = 0.35 places the ceiling in the WDF's measured
-  mid/high-drive band. The tanh flattens where the diode keeps creeping up — a
-  documented approximation; the comparison is about aliasing, not an exact curve.
+  **0.55–0.74 V** under realistic overdrive (it keeps rising ~logarithmically
+  rather than hard-limiting). `tanh(x/Vk)·Vk` matches the unity origin slope
+  exactly and limits at ±Vk; Vk is **fitted to the WDF by least squares in dB**
+  over 41 log-spaced drive levels from 0.5 V to 100 V (optimum 0.6659, rms error
+  0.605 dB; the shipped 0.67 costs 0.607 dB). The tanh flattens where the diode
+  keeps creeping up — a documented approximation; the comparison is about
+  aliasing, not an exact curve.
+  **`Vk` was 0.35 until 2026-07-25**, quoting a "0.33–0.39 V" WDF measurement that
+  was really a measurement of the missing diode ideality factor — the reference had
+  been fitted to the bug. See **§36** (audit finding 15, ADR 008) for the refit and
+  for `testAdaaTracksWdf`, the new test that ties the two constants together so this
+  cannot silently recur. The table below predates the fix; its *relative* ADAA-vs-WDF
+  verdict is unaffected (both paths moved together) but its absolute dB are stale.
 - **ADAA:** first-order (Parker/Esqueda/Bilbao/Välimäki 2016)
   `y[n] = (F1(x[n]) − F1(x[n−1]))/(x[n] − x[n−1])`, `F1(x) = Vk²·ln(cosh(x/Vk))`
   (evaluated stably), with the divided-difference fall-back
@@ -4821,7 +4836,7 @@ core source); the *ranking* is the point. Post-pass numbers:
 | jcm800 (valve amp) | 1.96× | 51.1 % | 1.14× |
 | twin (valve amp) | 2.90× | 34.5 % | 1.14× |
 | ac30 (valve amp) | 3.80× | 26.3 % | 1.12× |
-| muff (BJT fuzz) | 4.10× | 24.4 % | 1.06× |
+| muff (BJT fuzz) | 4.94× | 20.3 % † | 1.06× |
 | rat (dist pedal) | 35.2× | 2.8 % | 1.80× |
 | sd1 / screamer (overdrive) | ~43× | 2.3 % | ~2.17× |
 | gold (clean-blend drive) | — | — | 1.80× |
@@ -4832,6 +4847,14 @@ core source); the *ranking* is the point. Post-pass numbers:
 | clean amp alone (JC-120, mono) | 1403.6× | 0.07 % | 1.00× |
 | output limiter | 1677.3× | 0.06 % | 1.00× |
 | oversampler alone, 4× (up+down) | — | — | 2.72× |
+
+† **muff row updated 2026-07-25** by the residual early-out (§34, audit finding 12).
+Measured interleaved against the pre-fix solver on the same idle machine in the same
+session, three runs each: **3.81–3.93× / 25.4–26.2 % → 4.78–4.94× / 20.3–20.9 %**.
+The row previously read 4.10× / 24.4 %, measured on different hardware — so take the
+before→after *pair* as the result and the absolute figure as machine-dependent. Note
+this bench riff decays to silence between plucks, so it under-reports the fix: the
+headline win is on **silence**, where the same change is ~13.7× (§34).
 
 Reading it: the **valve amps are the budget** — a valve head plus a dirt pedal,
 cab, and reverb is dominated by the head alone; everything linear is noise. The
@@ -6066,6 +6089,8 @@ asserting the check does *not* fire (a healthy tree; an edit under `core/tests/`
 that pin the toolchain sub-check as advisory, which call the exported `checkArtifact()`
 directly rather than the CLI.
 
+---
+
 ## 32. Audit perf item 2 — the halfband resampler's per-tap integer division
 
 **The finding** (`docs/audits/2026-07-24-project-audit.md:309`, "Fidelity-neutral
@@ -6468,3 +6493,533 @@ network really does go subnormal**, so if a future `chowdsp` bump changes that, 
 - **`web/public/generated/*` must be rebuilt** — `core/` changed, so the committed WASM
   artifact is stale until `bash scripts/build-wasm.sh` runs. This slice fixes a cliff that is
   *worst* on WASM (no FTZ at all), so it is worth nothing to a player until the artifact ships.
+
+---
+
+## 34. Audit finding 12 — the Muff cost more CPU when you were *not* playing
+
+**Slice:** `perf/muff-newton-earlyout` (2026-07-25). **Touches:** `core/src/dsp/BjtStage.cpp`,
+`core/include/clipper/dsp/BjtStage.h`, `core/include/clipper/dsp/TubeSolverMode.h`,
+`core/tests/test_muff_model.cpp`, `core/tests/test_tube_solver.cpp`. No component value, no
+Ebers-Moll change, no damping-strategy change. Goldens untouched.
+
+### The symptom, and why the two obvious explanations were both wrong
+
+The audit measured the Muff at **59 % of one core on silence vs 20 % while playing** — 3.2×
+*more* expensive idle than in use. It ruled out the two things one would reach for first:
+forcing hardware FTZ/DAZ changes nothing (so not denormals), and the iteration count does not
+rise (so not extra Newton iterations).
+
+Both rebuttals hold up, and the iteration count is even more damning than the audit thought.
+On this build a parked stage reports **1** Newton iteration (0 once the off-by-one below is
+fixed) against **8–13** on signal. Idle did *strictly less* Newton work than playing and still
+cost ~2.7× the wall time.
+
+### The cause: an unsatisfiable line search
+
+`dampedNewton` accepts a trial step only on a **strict** residual decrease:
+
+```cpp
+if (infNorm3(rt) < cur * (1.0 - 1e-4 * lam)) break;
+lam *= 0.5;
+```
+
+and its only exit was on **step size** (`|lam·dx| < 1e-9` V). There was no residual-based
+early-out. At the quiescent point the residual is already at the floating-point floor, so *no*
+trial step can make it strictly smaller — the search runs all 30 backtracks, every iteration,
+and each backtrack is a full Ebers-Moll + diode system evaluation with 4 `std::exp` calls.
+
+Instrumented, per solve (4 stages × 4× oversampling × every sample):
+
+| input | system evaluations / solve | iterations exhausting all 30 backtracks |
+|---|---|---|
+| silence | **31.00** | **100 %** |
+| tiny (0.001) | 4.10–5.41 | 1.5–2.1 % |
+| hot DI (0.20) | 6.05–6.65 | 1.9–2.0 % |
+| ±20 V slam | 9.92–13.47 | 6.2–10.9 % |
+
+31 evaluations, 124 `exp` calls, per stage per sample, to reproduce an answer already in hand.
+
+### The fix, and the tolerance
+
+A residual-norm early-out at the top of the iteration: if the KCL residual ∞-norm is at
+tolerance, return without solving or line-searching. The residuals are **node currents**, so
+the tolerance is a **current in amps** — `kNewtonResidualTolA`, scaled by the existing
+`tubeSolverTolScale()` rather than a second knob (`TubeSolverMode.h`'s scope note now covers
+the BJT solver too).
+
+The audit also suggested short-circuiting the backtracking when `cur` is already at tolerance.
+**That is dead code** once the top-of-loop check exists — `cur` is `infNorm3(r)` with `r`
+unchanged between the two points, so the branch is unreachable. Not added.
+
+**This is an accuracy trade, and the slice's main finding is that it cannot be otherwise.**
+The pre-fix solver drove the residual all the way to the floating-point floor, so *any*
+early-out that fires declines refinement it performed. Bit-identity was the acceptance bar and
+it is unreachable. Swept against the pre-fix solver over 25 renders (5 sustain × 5 input
+levels, 2 s each at 48 kHz, byte-compared):
+
+| `kNewtonResidualTolA` | fires when parked? | worst difference vs the pre-fix solver |
+|---|---|---|
+| 1e-13 | yes | −81.8 dBFS abs / −89.0 dB rel |
+| 1e-14 | yes | −104.3 / −111.8 |
+| 1e-15 | yes | −108.5 / −116.0 |
+| 1e-16 | yes | −124.3 / −129.5 |
+| **1e-17** | **yes** | **−127.4 / −134.1** ← chosen |
+| 1e-18 | **no** | −132.5 / −137.7 |
+| 1e-19 | **no** | bit-identical (never fires) |
+
+The floor of the window is the **idle residual ceiling**: the largest residual a parked stage
+ever presents, measured at **2.0600e-18 A**. Below that the early-out stops firing and the
+pathology returns. That ceiling is remarkably stable — 2.0600e-18 to five figures at every one
+of 44.1/48/88.2/96/192 kHz × 1/2/4/8 oversampling × sustain MIN/mid/MAX — because at the parked
+point the two large companion terms `gCin·(vin−Vb)` and `histCin` cancel exactly, leaving the
+residual set by the DC branch currents (~0.9 mA scale) and not by `gCin = Cin/T`. So the margin
+does not erode with rate or oversampling factor.
+
+**1e-17 is the tightest value that still fires**: 4.9× above the idle ceiling, and **7.4 dB
+inside the project's established −120 dBFS solver-accuracy gate** — the same bar every valve
+solver's early exit is held to (§25). Per solve the error is 1e-17 A ÷ ~1.9e-4 S ≈ **53
+femtovolts** of node voltage; the −127 dBFS output figure is that 53 fV amplified by the Muff's
+four cascaded high-gain stages and accumulated through their recursive state, i.e. a
+cascade-gain figure rather than a per-solve one.
+
+**The DC operating-point solve deliberately opts out** (`tol = 0.0`). It runs once inside
+`prepare()`, so early-outing it buys nothing measurable — and it is not free, because its final
+iterate seeds `vbQ_`/`vcQ_`/`veQ_` and `settleDC()`, so stopping it earlier shifts the quiescent
+point every render is referenced to. Measured, that shift contributed ~3× more output
+difference than the per-sample early-out alone. `tol = 0.0` makes `cur <= tol` fire only on an
+exactly-zero residual, where the Newton step is exactly zero, so opting out preserves the old
+behaviour exactly rather than approximately.
+
+### Secondary fix: an iteration count above its own cap
+
+`dampedNewton` returned `it + 1`, which over-reports by one when the loop exhausts `maxIter`.
+This was not hypothetical: a ±20 V slam at 96 kHz × 4 made `lastMaxNewtonIterations()` report
+**61** against `kMaxNewtonIter == 60`. It now counts iterations that actually moved the iterate,
+so a parked stage reports 0 and an exhausted loop reports exactly 60.
+
+### Measured results
+
+**Silence vs signal**, 10 s of audio at 48 kHz in 128-frame blocks, interleaved before/after on
+an idle machine, two passes (wall ms):
+
+| sustain | input | before | after | speedup |
+|---|---|---|---|---|
+| 0.00 | silence | 6797–6820 | 498–501 | **13.6×** |
+| 0.00 | hot 0.20 | 2375–2511 | 1857–1863 | 1.28× |
+| 0.60 | silence | 6871–7002 | 494–498 | **13.9×** |
+| 0.60 | hot 0.20 | 2479–2534 | 2007–2108 | 1.22× |
+| 1.00 | silence | 6837–6982 | 488–534 | **13.4×** |
+| 1.00 | hot 0.20 | 2598–2653 | 2114–2186 | 1.21× |
+
+**Silence/signal ratio 2.58–2.87× → 0.23–0.27×.** Idle is now *cheaper* than playing, which is
+the expected ordering; the audit's target of ~1.0 is beaten because the fix removes 30 of 31
+evaluations rather than merely equalising. System evaluations per solve on silence:
+**31.00 → 1.00**. Signal also improves (1.21–1.28×) because program material spends a lot of
+its time in decayed, already-converged samples.
+
+`clipper-bench --unit muff`: **3.81–3.93× realtime / 25.4–26.2 % → 4.78–4.94× / 20.3–20.9 %**
+(§25.3 table updated).
+
+### What is pinned, and proved to have teeth
+
+- **`clipper_muff_tests` → `testIdleSolverCost`** — a parked stage does **0** Newton iterations,
+  across 48 rate × oversampling × sustain combinations. Asserted as a solver-work count, not a
+  wall-clock time, so it is not flaky on a shared CI box. It is checked after driving real
+  signal through first, so it covers a stage that fell quiet after being played rather than one
+  sitting on its `prepare()`-time park.
+- **`clipper_tube_solver_tests`** — the Muff joins the production-vs-reference-mode −120 dBFS
+  gate. Reference mode scales the tolerance to 1e-20, *below* the idle ceiling, so the early-out
+  never fires there and the reference render **is** the pre-fix solver: this measures the
+  early-out's true audio cost on every run. Measured −138.5 to −228.8 dBFS across sustain
+  MIN/mid/MAX at hot-DI and loud input.
+- **Perturbation check** (both directions, confirmed red then restored green):
+  `kNewtonResidualTolA = 1e-19` → `clipper_muff_tests` RED (early-out stops firing);
+  `= 1e-11` → `clipper_tube_solver_tests` RED (truncates real work); restoring the `it + 1`
+  over-report → `clipper_muff_tests` RED.
+
+### Two traps this slice hit, recorded so the next person does not
+
+1. **A whole bit-identity sweep was vacuous.** `MuffModel`'s `PARAM_VOLUME` smoother defaults
+   to **0**, so a Muff driven only through `PARAM_SUSTAIN` renders **digital silence** — and 25
+   of 25 renders compared byte-identical for the wrong reason. The `assert(peak > 0.01)` guard
+   in `test_tube_solver.cpp` is what caught it and is commented to stay. Any harness that
+   renders a pedal must assert its output is non-silent before comparing anything.
+2. **The worst case was not the obvious one.** The early-out's audio cost at hot-DI level is
+   −228 dBFS; at a *loud* input (riff ×5) and sustain 0.70 it is −127 dBFS, 19 dB worse. A test
+   that only ever drove hot DI would have reported a number 100 dB better than the truth. The
+   gate now drives MIN/mid/MAX sustain at **both** levels.
+
+### Newly found, left as an XFAIL
+
+Widening the old ±10 V single-oversampling-factor slam test to **±20 V across every rate ×
+factor** exposed a pre-existing defect: **6 of 16 combinations exhaust the 60-iteration cap**
+(2× oversampling at all four base rates, and 4× at 88.2 and 96 kHz). Output stays finite and
+bounded — this is not the old cascade blow-up — but at those samples the solve has not
+converged, so the audio there is not the circuit's answer. Confirmed pre-existing by measuring
+the identical counts on the pre-early-out solver (which reported the cap as 61). The shipped
+desktop path (4× at 44.1/48 kHz) converges in 17–18 iterations, but 96 kHz × 4 is a real user
+configuration. Recorded as `muff-slam-exhausts-newton-cap` in `clipper_muff_tests`' XFAIL
+ledger; **do not** paper over it by raising `kMaxNewtonIter`, which buys iterations rather than
+convergence.
+
+### Not affected
+
+The control-rate parameter-sampling XFAIL still measures the Muff at **1.473 absolute inside
+25 ms**, unchanged — it is about which smoothed value a chunk keeps, not about the solver, so
+it stays open. The valve solvers (`TriodeStage`, the three power amps) use a plain step-size
+exit with **no** backtracking line search, so finding 12 does not apply to them.
+
+**The WASM artifact must be rebuilt** (`bash scripts/build-wasm.sh`) — `core/` changed.
+
+---
+
+## 36. Audit finding 15 — the diode ideality factor, and a reference fitted to the bug
+
+**This is a deliberate tone change.** The RAT is now ~5 dB louder and correspondingly
+cleaner at the same DISTORTION setting, because the diode clamp it runs into sits
+where a real 1N4148 pair's clamp sits. Nothing was re-gained to hide that; see
+**"The voicing question"** below for the numbers and the recommendation.
+
+### The defect
+
+`core/src/dsp/RatModel.cpp` built its stage-2 clipper as
+
+```cpp
+chowdsp::wdft::DiodePairT<double, decltype(P1)> diodes { P1, kDiodeIs, kDiodeVt, 1.0 };
+// kDiodeIs = 2.52e-9;  kDiodeVt = 25.85e-3;
+```
+
+`Is = 2.52 nA` is the 1N4148's SPICE saturation current. The card it comes from reads
+`IS=2.52n **N=1.752**` — and the ideality factor was dropped. `DiodePairT`'s fourth
+argument is `nDiodes`, used internally as `Vt_eff = nDiodes * Vt`, which is exactly
+where an ideality factor belongs (`GoldModel` already used it that way for its
+germanium pair, `kGeIdeality = 1.3`). With `n = 1.0` the junction's effective thermal
+voltage was 1.752× too small, so the pair only reached 0.6 V at roughly 30 A.
+
+Measured settled clipping-node voltage of the actual WDF tree (192 kHz = 4× the
+worklet rate, DC drive, 20 000 samples of settling):
+
+| drive `vin` | `n = 1.000` (shipped) | `n = 1.752` (1N4148) | Δ |
+|---|---|---|---|
+| 0.5 V | 0.2926 | 0.4489 | +3.72 dB |
+| 1 V | 0.3218 | 0.5476 | +4.62 dB |
+| 3 V | 0.3548 | 0.6219 | +4.88 dB |
+| 10 V | 0.3761 | 0.6778 | +5.12 dB |
+| 30 V | 0.4047 | 0.7089 | +4.87 dB |
+| 100 V | 0.4212 | 0.7379 | +4.87 dB |
+| 600 V | 0.4341 | 0.7906 | +5.21 dB |
+
+So the pedal clipped at **0.32–0.43 V** where this file, `RatModel.h` and §6 bullet 2
+all documented **±0.6 V** — 5–6 dB low, with a harder knee than a real silicon pair.
+`BjtStage.h` has always had the physics right (`nVt = 0.0453`, i.e. n ≈ 1.75), so the
+codebase disagreed with itself about what a silicon junction is.
+
+Through the model, at the shipped default knobs (DISTORTION 0.7 / FILTER 0.4 /
+LEVEL 0.8), the clipping-node peak on a 0.3 V-peak 220 Hz sine:
+
+| DISTORTION | before | after |
+|---|---|---|
+| 0.2 | 0.213 V | 0.223 V |
+| 0.4 | 0.323 V | 0.549 V |
+| 0.7 (default) | **0.381 V** | **0.678 V** |
+| 1.0 | 0.418 V | 0.737 V |
+
+### The second-order damage: a reference fitted to the defect
+
+`core/include/clipper/dsp/DiodeClipperADAA.h` is the memoryless `Vk·tanh(x/Vk)`
+stand-in that exists **solely** so `--stage2 adaa` can compare first-order ADAA
+against oversampling on the same nonlinearity. Its header said
+
+> "The WDF diode node … saturates around ~0.33-0.39 V under realistic overdrive …
+> Vk = 0.35 places the tanh ceiling in the WDF's measured mid/high-drive output band."
+
+That measurement was real, and it was a measurement **of the bug**. Nothing tied the
+two constants together afterwards, so fixing the diode without refitting `Vk` would
+have left the A/B path silently comparing two different circuits — the worst failure
+mode available to a comparison path, because it keeps agreeing.
+
+`kDefaultVk` is now **derived by measurement**: a least-squares fit in dB of
+`Vk·tanh(x/Vk)` against the settled WDF node voltage over 41 log-spaced drive levels
+spanning 0.5–100 V (the range the RAT's op-amp output covers from a quiet pick at low
+DISTORTION to a cranked knob on a hot humbucker).
+
+| fit target | optimum `Vk` | rms dB error | error at the shipped 0.35 |
+|---|---|---|---|
+| old (`n = 1.000`) WDF | 0.3703 | 0.716 dB | 0.860 dB |
+| **new (`n = 1.752`) WDF** | **0.6659** | **0.605 dB** | **5.346 dB** |
+
+`kDefaultVk = 0.67` (the rounded optimum; 0.607 dB rms, a 0.002 dB penalty over
+0.6659). Note the old 0.35 was already 0.14 dB worse than its *own* target's optimum.
+
+Model-level WDF-vs-ADAA gap at default knobs, 220 Hz, three input levels — this is
+the number the A/B path's honesty rests on:
+
+| input peak | before (both wrong, consistently) | after (both right) |
+|---|---|---|
+| 0.10 | rms +0.09 dB / peak −0.19 dB | rms +0.72 dB / peak +0.57 dB |
+| 0.30 | rms −0.42 dB / peak −0.71 dB | rms +0.20 dB / peak −0.10 dB |
+| 0.60 | rms −0.75 dB / peak −0.98 dB | rms −0.04 dB / peak −0.26 dB |
+
+The *before* column looks fine, and that is the point: the two stages were wrong
+**together**. Had the diode been fixed and `Vk` left at 0.35, the ADAA peak would sit
+~5.7 dB below the WDF.
+
+### The same constant, in GOLD
+
+`core/src/dsp/GoldModel.cpp` had `kSiIdeality = 1.0` in its **silicon
+counterfactual** — the measurement-only diode option that exists to show what the
+germanium pair buys. Dropping the ideality factor pulls the silicon knee *down toward*
+the germanium's, so the A/B measured almost nothing. Settled node voltage in GOLD's
+network (`Rs = 2.2 kΩ`, `Cp = 4.7 nF`):
+
+| drive | Ge (`n = 1.3`) | Si (`n = 1.0`) | Si (`n = 1.752`) | old contrast | new contrast |
+|---|---|---|---|---|---|
+| 1 V | 0.2485 | 0.3022 | 0.5150 | +1.70 dB | **+6.33 dB** |
+| 3 V | 0.2888 | 0.3346 | 0.5868 | +1.28 dB | +6.16 dB |
+| 10 V | 0.3223 | 0.3558 | 0.6423 | +0.86 dB | +5.99 dB |
+| 30 V | 0.3529 | 0.3844 | 0.6732 | +0.74 dB | +5.61 dB |
+| 100 V | 0.3741 | 0.4009 | 0.7023 | +0.60 dB | +5.47 dB |
+
+Measured *through the model*, clean half switched out, 0.3 V sine: the contrast goes
+from **+0.96…+1.56 dB** to **+5.88…+6.11 dB**, which is the ~6–7 dB a real
+1N34A-vs-1N4148 comparison gives. **The germanium side was and is correct** (n = 1.3,
+knee 0.286 V at 1 mA, matching its own documentation), so GOLD's actual voice — the
+pedal players hear — is **unchanged by this slice**. Only its counterfactual moved.
+
+### The voicing question — measured, reported, NOT compensated
+
+Raising the ceiling 5 dB makes the RAT louder and, at a given knob, less saturated.
+This pedal has history here: §11.1 (M6.1) records a "the RAT has no balls" report
+fixed with an input trim and a +54 → +66 dB max-gain change. CLAUDE.md forbids
+calibrating a constant to absorb an error elsewhere (`kFullScaleSecV` absorbed two
+factor-of-2 mistakes that way), so **nothing was re-gained here**. The numbers:
+
+At the shipped default knobs (0.7 / 0.4 / 0.8), 220 Hz sine, tail RMS/peak/THD:
+
+| input peak | out rms | out peak | rms dBFS | THD |
+|---|---|---|---|---|
+| 0.05 | 0.2469 → **0.4120** | 0.2717 → 0.4677 | −12.15 → **−7.70** | 31.4 % → 25.7 % |
+| 0.10 | 0.2663 → **0.4586** | 0.2860 → 0.5021 | −11.49 → **−6.77** | 35.1 % → 32.2 % |
+| 0.30 (hot humbucker) | 0.2882 → **0.5092** | 0.3039 → 0.5420 | −10.80 → **−5.86** | 38.3 % → 36.5 % |
+| 0.60 | 0.3001 → 0.5283 | 0.3152 → 0.5525 | −10.46 → −5.54 | 38.4 % → 38.6 % |
+
+A 110 Hz pluck at 0.3 V peak: rms −12.59 → **−8.39 dBFS** (+4.20 dB), peak 0.305 →
+0.534.
+
+Onset of clipping, DISTORTION knob position where THD crosses a threshold (0.3 V sine):
+
+| threshold | before | after |
+|---|---|---|
+| THD ≥ 5 % | dist 0.24 | dist 0.32 |
+| THD ≥ 10 % | dist 0.27 | dist 0.35 |
+
+**Judgement: a compensating voicing slice is NOT indicated.** The onset moves by
+0.08 of knob travel — less than one position on a ten-mark face — and at the shipped
+default (0.7) the pedal is still at 36 % THD, i.e. thoroughly saturated. The change
+is in the *opposite direction* to the M6.1 complaint: this is +5 dB of output, not
+less. What genuinely does want a look, as its own slice, is **downstream staging** —
+5 dB more into the amp and the worklet's soft limiter is a level-structure question,
+not a RAT-voicing one. The golden below shows exactly that: the JCM800 absorbs the
+level (broadband RMS moves −0.15 dB) and converts it into a different harmonic
+distribution.
+
+### Aliasing did not regress
+
+The knee got *softer*, so the alias floor should hold or improve.
+`build/clipper-render --alias-report` (f0 = 4186 Hz, dist 0.70):
+
+| os | worst-alias before | worst-alias after | fund amp before → after |
+|---|---|---|---|
+| 1 | −18.1 dB | −17.8 dB | 0.412 → 0.730 |
+| 2 | −21.0 dB | −21.1 dB | 0.424 → 0.744 |
+| 4 (default) | −104.1 dB | −102.4 dB | 0.428 → 0.757 |
+| 8 | −106.2 dB | −106.3 dB | 0.434 → 0.767 |
+
+The 4× floor moves 1.7 dB while the fundamental rises **4.98 dB**, so alias-to-signal
+actually improves by ~3.3 dB. `clipper_rat_tests` also measures 4× at −87.7 dB against
+its own harsher in-test conditions and −90.9 dB at dist 1.0 (bar −60 dB).
+
+### Goldens: `rat_jcm800` MOVED and was deliberately NOT re-blessed
+
+`clipper_player_expectations_tests --golden-report`:
+
+```
+GOLDEN-DELTA rat_jcm800       CHANGED   -0.15  6.50  800  10
+GOLDEN-DELTA sd1_twin_reverb  UNCHANGED +0.00  0.07  317  13
+GOLDEN-DELTA muff_twin        UNCHANGED +0.00  0.00  252  13
+GOLDEN-DELTA ts_ac30          UNCHANGED +0.00  0.00 1008   7
+GOLDEN-DELTA clean120_chorus  UNCHANGED -0.00  0.11  252   7
+```
+
+Only the RAT rig moved, which is the scope check: nothing else in the chain was
+touched. Per third-octave band, `rat_jcm800`:
+
+| band | golden | new | Δ |
+|---|---|---|---|
+| 200 Hz | 48.74 | 48.46 | −0.27 |
+| 400 Hz | 36.34 | 36.65 | +0.31 |
+| 635 Hz | 23.99 | 26.49 | **+2.50** |
+| 800 Hz | 10.02 | 16.52 | **+6.50** |
+| 1008 Hz | 12.94 | 7.09 | **−5.85** |
+| 1270 Hz | 12.35 | 12.15 | −0.20 |
+| 1600 Hz | 10.63 | 15.52 | **+4.89** |
+| 2016 Hz | 7.89 | 6.59 | −1.30 |
+| 2540 Hz | 4.60 | 7.55 | **+2.96** |
+| 3200 Hz | 2.51 | 4.34 | +1.83 |
+
+Broadband RMS barely moves (−0.15 dB) because the JCM800 is already compressing;
+what changes is *where the energy sits* — the upper-mid harmonic structure is
+redistributed by up to 6.5 dB as the amp is driven further into its own nonlinearity.
+That is an audible tone change and it is the intended consequence.
+
+**The goldens were left un-blessed and `clipper_player_expectations_tests` therefore
+fails on this branch.** Re-blessing is a human ritual (`scripts/update-goldens.sh`
+requires a clean tree, a confirmation typed at a real tty, and a `GOLDENS.md`
+justification) and it is not this slice's call to make — a reviewer should look at the
+table above and decide. See §31.
+
+### Tests: what changed and why
+
+- **`test_rat_model.cpp` `testClippingCeiling`** — had ONE property, relative
+  ("doubling the input barely moves the peak"). A saturating clipper satisfies that at
+  *any* ceiling, which is precisely how this defect survived four milestones. Added an
+  **absolute** property against an external reference (the 1N4148 SPICE card and its
+  0.62–0.72 V datasheet forward-drop band): the clipping node must land in 0.60–0.85 V
+  at realistic drive, plus a soft-knee check that the toe is below the slammed ceiling.
+  *Teeth proven:* the pre-fix diode fails it by 5–6 dB. Measured 0.727 / 0.737 V, toe
+  0.664 V.
+- **`test_rat_model.cpp` `testAdaaTracksWdf` (new)** — drives the WDF and ADAA stage-2
+  modes through the real model at the shipped default knobs and asserts their rms and
+  peak agree within 1.5 dB. This is the assertion that would have caught the fitted
+  reference. It does **not** re-derive `Vk` from `RatModel`'s constants, so it is not
+  a tautology. *Teeth proven:* with the corrected diode and `kDefaultVk` put back to
+  0.35 it fails on the rms bound.
+- **`test_rat_model.cpp` `testFactorOneRegression`** — hardcoded os=1 sample values,
+  **regenerated**. This is a drift guard, not a property: it pins whatever the
+  single-rate path does, so a deliberate clipper change necessarily invalidates it and
+  it must be *recaptured*, never loosened. The samples grew by about the 5 dB the
+  ceiling grew (index 2048: −0.34848 → −0.61019, +4.86 dB; index 4095: −0.35369 →
+  −0.63336, +5.05 dB), which is the check that nothing *else* moved with it. Precedent:
+  it was regenerated the same way for M6.5.
+- **`test_gold_model.cpp` `testGermaniumKnee`** — **re-baselined, and its bounds got
+  TIGHTER, not looser.** Say it precisely, because the sloppy version of this sentence
+  reads as the one thing CLAUDE.md forbids ("don't loosen a bound to go green"): as
+  *assertions* both bounds are now strictly harder to satisfy — onset ratio `5.0×` →
+  `20.0×` and slope ratio `0.25×` → `0.05×`. What got looser is the **margin between
+  the bound and the measurement** (onset 26×/5× = 5.2× of headroom → 189×/20× = 9.4×),
+  which is the point: neither assertion was pinning the bug, both were genuine
+  properties that the bug made *harder* to satisfy, because a dropped ideality factor
+  pulled the silicon knee toward the germanium's. Measured 26× → **189×** onset and
+  0.032 → **0.0063** slope ratio.
+- **`test_gold_model.cpp` `testDiodeLevelContrast` (new)** — the knee test compares
+  *shapes* via ratios and passed happily while the two ceilings sat 1 dB apart. This
+  asserts the thing the A/B is for, against the external ~6 dB 1N34A-vs-1N4148
+  reference, with the clean half switched out and the measurement taken past both
+  knees: contrast must land in 4.0–9.0 dB. *Teeth proven:* reverting `kSiIdeality` to
+  1.0 fails it. Measured 5.88–6.11 dB.
+
+### Still open after this slice
+
+- **The goldens.** `rat_jcm800` is stale by up to 6.50 dB in one band, by design. A
+  human decides.
+- **The committed WASM artifact.** `core/` changed, so `web/public/generated/*` and
+  `.build-stamp.json` are stale and `check-artifact.mjs` will correctly fail. Out of
+  this slice's remit (see §31 — the fix is `bash scripts/build-wasm.sh`, never a
+  hand-edited stamp).
+- **Downstream level staging.** The RAT delivers ~5 dB more into the amp than it did.
+  Its own slice, with the table above as the input.
+- **§7's `--alias-report` table** is still stale (noted in §32); the numbers in this
+  section supersede it for the RAT.
+## 37. Audit finding 16 (DC half) — the Muff's missing output coupling cap
+
+**Slice:** `fix/muff-output-dc-blocker` (2026-07-25). **Touches:** `core/src/dsp/MuffModel.cpp`,
+`core/tests/test_muff_model.cpp`. **ADR 009.** **Deliberate tone change** — the `muff_twin`
+golden is re-blessed, by 0.80 dB in one band.
+
+### The finding, and why it is only half fixed here
+
+Audit finding 16 names **two** defects: the Muff has **no output DC blocker** and **almost
+no bass**. This slice fixes the first. The second is held to its own slice, and the reason
+is recorded in ADR 009: fixing the bass means adding a series base resistor whose value
+cannot be taken from the schematic until an upstream discrepancy is settled — this model's
+clip-stage base node measures **~1.8 kΩ against the real stage's ~4 kΩ**, so the schematic's
+100 kΩ produces 33 dB of divider loss here and turns SUSTAIN into a threshold switch.
+Choosing 47 kΩ instead makes the pedal sound right by compensating for a number that is
+itself wrong, which is the practice CLAUDE.md explicitly forbids. It may still be the right
+call — but it is a separate argument, and bundling it would have bought an uncontroversial
+fix at the price of that argument.
+
+The split is justified by measurement, not taste. Golden movement, the two halves:
+
+| | broadband | worst band |
+|---|---|---|
+| **output cap alone (this slice)** | **−0.03 dB** | **0.80 dB @ 5080 Hz** |
+| both halves together | −5.85 dB | 26.04 dB @ 1270 Hz |
+
+The base resistors account for essentially the entire tone change.
+
+### The defect
+
+`MuffModel::processChunk` ended `w[i] = x * outGain;` — no high-pass anywhere in the model.
+`BjtStage::processSample` returns `Vc - vcQ_`, which removes the **quiescent** DC only, not
+the dynamic DC that four asymmetrically-clipping common-emitter stages rectify when driven.
+Every sibling pedal carries `dcBlockHz = 12.0` for precisely this reason (`SdModel.cpp`:
+"the asymmetric clip produces DC"). Measured before: up to **+0.47 V, 28 % of peak**.
+
+### The fix, and where it sits
+
+The real pedal's **0.1 µF output cap into the 100 k VOLUME pot**:
+`f = 1/(2π·100k·0.1µ) = 15.92 Hz`. Derived from the Muff's own two components rather than
+copied from the siblings' 12 Hz. Placed **after Q4 and before the VOLUME multiply**, because
+in the pedal the cap precedes the pot, and **inside the oversampled domain**, so it also
+blocks the rectified DC before it reaches the decimator.
+
+`kOutputTrim` **stays at 0.40** — see the hazard below.
+
+### Measured
+
+DC on signal, across three SUSTAIN settings and a +0.1 V input-offset case (the offset case
+matters because deleting a coupling cap changes nothing on a clean input — §29):
+
+* **+0.47 V / 28 % of peak → 0.00000–0.00003 % of peak**, against a 1 % bar.
+
+What is *not* fixed, and is now measured, printed and named rather than skipped:
+
+* `finding16-muff-almost-no-bass` — low E (82.4 Hz) at **−41.14 dB** re 1 kHz, open A
+  **−34.04 dB**, 60 Hz **−49.87 dB**. This **independently reproduces the audit's "41 dB
+  down" to the digit**, which is a useful confirmation that the audit's number was right.
+* `muff-slam-exhausts-newton-cap` — still **6 of 16** rate × oversampling combinations at
+  the 60-iteration cap. The base-resistor branch fixes this as a *side effect* (worst 18/60,
+  3.3× margin): a series resistance ahead of the exponential base-emitter junction bounds
+  the base-current step, so there is less stiffness for the damped Newton's line search to
+  globalize against. That win is claimed on that branch, not this one.
+
+The opposite-direction bar stays a **hard assert** on both branches: 30 Hz must remain
+> 12 dB down (measured **−72.01 dB**). A first-order-per-stage network cannot satisfy both
+directions by accident, so the pair is what makes either meaningful — if someone deletes a
+coupling cap or DC-couples a stage to chase the bass bars, this fails.
+
+### Two traps this slice surfaced
+
+**1. A removed `ledgerMain` would have silently disabled the XFAIL ledger.** The bundled
+slice deleted the `ledgerMain` call from `main()` on the assumption it would have no XFAILs
+left, while `core/CMakeLists.txt` still registered `clipper_muff_tests_xfail_ledger`. Left
+that way, `--xfail-ledger` runs the whole suite and exits **0**, so ctest reports the ledger
+entry as **Passed** instead of `***Skipped` — the line whose entire job is to advertise open
+defects becomes a silent duplicate test run. Verified fixed: ledger exits **77**.
+
+This is the third instance of the same shape, and it is worth naming as a class: the
+advisory native job that failed on 100 % of runs (§ CI), the artifact check that only
+verified existence (§31), and now this. **A guard that is present but inert is worse than an
+absent one**, because its presence is read as coverage.
+
+**2. `kOutputTrim` is a stacking hazard.** The bundled version raised it 0.40 → 0.45 to hold
+the TONE 0 corner under the 2.0 V ceiling *once the bass returned*. This slice leaves it at
+0.40, and measures SUSTAIN 1.0 peaking at **2.0096 V** — already marginally over that
+ceiling from the cap alone. Whoever lands the base-resistor half must **re-derive the trim
+against the combination**, not stack a second adjustment on top. Absorbing two unrelated
+corrections into one constant is exactly how `kFullScaleSecV` ended up hiding two separate
+factor-of-2 mistakes.
+
+**The WASM artifact was rebuilt** — `core/` changed.

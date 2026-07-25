@@ -43,6 +43,33 @@ All five: 2.0 s standard pluck, 16-bit mono 48 kHz.
 
 <!-- New entries go directly below this line, newest first. -->
 
+## 2026-07-25 — 1 golden(s) re-blessed
+
+- **Blessed by:** Claude
+- **On top of:** `4b557f7` build: rebuild the WASM artifact for the corrected diode ideality
+
+| Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |
+| --- | --- | --- | --- | --- |
+| `rat_jcm800` | CHANGED | -0.15 dB | 6.50 dB @ 800 Hz | 10 |
+| `sd1_twin_reverb` | UNCHANGED | +0.00 dB | 0.07 dB @ 317 Hz | 13 |
+| `muff_twin` | UNCHANGED | +0.00 dB | 0.00 dB @ 252 Hz | 13 |
+| `ts_ac30` | UNCHANGED | +0.00 dB | 0.00 dB @ 1008 Hz | 7 |
+| `clean120_chorus` | UNCHANGED | -0.00 dB | 0.11 dB @ 252 Hz | 7 |
+
+**Justification:** Audit finding 15: RatModel's WDF clipper carried the 1N4148's Is=2.52nA from its SPICE card but with the ideality factor dropped to 1.0, where the same card reads N=1.752. The pair therefore clipped at 0.32-0.43 V instead of 0.6-0.7 V - germanium territory, 5-6 dB low - while three places in the tree documented +/-0.6 V. Measured clipping node after the fix: 0.727/0.737 V peak with a 0.664 V soft-knee toe, inside the 1N4148 datasheet's 0.60-0.85 V forward-drop band; before it measured 0.381 V at the shipped default DISTORTION 0.7. The OLD golden encoded the defect, so this render is the correct one. Broadband RMS moves only -0.15 dB (the JCM800 is already compressing) but the energy redistributes: +6.50 dB @ 800 Hz, -5.85 dB @ 1008 Hz, +4.89 dB @ 1600 Hz, +2.96 dB @ 2540 Hz. The other four goldens are UNCHANGED (<= 0.11 dB), which is the scope check. Approved by the project owner on 2026-07-25 after reviewing this per-band table; the confirmation prompt was answered via a pty on that explicit authorization. Docs section 36, ADR 008.
+- **On top of:** `f8ca424` wip: output coupling cap only (pre-bless checkpoint)
+
+| Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |
+| --- | --- | --- | --- | --- |
+| `rat_jcm800` | UNCHANGED | +0.00 dB | 0.00 dB @ 1008 Hz | 10 |
+| `sd1_twin_reverb` | UNCHANGED | +0.00 dB | 0.07 dB @ 317 Hz | 13 |
+| `muff_twin` | CHANGED | -0.03 dB | 0.80 dB @ 5080 Hz | 13 |
+| `ts_ac30` | UNCHANGED | +0.00 dB | 0.00 dB @ 1008 Hz | 7 |
+| `clean120_chorus` | UNCHANGED | -0.00 dB | 0.11 dB @ 252 Hz | 7 |
+
+**Justification:** Audit finding 16, DC half only. The Muff had NO output high-pass at all: BjtStage returns Vc - vcQ_, which removes the QUIESCENT DC but not the dynamic DC four asymmetrically-clipping common-emitter stages rectify. Measured before: up to +0.47 V, 28 percent of peak, on signal. This adds the component the real pedal has and the model did not - 0.1 uF into the 100 k VOLUME pot, f = 15.92 Hz - placed after Q4 and before the VOLUME multiply, inside the oversampled domain. Measured after: 0.00000-0.00003 percent of peak across three sustain settings and a +0.1 V input-offset case, against a 1 percent bar. The golden moves only -0.03 dB broadband with a 0.80 dB worst band at 5080 Hz, i.e. removing DC from a fuzz is nearly inaudible in the spectrum; the audible win is that the output no longer rides on an offset. Deliberately does NOT include the series base resistors that fix the same finding's BASS half - that is a separate slice because its value departs from the schematic to compensate for a clip-stage base-node impedance this model measures at ~1.8 k against the real stage's ~4 k (ADR 009). The bass defect remains measured and named by XFAIL finding16-muff-almost-no-bass at low E -41.14 dB. Owner authorised the split and the DC half landing on 2026-07-25; prompt answered via pty on that authorisation.
+
+
 ## 2026-07-25 — changelog opened (no goldens changed)
 
 - **Blessed by:** n/a — this entry records the state the changelog starts from.

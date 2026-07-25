@@ -1,8 +1,11 @@
 // Clipper — tube-solver precision switch (test instrumentation, docs §25).
 //
 // Every valve solver (TriodeStage / cathode follower, LtpInverter, the pentode
-// plate & grid solves) converges its per-sample Newton to a PRODUCTION tolerance
-// chosen so the audio-band error of early exit sits far below -120 dBFS. The
+// plate & grid solves) AND the BJT solver (BjtStage's damped Newton, whose
+// residual early-out landed with audit finding 12 — docs §34; the name kept its
+// "tube" spelling rather than churning nine call sites) converges its per-sample
+// Newton to a PRODUCTION tolerance chosen so the audio-band error of early exit
+// sits far below -120 dBFS. The
 // regression test (test_tube_solver.cpp) proves that choice by re-rendering the
 // same program material with every tolerance tightened by 1000x ("reference mode")
 // and asserting the two renders differ by less than -120 dBFS.
@@ -19,8 +22,10 @@
 
 namespace clipper::dsp {
 
-// Multiplier applied to every tube solver's convergence tolerance. 1.0 in
-// production; 1e-3 in the regression test's reference mode.
+// Multiplier applied to every solver's convergence tolerance — dimensionless, so
+// it scales the valve solvers' step tolerances (volts) and BjtStage's residual
+// tolerance (amps) alike. 1.0 in production; 1e-3 in the regression test's
+// reference mode.
 inline double& tubeSolverTolScale() {
     static double scale = 1.0;
     return scale;

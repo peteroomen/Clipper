@@ -215,18 +215,69 @@ void testGermaniumKnee(double fs) {
     const double siLo = thdAt(lo, GoldModel::DIODE_SILICON);
     const double siHi = thdAt(hi, GoldModel::DIODE_SILICON);
     // Onset: at the quiet end the germanium is already making measurable harmonics
-    // while the silicon pair is still essentially linear (measured ~26x).
-    assert(geLo > siLo * 5.0 && "germanium does not bend earlier than silicon");
+    // while the silicon pair is still essentially linear.
+    //
+    // RE-BASELINED 2026-07-25 (audit finding 15, docs §36). The silicon
+    // counterfactual had its ideality factor dropped to 1.0, which pulled its knee
+    // DOWN toward the germanium's and made this test's job easier than it should
+    // have been: the onset ratio measured ~26x and the slope ratio ~0.032. With the
+    // real 1N4148 device (n = 1.752) the two diodes are properly far apart and both
+    // ratios improve by an order of magnitude — measured onset **189x** and slope
+    // ratio **0.0063**.
+    //
+    // Both bounds below are therefore TIGHTER than they were (5x -> 20x, 0.25x ->
+    // 0.05x): as assertions they are strictly harder to satisfy. What widened is the
+    // MARGIN between bound and measurement (5.2x of headroom -> 9.4x), which is
+    // deliberate — these are the "these are clearly different devices" floor, not a
+    // fit to the measurement. Neither assertion was pinning the bug; both were genuine
+    // properties that the bug made harder to satisfy. Do not read this as loosening a
+    // bound to go green (CLAUDE.md forbids that, and rightly).
+    assert(geLo > siLo * 20.0 && "germanium does not bend earlier than silicon");
     // Slope: across the same 20 dB the germanium THD grows by a far smaller factor
-    // (measured ~23x vs silicon's ~730x) — that is the soft knee, as a number.
+    // (measured ~23x vs silicon's ~3672x) — that is the soft knee, as a number.
     const double geSlope = geHi / (geLo + 1e-12);
     const double siSlope = siHi / (siLo + 1e-12);
-    assert(geSlope < 0.25 * siSlope &&
+    assert(geSlope < 0.05 * siSlope &&
            "germanium THD-vs-level slope is not markedly gentler than silicon");
     std::printf(
         "  [ok] germanium knee @ %.0f Hz: Ge THD %.2f%% -> %.2f%% (x%.2f over 20 dB), "
-        "Si %.2f%% -> %.2f%% (x%.2f) — Ge bends EARLIER and GENTLER\n",
-        fs, geLo * 100, geHi * 100, geSlope, siLo * 100, siHi * 100, siSlope);
+        "Si %.4f%% -> %.2f%% (x%.2f) — Ge bends EARLIER (x%.0f) and GENTLER (x%.4f)\n",
+        fs, geLo * 100, geHi * 100, geSlope, siLo * 100, siHi * 100, siSlope,
+        geLo / (siLo + 1e-12), geSlope / siSlope);
+}
+
+// --- Test 3b: the germanium-vs-silicon LEVEL contrast, absolutely. -----------
+// The knee test above measures the SHAPE difference (onset + slope) and passes on
+// ratios. It passed at ~26x onset even while the two diodes' clipping ceilings sat
+// only ~1 dB apart, because a dropped ideality factor moves a knee without changing
+// the shape of the comparison much (audit finding 15). So it never noticed that the
+// silicon "counterfactual" had stopped being silicon.
+//
+// This asserts the thing the A/B is FOR, against an external reference: a 1N34A
+// point-contact germanium pair and a 1N4148 silicon pair clip roughly a factor of
+// two in voltage apart — the datasheet forward drops are ~0.3 V and ~0.65 V, i.e.
+// ~6 dB. The clean half is switched OUT so this reads the clipper alone, and the
+// measurement is taken well past both knees so it reads the CEILINGS, not the toe.
+// Measured 5.88-6.11 dB across the drive range; it was 0.96-1.56 dB before.
+void testDiodeLevelContrast(double fs) {
+    const double f0 = 220.0;
+    std::printf("  [--] Ge-vs-Si ceiling contrast @ %.0f Hz (clean half OUT):\n", fs);
+    for (float g : {0.10f, 0.35f, 0.60f, 1.00f}) {
+        const Params p{g, 0.5f, 0.7f};
+        const auto in = sine(f0, 0.3f, 0.6, fs);
+        const double ge = tailRms(render(in, p, fs, 4, GoldModel::DIODE_GERMANIUM, false), fs);
+        const double si = tailRms(render(in, p, fs, 4, GoldModel::DIODE_SILICON, false), fs);
+        assert(ge > 1e-4 && si > 1e-4 && "a diode option produced no output");
+        const double contrast = toDb(si) - toDb(ge);
+        // A real 1N34A-vs-1N4148 pair is ~6-7 dB apart. Bracket generously but
+        // nowhere near the ~1 dB the dropped ideality factor produced.
+        assert(contrast > 4.0 &&
+               "silicon barely clips above germanium — is the 1N4148 ideality factor "
+               "missing again? (audit finding 15, docs §36)");
+        assert(contrast < 9.0 && "silicon clips implausibly far above germanium");
+        std::printf("       gain %.2f: Ge rms %.4f, Si rms %.4f -> %+.2f dB "
+                    "(4.0-9.0 dB band)\n", g, ge, si, contrast);
+    }
 }
 
 // --- Test 4: the TREBLE control (normal sense: clockwise BRIGHTENS). ---------
@@ -406,6 +457,7 @@ int main() {
     testCrossfade(96000.0);
     testGermaniumKnee(44100.0);
     testGermaniumKnee(96000.0);
+    testDiodeLevelContrast(48000.0);
     testTreble(44100.0);
     testTreble(96000.0);
     testAliasing(44100.0);

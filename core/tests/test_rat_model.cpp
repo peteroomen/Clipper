@@ -289,6 +289,22 @@ void testSlewRate(double fs) {
 }
 
 // --- Test 2: clipping ceiling. ----------------------------------------------
+// TWO properties, and until 2026-07-25 only the first was asserted — which is
+// precisely how audit finding 15 shipped and survived four milestones:
+//
+//   (a) RELATIVE: doubling the input barely moves the peak. A saturating clipper
+//       does this at ANY ceiling, so this can never catch a wrong diode. Kept —
+//       it is still the property that proves the clipper is in circuit at all.
+//   (b) ABSOLUTE: the peak lands where an antiparallel 1N4148 pair's clamp lands.
+//       This is the assertion the file was missing. The reference is EXTERNAL to
+//       our netlist — the 1N4148 SPICE model card (`IS=2.52n N=1.752`) and the
+//       datasheet forward-voltage spec (0.62-0.72 V over 1-10 mA) — not a curve
+//       re-derived from RatModel's own constants, so it does catch a wrong device.
+//       With the ideality factor dropped to 1.0 the clipping node topped out at
+//       0.322-0.434 V and (b) fails by 5-6 dB.
+//
+// Measured with the FILTER wide open and LEVEL at unity so stage 3 is essentially
+// transparent and the peak read here IS the clipping-node voltage. See docs §36.
 void testClippingCeiling() {
     const double fs = 48000.0;
     const double f0 = 220.0;
@@ -301,7 +317,24 @@ void testClippingCeiling() {
     assert(p1 > 1e-3 && "no output");
     const double ratio = p2 / p1;
     assert(ratio < 1.3 && "output peak did not saturate (clipper bypassed?)");
-    std::printf("  [ok] clipping ceiling: 2x input -> %.3fx peak\n", ratio);
+
+    // (b) The absolute knee. Both drive levels above are well past the knee (the
+    // op-amp output is tens of volts at DISTORTION 0.9), so both must sit inside a
+    // real silicon pair's forward-voltage band. Measured 0.727 / 0.740 V.
+    for (double p : {p1, p2}) {
+        assert(p > 0.60 &&
+               "clipping node below a silicon diode pair's knee — is the 1N4148 "
+               "ideality factor missing again? (audit finding 15, docs §36)");
+        assert(p < 0.85 && "clipping node above a silicon diode pair's forward drop");
+    }
+    // And the knee is SOFT, not a wall: from just-into-clipping to slammed the
+    // ceiling still creeps up logarithmically. A hard limiter would not.
+    const double soft = peakAt(0.05f);
+    assert(soft > 0.40 && soft < p1 - 0.02 &&
+           "the diode knee is not behaving like a soft exponential junction");
+    std::printf("  [ok] clipping ceiling: 2x input -> %.3fx peak; node peak %.3f / %.3f V "
+                "(1N4148 pair, 0.60-0.85 V band); soft-knee toe %.3f V\n",
+                ratio, p1, p2, soft);
 }
 
 // --- Test 3: filter behavior. Runs at the given sample rate. -----------------
@@ -558,6 +591,14 @@ void testPassbandIntegrity() {
 // around the WDF stage, so it must match bit-closely. Regenerated for M6.5 (the
 // LM308 op-amp model now sits in the signal path at every factor) — the guard
 // pins the current single-rate path (shaping + LM308 + clip) against future drift.
+//
+// REGENERATED 2026-07-25 for the diode ideality fix (audit finding 15, docs §36).
+// This is a drift guard, not a property: it pins whatever the single-rate path
+// currently does, so a DELIBERATE change to the clipper necessarily invalidates it
+// and it must be recaptured rather than loosened. The samples grew by roughly the
+// 5 dB the corrected diode ceiling grew (e.g. index 2048: -0.34848 -> -0.61019,
+// +4.86 dB; index 4095: -0.35369 -> -0.63336, +5.05 dB), which is the expected
+// magnitude and is the check that nothing else moved with it.
 void testFactorOneRegression() {
     const double fs = 44100.0, f0 = 987.0;
     const int N = 4096;
@@ -567,15 +608,52 @@ void testFactorOneRegression() {
     auto out = renderOS(in, {0.8f, 0.35f, 0.9f}, fs, 1);
     struct G { int i; float v; };
     const G golden[] = {
-        {128, -1.448836029e-01f}, {256, -2.423077524e-01f}, {512, -2.132538408e-01f},
-        {1024, -1.587393880e-01f}, {2048, -3.484802246e-01f}, {3000, 3.611189127e-01f},
-        {4095, -3.536947966e-01f},
+        {128, -2.599118650e-01f}, {256, -4.244312048e-01f}, {512, -3.632787466e-01f},
+        {1024, -2.437708825e-01f}, {2048, -6.101886630e-01f}, {3000, 6.327062845e-01f},
+        {4095, -6.333589554e-01f},
     };
     double maxDiff = 0.0;
     for (const auto& g : golden)
         maxDiff = std::max(maxDiff, static_cast<double>(std::fabs(out[g.i] - g.v)));
     assert(maxDiff < 1e-5 && "os=1 output diverged from the M1 golden reference");
     std::printf("  [ok] factor-1 regression: max |os1 - M1 golden| = %.2e\n", maxDiff);
+}
+
+// --- Test M2-3b: the ADAA reference must track the WDF stage it replaces. -----
+// `--stage2 adaa` exists for ONE purpose: to compare first-order ADAA against
+// oversampling on the SAME nonlinearity. That only means anything if the two stages
+// clip at the same place, so `DiodeClipperADAA::kDefaultVk` is not a free parameter
+// — it is a measurement of the WDF diode node.
+//
+// It was a free parameter in practice: kDefaultVk was fitted to the WDF while the
+// WDF had a dropped diode ideality factor, and nothing tied the two together
+// afterwards (audit finding 15, docs §36). Nothing here re-derives Vk from
+// RatModel's constants — the two stages are driven identically through the real
+// model and their OUTPUT levels compared, so a Vk that drifts away from the diode
+// (or a diode that drifts away from Vk) fails. Measured gap at Vk = 0.67: rms
+// +0.72 / +0.20 / -0.04 dB and peak +0.57 / -0.10 / -0.26 dB over the three input
+// levels; with the stale Vk = 0.35 the ADAA peak is ~5.7 dB low.
+void testAdaaTracksWdf() {
+    const double fs = 48000.0, f0 = 220.0;
+    for (double amp : {0.1, 0.3, 0.6}) {
+        auto in = sine(f0, static_cast<float>(amp), 0.6, fs);
+        // The pedal's shipped default knobs (rig.ts KNOB_DEFAULTS).
+        auto w = renderOS(in, {0.7f, 0.4f, 0.8f}, fs, 4, RatModel::STAGE2_WDF);
+        auto a = renderOS(in, {0.7f, 0.4f, 0.8f}, fs, 4, RatModel::STAGE2_ADAA);
+        const double rw = tailRms(w, fs), ra = tailRms(a, fs);
+        const double pw = tailPeak(w, fs), pa = tailPeak(a, fs);
+        assert(rw > 1e-3 && ra > 1e-3 && "a stage-2 mode produced no output");
+        const double dRms = toDb(ra) - toDb(rw);
+        const double dPk = toDb(pa) - toDb(pw);
+        assert(std::fabs(dRms) < 1.5 &&
+               "the ADAA stand-in's LEVEL diverged from the WDF diode stage — "
+               "kDefaultVk and the WDF diode are out of step (docs §36)");
+        assert(std::fabs(dPk) < 1.5 &&
+               "the ADAA stand-in's CEILING diverged from the WDF diode stage — "
+               "kDefaultVk and the WDF diode are out of step (docs §36)");
+        std::printf("  [ok] adaa tracks wdf @ in %.2f: rms %+.2f dB, peak %+.2f dB "
+                    "(|Δ| < 1.5 dB)\n", amp, dRms, dPk);
+    }
 }
 
 // --- Test M2-4: ADAA effectiveness on the memoryless clipper. -----------------
@@ -657,6 +735,7 @@ int main() {
     testAliasingAtMaxGain(96000.0);
     testPassbandIntegrity();
     testFactorOneRegression();
+    testAdaaTracksWdf();
     testAdaaEffectiveness();
     testPerfSanity();
     std::printf("All RatModel tests passed.\n");
