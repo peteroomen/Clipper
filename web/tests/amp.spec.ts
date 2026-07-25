@@ -188,83 +188,118 @@ test('amp params: raising the JCM gain drives it harder (params reach the core)'
   expect(result.highH3).toBeGreaterThan(result.lowH3);
 });
 
-// --- 3. Declick: swapping the amp voice mid-signal produces no pop. ---------------
-// The `ampModel` message is bracketed by the shared raised-cosine declick fade, so
-// the swap happens at an output zero — no step/discontinuity, no NaN.
-test('amp swap: no pop (declick continuity)', async ({ page }) => {
+// --- 3. Declick: swapping the amp voice MID-RENDER produces no pop. ---------------
+//
+// 2026-07-25 (test/assert-real-properties). This test used to post the `ampModel`
+// message BEFORE `ctx.startRendering()`, which is the audit's headline example of a
+// test asserting the wrong thing: the swap then lands at the opening zero crossing
+// with empty filter state, so REMOVING THE DECLICK ENTIRELY would still pass. Its
+// bound was also `swapMaxDelta < baseMaxDelta * 2.0 + 0.02`, and that `+0.02`
+// absolute floor is on its own larger than the 0.0227 step a de-declicked JCM swap
+// actually produces — so even applied mid-render the old bound would have passed.
+//
+// Now: `ctx.suspend()` / `resume()` (the technique expectations.spec.ts:255 already
+// uses) lands the swap at 0.3 s into a sustained note, with the filters warm and the
+// oscillator mid-cycle. And the reference is the render's OWN per-sample slew away
+// from the swap, in the same render — a pop is BY DEFINITION a step larger than the
+// signal's natural slew, so no absolute floor is needed or wanted.
+//
+// MEASURED (headless Chromium, 48 kHz), swap-window slew / away-from-swap slew:
+//                       shipped declick   declick DELETED
+//   clean120 -> jcm800        2.04              7.15
+//   clean120 -> twin          1.66              7.16
+//   clean120 -> ac30          1.19              5.12
+// Bar: 3.0. Passes the shipped fade with 1.5x margin, fails a removed one with 1.7x.
+const SWAP_SLEW_RATIO_BAR = 3.0;
+
+test('amp swap: no pop (declick continuity, swap lands MID-RENDER)', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
 
   const result = await page.evaluate(async () => {
     const sampleRate = 48000;
-    const seconds = 0.4;
+    const seconds = 0.6;
+    const swapAt = 0.3; // seconds into the render — mid-note, filters warm
 
-    async function render(swapToJcm: boolean): Promise<Float32Array> {
-      const length = Math.floor(sampleRate * seconds);
-      const ctx = new OfflineAudioContext(1, length, sampleRate);
-      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
-      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
-        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
-      });
-      await new Promise<void>((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
-        node.port.onmessage = (e: MessageEvent) => {
-          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
-          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
-        };
-      });
-      await new Promise<void>((resolve) => {
-        node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
-        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
-        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.4 });
-        // Keep the JCM near breakup (low gain) so the two tones are comparable in
-        // level — the test isolates the SWAP transient, not the tonal difference.
-        node.port.postMessage({ type: 'param', unit: 'amp', id: 10, value: 0.15 }); // gain
-        node.port.postMessage({ type: 'param', unit: 'amp', id: 12, value: 0.3 });  // master
-        // Both renders trigger one startup declick: the baseline swaps to the same
-        // Clean 120 (model 0), the other swaps to the JCM (model 1).
-        node.port.postMessage({ type: 'ampModel', model: swapToJcm ? 1 : 0 });
-        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 }); // cab on -> latency echo
-      });
+    const length = Math.floor(sampleRate * seconds);
+    const ctx = new OfflineAudioContext(1, length, sampleRate);
+    await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+    const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+      numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+    });
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+      node.port.onmessage = (e: MessageEvent) => {
+        if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+        else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+      };
+    });
+    await new Promise<void>((resolve) => {
+      node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
+      node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+      node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.4 });
+      // Keep the JCM near breakup (low gain) so the two voices are comparable in
+      // level — this isolates the SWAP transient, not the tonal difference.
+      node.port.postMessage({ type: 'param', unit: 'amp', id: 10, value: 0.15 }); // gain
+      node.port.postMessage({ type: 'param', unit: 'amp', id: 12, value: 0.3 });  // master
+      node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 }); // cab on -> latency echo
+    });
 
-      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
-      const g = new GainNode(ctx, { gain: 0.3 });
-      osc.connect(g).connect(node).connect(ctx.destination);
-      osc.start();
-      const buffer = await ctx.startRendering();
-      return buffer.getChannelData(0).slice();
-    }
+    // THE SWAP, mid-render. suspend() parks the offline render so the port message
+    // lands deterministically at swapAt before rendering continues.
+    ctx.suspend(swapAt).then(async () => {
+      node.port.postMessage({ type: 'ampModel', model: 1 }); // -> JCM800
+      await new Promise((r) => setTimeout(r, 50));
+      await ctx.resume();
+    });
 
-    function maxDelta(d: Float32Array): number {
+    const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+    const g = new GainNode(ctx, { gain: 0.3 });
+    osc.connect(g).connect(node).connect(ctx.destination);
+    osc.start();
+    const buffer = await ctx.startRendering();
+    const d = buffer.getChannelData(0);
+
+    function maxDelta(t0: number, t1: number): number {
+      const a = Math.max(1, Math.floor(t0 * sampleRate));
+      const b = Math.min(d.length, Math.floor(t1 * sampleRate));
       let m = 0;
-      for (let i = 1; i < d.length; i++) { const a = Math.abs(d[i] - d[i - 1]); if (a > m) m = a; }
+      for (let i = a; i < b; i++) { const x = Math.abs(d[i] - d[i - 1]); if (x > m) m = x; }
       return m;
     }
-    function anyNaN(d: Float32Array): boolean {
-      for (let i = 0; i < d.length; i++) if (!Number.isFinite(d[i])) return true;
-      return false;
-    }
-    function rms(d: Float32Array): number {
+    function rms(t0: number, t1: number): number {
+      const a = Math.floor(t0 * sampleRate), b = Math.min(d.length, Math.floor(t1 * sampleRate));
       let s = 0;
-      for (let i = 0; i < d.length; i++) s += d[i] * d[i];
-      return Math.sqrt(s / d.length);
+      for (let i = a; i < b; i++) s += d[i] * d[i];
+      return Math.sqrt(s / (b - a));
     }
+    let nan = false;
+    for (let i = 0; i < d.length; i++) if (!Number.isFinite(d[i])) { nan = true; break; }
 
-    const base = await render(false);
-    const swapped = await render(true);
+    // The declick bracket is 6 ms out + 6 ms in; 20 ms covers it plus scheduling jitter.
+    const slewAtSwap = maxDelta(swapAt - 0.002, swapAt + 0.02);
+    const slewBefore = maxDelta(0.05, swapAt - 0.002);
+    const slewAfter = maxDelta(swapAt + 0.05, seconds - 0.01);
     return {
-      baseMaxDelta: maxDelta(base),
-      swapMaxDelta: maxDelta(swapped),
-      nan: anyNaN(swapped),
-      rms: rms(swapped),
+      nan,
+      slewAtSwap, slewBefore, slewAfter,
+      ratio: slewAtSwap / Math.max(slewBefore, slewAfter),
+      rmsBefore: rms(0.1, swapAt - 0.01),
+      rmsAfter: rms(swapAt + 0.05, seconds - 0.01),
     };
   });
 
-  // No NaN, real signal, and the swap's largest sample-to-sample jump stays in the
-  // same ballpark as the un-swapped tone — the raised-cosine fade means no pop.
   expect(result.nan).toBe(false);
-  expect(result.rms).toBeGreaterThan(0.005);
-  expect(result.swapMaxDelta).toBeLessThan(result.baseMaxDelta * 2.0 + 0.02);
+  // The swap genuinely landed MID-RENDER: there is real signal on BOTH sides, and the
+  // two sides are audibly different levels — i.e. the amp voice really did change
+  // while audio was flowing. Without these the test could quietly revert to the old
+  // vacuous shape (swap before rendering starts) and still pass.
+  expect(result.rmsBefore).toBeGreaterThan(0.005);
+  expect(result.rmsAfter).toBeGreaterThan(0.005);
+  expect(Math.abs(result.rmsAfter - result.rmsBefore)).toBeGreaterThan(result.rmsBefore * 0.2);
+  // NO POP: the largest sample-to-sample step across the swap is within 3x the
+  // signal's own slew elsewhere in the SAME render.
+  expect(result.ratio).toBeLessThan(SWAP_SLEW_RATIO_BAR);
 });
 
 // --- 4. PERF SMOKE: the JCM800 WASM offline render is within a generous bound. ----
@@ -284,7 +319,7 @@ test('perf smoke: jcm800 offline-render wall-time ratio is within a generous bou
     const sampleRate = 48000;
     const seconds = 2.0; // a longer render so the wall-time is meaningful
 
-    async function timedRender(jcm: boolean): Promise<number> {
+    async function timedRender(jcm: boolean) {
       const length = Math.floor(sampleRate * seconds);
       const ctx = new OfflineAudioContext(1, length, sampleRate);
       await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
@@ -313,8 +348,29 @@ test('perf smoke: jcm800 offline-render wall-time ratio is within a generous bou
       osc.connect(g).connect(node).connect(ctx.destination);
       osc.start();
       const t0 = performance.now();
-      await ctx.startRendering();
-      return performance.now() - t0;
+      const buffer = await ctx.startRendering();
+      // 2026-07-25 (test/assert-real-properties): return the AUDIO as well as the
+      // wall time. The old form returned only the elapsed ms and never read a
+      // single output sample, so it timed — and passed on — a render that produced
+      // silence, or one where the amp-model swap never landed and both "paths" were
+      // the same amp (a ratio of ~1, comfortably under the bound).
+      return { ms: performance.now() - t0, data: buffer.getChannelData(0).slice() };
+    }
+    function rmsOf(d: Float32Array): number {
+      const s0 = Math.floor(sampleRate * 0.2);
+      let s = 0;
+      for (let i = s0; i < d.length; i++) s += d[i] * d[i];
+      return Math.sqrt(s / (d.length - s0));
+    }
+    function maxAbsDiffOf(a: Float32Array, b: Float32Array): number {
+      const s0 = Math.floor(a.length * 0.4);
+      let m = 0;
+      for (let i = s0; i < a.length; i++) { const dd = Math.abs(a[i] - b[i]); if (dd > m) m = dd; }
+      return m;
+    }
+    function allFiniteOf(d: Float32Array): boolean {
+      for (let i = 0; i < d.length; i++) if (!Number.isFinite(d[i])) return false;
+      return true;
     }
 
     // Warm each path once (JIT / WASM warmup), then take the best of a few runs to
@@ -323,10 +379,31 @@ test('perf smoke: jcm800 offline-render wall-time ratio is within a generous bou
     await timedRender(true);
     const cleanTimes: number[] = [];
     const jcmTimes: number[] = [];
-    for (let i = 0; i < 3; i++) { cleanTimes.push(await timedRender(false)); jcmTimes.push(await timedRender(true)); }
+    const cleanAudios: Float32Array[] = [];
+    const voiceAudios: Float32Array[] = [];
+    for (let i = 0; i < 3; i++) {
+      const c = await timedRender(false);
+      cleanTimes.push(c.ms);
+      cleanAudios.push(c.data);
+      const v = await timedRender(true);
+      jcmTimes.push(v.ms);
+      voiceAudios.push(v.data);
+    }
     const clean = Math.min(...cleanTimes);
     const jcm = Math.min(...jcmTimes);
-    return { clean, jcm, ratio: jcm / clean, rtFactor: jcm / (seconds * 1000), seconds };
+    return {
+      clean, jcm, ratio: jcm / clean, rtFactor: jcm / (seconds * 1000), seconds,
+      // What was actually rendered, so the numbers above describe real work. BEST of the
+      // three pairs: Chromium degrades later offline renders once enough contexts have
+      // accumulated in one process (audio.spec.ts's header warns about it), and a degraded
+      // render can drop the amp-model swap and hand back two identical buffers. "At least
+      // one pair rendered genuinely different audio" still fails hard if the swap NEVER
+      // works, without trading a vacuous test for a flaky one.
+      cleanRms: Math.max(...cleanAudios.map(rmsOf)),
+      voiceRms: Math.max(...voiceAudios.map(rmsOf)),
+      voiceDiff: Math.max(...cleanAudios.map((c, k) => maxAbsDiffOf(c, voiceAudios[k]))),
+      finite: cleanAudios.every(allFiniteOf) && voiceAudios.every(allFiniteOf),
+    };
   });
 
   const ratio = perf.ratio;
@@ -349,8 +426,21 @@ test('perf smoke: jcm800 offline-render wall-time ratio is within a generous bou
   // smoke bound. This is a guard against PATHOLOGICAL regressions (e.g. an accidental
   // 8x oversampling or a lost fast-path would multiply this), not a tight budget —
   // the measured ratio (~40x in headless CI) is the expected steady-state cost.
-  expect(perf.clean).toBeGreaterThan(0);
-  expect(perf.jcm).toBeGreaterThan(0);
+  // 2026-07-25 (test/assert-real-properties): `expect(perf.clean).toBeGreaterThan(0)`
+  // on a `performance.now()` delta is a tautology — a wall-clock difference is positive
+  // by construction, so the two assertions that used to be here could not fail, and
+  // nothing in this test ever read an output sample. What makes the ratio MEAN anything
+  // is that both paths actually rendered audio, and rendered DIFFERENT audio: otherwise
+  // the ratio is clean-vs-clean (~1) and sails under the bound no matter how slow the
+  // JCM800 becomes. Every assertion below can fail.
+  expect(perf.finite).toBe(true);
+  expect(perf.cleanRms).toBeGreaterThan(0.005);   // the clean path made sound
+  expect(perf.voiceRms).toBeGreaterThan(0.005);   // the JCM800 path made sound
+  expect(perf.voiceDiff).toBeGreaterThan(0.02);   // and they are DIFFERENT amps
+  // A 2 s WASM render cannot complete in under a millisecond; if it did, the render did
+  // not happen and the ratio is noise over noise.
+  expect(perf.clean).toBeGreaterThan(1);
+  expect(perf.jcm).toBeGreaterThan(1);
   expect(ratio).toBeLessThan(150);
 });
 
@@ -455,21 +545,79 @@ test('amp switch: twin renders a different tone than clean120, swap is click-fre
       for (let i = s0; i < a.length; i++) { const dd = Math.abs(a[i] - b[i]); if (dd > m) m = dd; }
       return m;
     }
-    function maxDelta(d: Float32Array): number {
-      let m = 0; for (let i = 1; i < d.length; i++) { const a = Math.abs(d[i] - d[i - 1]); if (a > m) m = a; }
-      return m;
-    }
     function anyNaN(d: Float32Array): boolean {
       for (let i = 0; i < d.length; i++) if (!Number.isFinite(d[i])) return true;
       return false;
     }
+
+    // -- (a) the two voices sound different. Two static renders; valid as it stands.
     const clean = await render(false);
     const twin = await render(true);
+
+    // -- (b) the SWAP is click-free. 2026-07-25 (test/assert-real-properties): this
+    // used to compare the two STATIC renders' whole-buffer maxDelta with a
+    // `* 2.0 + 0.05` bound. The swap happened before startRendering() in both, so no
+    // mid-stream discontinuity existed to measure and a deleted declick would still
+    // have passed — and the +0.05 floor alone is larger than the 0.032 step a
+    // de-declicked twin swap actually produces. Now the swap lands MID-RENDER via
+    // suspend()/resume() and is compared against the render's own slew.
+    const swapAt = 0.3;
+    const seconds2 = 0.6;
+    const length2 = Math.floor(sampleRate * seconds2);
+    const ctx = new OfflineAudioContext(1, length2, sampleRate);
+    await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+    const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+      numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+    });
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+      node.port.onmessage = (e: MessageEvent) => {
+        if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+        else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+      };
+    });
+    await new Promise<void>((resolve) => {
+      node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
+      node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+      node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.4 });
+      node.port.postMessage({ type: 'param', unit: 'amp', id: 7, value: 0.0 }); // trem OFF
+      node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: 0.0 }); // reverb off
+      node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 });   // cab on
+    });
+    ctx.suspend(swapAt).then(async () => {
+      node.port.postMessage({ type: 'ampModel', model: 2 }); // -> Twin, mid-note
+      await new Promise((r) => setTimeout(r, 50));
+      await ctx.resume();
+    });
+    const osc2 = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+    const g2 = new GainNode(ctx, { gain: 0.3 });
+    osc2.connect(g2).connect(node).connect(ctx.destination);
+    osc2.start();
+    const live = (await ctx.startRendering()).getChannelData(0);
+
+    function winDelta(d: Float32Array, t0: number, t1: number): number {
+      const a = Math.max(1, Math.floor(t0 * sampleRate));
+      const b = Math.min(d.length, Math.floor(t1 * sampleRate));
+      let m = 0;
+      for (let i = a; i < b; i++) { const x = Math.abs(d[i] - d[i - 1]); if (x > m) m = x; }
+      return m;
+    }
+    function winRms2(d: Float32Array, t0: number, t1: number): number {
+      const a = Math.floor(t0 * sampleRate), b = Math.min(d.length, Math.floor(t1 * sampleRate));
+      let s = 0;
+      for (let i = a; i < b; i++) s += d[i] * d[i];
+      return Math.sqrt(s / (b - a));
+    }
+    const atSwap = winDelta(live, swapAt - 0.002, swapAt + 0.02);
+    const away = Math.max(winDelta(live, 0.05, swapAt - 0.002),
+                          winDelta(live, swapAt + 0.05, seconds2 - 0.01));
     return {
       cleanRms: rms(clean), twinRms: rms(twin),
       diff: maxAbsDiff(clean, twin),
-      cleanDelta: maxDelta(clean), twinDelta: maxDelta(twin),
-      nan: anyNaN(twin),
+      nan: anyNaN(twin) || anyNaN(live),
+      swapRatio: atSwap / away,
+      swapRmsBefore: winRms2(live, 0.1, swapAt - 0.01),
+      swapRmsAfter: winRms2(live, swapAt + 0.05, seconds2 - 0.01),
     };
   });
 
@@ -477,9 +625,13 @@ test('amp switch: twin renders a different tone than clean120, swap is click-fre
   expect(result.twinRms).toBeGreaterThan(0.01);
   expect(result.diff).toBeGreaterThan(0.02); // audibly different voicing
   expect(result.nan).toBe(false);
-  // The swap's largest sample step stays in the same ballpark — the declick fade
-  // means the topology change does not pop.
-  expect(result.twinDelta).toBeLessThan(result.cleanDelta * 2.0 + 0.05);
+  // The swap really landed mid-render (signal both sides, and the level changed).
+  expect(result.swapRmsBefore).toBeGreaterThan(0.005);
+  expect(result.swapRmsAfter).toBeGreaterThan(0.005);
+  expect(Math.abs(result.swapRmsAfter - result.swapRmsBefore))
+    .toBeGreaterThan(result.swapRmsBefore * 0.2);
+  // NO POP. Measured 1.66 with the shipped declick, 7.16 with it deleted.
+  expect(result.swapRatio).toBeLessThan(SWAP_SLEW_RATIO_BAR);
 });
 
 // --- 7. The Twin's tremolo audibly modulates a render's ENVELOPE — and only when
@@ -700,7 +852,7 @@ test('perf smoke: twin offline-render wall-time ratio is within a generous bound
   const perf = await page.evaluate(async () => {
     const sampleRate = 48000;
     const seconds = 2.0;
-    async function timedRender(twin: boolean): Promise<number> {
+    async function timedRender(twin: boolean) {
       const length = Math.floor(sampleRate * seconds);
       const ctx = new OfflineAudioContext(1, length, sampleRate);
       await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
@@ -728,17 +880,59 @@ test('perf smoke: twin offline-render wall-time ratio is within a generous bound
       osc.connect(g).connect(node).connect(ctx.destination);
       osc.start();
       const t0 = performance.now();
-      await ctx.startRendering();
-      return performance.now() - t0;
+      const buffer = await ctx.startRendering();
+      // 2026-07-25 (test/assert-real-properties): return the AUDIO as well as the
+      // wall time. The old form returned only the elapsed ms and never read a
+      // single output sample, so it timed — and passed on — a render that produced
+      // silence, or one where the amp-model swap never landed and both "paths" were
+      // the same amp (a ratio of ~1, comfortably under the bound).
+      return { ms: performance.now() - t0, data: buffer.getChannelData(0).slice() };
+    }
+    function rmsOf(d: Float32Array): number {
+      const s0 = Math.floor(sampleRate * 0.2);
+      let s = 0;
+      for (let i = s0; i < d.length; i++) s += d[i] * d[i];
+      return Math.sqrt(s / (d.length - s0));
+    }
+    function maxAbsDiffOf(a: Float32Array, b: Float32Array): number {
+      const s0 = Math.floor(a.length * 0.4);
+      let m = 0;
+      for (let i = s0; i < a.length; i++) { const dd = Math.abs(a[i] - b[i]); if (dd > m) m = dd; }
+      return m;
+    }
+    function allFiniteOf(d: Float32Array): boolean {
+      for (let i = 0; i < d.length; i++) if (!Number.isFinite(d[i])) return false;
+      return true;
     }
     await timedRender(false);
     await timedRender(true);
     const cleanTimes: number[] = [];
     const twinTimes: number[] = [];
-    for (let i = 0; i < 3; i++) { cleanTimes.push(await timedRender(false)); twinTimes.push(await timedRender(true)); }
+    const cleanAudios: Float32Array[] = [];
+    const voiceAudios: Float32Array[] = [];
+    for (let i = 0; i < 3; i++) {
+      const c = await timedRender(false);
+      cleanTimes.push(c.ms);
+      cleanAudios.push(c.data);
+      const v = await timedRender(true);
+      twinTimes.push(v.ms);
+      voiceAudios.push(v.data);
+    }
     const clean = Math.min(...cleanTimes);
     const twin = Math.min(...twinTimes);
-    return { clean, twin, ratio: twin / clean, rtFactor: twin / (seconds * 1000), seconds };
+    return {
+      clean, twin, ratio: twin / clean, rtFactor: twin / (seconds * 1000), seconds,
+      // What was actually rendered, so the numbers above describe real work. BEST of the
+      // three pairs: Chromium degrades later offline renders once enough contexts have
+      // accumulated in one process (audio.spec.ts's header warns about it), and a degraded
+      // render can drop the amp-model swap and hand back two identical buffers. "At least
+      // one pair rendered genuinely different audio" still fails hard if the swap NEVER
+      // works, without trading a vacuous test for a flaky one.
+      cleanRms: Math.max(...cleanAudios.map(rmsOf)),
+      voiceRms: Math.max(...voiceAudios.map(rmsOf)),
+      voiceDiff: Math.max(...cleanAudios.map((c, k) => maxAbsDiffOf(c, voiceAudios[k]))),
+      finite: cleanAudios.every(allFiniteOf) && voiceAudios.every(allFiniteOf),
+    };
   });
 
   const line =
@@ -753,8 +947,21 @@ test('perf smoke: twin offline-render wall-time ratio is within a generous bound
 
   // Guard against pathological regressions (an accidental 8x OS, a lost fast-path);
   // the measured ratio is the expected steady-state cost of the tube Newton solves.
-  expect(perf.clean).toBeGreaterThan(0);
-  expect(perf.twin).toBeGreaterThan(0);
+  // 2026-07-25 (test/assert-real-properties): `expect(perf.clean).toBeGreaterThan(0)`
+  // on a `performance.now()` delta is a tautology — a wall-clock difference is positive
+  // by construction, so the two assertions that used to be here could not fail, and
+  // nothing in this test ever read an output sample. What makes the ratio MEAN anything
+  // is that both paths actually rendered audio, and rendered DIFFERENT audio: otherwise
+  // the ratio is clean-vs-clean (~1) and sails under the bound no matter how slow the
+  // Twin becomes. Every assertion below can fail.
+  expect(perf.finite).toBe(true);
+  expect(perf.cleanRms).toBeGreaterThan(0.005);   // the clean path made sound
+  expect(perf.voiceRms).toBeGreaterThan(0.005);   // the Twin path made sound
+  expect(perf.voiceDiff).toBeGreaterThan(0.02);   // and they are DIFFERENT amps
+  // A 2 s WASM render cannot complete in under a millisecond; if it did, the render did
+  // not happen and the ratio is noise over noise.
+  expect(perf.clean).toBeGreaterThan(1);
+  expect(perf.twin).toBeGreaterThan(1);
   expect(perf.ratio).toBeLessThan(150);
 });
 
@@ -817,21 +1024,74 @@ test('amp switch: ac30 renders a different tone than clean120, swap is click-fre
       for (let i = s0; i < a.length; i++) { const dd = Math.abs(a[i] - b[i]); if (dd > m) m = dd; }
       return m;
     }
-    function maxDelta(d: Float32Array): number {
-      let m = 0; for (let i = 1; i < d.length; i++) { const a = Math.abs(d[i] - d[i - 1]); if (a > m) m = a; }
-      return m;
-    }
     function anyNaN(d: Float32Array): boolean {
       for (let i = 0; i < d.length; i++) if (!Number.isFinite(d[i])) return true;
       return false;
     }
+
+    // -- (a) the two voices sound different. Two static renders; valid as it stands.
     const clean = await render(false);
     const ac30 = await render(true);
+
+    // -- (b) the SWAP is click-free, landed MID-RENDER. See the JCM800 block above for
+    // why the old form (topology change posted before startRendering, bound
+    // `* 2.0 + 0.05`) could not fail: 2026-07-25, test/assert-real-properties.
+    const swapAt = 0.3;
+    const seconds2 = 0.6;
+    const length2 = Math.floor(sampleRate * seconds2);
+    const ctx = new OfflineAudioContext(1, length2, sampleRate);
+    await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+    const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+      numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+    });
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+      node.port.onmessage = (e: MessageEvent) => {
+        if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+        else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+      };
+    });
+    await new Promise<void>((resolve) => {
+      node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
+      node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+      node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.4 });
+      node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: 0.0 }); // reverb off
+      node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 });   // cab on
+    });
+    ctx.suspend(swapAt).then(async () => {
+      node.port.postMessage({ type: 'ampModel', model: 3 }); // -> AC30, mid-note
+      await new Promise((r) => setTimeout(r, 50));
+      await ctx.resume();
+    });
+    const osc2 = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+    const g2 = new GainNode(ctx, { gain: 0.3 });
+    osc2.connect(g2).connect(node).connect(ctx.destination);
+    osc2.start();
+    const live = (await ctx.startRendering()).getChannelData(0);
+
+    function winDelta(d: Float32Array, t0: number, t1: number): number {
+      const a = Math.max(1, Math.floor(t0 * sampleRate));
+      const b = Math.min(d.length, Math.floor(t1 * sampleRate));
+      let m = 0;
+      for (let i = a; i < b; i++) { const x = Math.abs(d[i] - d[i - 1]); if (x > m) m = x; }
+      return m;
+    }
+    function winRms2(d: Float32Array, t0: number, t1: number): number {
+      const a = Math.floor(t0 * sampleRate), b = Math.min(d.length, Math.floor(t1 * sampleRate));
+      let s = 0;
+      for (let i = a; i < b; i++) s += d[i] * d[i];
+      return Math.sqrt(s / (b - a));
+    }
+    const atSwap = winDelta(live, swapAt - 0.002, swapAt + 0.02);
+    const away = Math.max(winDelta(live, 0.05, swapAt - 0.002),
+                          winDelta(live, swapAt + 0.05, seconds2 - 0.01));
     return {
       cleanRms: rms(clean), ac30Rms: rms(ac30),
       diff: maxAbsDiff(clean, ac30),
-      cleanDelta: maxDelta(clean), ac30Delta: maxDelta(ac30),
-      nan: anyNaN(ac30),
+      nan: anyNaN(ac30) || anyNaN(live),
+      swapRatio: atSwap / away,
+      swapRmsBefore: winRms2(live, 0.1, swapAt - 0.01),
+      swapRmsAfter: winRms2(live, swapAt + 0.05, seconds2 - 0.01),
     };
   });
 
@@ -839,9 +1099,13 @@ test('amp switch: ac30 renders a different tone than clean120, swap is click-fre
   expect(result.ac30Rms).toBeGreaterThan(0.01);
   expect(result.diff).toBeGreaterThan(0.02); // audibly different voicing
   expect(result.nan).toBe(false);
-  // The swap's largest sample step stays in the same ballpark — the declick fade
-  // means the topology change does not pop.
-  expect(result.ac30Delta).toBeLessThan(result.cleanDelta * 2.0 + 0.05);
+  // The swap really landed mid-render (signal both sides, and the level changed).
+  expect(result.swapRmsBefore).toBeGreaterThan(0.005);
+  expect(result.swapRmsAfter).toBeGreaterThan(0.005);
+  expect(Math.abs(result.swapRmsAfter - result.swapRmsBefore))
+    .toBeGreaterThan(result.swapRmsBefore * 0.2);
+  // NO POP. Measured 1.19 with the shipped declick, 5.12 with it deleted.
+  expect(result.swapRatio).toBeLessThan(SWAP_SLEW_RATIO_BAR);
 });
 
 // --- AC30 (b): params reach the core — raising REVERB adds a wet tail. --------------
@@ -979,7 +1243,7 @@ test('perf smoke: ac30 offline-render wall-time ratio is within a generous bound
   const perf = await page.evaluate(async () => {
     const sampleRate = 48000;
     const seconds = 2.0;
-    async function timedRender(ac30: boolean): Promise<number> {
+    async function timedRender(ac30: boolean) {
       const length = Math.floor(sampleRate * seconds);
       const ctx = new OfflineAudioContext(1, length, sampleRate);
       await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
@@ -1006,17 +1270,59 @@ test('perf smoke: ac30 offline-render wall-time ratio is within a generous bound
       osc.connect(g).connect(node).connect(ctx.destination);
       osc.start();
       const t0 = performance.now();
-      await ctx.startRendering();
-      return performance.now() - t0;
+      const buffer = await ctx.startRendering();
+      // 2026-07-25 (test/assert-real-properties): return the AUDIO as well as the
+      // wall time. The old form returned only the elapsed ms and never read a
+      // single output sample, so it timed — and passed on — a render that produced
+      // silence, or one where the amp-model swap never landed and both "paths" were
+      // the same amp (a ratio of ~1, comfortably under the bound).
+      return { ms: performance.now() - t0, data: buffer.getChannelData(0).slice() };
+    }
+    function rmsOf(d: Float32Array): number {
+      const s0 = Math.floor(sampleRate * 0.2);
+      let s = 0;
+      for (let i = s0; i < d.length; i++) s += d[i] * d[i];
+      return Math.sqrt(s / (d.length - s0));
+    }
+    function maxAbsDiffOf(a: Float32Array, b: Float32Array): number {
+      const s0 = Math.floor(a.length * 0.4);
+      let m = 0;
+      for (let i = s0; i < a.length; i++) { const dd = Math.abs(a[i] - b[i]); if (dd > m) m = dd; }
+      return m;
+    }
+    function allFiniteOf(d: Float32Array): boolean {
+      for (let i = 0; i < d.length; i++) if (!Number.isFinite(d[i])) return false;
+      return true;
     }
     await timedRender(false);
     await timedRender(true);
     const cleanTimes: number[] = [];
     const ac30Times: number[] = [];
-    for (let i = 0; i < 3; i++) { cleanTimes.push(await timedRender(false)); ac30Times.push(await timedRender(true)); }
+    const cleanAudios: Float32Array[] = [];
+    const voiceAudios: Float32Array[] = [];
+    for (let i = 0; i < 3; i++) {
+      const c = await timedRender(false);
+      cleanTimes.push(c.ms);
+      cleanAudios.push(c.data);
+      const v = await timedRender(true);
+      ac30Times.push(v.ms);
+      voiceAudios.push(v.data);
+    }
     const clean = Math.min(...cleanTimes);
     const ac30 = Math.min(...ac30Times);
-    return { clean, ac30, ratio: ac30 / clean, rtFactor: ac30 / (seconds * 1000), seconds };
+    return {
+      clean, ac30, ratio: ac30 / clean, rtFactor: ac30 / (seconds * 1000), seconds,
+      // What was actually rendered, so the numbers above describe real work. BEST of the
+      // three pairs: Chromium degrades later offline renders once enough contexts have
+      // accumulated in one process (audio.spec.ts's header warns about it), and a degraded
+      // render can drop the amp-model swap and hand back two identical buffers. "At least
+      // one pair rendered genuinely different audio" still fails hard if the swap NEVER
+      // works, without trading a vacuous test for a flaky one.
+      cleanRms: Math.max(...cleanAudios.map(rmsOf)),
+      voiceRms: Math.max(...voiceAudios.map(rmsOf)),
+      voiceDiff: Math.max(...cleanAudios.map((c, k) => maxAbsDiffOf(c, voiceAudios[k]))),
+      finite: cleanAudios.every(allFiniteOf) && voiceAudios.every(allFiniteOf),
+    };
   });
 
   const line =
@@ -1030,7 +1336,20 @@ test('perf smoke: ac30 offline-render wall-time ratio is within a generous bound
   await testInfo.attach('ac30-perf-ratio', { body: line, contentType: 'text/plain' });
 
   // Guard against pathological regressions (an accidental 8x OS, a lost fast-path).
-  expect(perf.clean).toBeGreaterThan(0);
-  expect(perf.ac30).toBeGreaterThan(0);
+  // 2026-07-25 (test/assert-real-properties): `expect(perf.clean).toBeGreaterThan(0)`
+  // on a `performance.now()` delta is a tautology — a wall-clock difference is positive
+  // by construction, so the two assertions that used to be here could not fail, and
+  // nothing in this test ever read an output sample. What makes the ratio MEAN anything
+  // is that both paths actually rendered audio, and rendered DIFFERENT audio: otherwise
+  // the ratio is clean-vs-clean (~1) and sails under the bound no matter how slow the
+  // AC30 becomes. Every assertion below can fail.
+  expect(perf.finite).toBe(true);
+  expect(perf.cleanRms).toBeGreaterThan(0.005);   // the clean path made sound
+  expect(perf.voiceRms).toBeGreaterThan(0.005);   // the AC30 path made sound
+  expect(perf.voiceDiff).toBeGreaterThan(0.02);   // and they are DIFFERENT amps
+  // A 2 s WASM render cannot complete in under a millisecond; if it did, the render did
+  // not happen and the ratio is noise over noise.
+  expect(perf.clean).toBeGreaterThan(1);
+  expect(perf.ac30).toBeGreaterThan(1);
   expect(perf.ratio).toBeLessThan(150);
 });

@@ -17,7 +17,11 @@
 #include "clipper/dsp/Jcm800PowerAmp.h"
 
 #include "measure/AliasMetric.h"
+#include "support/AssertsLive.h"
+#include "support/LtpProbe.h"
+#include "support/Xfail.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <complex>
@@ -30,6 +34,22 @@
 namespace {
 
 constexpr double kTwoPi = 6.283185307179586;
+
+// --- known-bad properties (2026-07-24 audit) --------------------------------------
+constexpr clipper::test::XfailDecl kXfTwinPiPlate{
+    "finding7-twin-pi-plate-fraction",
+    "2026-07-24 audit finding 7",
+    "the Twin PI plates idle at 70-85 % of B+ (a real long tail), not parked near cutoff",
+    "the LtpInverter tailRef fix (finding 7) — fixes all three amps at once"};
+constexpr clipper::test::XfailDecl kXfTwinPiCurrent{
+    "finding7-twin-pi-standing-current",
+    "2026-07-24 audit finding 7",
+    "each Twin PI triode idles at 0.5-0.9 mA (docs/DEVELOPMENT.md target)",
+    "the LtpInverter tailRef fix (finding 7)"};
+// NOTE: the OptoTremolo's SPEED-dependent depth collapse / level sag (audit Medium/DSP)
+// is pinned in the new core/tests/test_opto_tremolo.cpp, which also drives it through the
+// composed TwinAmp — the path no render in this file exercises, because every Twin render
+// here passes INTENSITY 0 or a fixed SPEED of 0.4.
 using clipper::dsp::FenderToneStack;
 using clipper::dsp::Jcm800PowerAmp;
 using clipper::dsp::OptoTremolo;
@@ -179,17 +199,32 @@ void testOperatingPoints(double fs) {
     const double dissW = iq * railM;
     assert(dissW < 30.0 && "6L6 plate dissipation exceeds the 30 W max");
 
-    // PI: balanced anti-phase legs (quiescent plates present, tail current positive).
-    const auto& ltp = pa.inverter();
-    assert(ltp.quiescentPlate1() > 250.0 && ltp.quiescentPlate1() < 410.0 && "PI Va1 implausible");
-    assert(ltp.quiescentPlate2() > 250.0 && ltp.quiescentPlate2() < 410.0 && "PI Va2 implausible");
-    assert(ltp.quiescentTail() > 0.0 && ltp.quiescentCurrent1() > 0.0 && "PI tail/current not positive");
+    // PI: the phase inverter's operating point and LEG BALANCE.
+    //
+    // 2026-07-25 (test/assert-real-properties): this block was commented "PI: balanced
+    // anti-phase legs" but asserted only `quiescentPlate1() > 250 && < 410` — a 160 V
+    // window on a 410 V rail, which admits BOTH a healthy ~330 V and the starved 386.8 V
+    // (94.3 % of B+) the amp actually ships with. Nothing checked the balance the comment
+    // named. That is the exact hole the starved AC30 phase inverter shipped through
+    // (docs §23 second amendment). Now: plate as a FRACTION of B+, standing current per
+    // triode from Ohm's law on the plate load, and the measured leg-gain ratio — see
+    // core/tests/support/LtpProbe.h, shared with the JCM800 and AC30 suites.
+    //
+    // The Twin's LEG BALANCE is ASSERTED FOR REAL (it measures 0.990 — but only because
+    // Ra2 = 142 kΩ, a resistor that exists in no AB763; see audit finding 7's note on the
+    // header/code contradiction). Its plate fraction and standing current XFAIL: the pair
+    // idles at 94 % of B+ drawing 0.23 mA/triode, i.e. parked near cutoff (finding 7).
+    const auto ltpM = clipper::test::measureLtp(pa.inverter(), fs);
+    clipper::test::assertLtpSane(ltpM, "Twin");
+    clipper::test::assertLtpTargets(ltpM, fs, "Twin", &kXfTwinPiPlate, &kXfTwinPiCurrent,
+                                    /*balance: holds, assert for real*/ nullptr);
 
     std::printf("  [ok] DC op points @ %.0f Hz: V1 Va=%.1f Vk=%.2f Iq=%.2fmA; 6L6 Iq=%.2f mA/tube "
-                "(analytic %.2f), rail=%.1f V (%.1f), screen=%.1f V, Pdiss=%.1f W; PI Va1=%.1f Va2=%.1f\n",
+                "(analytic %.2f), rail=%.1f V (%.1f), screen=%.1f V, Pdiss=%.1f W\n",
                 fs, pre.stageQuiescentPlate(TwinPreamp::V1), pre.stageQuiescentCathode(TwinPreamp::V1),
                 pre.stageQuiescentCurrent(TwinPreamp::V1) * 1e3, iq * 1e3, ipA * 1e3, railM, rail,
-                pa.screenIdle(), dissW, ltp.quiescentPlate1(), ltp.quiescentPlate2());
+                pa.screenIdle(), dissW);
+    clipper::test::printLtp(ltpM, "Twin", fs);
 }
 
 // ---------------------------------------------------------------------------
@@ -570,9 +605,19 @@ void testAliasing(double fs) {
                 fs, a1, a2, a4, a8);
 }
 
+// Known defects this binary exercises under XFAIL. Printed by --xfail-ledger, which ctest
+// surfaces as ***Skipped in its default summary (see core/CMakeLists.txt).
+const clipper::test::XfailDecl kLedger[] = {kXfTwinPiPlate, kXfTwinPiCurrent};
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    clipper::test::requireAssertsLive();
+    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
+                                                 sizeof kLedger / sizeof kLedger[0],
+                                                 "clipper_twin_tests");
+    if (ledger >= 0) return ledger;
+
     std::printf("Running clipper::dsp Twin (M10.1) tests...\n");
     for (double fs : {44100.0, 48000.0, 96000.0}) {
         testOperatingPoints(fs);
@@ -585,6 +630,7 @@ int main() {
     testAliasing(44100.0);
     testAliasing(48000.0);
     testAliasing(96000.0);
-    std::printf("All Twin (M10.1) tests passed.\n");
-    return 0;
+    std::printf("All Twin (M10.1) tests passed (XFAILs listed below are known open defects, "
+                "not regressions).\n");
+    return clipper::test::reportXfails();
 }

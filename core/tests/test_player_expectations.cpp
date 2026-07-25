@@ -54,6 +54,9 @@
 #define DR_WAV_IMPLEMENTATION
 #include "dr_wav.h"
 
+#include "support/AssertsLive.h"
+#include "support/Xfail.h"
+
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -108,6 +111,22 @@ constexpr int kAmpVolume = 0, kAmpBass = 1, kAmpMid = 2, kAmpTreble = 3,
               kAmpBright = 4, kAmpCab = 5, kAmpSpeed = 6, kAmpDepth = 7,
               kAmpChorusMode = 8, kAmpReverb = 9, kAmpJcmGain = 10,
               kAmpJcmPresence = 11, kAmpJcmMaster = 12;
+
+// --- known-bad properties (2026-07-24 audit) --------------------------------------
+// Found by this slice, when block B's vacuous 128-only comparison was replaced with a
+// RAGGED block size. It is the audit's Medium/DSP item, now measured end to end through
+// the C ABI the worklet actually calls.
+constexpr clipper::test::XfailDecl kXfControlRateBlockSize{
+    "control-rate-param-sampling-block-size",
+    "2026-07-24 audit, Medium/DSP: 'control-rate parameter sampling defeats the 5 ms "
+    "smoother at DAW block sizes' (OverdriveEngine.cpp:147, MuffModel.cpp:161, "
+    "GoldModel.cpp:351)",
+    "a dirt pedal's output does not depend on the host block size AT ALL, including during "
+    "the initial parameter snap — the smoothers advance per sample but only the CHUNK-END "
+    "value is kept, so the trajectory differs with chunk size (worst: Muff, 1.6 absolute at "
+    "25 ms; all five converge to <= 1.0e-3 relative after ~50 ms)",
+    "the control-rate sampling fix: apply the smoothed value PER SAMPLE instead of keeping "
+    "the chunk-end value (RatModel's own inner loop is the pattern)"};
 
 // --- signal helpers ----------------------------------------------------------
 
@@ -622,7 +641,11 @@ void testKnobMonotonicity(const std::vector<Gear>& gear) {
         for (size_t i = 0; i < g.knobs.size(); ++i) {
             const auto& k = g.knobs[i];
             if (k.kind != KnobSpec::GAIN) continue;
-            const auto drive = sine(220.0, g.isPedal ? 0.1f : 0.1f, 1.0, kFs);
+            // 2026-07-25: this was `g.isPedal ? 0.1f : 0.1f` — two identical branches, i.e.
+            // a ternary that reads as if pedals and amps are probed at different levels
+            // while doing nothing. 0.1 V is right for both (a realistic single-coil pluck),
+            // so the branch is gone rather than the level changed.
+            const auto drive = sine(220.0, 0.1f, 1.0, kFs);
             double th[3];
             int idx = 0;
             for (float v : {k.monoLo, k.monoMid, k.monoHi}) {
@@ -636,8 +659,19 @@ void testKnobMonotonicity(const std::vector<Gear>& gear) {
             std::printf("  [A3] %-9s %-10s THD %5.1f%% -> %5.1f%% -> %5.1f%%\n", g.name.c_str(),
                         k.name, th[0] * 100, th[1] * 100, th[2] * 100);
             std::fflush(stdout);
-            assert(th[1] >= th[0] * 0.95 && th[2] >= th[1] * 0.95 &&
-                   "GAIN knob THD not (coarsely) non-decreasing lo->mid->hi");
+            // 2026-07-25: this asserted `th[1] >= th[0] * 0.95`, which permits a 5 % THD
+            // DECREASE under the banner "non-decreasing". Turning a gain knob UP must not
+            // make a device cleaner — that is a wiring/taper inversion, and 5 % of slack is
+            // exactly enough to hide a small one. The contract is now literal (>=), with a
+            // tiny ABSOLUTE epsilon for float noise in the Goertzel rather than a
+            // proportional one that scales with the measurement it is meant to protect.
+            constexpr double kThdEps = 1e-6;  // 0.0001 % THD — far below any real knob step
+            assert(th[1] >= th[0] - kThdEps && th[2] >= th[1] - kThdEps &&
+                   "GAIN knob THD DECREASED as the knob opened (taper or wiring inverted)");
+            // And it must actually DO something across its travel, not merely fail to
+            // decrease: a knob wired to nothing satisfies non-decreasing perfectly.
+            assert(th[2] > th[0] + 1e-3 &&
+                   "GAIN knob barely changed THD across its travel (dead control?)");
         }
         // -- LEVEL knobs (level must not decrease as the pot opens) ------------
         for (size_t i = 0; i < g.knobs.size(); ++i) {
@@ -657,8 +691,22 @@ void testKnobMonotonicity(const std::vector<Gear>& gear) {
             std::printf("  [A3] %-9s %-10s level %6.1f -> %6.1f -> %6.1f dBFS\n", g.name.c_str(),
                         k.name, toDb(lv[0]), toDb(lv[1]), toDb(lv[2]));
             std::fflush(stdout);
-            assert(lv[1] >= lv[0] && lv[2] >= lv[1] * 0.98 &&
-                   "LEVEL knob output not non-decreasing 0->0.5->1");
+            // 2026-07-25: `lv[1] >= lv[0]` compared a real level against lv[0], which is
+            // ~1e-12 (a closed pot is silence) — true for any lv[1] whatsoever, including a
+            // level knob that does nothing at all. And `lv[2] >= lv[1] * 0.98` again let the
+            // output DROP as the pot opened. Now: the pot must be genuinely closed at 0,
+            // must not lose level as it opens, and must gain REAL level across its travel.
+            assert(lv[0] < 1e-6 && "LEVEL knob at 0 is not silent (the pot does not close)");
+            assert(lv[2] >= lv[1] && "LEVEL knob output DROPPED from 0.5 to 1.0 (taper "
+                                     "inverted, or the top of the travel is dead)");
+            // The top half of the travel must be WORTH SOMETHING. Bar: +2 dB from noon to
+            // fully open — clearly audible, and it fails a knob whose upper half is dead,
+            // which is a real class of defect in this codebase (the audit measured JCM800
+            // BASS at "+9.5 dB lower half / +0.2 dB upper half"). Measured across the rig:
+            // rat/muff/gold +6.0, jcm master +9.5, ac30 +8.1, twin +18.2, and clean120 the
+            // tightest at +2.9 dB (its volume runs into a compressive output stage).
+            assert(lv[2] > lv[1] * 1.2589 &&
+                   "LEVEL knob gained under 2 dB from noon to fully open (dead top half)");
         }
         // -- TONE knobs (extremes move the spectrum the documented way) --------
         for (size_t i = 0; i < g.knobs.size(); ++i) {
@@ -766,31 +814,115 @@ double maxAbsDiff(const std::vector<float>& a, const std::vector<float>& b) {
     return m;
 }
 
-void liveVsRef(const char* name, const std::vector<float>& in,
-               const std::function<void(const float*, float*, int)>& refProc,
-               const std::function<void(const float*, float*, int)>& liveProc,
-               double tol) {
+// 2026-07-25 (test/assert-real-properties). This helper's tolerance used to be 2e-5 with a
+// comment about "float accumulation across ~60k samples of tube solves", and every single
+// unit it drove measured a max |Δ| of EXACTLY 0.000e+00. That was not luck: every unit
+// already chunks internally at exactly 128, so a 128-frame outer loop cannot produce a
+// different internal call pattern from one big call. The tolerance was ~94 dB looser than
+// the property needed, so the test could not have failed short of gross corruption — it was
+// structurally vacuous, in the same way audit finding 3's `testConvolverChunking` was.
+//
+// It is now two different, both-real assertions depending on the block size:
+//
+//   ALIGNED (a multiple of the internal 128-sample chunk) -> BIT-IDENTICAL, tol 0.0.
+//       This is what is actually true, and pinning it at 0 makes it a regression detector.
+//
+//   RAGGED (not a multiple) -> the only segmentation that can catch a block-size bug at
+//       all. Finding 3's CabConvolver was exact at 128 and produced an error LARGER than
+//       the signal at 100; the old 128-only test could not see it. Measured now, at 100 and
+//       127 frames:
+//         * phaser, all four amp voices, CabConvolver and ReverbModel are EXACTLY 0 at
+//           every block size from 1 to 256 -> asserted bit-identical here too.
+//         * the five DIRT PEDALS diverge, but ONLY during the first ~25 ms, and converge to
+//           <= 1.0e-3 relative afterwards. That is the audit's Medium/DSP item
+//           "control-rate parameter sampling defeats the 5 ms smoother at DAW block sizes":
+//           the smoother advances per sample but only its CHUNK-END value is kept, so the
+//           parameter TRAJECTORY during the initial snap depends on the chunk size. Worst
+//           case measured: Muff, 1.6 absolute at 25 ms. So the SETTLED output is asserted
+//           for real, and the startup transient is an XFAIL naming that item.
+struct LiveDiff {
+    double whole = 0.0;     // max |Δ| over the entire render
+    double settled = 0.0;   // max |Δ| past kBlockSettleSecs
+    double relative = 0.0;  // settled, relative to the reference's own peak there
+};
+constexpr double kBlockSettleSecs = 0.05;  // past every parameter smoother's ~5-8 ms settle
+
+// The settled bar: 2e-3 relative is about -54 dB, tight enough that finding 3's class of
+// bug (error larger than the signal) is caught by three orders of magnitude, and loose
+// enough to cover the residual smoother-trajectory difference. Worst measured: 1.0e-3.
+constexpr double kRaggedSettledBar = 2e-3;
+
+LiveDiff liveVsRef(const char* name, const std::vector<float>& in,
+                   const std::function<void(const float*, float*, int)>& refProc,
+                   const std::function<void(const float*, float*, int)>& liveProc,
+                   int blockSize, bool expectBitExact,
+                   const clipper::test::XfailDecl* startupXfail) {
     const int n = static_cast<int>(in.size());
     std::vector<float> ref(in.size(), 0.0f);
     refProc(in.data(), ref.data(), n);          // separate buffers, one big call
-    std::vector<float> live = in;               // IN-PLACE at the worklet quantum
-    for (int off = 0; off + 128 <= n; off += 128)
-        liveProc(live.data() + off, live.data() + off, 128);
-    const int rem = n % 128;
-    if (rem) liveProc(live.data() + (n - rem), live.data() + (n - rem), rem);
+    std::vector<float> live = in;               // IN-PLACE at the host quantum
+    for (int off = 0; off < n; off += blockSize) {
+        const int c = std::min(blockSize, n - off);
+        liveProc(live.data() + off, live.data() + off, c);
+    }
     assert(allFinite(live) && "live-convention render produced NaN/inf");
-    const double d = maxAbsDiff(ref, live);
-    std::printf("  [B ] %-24s in-place/128f vs separate/big-block: max |Δ| %.3e\n", name, d);
+
+    LiveDiff d;
+    d.whole = maxAbsDiff(ref, live);
+    const int st = std::min(n, static_cast<int>(kBlockSettleSecs * kFs));
+    double pk = 0.0;
+    for (int i = st; i < n; ++i) {
+        d.settled = std::max(d.settled, std::fabs(static_cast<double>(ref[i]) - live[i]));
+        pk = std::max(pk, std::fabs(static_cast<double>(ref[i])));
+    }
+    d.relative = pk > 0.0 ? d.settled / pk : 0.0;
+
+    std::printf("  [B ] %-24s in-place/%4d-frame vs big-block: max |Δ| %.3e (settled %.3e = "
+                "%.2e rel)\n", name, blockSize, d.whole, d.settled, d.relative);
     std::fflush(stdout);
-    assert(d <= tol && "LIVE-CONVENTION: in-place 128-frame processing diverges from "
-                       "separate-buffer big-block processing (in-place aliasing bug)");
+
+    if (expectBitExact) {
+        assert(d.whole == 0.0 &&
+               "LIVE-CONVENTION: in-place blocked processing is not BIT-IDENTICAL to "
+               "separate-buffer big-block processing at a 128-aligned block size");
+        return d;
+    }
+    // Ragged. The settled output must be block-size independent for real.
+    assert(pk > 0.0 && "no settled signal to compare");
+    assert(d.relative <= kRaggedSettledBar &&
+           "RAGGED BLOCK SIZE: the SETTLED output depends on the host block size — the "
+           "stream is being corrupted, not merely smoothed differently (finding 3's class)");
+    if (startupXfail) {
+        char detail[256];
+        std::snprintf(detail, sizeof detail,
+                      "%s at %d-frame blocks: max |Δ| %.3e during the first %.0f ms (settled "
+                      "%.2e rel, bar for the whole render is %.0e)",
+                      name, blockSize, d.whole, 1000.0 * kBlockSettleSecs, d.relative,
+                      kRaggedSettledBar);
+        clipper::test::expectXfail(d.whole <= kRaggedSettledBar * pk, *startupXfail, detail);
+    } else {
+        assert(d.whole == 0.0 &&
+               "this unit is bit-identical at every block size from 1 to 256; it just "
+               "stopped being (a new block-size dependence)");
+    }
+    return d;
 }
 
 void testLiveConvention() {
     // 1.2 s of the standard pluck (long enough to cover cab partition boundaries,
-    // reverb tails building up, and the tube solvers' warm-start paths).
-    const auto pluck = standardPluck(1.2, kFs);
-    const double tol = 2e-5;  // float accumulation across ~60k samples of tube solves
+    // reverb tails building up, and the tube solvers' warm-start paths). Trimmed by 37
+    // samples so the length (57563 at 48 kHz) is a multiple of NEITHER block size below —
+    // every pass therefore ends on a partial block, which is its own code path.
+    const auto full = standardPluck(1.2, kFs);
+    const std::vector<float> pluck(full.begin(), full.end() - 37);
+
+    // 128 is the worklet's render quantum: BIT-IDENTICAL is required. 100 is RAGGED — not a
+    // multiple of the internal 128-sample chunk, and the size at which audit finding 3's
+    // CabConvolver bug produced an error LARGER than the signal while the 128-only test
+    // passed. Any unit that keeps hidden state indexed by its own chunk counter fails at
+    // 100 and not at 128, which is exactly why both are here.
+    struct BlockCase { int block; bool bitExact; };
+    constexpr BlockCase kBlocks[] = {{128, true}, {100, false}};
 
     // -- pedal C ABIs (defaults, 4× oversampling — the worklet's settings) -----
     struct PedalAbi {
@@ -801,20 +933,25 @@ void testLiveConvention() {
         void (*setOs)(void*, int);
         void (*process)(void*, const float*, float*, int);
         float p0, p1, p2;
+        // Non-null = this unit's output depends on the host block size during the initial
+        // smoother snap (the audit's control-rate parameter-sampling item). Null = exact at
+        // every block size, asserted bit-identical even at a ragged one.
+        const clipper::test::XfailDecl* startupXfail;
     };
     const PedalAbi pedals[] = {
         {"rat_ ABI", rat_create, rat_destroy, rat_set_param, rat_set_oversampling,
-         rat_process, 0.7f, 0.4f, 0.8f},
+         rat_process, 0.7f, 0.4f, 0.8f, &kXfControlRateBlockSize},
         {"sd_ ABI", sd_create, sd_destroy, sd_set_param, sd_set_oversampling,
-         sd_process, 0.5f, 0.5f, 0.7f},
+         sd_process, 0.5f, 0.5f, 0.7f, &kXfControlRateBlockSize},
         {"ts_ ABI", ts_create, ts_destroy, ts_set_param, ts_set_oversampling,
-         ts_process, 0.5f, 0.5f, 0.75f},
+         ts_process, 0.5f, 0.5f, 0.75f, &kXfControlRateBlockSize},
         {"muff_ ABI", muff_create, muff_destroy, muff_set_param, muff_set_oversampling,
-         muff_process, 0.6f, 0.5f, 0.6f},
+         muff_process, 0.6f, 0.5f, 0.6f, &kXfControlRateBlockSize},
         {"gold_ ABI", gold_create, gold_destroy, gold_set_param, gold_set_oversampling,
-         gold_process, 0.35f, 0.5f, 0.7f},
+         gold_process, 0.35f, 0.5f, 0.7f, &kXfControlRateBlockSize},
+        // The phaser has no per-chunk parameter sampling: exact at every block size.
         {"phaser_ ABI", phaser_create, phaser_destroy, phaser_set_param, nullptr,
-         phaser_process, 0.35f, 0.5f, 0.5f},
+         phaser_process, 0.35f, 0.5f, 0.5f, nullptr},
     };
     for (const auto& p : pedals) {
         auto mk = [&]() {
@@ -825,13 +962,16 @@ void testLiveConvention() {
             p.setParam(h, 2, p.p2);
             return h;
         };
-        void* hRef = mk();
-        void* hLive = mk();
-        liveVsRef(p.name, pluck,
-                  [&](const float* i, float* o, int n) { p.process(hRef, i, o, n); },
-                  [&](const float* i, float* o, int n) { p.process(hLive, i, o, n); }, tol);
-        p.destroy(hRef);
-        p.destroy(hLive);
+        for (const auto& bc : kBlocks) {
+            void* hRef = mk();
+            void* hLive = mk();
+            liveVsRef(p.name, pluck,
+                      [&](const float* i, float* o, int n) { p.process(hRef, i, o, n); },
+                      [&](const float* i, float* o, int n) { p.process(hLive, i, o, n); },
+                      bc.block, bc.bitExact, p.startupXfail);
+            p.destroy(hRef);
+            p.destroy(hLive);
+        }
     }
 
     // -- the AmpChain C ABI, every voice, cab ON + reverb engaged --------------
@@ -858,14 +998,21 @@ void testLiveConvention() {
     };
     const char* ampNames[] = {"amp_ ABI clean120", "amp_ ABI jcm800", "amp_ ABI twin",
                               "amp_ ABI ac30"};
+    // All four amp voices are bit-identical at every block size (measured 1..256): the valve
+    // amps have no parameter smoothing at all (audit finding 6), and the clean amp's
+    // smoothers are advanced per sample without a per-chunk resample. So no XFAIL here —
+    // ragged sizes are asserted bit-identical too.
     for (int model = 0; model < 4; ++model) {
-        void* hRef = mkAmp(model);
-        void* hLive = mkAmp(model);
-        liveVsRef(ampNames[model], pluck,
-                  [&](const float* i, float* o, int n) { amp_process(hRef, i, o, n); },
-                  [&](const float* i, float* o, int n) { amp_process(hLive, i, o, n); }, tol);
-        amp_destroy(hRef);
-        amp_destroy(hLive);
+        for (const auto& bc : kBlocks) {
+            void* hRef = mkAmp(model);
+            void* hLive = mkAmp(model);
+            liveVsRef(ampNames[model], pluck,
+                      [&](const float* i, float* o, int n) { amp_process(hRef, i, o, n); },
+                      [&](const float* i, float* o, int n) { amp_process(hLive, i, o, n); },
+                      bc.block, bc.bitExact, nullptr);
+            amp_destroy(hRef);
+            amp_destroy(hLive);
+        }
     }
 
     // -- the STEREO amp path (the worklet's real render call), chorus ON -------
@@ -878,37 +1025,46 @@ void testLiveConvention() {
             amp_set_param(h, kAmpChorusMode, 1.0f);  // chorus ON -> genuinely stereo
             return h;
         };
-        void* hRef = mkC();
-        void* hLive = mkC();
-        std::vector<float> refL(pluck.size(), 0.0f), refR(pluck.size(), 0.0f);
-        amp_process_stereo(hRef, pluck.data(), refL.data(), refR.data(), n);
-        std::vector<float> liveL(pluck.size(), 0.0f), liveR(pluck.size(), 0.0f);
-        for (int off = 0; off < n; off += 128) {
-            const int c = std::min(128, n - off);
-            amp_process_stereo(hLive, pluck.data() + off, liveL.data() + off,
-                               liveR.data() + off, c);
+        for (const auto& bc : kBlocks) {
+            void* hRef = mkC();
+            void* hLive = mkC();
+            std::vector<float> refL(pluck.size(), 0.0f), refR(pluck.size(), 0.0f);
+            amp_process_stereo(hRef, pluck.data(), refL.data(), refR.data(), n);
+            std::vector<float> liveL(pluck.size(), 0.0f), liveR(pluck.size(), 0.0f);
+            for (int off = 0; off < n; off += bc.block) {
+                const int c = std::min(bc.block, n - off);
+                amp_process_stereo(hLive, pluck.data() + off, liveL.data() + off,
+                                   liveR.data() + off, c);
+            }
+            const double dL = maxAbsDiff(refL, liveL), dR = maxAbsDiff(refR, liveR);
+            std::printf("  [B ] %-24s %4d-frame vs big-block stereo: max |Δ| L %.3e R %.3e\n",
+                        "amp_ ABI stereo+chorus", bc.block, dL, dR);
+            assert(allFinite(liveL) && allFinite(liveR));
+            // Bit-identical at BOTH sizes, ragged included, and the two channels must be
+            // checked separately: the chorus makes them genuinely different signals, so a
+            // block-size bug in one channel's delay-line indexing cannot hide in the other.
+            assert(dL == 0.0 && dR == 0.0 &&
+                   "stereo amp path is not BIT-IDENTICAL between blocked and big-block "
+                   "rendering");
+            amp_destroy(hRef);
+            amp_destroy(hLive);
         }
-        const double dL = maxAbsDiff(refL, liveL), dR = maxAbsDiff(refR, liveR);
-        std::printf("  [B ] %-24s 128f vs big-block stereo: max |Δ| L %.3e R %.3e\n",
-                    "amp_ ABI stereo+chorus", dL, dR);
-        assert(allFinite(liveL) && allFinite(liveR));
-        assert(dL <= tol && dR <= tol &&
-               "stereo amp path diverges between 128-frame and big-block rendering");
-        amp_destroy(hRef);
-        amp_destroy(hLive);
     }
 
     // -- the cab convolver + reverb, bare (the exact units the worklet chains) --
-    {
+    // CabConvolver: BIT-IDENTICAL at a ragged size too, since fix/cab-block-size. This is
+    // the assertion audit finding 3 needed and did not have.
+    for (const auto& bc : kBlocks) {
         const auto ir = clipper::dsp::generateDefaultCab2x12IR(kFs);
         clipper::dsp::CabConvolver cabRef, cabLive;
         cabRef.prepare(kFs, ir.data(), static_cast<int>(ir.size()), kFs, 128);
         cabLive.prepare(kFs, ir.data(), static_cast<int>(ir.size()), kFs, 128);
         liveVsRef("CabConvolver", pluck,
                   [&](const float* i, float* o, int n) { cabRef.process(i, o, n); },
-                  [&](const float* i, float* o, int n) { cabLive.process(i, o, n); }, tol);
+                  [&](const float* i, float* o, int n) { cabLive.process(i, o, n); }, bc.block,
+                  bc.bitExact, nullptr);
     }
-    {
+    for (const auto& bc : kBlocks) {
         clipper::dsp::ReverbModel rvRef, rvLive;
         rvRef.prepare(kFs);
         rvRef.setMix(0.5f);
@@ -916,10 +1072,14 @@ void testLiveConvention() {
         rvLive.setMix(0.5f);
         liveVsRef("ReverbModel", pluck,
                   [&](const float* i, float* o, int n) { rvRef.process(i, o, n); },
-                  [&](const float* i, float* o, int n) { rvLive.process(i, o, n); }, tol);
+                  [&](const float* i, float* o, int n) { rvLive.process(i, o, n); }, bc.block,
+                  bc.bitExact, nullptr);
     }
-    std::printf("  [ok] B live-convention: every entry point identical in-place/128-frame vs "
-                "separate/big-block (tol %.0e)\n", tol);
+    std::printf("  [ok] B live-convention: BIT-IDENTICAL in-place at the worklet's 128-frame "
+                "quantum for every entry point; at a RAGGED 100 frames the phaser, all four "
+                "amp voices, CabConvolver and ReverbModel are still bit-identical and the "
+                "five dirt pedals agree to <= %.0e relative once settled\n",
+                kRaggedSettledBar);
 }
 
 // ---------------------------------------------------------------------------
@@ -1217,9 +1377,18 @@ void testGoldenRenders(bool update) {
     }
 }
 
+// Known defects this binary exercises under XFAIL. Printed by --xfail-ledger, which ctest
+// surfaces as ***Skipped in its default summary (see core/CMakeLists.txt).
+const clipper::test::XfailDecl kLedger[] = {kXfControlRateBlockSize};
+
 }  // namespace
 
 int main(int argc, char** argv) {
+    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
+                                                 sizeof kLedger / sizeof kLedger[0],
+                                                 "clipper_player_expectations_tests");
+    if (ledger >= 0) return ledger;
+    clipper::test::requireAssertsLive();
     bool update = false;
     bool report = false;
     for (int i = 1; i < argc; ++i) {
@@ -1247,6 +1416,7 @@ int main(int argc, char** argv) {
     // In update mode the blocks above still run: never bless a render that fails
     // min-knob usability or the hum torture.
     testGoldenRenders(update);
-    std::printf("All M11 player-expectations tests passed.\n");
-    return 0;
+    std::printf("All M11 player-expectations tests passed (XFAILs listed below are known open "
+                "defects, not regressions).\n");
+    return clipper::test::reportXfails();
 }

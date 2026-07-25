@@ -59,6 +59,8 @@
 #include "clipper/dsp/TsModel.h"
 #include "clipper/dsp/TwinAmp.h"
 
+#include "support/AssertsLive.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -739,6 +741,7 @@ void testResetIsCheaperThanPrepare() {
 }  // namespace
 
 int main() {
+    clipper::test::requireAssertsLive();
     // Unbuffered: an assert() abort must not swallow the measurement lines that
     // explain WHY it fired.
     std::setvbuf(stdout, nullptr, _IONBF, 0);

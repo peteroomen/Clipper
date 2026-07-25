@@ -16,7 +16,11 @@
 #include "clipper/dsp/TwinPowerAmp.h"
 
 #include "measure/AliasMetric.h"
+#include "support/AssertsLive.h"
+#include "support/LtpProbe.h"
+#include "support/Xfail.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <complex>
@@ -28,6 +32,15 @@
 namespace {
 
 constexpr double kTwoPi = 6.283185307179586;
+
+// --- known-bad properties (2026-07-24 audit) --------------------------------------
+constexpr clipper::test::XfailDecl kXfAc30PiBalance{
+    "finding7-ac30-pi-leg-balance",
+    "2026-07-24 audit finding 7",
+    "the AC30 PI's two anti-phase legs are gain-balanced within 10 % — the 2.2 k tail that "
+    "buys the correct DC point destroys the long-tail property (7:1 CMRR, ratio 0.550)",
+    "the LtpInverter tailRef fix (finding 7): tail reference instead of Rtail, so a proper "
+    "10 k tail can deliver BOTH the operating point and the balance"};
 using clipper::dsp::Ac30Amp;
 using clipper::dsp::Ac30PowerAmp;
 using clipper::dsp::Ac30Preamp;
@@ -191,16 +204,35 @@ void testOperatingPoints(double fs) {
     const double dissW = iq * railM;
     assert(dissW < 12.5 && "EL84 plate dissipation exceeds the ~12 W max (class-A runs hot but bounded)");
 
-    const auto& ltp = pa.inverter();
-    assert(ltp.quiescentPlate1() > 150.0 && ltp.quiescentPlate1() < 300.0 && "PI Va1 implausible");
-    assert(ltp.quiescentPlate2() > 150.0 && ltp.quiescentPlate2() < 300.0 && "PI Va2 implausible");
+    // PI: the phase inverter's operating point and LEG BALANCE.
+    //
+    // 2026-07-25 (test/assert-real-properties): this block asserted only
+    // `quiescentPlate1() > 150 && < 300` — a 150 V window on a 300 V rail, wide enough to
+    // pass a phase inverter parked anywhere from mid-load-line to 99 % of B+. The comment
+    // above the Twin's equivalent said "balanced anti-phase legs" and nothing checked the
+    // balance; this one did not even claim to. That window is the hole the AC30's OWN
+    // starved phase inverter shipped through (docs §23 second amendment) — the test that
+    // should have caught it passed both before and after the fix.
+    //
+    // The AC30 is the one amp that MEETS the plate-fraction and standing-current targets,
+    // so both are ASSERTED FOR REAL here. It meets them only because Rtail was cut to
+    // 2.2 kΩ, and that is exactly what wrecks its LEG BALANCE (0.550) — a two-terminal
+    // tail cannot deliver both. So the balance is the XFAIL, and the two it passes are
+    // hard assertions: together they pin the trade-off, so a future "fix" that restores
+    // balance by re-starving the inverter cannot pass. See finding 7.
+    const auto ltpM = clipper::test::measureLtp(pa.inverter(), fs);
+    clipper::test::assertLtpSane(ltpM, "AC30");
+    clipper::test::assertLtpTargets(ltpM, fs, "AC30",
+                                    /*plate fraction: holds, assert for real*/ nullptr,
+                                    /*standing current: holds, assert for real*/ nullptr,
+                                    &kXfAc30PiBalance);
 
     std::printf("  [ok] DC op points @ %.0f Hz: V1 Va=%.1f Vk=%.2f Iq=%.2fmA; EL84 Iq=%.2f mA/tube "
-                "(analytic %.2f), Vk=%.2f (analytic %.2f), rail=%.1f (%.1f), screen=%.1f, Pdiss=%.1f W; "
-                "PI Va1=%.1f Va2=%.1f\n",
+                "(analytic %.2f), Vk=%.2f (analytic %.2f), rail=%.1f (%.1f), screen=%.1f, Pdiss=%.1f W\n",
                 fs, pre.stageQuiescentPlate(Ac30Preamp::V1), pre.stageQuiescentCathode(Ac30Preamp::V1),
                 pre.stageQuiescentCurrent(Ac30Preamp::V1) * 1e3, iq * 1e3, ipA * 1e3, vkM, vkA,
-                railM, railA, pa.screenIdle(), dissW, ltp.quiescentPlate1(), ltp.quiescentPlate2());
+                railM, railA, pa.screenIdle(), dissW);
+    clipper::test::printLtp(ltpM, "AC30", fs);
 }
 
 // ---------------------------------------------------------------------------
@@ -690,9 +722,19 @@ void testAliasing(double fs) {
                 fs, a1, a2, a4, a8);
 }
 
+// Known defects this binary exercises under XFAIL. Printed by --xfail-ledger, which ctest
+// surfaces as ***Skipped in its default summary (see core/CMakeLists.txt).
+const clipper::test::XfailDecl kLedger[] = {kXfAc30PiBalance};
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    clipper::test::requireAssertsLive();
+    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
+                                                 sizeof kLedger / sizeof kLedger[0],
+                                                 "clipper_ac30_tests");
+    if (ledger >= 0) return ledger;
+
     std::printf("Running clipper::dsp AC30 (M10.2) tests...\n");
     for (double fs : {44100.0, 48000.0, 96000.0}) {
         testOperatingPoints(fs);
@@ -713,6 +755,7 @@ int main() {
     testAliasing(44100.0);
     testAliasing(48000.0);
     testAliasing(96000.0);
-    std::printf("All AC30 (M10.2) tests passed.\n");
-    return 0;
+    std::printf("All AC30 (M10.2) tests passed (XFAILs listed below are known open defects, "
+                "not regressions).\n");
+    return clipper::test::reportXfails();
 }

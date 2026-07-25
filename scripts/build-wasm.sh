@@ -121,7 +121,7 @@ EMCC_ARGS=(
     # The link is -O3 with NO -DNDEBUG, so assert() is live in the shipped engine
     # and every one of them bakes its __FILE__ into the WASM. Those are ABSOLUTE
     # paths, so the committed artifact recorded whichever directory the builder
-    # happened to be in: main's artifact currently embeds four strings pointing at
+    # happened to be in: main's artifact embedded four strings pointing at
     # `/home/user/Clipper/.claude/worktrees/agent-ab1bbfef070dfac5b/...`, an
     # ephemeral agent worktree, because that is where it was last rebuilt. Same
     # source, same emcc, 64 differing bytes — which is why the "reproduces
@@ -130,7 +130,7 @@ EMCC_ARGS=(
     # -ffile-prefix-map rewrites those to repo-relative, which makes a future
     # rebuild-and-compare CI check possible. It does NOT remove the asserts: that
     # is -DNDEBUG, a change to what the audio engine does at runtime, and it wants
-    # a deliberate decision rather than a drive-by (docs §30).
+    # a deliberate decision rather than a drive-by (docs §31).
     -ffile-prefix-map="$REPO_ROOT/="
     -ffile-prefix-map="$CORE_DIR/=core/"
     -s MODULARIZE=1
@@ -142,12 +142,13 @@ EMCC_ARGS=(
     # in step with clipper_c_api.cpp. The *_reset entries are the recovery path for
     # audit finding 1 (docs §28): without them a poisoned engine can only be
     # recovered by tearing the whole worklet graph down.
-    -s EXPORTED_FUNCTIONS='["_clipper_create","_clipper_destroy","_clipper_set_param","_clipper_process","_rat_create","_rat_destroy","_rat_set_param","_rat_set_oversampling","_rat_latency_samples","_rat_process","_sd_create","_sd_destroy","_sd_set_param","_sd_set_oversampling","_sd_latency_samples","_sd_process","_ts_create","_ts_destroy","_ts_set_param","_ts_set_oversampling","_ts_latency_samples","_ts_process","_muff_create","_muff_destroy","_muff_set_param","_muff_set_oversampling","_muff_latency_samples","_muff_process","_gold_create","_gold_destroy","_gold_set_param","_gold_set_oversampling","_gold_latency_samples","_gold_process","_phaser_create","_phaser_destroy","_phaser_set_param","_phaser_set_oversampling","_phaser_latency_samples","_phaser_process","_amp_create","_amp_destroy","_amp_set_param","_amp_set_model","_amp_latency_samples","_amp_process","_amp_process_stereo","_amp_set_cab_builtin","_amp_load_custom_ir","_clipper_reset","_rat_reset","_sd_reset","_ts_reset","_muff_reset","_gold_reset","_phaser_reset","_amp_reset","_malloc","_free"]'
+    -s EXPORTED_FUNCTIONS='["_clipper_create","_clipper_destroy","_clipper_set_param","_clipper_process","_rat_create","_rat_destroy","_rat_set_param","_rat_set_oversampling","_rat_latency_samples","_rat_process","_sd_create","_sd_destroy","_sd_set_param","_sd_set_oversampling","_sd_latency_samples","_sd_process","_ts_create","_ts_destroy","_ts_set_param","_ts_set_oversampling","_ts_latency_samples","_ts_process","_muff_create","_muff_destroy","_muff_set_param","_muff_set_oversampling","_muff_latency_samples","_muff_process","_gold_create","_gold_destroy","_gold_set_param","_gold_set_oversampling","_gold_latency_samples","_gold_process","_phaser_create","_phaser_destroy","_phaser_set_param","_phaser_set_oversampling","_phaser_latency_samples","_phaser_process","_amp_create","_amp_destroy","_amp_set_param","_amp_set_model","_amp_latency_samples","_amp_process","_amp_process_stereo","_amp_set_cab_builtin","_amp_load_custom_ir","_amp_prepare_cab_builtin","_amp_prepare_cab_custom","_amp_commit_cab","_clipper_reset","_rat_reset","_sd_reset","_ts_reset","_muff_reset","_gold_reset","_phaser_reset","_amp_reset","_malloc","_free"]' \
     -s EXPORTED_RUNTIME_METHODS='["HEAPF32","HEAPU8"]'
 )
 # --- STAMP:EMCC-ARGS END ---
 
 emcc "${EMCC_ARGS[@]}" -o "$OUT_FILE"
+
 
 echo "Built WASM ES module: $OUT_FILE"
 ls -la "$OUT_FILE"
