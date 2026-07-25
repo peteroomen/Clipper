@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The DSP core: 18 plain-assert ctest targets, plus 6 `_xfail_ledger` entries that ctest
+  # The DSP core: 20 plain-assert ctest targets, plus 6 `_xfail_ledger` entries that ctest
   # reports as Skipped and which name the KNOWN-BAD properties still open against the
   # 2026-07-24 audit (docs §29). This is the load-bearing suite — every circuit model is
   # offline-testable precisely so that audio bugs are attributable to a model rather than
@@ -199,14 +199,23 @@ jobs:
 
   # The JUCE plugin. identical_core_test is load-bearing: it proves the plugin is a
   # re-wrap of the core rather than a re-implementation, across all four amp voices.
-  # Marked advisory (continue-on-error) for its first outings only — the Linux JUCE
-  # system-dependency list is easy to get subtly wrong, and a flaky new job must not
-  # block PRs on day one. Once it has been green a few times, drop the flag and add
-  # it to the required checks in branch protection.
+  #
+  # This job carried `continue-on-error: true` from the day CI landed, and that flag
+  # turned out to be actively harmful rather than merely cautious: the job failed on
+  # EVERY run (an unfiltered ctest reported the core's registered-but-unbuilt targets
+  # as Not Run and exited 8 — see the filter below), and the advisory flag hid it, so
+  # the load-bearing identical-core test had never once actually run in CI. The flag
+  # was justified as "drop it once it has been green a few times", but the honest
+  # condition is "once it has been observed green at all" — an advisory job nobody
+  # reads is indistinguishable from no job.
+  #
+  # Observed green on the runs for PR #11 and PR #12 after the ctest filter landed in
+  # PR #6, so the flag comes off here and the job blocks like every other one. Add it
+  # to the required checks in branch protection (owner action — CLAUDE.md, "GitHub
+  # branch protection").
   native:
-    name: Native (JUCE identical-core) [advisory]
+    name: Native (JUCE identical-core)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -230,8 +239,8 @@ jobs:
       - name: Build console tests
         run: cmake --build native/build -j --target clipper_identical_test clipper_chain_edit_test
 
-      # The native CMakeLists pulls the core in, so native/build registers ALL 19
-      # core ctest targets alongside the two native ones. We only BUILD the native
+      # The native CMakeLists pulls the core in, so native/build registers ALL 26
+      # core ctest entries alongside the two native ones. We only BUILD the native
       # pair, so an unfiltered ctest reports the core tests as "Not Run" and exits
       # 8 — which is what made this job fail on every run while continue-on-error
       # hid it. Filter to the two tests this job exists to run; the core suite has

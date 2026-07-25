@@ -76,7 +76,7 @@ This file is read by Claude Code at the start of every session. It captures conv
 - **ADR numbers are assigned centrally.** Two parallel slices both reached for `001`; if you are working a slice, ask rather than guess.
 - **Also just landed:** **audit finding 3 fixed** — `CabConvolver` is exact for ANY host block size, not just multiples of 128. It zero-padded a partial block but advanced the FDL by a full partition and discarded the remainder, so the stream stayed misaligned forever; at 100-sample blocks the error EXCEEDED the signal (0.1636 vs a 0.1521 peak). Now feed → maybe-one-block → drain, with the deferral moved out of the FDL indexing and into an output FIFO, so it costs **no** extra latency and the 128-aligned path stays bit-identical (goldens untouched). Measured 0.0 error at every block size from 1 to 4096.
 - **Still open on the native side of finding 3:** the *convolver* now handles any block size, but `native/src/ClipperEngine::process` still only chunks when `numFrames > maxBlock_`, so the rest of the native chain still sees raw host block sizes. Its own slice.
-- **CI native job:** the `native` job's `ctest` inherits the core's registered tests (the native CMakeLists pulls the core in) and reported them Not Run because only the two native targets are built, so the job failed on every run with `continue-on-error` hiding it. Fixed with `-R 'clipper_identical_core|clipper_chain_edit'`. It stays advisory until it has been observed green — the load-bearing identical-core test had **never** actually run in CI before this.
+- **CI native job — now blocking.** Its `ctest` inherited the core's registered tests (the native CMakeLists pulls the core in) and reported them Not Run because only the two native targets are built, so the job failed on every run with `continue-on-error` hiding it — the load-bearing identical-core test had **never** actually run in CI. Fixed with `-R 'clipper_identical_core|clipper_chain_edit'`; observed green on PRs #11 and #12, so the advisory flag is off and it blocks like every other job. **Owner action outstanding:** add it to the required checks in branch protection.
 - **Repo hygiene note:** project history lived on a long-running feature branch for a while and `main` held only a README. That is being corrected — `main` is now the trunk. Do not start new work from anything but `main`.
 - **Env note:** **Node 22+** for the web app and tests — `npm run test:server` / `test:history` / `test:scripts` pass a quoted glob to `node --test`, and native glob support landed in Node 22, so on Node 20 they fail with "Could not find …/*.test.mjs". (Documented as 18+ until CI proved otherwise.) CMake ≥ 3.16 and a C++17 compiler for the core; Emscripten only for the WASM rebuild (`scripts/setup-emsdk.sh`), now pinned to **emsdk 6.0.4**. The artifact is byte-reproducible **from any directory as of 2026-07-25** — it was not before. The emcc link is `-O3` with no `-DNDEBUG`, so live `assert()`s bake their absolute `__FILE__` into the WASM, and the committed artifact recorded whichever directory the builder was in (main's briefly embedded an ephemeral agent-worktree path). `-ffile-prefix-map` makes those repo-relative; verified byte-identical across two different build directories. **Asserts still ship inside the audio engine** — removing them is `-DNDEBUG`, a runtime-behaviour change, deliberately not done here (docs §30).
 
@@ -261,9 +261,9 @@ In **Settings → Branches → Add rule** for `main`:
 
 ## Automated Checks
 
-> **Status: wired up** (`.github/workflows/ci.yml`, landed 2026-07-25 — this note said "not yet" until then). Runs on every PR to `main` and every push to `main`. The **native job stays advisory** (`continue-on-error`) until it has been observed green. The Post-Session Checklist commands are still the local gate — run them before you push, don't outsource that to CI.
+> **Status: wired up** (`.github/workflows/ci.yml`, landed 2026-07-25 — this note said "not yet" until then). Runs on every PR to `main` and every push to `main`. **Every job blocks** — the native job's `continue-on-error` came off once it had been observed green (see below). The Post-Session Checklist commands are still the local gate — run them before you push, don't outsource that to CI.
 >
-> **What CI cannot catch, and you must therefore still think about:** `web/playwright.config.ts` sets `retries: 2`, so a fault appearing in under a third of runs is retried away; `check-artifact.mjs` only checks the WASM artifact *exists*, not that it is current; and the goldens are `.wav` files no reviewer can read in a diff. See docs §29.
+> **What CI cannot catch, and you must therefore still think about:** `web/playwright.config.ts` sets `retries: 2`, so a fault appearing in under a third of runs is retried away; and the goldens are `.wav` files no reviewer can read in a diff (the Goldens-changelog job forces a written justification, but cannot check it is *true*). See docs §29.
 
 ### The CI pipeline (GitHub Actions)
 
@@ -273,7 +273,7 @@ In **Settings → Branches → Add rule** for `main`:
 4. **Artifact staleness:** `node web/scripts/check-artifact.mjs` — a real content-hash check against `web/public/generated/.build-stamp.json`, needing no emsdk. See **The committed WASM artifact**.
 5. **Goldens changelog:** a PR that changes a `.wav` under `core/tests/goldens/` must also change `core/tests/goldens/GOLDENS.md`.
 6. **Commit messages:** a dependency-free Conventional Commits regex over the PR's first-parent subjects.
-7. **Native (advisory):** the JUCE `identical_core_test` and `chain_edit_test`.
+7. **Native:** the JUCE `clipper_identical_test` and `clipper_chain_edit_test`, run through a filtered `ctest` (the native build registers the core's tests too, without building them).
 
 ### Useful commands
 
