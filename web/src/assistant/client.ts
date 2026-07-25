@@ -33,6 +33,21 @@ export class AssistantError extends Error {
   }
 }
 
+// The turn was cancelled by the user (audit UI/UX finding 3: a turn that is
+// rearranging the live rig used to be unstoppable). NOT an error — the caller
+// shows a neutral "cancelled" notice, and no tool call from the cancelled turn
+// has been applied.
+export class AssistantAborted extends Error {
+  constructor() {
+    super('The assistant turn was cancelled.');
+    this.name = 'AssistantAborted';
+  }
+}
+
+function abortedIf(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new AssistantAborted();
+}
+
 interface StreamedTurn {
   content: unknown[];
   stopReason: string | null;
@@ -42,7 +57,8 @@ interface StreamedTurn {
 // streaming text deltas out. Returns the full content array + stop_reason.
 async function streamTurn(
   body: ReadableStream<Uint8Array>,
-  onTextDelta: (delta: string) => void
+  onTextDelta: (delta: string) => void,
+  signal?: AbortSignal
 ): Promise<StreamedTurn> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -129,7 +145,16 @@ async function streamTurn(
 
   // Read + split on blank-line-delimited SSE events; within each, use `data:`.
   for (;;) {
-    const { done, value } = await reader.read();
+    let done: boolean;
+    let value: Uint8Array | undefined;
+    try {
+      ({ done, value } = await reader.read());
+    } catch (err) {
+      // A cancel mid-stream rejects the pending read. Report it as a cancel, not
+      // as a network failure, and never as a completed turn.
+      abortedIf(signal);
+      throw err;
+    }
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     let sep;
@@ -171,7 +196,8 @@ async function requestTurn(
   system: unknown,
   tools: unknown,
   messages: ApiMessage[],
-  onTextDelta: (delta: string) => void
+  onTextDelta: (delta: string) => void,
+  signal?: AbortSignal
 ): Promise<StreamedTurn> {
   // Trim / cap the history for THIS request (see history.ts). The local
   // `messages` array is left intact — the live tool-use loop still echoes full
@@ -184,8 +210,12 @@ async function requestTurn(
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ system, tools, messages: outgoing }),
+      // A real cancel: the request is torn down, not just ignored.
+      signal,
     });
   } catch {
+    // An aborted fetch rejects here too — it is a cancel, not a dead proxy.
+    abortedIf(signal);
     throw new AssistantError('proxy_unreachable');
   }
 
@@ -206,21 +236,33 @@ async function requestTurn(
   }
   if (!resp.body) throw new AssistantError('unknown', 'The assistant response had no body.');
 
-  return streamTurn(resp.body, onTextDelta);
+  return streamTurn(resp.body, onTextDelta, signal);
 }
 
 // Drive the full tool-use loop over an existing message history (mutated in
 // place and returned). Executes ALL tool_use blocks in a turn and returns their
 // results in ONE user message before continuing.
+//
+// `signal` makes a turn CANCELLABLE (audit UI/UX finding 3). The contract, which
+// the undo ring depends on: once the signal is aborted, NO further tool call from
+// this turn is executed and the partially streamed turn is NOT appended to the
+// history — so the rig is either left untouched or left exactly where the last
+// completed tool call put it, never mid-stream.
 export async function runAssistant(
   controller: RigController,
   system: unknown,
   tools: unknown,
   messages: ApiMessage[],
-  cb: RunCallbacks
+  cb: RunCallbacks,
+  signal?: AbortSignal
 ): Promise<ApiMessage[]> {
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
-    const turn = await requestTurn(system, tools, messages, cb.onTextDelta);
+    abortedIf(signal);
+    const turn = await requestTurn(system, tools, messages, cb.onTextDelta, signal);
+    // A cancel that lands while the last bytes are in flight must not apply the
+    // turn's tool calls, and must not leave an assistant tool_use in the history
+    // with no matching tool_result (the next request would be rejected).
+    abortedIf(signal);
     messages.push({ role: 'assistant', content: turn.content });
 
     if (turn.stopReason === 'tool_use') {
@@ -231,6 +273,11 @@ export async function runAssistant(
       const results: unknown[] = [];
       const chips: string[] = [];
       for (const tu of toolUses) {
+        // Checked per call, so a cancel arriving mid-batch stops the rest.
+        if (signal?.aborted) {
+          if (chips.length) cb.onToolChips(chips);
+          throw new AssistantAborted();
+        }
         const exec = executeTool(controller, tu.name, tu.input ?? {});
         chips.push(exec.chip);
         results.push({ type: 'tool_result', tool_use_id: tu.id, content: exec.content });

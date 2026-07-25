@@ -136,6 +136,9 @@
 }
 .chat-input input::placeholder { color: var(--glass-ink); opacity: .5; }
 .chat-input input:disabled { opacity: .6; }
+/* Mid-turn the input is READ-ONLY, not disabled (docs §39) — it keeps focus and
+   its tab stop, so dim it the same way a disabled one used to look. */
+.chat-input input:read-only { opacity: .6; }
 .chat-input .send {
   flex-shrink: 0; width: 30px; height: 30px; border-radius: 50%; border: none;
   background: var(--ai); color: #fff; font-size: 14px; cursor: pointer;
@@ -143,6 +146,11 @@
   box-shadow: 0 3px 10px color-mix(in srgb, var(--ai) 50%, transparent);
 }
 .chat-input .send:disabled { opacity: .45; cursor: not-allowed; }
+/* STOP: the same button while a turn is in flight. Reads as an interrupt, not a
+   send — and is never disabled, so a turn reshaping the rig can always be
+   stopped (audit UI/UX finding 3). */
+.chat-input .send.stop { background: var(--led); font-size: 10px;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--led) 50%, transparent); }
 .chat-input .send:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
 
 /* stacked layout on narrow screens */

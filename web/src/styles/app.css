@@ -148,3 +148,27 @@ header.hero { position: relative; padding: 28px 0 8px; }
 @media (max-width: 760px) {
   .input-stage { flex-wrap: wrap; }
 }
+
+/* ---------- rig history: undo / redo (docs §39) ----------
+   Sits under the board, next to the gear it protects. Tokens only — this row is
+   on the app surface (never the dark pedal chassis), so the normal --ink /
+   --cap-edge pair is correct in both themes. */
+.rig-history {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: 0 0 18px;
+}
+.rig-history .rh-btn {
+  padding: 9px 16px; border-radius: 12px;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+/* The action name rides in a well so the control reads "Undo <what>" at a glance
+   rather than being a mystery button. */
+.rh-label {
+  font-family: ui-monospace, Menlo, monospace; font-size: 11px; font-weight: 500;
+  letter-spacing: .02em; text-transform: none; color: var(--ink-dim);
+  max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 2px 8px; border-radius: 999px;
+  background: var(--well);
+  box-shadow: inset 2px 2px 5px var(--sh-darker), inset -1px -1px 4px var(--sh-light);
+}
+.rh-note { font-size: 11.5px; color: var(--ink-faint); letter-spacing: .04em; }

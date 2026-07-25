@@ -40,6 +40,14 @@ export interface RigController {
   addPedal: (type: string, position?: number) => number;
   removePedal: (index: number) => void;
   movePedal: (from: number, to: number) => void;
+  // Undo bracketing for ONE assistant turn (docs §39, ADR 011). The CHAT calls
+  // these around a turn; `executeTool` below never does, so the tool surface —
+  // and its allowlist + clamps — is unchanged. A whole turn collapses to a
+  // single undo entry, so undoing a three-tool-call turn cannot leave the rig in
+  // a half-applied state the player never saw. Optional so a controller that
+  // does not implement undo still satisfies the interface.
+  beginUndo?: (label: string) => void;
+  endUndo?: () => void;
 }
 
 // JSON-schema tool definitions sent to the API (name/description/input_schema).

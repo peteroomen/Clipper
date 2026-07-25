@@ -4,7 +4,12 @@
 // flow, a typing indicator, and a pill input. Conversation lives in memory.
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { runAssistant, AssistantError, type ApiMessage } from '../assistant/client';
+import {
+  runAssistant,
+  AssistantError,
+  AssistantAborted,
+  type ApiMessage,
+} from '../assistant/client';
 import { TOOLS, type RigController } from '../assistant/tools';
 import { buildSystem, buildContextPreamble } from '../assistant/prompt';
 import { PICKUP_TYPES, type GuitarProfile, type PickupType } from '../guitar';
@@ -42,6 +47,16 @@ export function Chat({ controller, guitar, onGuitarChange }: ChatProps) {
 
   const nextId = () => idRef.current++;
   const healthCheckedRef = useRef(false);
+  // The live turn's abort controller (audit UI/UX finding 3: a turn reshaping the
+  // rig used to be unstoppable). Null when no turn is in flight.
+  const abortRef = useRef<AbortController | null>(null);
+  // The chat input, so a cancel can put the caret back where the player left it
+  // if focus has moved on since.
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function cancelTurn() {
+    abortRef.current?.abort();
+  }
 
   // Health check, fired LAZILY the first time the user engages the chat (focus /
   // send), not on mount — so pages that never touch the assistant make no /api
@@ -109,6 +124,10 @@ export function Chat({ controller, guitar, onGuitarChange }: ChatProps) {
       controller.getPeakDbFs?.(),
       controller.getTunerReading?.()
     );
+    // Where to rewind the API history to if the turn is cancelled: a half-turn
+    // (a user message with no reply, or an assistant tool_use with no matching
+    // tool_result) would make the NEXT request invalid.
+    const historyMark = historyRef.current.length;
     historyRef.current.push({
       role: 'user',
       content: [
@@ -118,23 +137,69 @@ export function Chat({ controller, guitar, onGuitarChange }: ChatProps) {
     });
     streamIdRef.current = null;
 
+    const ac = new AbortController();
+    abortRef.current = ac;
+    // ONE undo entry for the whole turn (docs §39): the coach may fire several
+    // tool calls, and undoing must return the rig to where it was BEFORE the
+    // turn, not to some intermediate state the player never saw. Nothing is
+    // pushed if the turn changes nothing (text-only reply, error, cancel).
+    controller.beginUndo?.('Assistant turn');
+
     try {
-      await runAssistant(controller, buildSystem(), TOOLS, historyRef.current, {
-        onTextDelta: appendTextDelta,
-        onToolChips: (chips) => {
-          streamIdRef.current = null; // text after tools starts a fresh bubble
-          setItems((prev) => [...prev, { id: nextId(), kind: 'chips', chips }]);
+      await runAssistant(
+        controller,
+        buildSystem(),
+        TOOLS,
+        historyRef.current,
+        {
+          onTextDelta: appendTextDelta,
+          onToolChips: (chips) => {
+            streamIdRef.current = null; // text after tools starts a fresh bubble
+            setItems((prev) => [...prev, { id: nextId(), kind: 'chips', chips }]);
+          },
+          onNotice: (variant, noticeText) =>
+            setItems((prev) => [
+              ...prev,
+              { id: nextId(), kind: 'notice', variant, text: noticeText },
+            ]),
         },
-        onNotice: (variant, noticeText) =>
-          setItems((prev) => [...prev, { id: nextId(), kind: 'notice', variant, text: noticeText }]),
-      });
+        ac.signal
+      );
     } catch (err) {
-      const message =
-        err instanceof AssistantError ? err.message : 'Something went wrong talking to the assistant.';
-      setItems((prev) => [...prev, { id: nextId(), kind: 'notice', variant: 'error', text: message }]);
+      if (err instanceof AssistantAborted) {
+        // Drop the cancelled exchange from the API history and say so in the
+        // flow. Any tool call that DID complete before the cancel stays applied
+        // (it is real, and it is inside the turn's single undo entry).
+        historyRef.current.length = historyMark;
+        setItems((prev) => [
+          ...prev,
+          {
+            id: nextId(),
+            kind: 'notice',
+            variant: 'truncated',
+            text: '(stopped — nothing further was changed.)',
+          },
+        ]);
+      } else {
+        const message =
+          err instanceof AssistantError
+            ? err.message
+            : 'Something went wrong talking to the assistant.';
+        setItems((prev) => [
+          ...prev,
+          { id: nextId(), kind: 'notice', variant: 'error', text: message },
+        ]);
+      }
     } finally {
+      controller.endUndo?.();
+      abortRef.current = null;
       streamIdRef.current = null;
       setBusy(false);
+      // The input is never `disabled` mid-turn (that is what dropped focus to
+      // <body>), but if focus DID move elsewhere while the turn ran, put it back
+      // where the player was typing.
+      const el = inputRef.current;
+      if (el && document.activeElement === document.body) el.focus();
     }
   }
 
@@ -241,25 +306,53 @@ export function Chat({ controller, guitar, onGuitarChange }: ChatProps) {
       </div>
 
       <form className="chat-input" onSubmit={handleSend}>
+        {/* READ-ONLY, never `disabled`, while a turn runs. `disabled` removes the
+            element from the focus order, which dropped focus to <body> mid-turn
+            and lost the player's place (audit UI/UX finding 3). readOnly keeps
+            the caret, the selection and the tab stop. Escape cancels the turn. */}
         <input
+          ref={inputRef}
           type="text"
           value={input}
           placeholder="Give me the rhythm tone from The Bends…"
           aria-label="Message the tone assistant"
           data-testid="chat-input"
-          disabled={busy}
+          readOnly={busy}
+          aria-busy={busy}
           onFocus={() => void checkHealth()}
           onChange={(ev) => setInput(ev.target.value)}
+          onKeyDown={(ev) => {
+            if (ev.key === 'Escape' && busy) {
+              ev.preventDefault();
+              cancelTurn();
+            }
+          }}
         />
-        <button
-          type="submit"
-          className="send"
-          aria-label="Send"
-          data-testid="chat-send"
-          disabled={busy || !input.trim()}
-        >
-          ↑
-        </button>
+        {/* While busy this is a STOP button rather than a disabled Send: a turn
+            that is rearranging the rig must be interruptible, and swapping the
+            handler in place (instead of disabling) also means focus never leaves
+            it if the player clicked to send. */}
+        {busy ? (
+          <button
+            type="button"
+            className="send stop"
+            aria-label="Stop the assistant"
+            data-testid="chat-stop"
+            onClick={cancelTurn}
+          >
+            ■
+          </button>
+        ) : (
+          <button
+            type="submit"
+            className="send"
+            aria-label="Send"
+            data-testid="chat-send"
+            disabled={!input.trim()}
+          >
+            ↑
+          </button>
+        )}
       </form>
     </aside>
   );

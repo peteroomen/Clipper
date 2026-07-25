@@ -30,6 +30,7 @@ import {
   type StoredCustomIr,
 } from './cab';
 import { loadGuitar, saveGuitar, type GuitarProfile } from './guitar';
+import { UndoRing, DEFAULT_CAPACITY } from './undo';
 import type { RigController } from './assistant/tools';
 import { Board } from './components/Board';
 import { InputStage } from './components/InputStage';
@@ -51,6 +52,50 @@ function applyTheme(choice: ThemeChoice) {
   if (choice === 'system') root.removeAttribute('data-theme');
   else root.setAttribute('data-theme', choice);
 }
+
+// ---- undo labels (docs §39) ----
+// The Undo control says WHAT it will undo, so every mutator names its action.
+// Short, player-facing words: the label lands on a button, not in a log.
+const PEDAL_LABEL: Record<PedalType, string> = {
+  rat: 'RAT',
+  sd1: 'SD-1',
+  ts: 'Screamer',
+  muff: 'Pi Fuzz',
+  gold: 'Myth',
+  phaser: 'Phaser',
+  tuner: 'Tuner',
+};
+const SLOT_LABEL: Record<ParamName, string> = {
+  distortion: 'drive',
+  filter: 'tone',
+  level: 'level',
+};
+const AMP_LABEL: Record<AmpParamName, string> = {
+  volume: 'Volume',
+  bass: 'Bass',
+  middle: 'Middle',
+  treble: 'Treble',
+  bright: 'Bright',
+  cab: 'Cab switch',
+  speed: 'Speed',
+  depth: 'Depth',
+  chorusMode: 'Mod mode',
+  reverb: 'Reverb',
+  gain: 'Gain',
+  presence: 'Presence',
+  master: 'Master',
+};
+const AMP_TYPE_LABEL: Record<AmpType, string> = {
+  clean120: 'Clean 120',
+  jcm800: 'JCM800',
+  twin: 'Twin Sixty-Five',
+  ac30: 'Thirty',
+};
+const CAB_LABEL: Record<CabChoice, string> = {
+  clean212: 'Clean 2×12',
+  brit412: 'Brit 4×12',
+  custom: 'custom IR',
+};
 
 export default function App() {
   const engineRef = useRef<Engine | null>(null);
@@ -110,6 +155,144 @@ export default function App() {
   customIrRef.current = customIr;
   const [cabNote, setCabNote] = useState<string | null>(null);
 
+  // ---- the undo ring (audit UI/UX findings 2+3; docs §39, ADR 011) ----
+  //
+  // `rigRef` is the SYNCHRONOUS source of truth and every mutator now writes it
+  // eagerly through `commitRig()`. Two reasons:
+  //   1. An undo snapshot taken at the top of a mutator must be the state
+  //      BEFORE that mutation — `rig` (state) only catches up on the next
+  //      render, which is too late.
+  //   2. React 18 batches, so several mutations inside ONE tick (an assistant
+  //      turn firing three tool calls in a row) all read the same stale
+  //      `rigRef.current`. The whole-object mutators (add/remove/swap/move)
+  //      therefore CLOBBERED each other: "add a Screamer and a phaser" landed
+  //      only the phaser. Writing the ref eagerly makes them compose.
+  function commitRig(next: RigState) {
+    rigRef.current = next;
+    setRig(next);
+  }
+
+  const undoRef = useRef<UndoRing | null>(null);
+  // The only undo state React renders. It changes at most once per undo entry
+  // (never per pointer move), because a coalesced push does not fire onChange.
+  const [undoUi, setUndoUi] = useState<{
+    undo: string | null;
+    redo: string | null;
+    depth: number;
+  }>({ undo: null, redo: null, depth: 0 });
+
+  function undoRing(): UndoRing {
+    if (!undoRef.current) {
+      undoRef.current = new UndoRing({
+        // Serializing the LIVE rig, called only when the ring decides to push.
+        snapshot: () => serializeRig(rigRef.current),
+        now: () => performance.now(),
+        onChange: () => {
+          const r = undoRef.current;
+          if (!r) return;
+          setUndoUi({ undo: r.topLabel, redo: r.redoLabel, depth: r.depth });
+        },
+      });
+    }
+    return undoRef.current;
+  }
+
+  // Record the pre-change state. `key` non-null coalesces a continuous gesture
+  // (a knob drag) into ONE entry; discrete actions pass null.
+  function recordUndo(label: string, key: string | null = null) {
+    undoRing().record(label, key);
+  }
+
+  // Push a whole rig to the running engine. Used by the undo/redo restore path:
+  // a snapshot can differ from the live rig in ANY field, so everything is
+  // re-sent. `prev` lets the two expensive topology messages (cab IR, amp voice)
+  // be skipped when they did not actually change — a cab prepare is 11-46 ms in
+  // the worklet's onmessage (docs §30), so sending it needlessly would cost a
+  // late render quantum for nothing.
+  function pushWholeRigToEngine(next: RigState, prev: RigState) {
+    const e = engineRef.current;
+    if (!e) return;
+    e.setInputTrim(next.input.trim);
+    if (next.oversampling !== prev.oversampling) e.setOversampling(next.oversampling);
+    // The chain message carries each instance's params + engaged flag, and is
+    // applied click-free (declick fade) in the worklet.
+    e.setChain(next.pedals);
+    for (const name of Object.keys(AMP_PARAM_ID) as AmpParamName[]) {
+      e.setAmpParam(AMP_PARAM_ID[name], next.amp.params[name]);
+    }
+    if (next.amp.type !== prev.amp.type) e.setAmpModel(next.amp.type);
+    e.setAmpBypass(!next.amp.engaged);
+    if (next.amp.cabModel !== prev.amp.cabModel) {
+      if (next.amp.cabModel === 'custom') {
+        if (customIrRef.current) void loadCustomIntoEngine(customIrRef.current);
+      } else {
+        e.setCabBuiltin(next.amp.cabModel);
+      }
+    }
+    const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
+    if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastChain = next.pedals.map((p) => p.id);
+  }
+
+  // Restore one snapshot. The stored JSON is treated as UNTRUSTED INPUT — it
+  // goes back through `deserializeRig()` -> `normalizeRig()`, the same clamp /
+  // coerce / migrate path a rig restored from localStorage gets, BEFORE any of
+  // it reaches the engine. The undo path must not become a way to put a
+  // non-finite or out-of-range value into the DSP (audit finding 1 / ADR 002).
+  function applySnapshot(json: string): boolean {
+    let next: RigState;
+    try {
+      next = deserializeRig(json);
+    } catch {
+      return false; // unparseable snapshot — leave the rig exactly as it is
+    }
+    // The custom IR's SAMPLES live outside the rig JSON, so a snapshot can name
+    // a cab this session has no data for.
+    if (next.amp.cabModel === 'custom' && !customIrRef.current) {
+      next = { ...next, amp: { ...next.amp, cabModel: 'clean212', customCabLabel: undefined } };
+      setCabNote('Custom IR not found — using the Clean 2×12.');
+    }
+    const prev = rigRef.current;
+    commitRig(next);
+    pushWholeRigToEngine(next, prev);
+    return true;
+  }
+
+  function doUndo(): boolean {
+    const e = undoRing().undo();
+    return e ? applySnapshot(e.json) : false;
+  }
+
+  function doRedo(): boolean {
+    const e = undoRing().redo();
+    return e ? applySnapshot(e.json) : false;
+  }
+
+  // Cmd/Ctrl-Z undo, Cmd/Ctrl-Shift-Z (or Ctrl-Y) redo, from anywhere in the
+  // app — EXCEPT inside a text field, where the platform's own text undo has to
+  // win: the chat input's Cmd-Z must undo what the player typed, not their rig.
+  useEffect(() => {
+    function isTextTarget(t: EventTarget | null): boolean {
+      const el = t as HTMLElement | null;
+      if (!el || typeof el.tagName !== 'string') return false;
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+      return el.isContentEditable === true;
+    }
+    function onKeyDown(ev: KeyboardEvent) {
+      if (!(ev.metaKey || ev.ctrlKey) || ev.altKey) return;
+      const k = ev.key.toLowerCase();
+      if (k !== 'z' && k !== 'y') return;
+      if (isTextTarget(ev.target)) return;
+      ev.preventDefault();
+      if (k === 'y' || ev.shiftKey) doRedo();
+      else doUndo();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+    // The handlers close over refs and stable setters only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Persist the rig on every change.
   useEffect(() => {
     saveRig(rig);
@@ -144,7 +327,33 @@ export default function App() {
         tunerReadingRef.current = r;
         setTunerReading(r);
       },
+      // Undo-ring seam (docs §39). Read-only counters + the two commands, plus
+      // `injectRaw` — the ONLY way the suite can hand the restore path a hostile
+      // snapshot and prove it re-validates instead of trusting it. The app never
+      // calls injectRaw.
+      undo: {
+        capacity: DEFAULT_CAPACITY,
+        depth: () => undoRing().depth,
+        redoDepth: () => undoRing().redoDepth,
+        labels: () => undoRing().labels(),
+        // attempts = what a naive one-entry-per-change ring would have pushed.
+        stats: () => {
+          const r = undoRing();
+          return {
+            attempts: r.attempts,
+            pushed: r.pushed,
+            coalesced: r.coalesced,
+            serializations: r.serializations,
+            dropped: r.dropped,
+          };
+        },
+        bytes: () => undoRing().bytes(),
+        undo: () => doUndo(),
+        redo: () => doRedo(),
+        injectRaw: (json: string, label?: string) => undoRing().injectRaw(json, label),
+      },
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function refreshDevices() {
@@ -172,12 +381,22 @@ export default function App() {
   // Set a knob on a specific pedal instance (by id). Lightweight per-pedal
   // message — does NOT re-push the chain (so no declick fade on a knob move).
   function setPedalParamById(pedalId: string, name: ParamName, value: number) {
-    setRig((r) => ({
-      ...r,
-      pedals: r.pedals.map((p) =>
+    const r0 = rigRef.current;
+    const inst = r0.pedals.find((p) => p.id === pedalId);
+    // A no-op write (a clamped drag edge, a double-click reset of a knob already
+    // at its default) must not leave an undo step that appears to do nothing.
+    if (inst && inst.params[name] === value) return;
+    // COALESCED by (instance, slot): a whole drag on one knob is one undo entry.
+    recordUndo(
+      `${inst ? PEDAL_LABEL[inst.type] : 'Pedal'} ${SLOT_LABEL[name]}`,
+      `p:${pedalId}:${name}`
+    );
+    commitRig({
+      ...r0,
+      pedals: r0.pedals.map((p) =>
         p.id === pedalId ? { ...p, params: { ...p.params, [name]: value } } : p
       ),
-    }));
+    });
     const id = PARAM_ID[name];
     engineRef.current?.setPedalParam(pedalId, id, value);
     const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
@@ -186,7 +405,10 @@ export default function App() {
 
   // Rig-level input trim (0..1 knob). Applied in the worklet before the pedals.
   function setInputTrim(value: number) {
-    setRig((r) => ({ ...r, input: { ...r.input, trim: value } }));
+    if (rigRef.current.input.trim === value) return; // no-op: no undo step
+    recordUndo('Input trim', 'input:trim'); // coalesced (continuous knob)
+    const r0 = rigRef.current;
+    commitRig({ ...r0, input: { ...r0.input, trim: value } });
     engineRef.current?.setInputTrim(value);
     const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
     if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastInputTrim = value;
@@ -195,11 +417,16 @@ export default function App() {
   // Set a pedal instance's engaged state (footswitch / assistant). Per-instance
   // bypass message; engaged=false -> bypassed.
   function setPedalEngagedById(pedalId: string, engaged: boolean) {
+    const r0 = rigRef.current;
+    const inst = r0.pedals.find((p) => p.id === pedalId);
+    // DISCRETE: never coalesced. Two stomps inside the coalescing window have to
+    // be two undos, or the first undo would look like it did nothing.
+    recordUndo(`${inst ? PEDAL_LABEL[inst.type] : 'Pedal'} ${engaged ? 'on' : 'bypass'}`);
     engineRef.current?.setPedalBypass(pedalId, !engaged); // bypass = not engaged
-    setRig((r) => ({
-      ...r,
-      pedals: r.pedals.map((p) => (p.id === pedalId ? { ...p, engaged } : p)),
-    }));
+    commitRig({
+      ...r0,
+      pedals: r0.pedals.map((p) => (p.id === pedalId ? { ...p, engaged } : p)),
+    });
     const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
     if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastBypass = !engaged;
   }
@@ -214,7 +441,7 @@ export default function App() {
   // applies it click-free (short output fade). Persisted like any rig change.
 
   function pushChain(next: RigState) {
-    setRig(next);
+    commitRig(next);
     engineRef.current?.setChain(next.pedals);
     const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
     if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastChain = next.pedals.map((p) => p.id);
@@ -228,22 +455,31 @@ export default function App() {
     const pedals = [...r.pedals];
     const at = position == null ? pedals.length : Math.min(pedals.length, Math.max(0, position));
     pedals.splice(at, 0, pedal);
+    recordUndo(`Add ${PEDAL_LABEL[type]}`);
     pushChain({ ...r, pedals });
     return at;
   }
 
+  // DESTRUCTIVE (audit UI/UX finding 2): the instance and its dialled-in knobs
+  // are gone from the rig, and the autosave commits immediately. Undoable now.
   function removePedal(pedalId: string) {
     const r = rigRef.current;
+    const inst = r.pedals.find((p) => p.id === pedalId);
+    if (!inst) return;
+    recordUndo(`Remove ${PEDAL_LABEL[inst.type]}`);
     pushChain({ ...r, pedals: r.pedals.filter((p) => p.id !== pedalId) });
   }
 
   // Swap a pedal in place (remove + add the new type at the same slot). Keeps the
-  // chain position; today only 'rat' exists so this is the plumbing for M7/M8.
+  // chain position. DESTRUCTIVE (audit UI/UX finding 2): the replacement is a
+  // FRESH instance at that type's defaults, so the dialled-in settings of the old
+  // one existed nowhere until this ring — the undo entry recorded here IS them.
   function swapPedal(pedalId: string, type: PedalType) {
     const r = rigRef.current;
     const idx = r.pedals.findIndex((p) => p.id === pedalId);
     if (idx < 0) return;
     const pedals = [...r.pedals];
+    recordUndo(`Swap ${PEDAL_LABEL[pedals[idx].type]} → ${PEDAL_LABEL[type]}`);
     pedals[idx] = makePedal(type);
     pushChain({ ...r, pedals });
   }
@@ -258,13 +494,23 @@ export default function App() {
     const pedals = [...r.pedals];
     const [moved] = pedals.splice(from, 1);
     pedals.splice(clampedTo, 0, moved);
+    recordUndo(`Move ${PEDAL_LABEL[moved.type]} #${from + 1} → #${clampedTo + 1}`);
     pushChain({ ...r, pedals });
   }
 
   // ---- amp mutations ----
 
-  function setAmpParam(name: AmpParamName, value: number) {
-    setRig((r) => ({ ...r, amp: { ...r.amp, params: { ...r.amp.params, [name]: value } } }));
+  // `coalesceKey` defaults to per-param coalescing (continuous knobs). The
+  // discrete callers below pass null so each flip is its own undo step.
+  function setAmpParam(
+    name: AmpParamName,
+    value: number,
+    coalesceKey: string | null = `amp:${name}`
+  ) {
+    if (rigRef.current.amp.params[name] === value) return; // no-op: no undo step
+    recordUndo(`Amp ${AMP_LABEL[name]}`, coalesceKey);
+    const r0 = rigRef.current;
+    commitRig({ ...r0, amp: { ...r0.amp, params: { ...r0.amp.params, [name]: value } } });
     engineRef.current?.setAmpParam(AMP_PARAM_ID[name], value);
     const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
     if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastAmpParam = { id: AMP_PARAM_ID[name], value };
@@ -273,19 +519,21 @@ export default function App() {
   // Flip a 0/1 amp toggle (bright / cab).
   function toggleAmp(name: 'bright' | 'cab') {
     const next = rigRef.current.amp.params[name] >= 0.5 ? 0 : 1;
-    setAmpParam(name, next);
+    setAmpParam(name, next, null); // discrete
   }
 
   // Set the 3-way chorus mode (0 off / 1 chorus / 2 vibrato). M6.3.
   function setChorusMode(mode: number) {
-    setAmpParam('chorusMode', mode);
+    setAmpParam('chorusMode', mode, null); // discrete
   }
 
   // Set the amp power (engaged) state explicitly (used by the Power rocker and
   // the assistant's set_engaged tool). engaged=false -> amp+cab bypassed.
   function setAmpEngaged(engaged: boolean) {
+    recordUndo(engaged ? 'Amp power on' : 'Amp power off');
     engineRef.current?.setAmpBypass(!engaged); // amp bypass = power off
-    setRig((r) => ({ ...r, amp: { ...r.amp, engaged } }));
+    const r0 = rigRef.current;
+    commitRig({ ...r0, amp: { ...r0.amp, engaged } });
     const w = window as unknown as { __CLIPPER_TEST__?: Record<string, unknown> };
     if (w.__CLIPPER_TEST__) w.__CLIPPER_TEST__.lastAmpBypass = !engaged;
   }
@@ -300,7 +548,9 @@ export default function App() {
   // a 2×12 combo) — but never auto-switches the cab (the player's choice stays theirs).
   function setAmpType(type: AmpType) {
     if (rigRef.current.amp.type === type) return;
-    setRig((r) => ({ ...r, amp: { ...r.amp, type } }));
+    recordUndo(`Amp ${AMP_TYPE_LABEL[type]}`);
+    const r0 = rigRef.current;
+    commitRig({ ...r0, amp: { ...r0.amp, type } });
     engineRef.current?.setAmpModel(type);
     if (type === 'jcm800' && rigRef.current.amp.cabModel === 'clean212') {
       setCabNote('JCM800 loaded — try the Brit 4×12 cab for a thicker, darker rock voicing.');
@@ -322,7 +572,11 @@ export default function App() {
   // cleared). Fall back to the Clean 2x12 with a note, once, on mount.
   useEffect(() => {
     if (rigRef.current.amp.cabModel === 'custom' && !customIrRef.current) {
-      setRig((r) => ({ ...r, amp: { ...r.amp, cabModel: 'clean212', customCabLabel: undefined } }));
+      const r0 = rigRef.current;
+      commitRig({
+        ...r0,
+        amp: { ...r0.amp, cabModel: 'clean212', customCabLabel: undefined },
+      });
       setCabNote('Custom IR not found — using the Clean 2×12.');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -344,7 +598,10 @@ export default function App() {
       return;
     }
     setCabNote(null);
-    setRig((r) => ({ ...r, amp: { ...r.amp, cabModel: cab } }));
+    if (rigRef.current.amp.cabModel === cab) return;
+    recordUndo(`Cab ${CAB_LABEL[cab]}`);
+    const r0 = rigRef.current;
+    commitRig({ ...r0, amp: { ...r0.amp, cabModel: cab } });
     if (cab === 'brit412' || cab === 'clean212') {
       engineRef.current?.setCabBuiltin(cab);
     } else if (cab === 'custom' && customIrRef.current) {
@@ -368,10 +625,15 @@ export default function App() {
       saveCustomIr(stored);
       setCustomIr(stored);
       customIrRef.current = stored;
-      setRig((r) => ({
-        ...r,
-        amp: { ...r.amp, cabModel: 'custom', customCabLabel: processed.label },
-      }));
+      // The undo entry restores the previous cab SELECTION. The uploaded samples
+      // themselves are deliberately not in the rig JSON (they live under their
+      // own storage key), so undo cannot "unload" an IR — see §39.
+      recordUndo('Upload IR');
+      const r0 = rigRef.current;
+      commitRig({
+        ...r0,
+        amp: { ...r0.amp, cabModel: 'custom', customCabLabel: processed.label },
+      });
       await loadCustomIntoEngine(stored);
       const lenNote = processed.truncated
         ? ` (${processed.originalLength} samples → capped to ${processed.samples.length})`
@@ -439,6 +701,14 @@ export default function App() {
         if (id) removePedal(id);
       },
       movePedal: (from, to) => movePedal(from, to),
+      // ONE assistant turn = ONE undo entry (audit UI/UX finding 3). The Chat
+      // brackets a turn with these; every record() inside is suppressed and the
+      // single pre-turn snapshot is pushed on end — and only if the rig actually
+      // changed, so a text-only or cancelled turn leaves no entry at all. Without
+      // this, undoing a multi-tool turn would strand the rig in a state the
+      // player never saw.
+      beginUndo: (label) => undoRing().begin(label),
+      endUndo: () => undoRing().end(),
     }),
     // The referenced setters are behaviorally stable (functional setState + refs).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -446,12 +716,16 @@ export default function App() {
   );
 
   function setOversampling(factor: number) {
-    setRig((r) => ({ ...r, oversampling: factor }));
+    if (rigRef.current.oversampling === factor) return;
+    recordUndo(`Oversampling ${factor}×`);
+    commitRig({ ...rigRef.current, oversampling: factor });
     engineRef.current?.setOversampling(factor);
   }
 
   function setSource(source: SourceKind) {
-    setRig((r) => ({ ...r, source }));
+    if (rigRef.current.source === source) return;
+    recordUndo(`Source ${source === 'live' ? 'live input' : 'test tone'}`);
+    commitRig({ ...rigRef.current, source });
   }
 
   // ---- transport ----
@@ -601,6 +875,52 @@ export default function App() {
             onCabSelect={setCabModel}
             onUploadIr={uploadIr}
           />
+
+          {/* Rig history (docs §39). The undo affordance names the action it will
+              revert, so it is never a mystery button, and both entries are plain
+              <button>s — keyboard operable for free, plus Cmd/Ctrl-Z anywhere
+              outside a text field. */}
+          <div className="rig-history" data-testid="rig-history" aria-label="Rig history">
+            <button
+              type="button"
+              className="btn rh-btn"
+              data-testid="undo"
+              onClick={() => doUndo()}
+              disabled={undoUi.undo === null}
+              aria-keyshortcuts="Control+Z Meta+Z"
+              title={
+                undoUi.undo === null
+                  ? 'Nothing to undo'
+                  : `Undo ${undoUi.undo} — Ctrl/Cmd-Z`
+              }
+            >
+              <span aria-hidden="true">↶</span> Undo
+              {undoUi.undo !== null && (
+                <span className="rh-label" data-testid="undo-label">
+                  {undoUi.undo}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              className="btn rh-btn"
+              data-testid="redo"
+              onClick={() => doRedo()}
+              disabled={undoUi.redo === null}
+              aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z"
+              title={
+                undoUi.redo === null ? 'Nothing to redo' : `Redo ${undoUi.redo} — Ctrl/Cmd-Shift-Z`
+              }
+            >
+              <span aria-hidden="true">↷</span> Redo
+            </button>
+            <span className="rh-note mono" data-testid="undo-depth">
+              {undoUi.depth === 0
+                ? 'no rig history yet'
+                : `${undoUi.depth} step${undoUi.depth === 1 ? '' : 's'} back`}
+            </span>
+          </div>
+
           {cabNote && (
             <div className="notice" data-testid="cab-note">
               <span className="dot" />

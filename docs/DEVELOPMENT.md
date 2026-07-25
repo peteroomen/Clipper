@@ -6656,3 +6656,155 @@ it stays open. The valve solvers (`TriodeStage`, the three power amps) use a pla
 exit with **no** backtracking line search, so finding 12 does not apply to them.
 
 **The WASM artifact must be rebuilt** (`bash scripts/build-wasm.sh`) — `core/` changed.
+
+---
+
+## 39. Audit UI/UX findings 2 + 3 — the undo ring, and a cancellable assistant turn
+
+**Slice:** `feat/undo-ring` (2026-07-25). **Touches:** `web/src/undo.ts` (new), `web/src/App.tsx`,
+`web/src/assistant/client.ts`, `web/src/assistant/tools.ts` (one type, no tool change),
+`web/src/components/Chat.tsx`, `web/src/styles/{app,chat}.css`, `web/tests/undo.spec.ts` (new).
+**No `core/`, no `web/worklet/`, no `native/` — no WASM rebuild, no DSP change of any kind.**
+See ADR 011 for the decision record.
+
+### The two findings
+
+> **"Remove and Swap are instantly destructive with no undo anywhere in the project."** Swap
+> replaces a dialled-in pedal with fresh defaults (`App.tsx:242`), and the autosave has already
+> committed it.
+>
+> **"Assistant tool calls rearrange the live rig with no cancel and no undo."** `runAssistant`
+> takes no `AbortSignal`; the input is merely `disabled`, which also drops focus to `<body>`.
+
+They are one finding in practice: the app had exactly one implicit save slot, mutated in place
+by both the player and the model, with no way back. CLAUDE.md's own UI convention —
+"Destructive actions (remove pedal, swap pedal) need an undo path. There is none today — don't
+add more destructive surface without one" — was a standing IOU.
+
+### The model: a bounded ring of rig-state snapshots
+
+`web/src/undo.ts` holds a framework-free `UndoRing`. Entries are the **strings**
+`serializeRig()` already produces, capacity **32**, restored through `deserializeRig()`.
+
+Why snapshots rather than a command/inverse log: the rig JSON is already the canonical
+serialization (and the preset format), so there is nothing to invent and nothing to keep in
+sync as pedal types and amp voices are added — a command log would need an inverse per action
+across six pedal types, four amps, the cab selector and the chain editor, and every new pedal
+would be a chance to forget one. Why strings rather than objects: a string is immutable, so a
+later mutation of live state cannot rewrite history; it is trivially measurable; and — the
+load-bearing reason — a restore goes back through `normalizeRig()`, **the same clamp / coerce /
+migrate path an untrusted persisted rig gets**. The undo path cannot become a way to put a
+non-finite or out-of-range value into the engine (audit finding 1, ADR 002). A snapshot is
+untrusted input, and it is treated as such even though today's ring is in-memory only.
+
+What it costs, stated plainly: a restore is a **whole-rig push** — one `chain` message (one
+~6 ms declick fade) plus all 13 amp params — not a surgical write. The two expensive topology
+messages, the cab IR (11–46 ms of prepare, docs §30) and the amp voice, are sent **only when
+they actually differ** from the pre-undo rig, so an undo of a knob move does not pay for a cab
+prepare.
+
+### Three rules the ring exists to enforce
+
+**1. A knob drag is ONE entry.** `record(label, key)` takes a coalescing key and a *thunk* for
+the snapshot. If the key matches the last push inside a 600 ms window the push is **dropped** —
+the older entry is the true pre-drag state — and the window extends. The thunk means a
+coalesced move does **zero** `JSON.stringify` work, which matters because knob moves arrive at
+pointer rate. Discrete actions (stomp, toggle, chain edit, amp/cab swap, oversampling) pass
+`key = null` and never coalesce: two toggles inside 600 ms must be two undos, or the first undo
+would appear to do nothing. Redundant writes (a clamped drag edge, a double-click reset of a
+knob already at its default) are dropped before the ring sees them, so the history holds no
+step that does nothing.
+
+**2. An assistant turn is ONE entry.** `begin(label)` captures the pre-turn snapshot and
+suppresses every push inside the transaction; `end()` pushes that single snapshot **only if the
+rig actually changed**. So a two-tool-call turn is one undo step, and a text-only reply, an
+errored turn and a cancelled turn leave the history untouched. Without this, undoing a
+multi-call turn would strand the rig in an intermediate state the player never saw. `undo()` is
+refused while a transaction is open — mid-turn the affordance is **Stop**, not undo.
+
+**3. Undo is not itself destructive.** Redo is in the ring (`Cmd/Ctrl-Shift-Z`, `Ctrl-Y`); any
+new record clears the redo branch.
+
+The affordance is a plain `<button>` pair under the board that **names the action** ("Undo
+Swap RAT → SD-1"), so it is keyboard operable for free, plus `Cmd/Ctrl-Z` from anywhere —
+except inside a text field, where the platform's own text undo has to win (the chat input's
+Cmd-Z must undo what the player typed).
+
+### The cancel path
+
+`runAssistant(..., signal?)` threads a real `AbortSignal` into `fetch` and re-checks it (a)
+before each iteration, (b) after the stream completes and (c) **before each tool call in a
+batch**. The contract the undo ring leans on: once aborted, no further tool call from that turn
+runs, and the partially streamed turn is **not** appended to the API history — an assistant
+`tool_use` with no matching `tool_result` would make the next request invalid, so `Chat`
+rewinds `historyRef` to a mark taken before the send. A cancel raises `AssistantAborted`, which
+the chat renders as a neutral "(stopped — nothing further was changed.)" notice, not an error.
+
+**The focus fix is the `disabled` attribute.** A disabled element leaves the focus order, which
+is precisely why focus fell to `<body>` mid-turn. The input is now `readOnly` + `aria-busy`
+while a turn runs (caret, selection and tab stop all kept, `Escape` cancels), and the send
+button **becomes** the Stop button rather than being disabled — same DOM node, so focus never
+leaves it either. A belt-and-braces `finally` restores focus to the input only if it had fallen
+to `<body>` anyway.
+
+### Found while building this, and fixed here: batched chain edits clobbered each other
+
+`rigRef` was written only during render, while `addPedal` / `removePedal` / `swapPedal` /
+`movePedal` all read it and pushed a whole new object. React 18 batches, so two chain edits in
+one tick — exactly what an assistant turn does — both read the *pre-first-edit* ref and the
+second overwrote the first. "Add a Screamer and a phaser" landed **only the phaser**. Every
+mutator now goes through `commitRig()`, which writes the ref eagerly and then `setRig`, so they
+compose. This was not in the audit; `undo.spec.ts`'s "two chain edits in one turn both land"
+test pins it.
+
+### Measured
+
+**Coalescing** — a real 3-second pointer drag on the RAT's Dist knob (180 `pointermove`
+events, Playwright, headless Chromium):
+
+| | naive one-entry-per-change | shipped |
+|---|---|---|
+| undo entries pushed | **180** | **1** |
+| `JSON.stringify` calls | 180 | **1** |
+| React state updates for the ring | 180 | 1 |
+
+(measured `attempts` 180, `pushed` 1, `coalesced` 179, `serializations` 1, over 4.75 s of
+wall-clock drag; the same run at 3.05 s of drag gives the identical entry count). The
+player-observable half of that test: **one** undo returns the knob to its pre-drag value.
+
+**Memory** — exact stored payload, not an estimate (`TextEncoder` for UTF-8, `length * 2` for
+the JS string's UTF-16 footprint):
+
+| snapshot | UTF-8 | UTF-16 (in-memory) |
+|---|---|---|
+| default rig (1 pedal) | **415 B** | **830 B** |
+| 8-pedal rig (largest the UI can build) | **1 146 B** | **2 292 B** |
+| **full ring, 32 × 8-pedal** | **36 672 B** | **73 344 B** |
+
+After 48 discrete actions the ring held 32 entries and had evicted 16 — the bound is real. The
+ceiling asserted in the suite is 128 KiB for a full ring of worst-case rigs.
+
+**Tests** — `web/tests/undo.spec.ts`, 10 tests, all player-observable: swap → undo restores the
+dialled-in numbers on the same instance id (and redo puts the SD-1 back); remove → undo
+restores the pedal *with* its knobs, in its slot; a two-tool-call turn is one entry (`depth`
+1, label `Assistant turn`) and one undo returns the **byte-identical** pre-turn rig; two chain
+edits in one turn both land; an advice-only turn leaves `depth` 0; a hanging turn is stopped
+with the rig byte-identical and `document.activeElement` still `chat-input` (during *and*
+after); a hostile snapshot injected into the ring comes back clamped, finite, with unknown
+pedal/amp/cab/oversampling values coerced; Cmd-Z is inert in the chat input and live outside it.
+
+### Not undoable, deliberately
+
+Anything not in the rig JSON: the **custom IR samples** (their own storage key — undoing an
+upload restores the cab *selection*, and the note in the ring says so), the guitar profile, the
+theme, engine start/stop, and the chat transcript (undo does not un-say what the coach said; it
+only moves the rig). The ring is **in-memory**: a reload is a history boundary. Persisting it
+would need a second storage key and a size budget against the numbers above — a preset slice,
+not this one. Native (JUCE) has its own state tree and no undo yet.
+
+### Known residual
+
+`retries: 2` in `web/playwright.config.ts` still applies to these tests, so a genuinely flaky
+undo assertion would be retried away like any other (docs §29's recommendation, unchanged
+here). And the whole-rig restore push re-sends all 13 amp params unconditionally; they are
+cheap smoothed writes, but a diffing push would be tidier if the param count grows.
