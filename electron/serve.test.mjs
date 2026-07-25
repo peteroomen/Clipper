@@ -11,7 +11,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startServer } from './serve.mjs';
+import { startServer, isContainedIn, CSP } from './serve.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Reuse the exact handler the browser proxy uses.
@@ -159,6 +159,57 @@ test('path traversal cannot escape distDir', async () => {
     await h.close();
     rmSync(dist, { recursive: true, force: true });
   }
+});
+
+// The main window renders model-influenced text, so the HTML response — and only
+// the HTML response, since a CSP header on a .js or .wasm body does nothing — has
+// to carry the policy.
+test('HTML responses carry a Content-Security-Policy; asset responses do not', async () => {
+  const dist = fakeDist();
+  const h = await startServer({ handler, distDir: dist, mock: true });
+  try {
+    const res = await fetch(h.url);
+    const csp = res.headers.get('content-security-policy');
+    assert.ok(csp, 'index.html has a CSP header');
+
+    // The directives the app's own threat model depends on.
+    assert.match(csp, /(^|;)\s*default-src 'self'/);
+    assert.match(csp, /(^|;)\s*script-src [^;]*'self'/);
+    assert.match(csp, /(^|;)\s*connect-src [^;]*'self'/);
+    // No remote script and no inline script: a model-authored <script> must not run.
+    assert.doesNotMatch(csp, /script-src[^;]*'unsafe-inline'/);
+    assert.doesNotMatch(csp, /script-src[^;]*\bhttps?:/);
+
+    // The SPA fallback is HTML too — it must not be a hole in the policy.
+    const spa = await fetch(new URL('/deep/link', h.url));
+    assert.equal(spa.headers.get('content-security-policy'), csp);
+
+    // A JS asset gets no CSP (the document's policy already governs it).
+    const asset = await fetch(new URL('/assets/app.js', h.url));
+    assert.equal(asset.headers.get('content-security-policy'), null);
+    assert.equal(CSP, csp, 'the exported policy is the one actually served');
+  } finally {
+    await h.close();
+    rmSync(dist, { recursive: true, force: true });
+  }
+});
+
+// `filePath.startsWith(distDir)` is true for any sibling directory whose name
+// merely begins with distDir. Not reachable over HTTP today (posix.normalize
+// absorbs every `..` before join runs), so this pins the predicate directly
+// rather than dressing it up as an end-to-end exploit that does not exist.
+test('containment rejects a sibling directory that merely shares the prefix', () => {
+  const dist = path.join(path.sep, 'app', 'dist');
+
+  assert.equal(isContainedIn(dist, path.join(dist, 'index.html')), true);
+  assert.equal(isContainedIn(dist, path.join(dist, 'assets', 'app.js')), true);
+  assert.equal(isContainedIn(dist, dist), true, 'distDir itself is contained');
+
+  // The bug: these all pass a bare startsWith().
+  assert.equal(isContainedIn(dist, path.join(path.sep, 'app', 'dist-evil', 'secret')), false);
+  assert.equal(isContainedIn(dist, `${dist}-evil`), false);
+  assert.equal(isContainedIn(dist, `${dist}.bak`), false);
+  assert.equal(isContainedIn(dist, path.join(path.sep, 'etc', 'passwd')), false);
 });
 
 test('two servers get distinct ephemeral ports (no collision)', async () => {
