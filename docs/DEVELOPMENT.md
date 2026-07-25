@@ -6931,3 +6931,95 @@ table above and decide. See §31.
   Its own slice, with the table above as the input.
 - **§7's `--alias-report` table** is still stale (noted in §32); the numbers in this
   section supersede it for the RAT.
+## 37. Audit finding 16 (DC half) — the Muff's missing output coupling cap
+
+**Slice:** `fix/muff-output-dc-blocker` (2026-07-25). **Touches:** `core/src/dsp/MuffModel.cpp`,
+`core/tests/test_muff_model.cpp`. **ADR 009.** **Deliberate tone change** — the `muff_twin`
+golden is re-blessed, by 0.80 dB in one band.
+
+### The finding, and why it is only half fixed here
+
+Audit finding 16 names **two** defects: the Muff has **no output DC blocker** and **almost
+no bass**. This slice fixes the first. The second is held to its own slice, and the reason
+is recorded in ADR 009: fixing the bass means adding a series base resistor whose value
+cannot be taken from the schematic until an upstream discrepancy is settled — this model's
+clip-stage base node measures **~1.8 kΩ against the real stage's ~4 kΩ**, so the schematic's
+100 kΩ produces 33 dB of divider loss here and turns SUSTAIN into a threshold switch.
+Choosing 47 kΩ instead makes the pedal sound right by compensating for a number that is
+itself wrong, which is the practice CLAUDE.md explicitly forbids. It may still be the right
+call — but it is a separate argument, and bundling it would have bought an uncontroversial
+fix at the price of that argument.
+
+The split is justified by measurement, not taste. Golden movement, the two halves:
+
+| | broadband | worst band |
+|---|---|---|
+| **output cap alone (this slice)** | **−0.03 dB** | **0.80 dB @ 5080 Hz** |
+| both halves together | −5.85 dB | 26.04 dB @ 1270 Hz |
+
+The base resistors account for essentially the entire tone change.
+
+### The defect
+
+`MuffModel::processChunk` ended `w[i] = x * outGain;` — no high-pass anywhere in the model.
+`BjtStage::processSample` returns `Vc - vcQ_`, which removes the **quiescent** DC only, not
+the dynamic DC that four asymmetrically-clipping common-emitter stages rectify when driven.
+Every sibling pedal carries `dcBlockHz = 12.0` for precisely this reason (`SdModel.cpp`:
+"the asymmetric clip produces DC"). Measured before: up to **+0.47 V, 28 % of peak**.
+
+### The fix, and where it sits
+
+The real pedal's **0.1 µF output cap into the 100 k VOLUME pot**:
+`f = 1/(2π·100k·0.1µ) = 15.92 Hz`. Derived from the Muff's own two components rather than
+copied from the siblings' 12 Hz. Placed **after Q4 and before the VOLUME multiply**, because
+in the pedal the cap precedes the pot, and **inside the oversampled domain**, so it also
+blocks the rectified DC before it reaches the decimator.
+
+`kOutputTrim` **stays at 0.40** — see the hazard below.
+
+### Measured
+
+DC on signal, across three SUSTAIN settings and a +0.1 V input-offset case (the offset case
+matters because deleting a coupling cap changes nothing on a clean input — §29):
+
+* **+0.47 V / 28 % of peak → 0.00000–0.00003 % of peak**, against a 1 % bar.
+
+What is *not* fixed, and is now measured, printed and named rather than skipped:
+
+* `finding16-muff-almost-no-bass` — low E (82.4 Hz) at **−41.14 dB** re 1 kHz, open A
+  **−34.04 dB**, 60 Hz **−49.87 dB**. This **independently reproduces the audit's "41 dB
+  down" to the digit**, which is a useful confirmation that the audit's number was right.
+* `muff-slam-exhausts-newton-cap` — still **6 of 16** rate × oversampling combinations at
+  the 60-iteration cap. The base-resistor branch fixes this as a *side effect* (worst 18/60,
+  3.3× margin): a series resistance ahead of the exponential base-emitter junction bounds
+  the base-current step, so there is less stiffness for the damped Newton's line search to
+  globalize against. That win is claimed on that branch, not this one.
+
+The opposite-direction bar stays a **hard assert** on both branches: 30 Hz must remain
+> 12 dB down (measured **−72.01 dB**). A first-order-per-stage network cannot satisfy both
+directions by accident, so the pair is what makes either meaningful — if someone deletes a
+coupling cap or DC-couples a stage to chase the bass bars, this fails.
+
+### Two traps this slice surfaced
+
+**1. A removed `ledgerMain` would have silently disabled the XFAIL ledger.** The bundled
+slice deleted the `ledgerMain` call from `main()` on the assumption it would have no XFAILs
+left, while `core/CMakeLists.txt` still registered `clipper_muff_tests_xfail_ledger`. Left
+that way, `--xfail-ledger` runs the whole suite and exits **0**, so ctest reports the ledger
+entry as **Passed** instead of `***Skipped` — the line whose entire job is to advertise open
+defects becomes a silent duplicate test run. Verified fixed: ledger exits **77**.
+
+This is the third instance of the same shape, and it is worth naming as a class: the
+advisory native job that failed on 100 % of runs (§ CI), the artifact check that only
+verified existence (§31), and now this. **A guard that is present but inert is worse than an
+absent one**, because its presence is read as coverage.
+
+**2. `kOutputTrim` is a stacking hazard.** The bundled version raised it 0.40 → 0.45 to hold
+the TONE 0 corner under the 2.0 V ceiling *once the bass returned*. This slice leaves it at
+0.40, and measures SUSTAIN 1.0 peaking at **2.0096 V** — already marginally over that
+ceiling from the cap alone. Whoever lands the base-resistor half must **re-derive the trim
+against the combination**, not stack a second adjustment on top. Absorbing two unrelated
+corrections into one constant is exactly how `kFullScaleSecV` ended up hiding two separate
+factor-of-2 mistakes.
+
+**The WASM artifact was rebuilt** — `core/` changed.
