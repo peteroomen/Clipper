@@ -321,6 +321,28 @@ if(NOT EMSCRIPTEN)
     clipper_add_test_flags(clipper_tube_solver_tests)
     add_test(NAME clipper_tube_solver_tests COMMAND clipper_tube_solver_tests)
 
+    # --- Audit finding 2: cab swap real-time safety ---------------------------
+    # A cab change used to run 11-46 ms of IR synthesis, heap copying and FFT
+    # partitioning inside process(), against a 2.667 ms deadline. The C ABI now
+    # double-buffers the per-side convolver pair: amp_prepare_cab_* builds the new
+    # cab in the inactive pair (off the render path) and amp_commit_cab flips an
+    # int. This suite asserts (A) the commit performs exactly ZERO allocations —
+    # counted with a REPLACED GLOBAL operator new, not inferred from a clock — and
+    # costs less than one render block, while the prepare still allocates (proof the
+    # work moved rather than vanished); and (B) the swapped-in cab is BIT-IDENTICAL
+    # to the pre-fix construction across a scripted session including a swap-back.
+    # Links clipper_c_api because block A drives the exact worklet entry points.
+    #   -DCLIPPER_CAB_TEST_LEGACY_ABI=1 routes the commit through the old monolithic
+    #   amp_set_cab_builtin, which is how "this test fails before the fix" was
+    #   verified: block A fails, block B still passes (B is the fidelity guard).
+    add_executable(clipper_cab_swap_tests tests/test_cab_swap.cpp)
+    target_link_libraries(clipper_cab_swap_tests PRIVATE clipper_c_api)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_cab_swap_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_cab_swap_tests COMMAND clipper_cab_swap_tests)
+
     # --- Per-unit CPU cost benchmark (native only; docs §25) ------------------
     add_executable(clipper-bench tools/bench/main.cpp)
     target_link_libraries(clipper-bench PRIVATE clipper_dsp)
