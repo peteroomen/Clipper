@@ -118,6 +118,19 @@ public:
     // uint32 — so the publish stays ONE relaxed atomic store, never a lock.
     std::vector<int> chainOrder() const;
     void setChainOrder(const std::vector<int>& types);
+
+    // --- the LIVE order, for a drag in progress (docs §40) --------------------
+    // A grip drag crosses a card boundary several times per gesture, and each crossing
+    // used to write the persisted board node. setChainOrderLive publishes to the AUDIO
+    // THREAD only — the packed atomic plus the version counter — so the reorder still
+    // sounds (declicked by the engine) with no ValueTree write; commitChainOrder()
+    // writes the tree ONCE when the gesture ends. chainOrder() returns the live order
+    // while one is pending, so the editor and the engine can never disagree, and
+    // getStateInformation() commits first so a host save mid-drag is never stale.
+    void setChainOrderLive(const std::vector<int>& types);
+    void commitChainOrder();
+    bool hasUncommittedChainOrder() const { return liveChainPending_; }
+
     // Bumped on every board change (including a host state load), so the editor can
     // notice an external edit and rebuild its cards.
     int chainVersion() const { return chainVersion_.load(); }
@@ -145,6 +158,11 @@ private:
     // Packed board snapshot for the audio thread (see chainOrder above).
     std::atomic<juce::uint32> packedChain_{0};
     std::atomic<int> chainVersion_{0};
+
+    // The order a drag has reached but not yet committed to the state tree. Message
+    // thread only — the audio thread reads packedChain_, never this.
+    std::vector<int> liveChain_;
+    bool liveChainPending_ = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ClipperAudioProcessor)
 };

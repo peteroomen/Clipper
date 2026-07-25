@@ -141,6 +141,32 @@ add_test(NAME clipper_chain_edit COMMAND clipper_chain_edit_test)
 #   cmake -B build -DCLIPPER_BUILD_SNAPSHOT_TOOL=ON && cmake --build build --target clipper_editor_snap
 #   xvfb-run -a build/.../clipper_editor_snap <out-dir>
 option(CLIPPER_BUILD_SNAPSHOT_TOOL "Build the dev-only headless editor snapshot tool" OFF)
+
+# --- Dev-only editor PAINT / INPUT / LAYOUT bench (NOT shipped) ---------------
+# The measurement harness behind docs §40: it counts DropShadow blur passes, offscreen
+# shadow images and ValueTree writes, proves the input-abort paths, audits accessible
+# names, and sweeps the minimum editor width. Turning it on also compiles the
+# CLIPPER_PAINT_METRICS counters + A/B switches INTO the editor, which is why the option
+# defaults OFF: a release plugin/standalone/VST3 build must carry none of it.
+#   cmake -B build -DCLIPPER_BUILD_PAINT_BENCH=ON && cmake --build build --target clipper_paint_bench
+#   xvfb-run -a build/.../clipper_paint_bench
+option(CLIPPER_BUILD_PAINT_BENCH "Build the dev-only editor paint/input/layout bench" OFF)
+if(CLIPPER_BUILD_PAINT_BENCH)
+    target_compile_definitions(Clipper PUBLIC CLIPPER_PAINT_METRICS=1)
+    juce_add_console_app(clipper_paint_bench PRODUCT_NAME clipper_paint_bench)
+    target_sources(clipper_paint_bench PRIVATE tools/paint_bench.cpp)
+    target_compile_definitions(clipper_paint_bench PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        CLIPPER_GIT_HASH="${CLIPPER_GIT_HASH}")
+    target_link_libraries(clipper_paint_bench PRIVATE
+        Clipper
+        clipper_dsp
+        juce::juce_audio_utils
+        juce::juce_gui_basics
+        juce::juce_recommended_config_flags)
+    target_include_directories(clipper_paint_bench PRIVATE src)
+endif()
 if(CLIPPER_BUILD_SNAPSHOT_TOOL)
     juce_add_console_app(clipper_editor_snap PRODUCT_NAME clipper_editor_snap)
     target_sources(clipper_editor_snap PRIVATE tools/editor_snapshot.cpp)

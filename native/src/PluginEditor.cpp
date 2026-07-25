@@ -78,10 +78,15 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     setLookAndFeel(&lnf_);
 
     // ---- knob helper: name, accent, visible + APVTS slider attachment ----------
+    // setKnobName, NOT setName — see NeuKnob's header: the old spelling shadowed the
+    // non-virtual Component::setName and left every knob anonymous (docs §40).
     auto knob = [this](NeuKnob& k, std::unique_ptr<SliderAttach>& at, const char* id,
                        const juce::String& nm, juce::Colour ac) {
-        k.setName(nm);
+        k.setKnobName(nm);
         k.setAccent(ac);
+        k.setOnSecondaryClick([this, id](juce::Component& c) {
+            showHostParameterMenu(c, proc_.apvts.getParameter(id));
+        });
         addAndMakeVisible(k);
         at = std::make_unique<SliderAttach>(proc_.apvts, id, k.slider());
     };
@@ -105,8 +110,10 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     boardView_.setScrollOnDragMode(juce::Viewport::ScrollOnDragMode::never);
     boardView_.onScroll = [this] {
         // The boundary cables are drawn by the EDITOR but end inside the content, so
-        // they have to be re-struck every time the content moves.
-        repaint();
+        // they have to be re-struck every time the content moves. Only those two bands
+        // change — a full-editor repaint() here is what made the drag-to-edge pump a
+        // repaint storm (docs §40).
+        repaintBoundaryCables();
         const int hidden = boardOverflow();
         const int at = boardView_.getViewPositionX();
         boardFade_.setEdges(hidden > 0 && at > 0, hidden > 0 && at < hidden);
@@ -115,6 +122,7 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     addAndMakeVisible(boardFade_);  // added AFTER the viewport, so it veils it
 
     trayAdd_.setTint(skin::benchInkDim);
+    trayAdd_.setButtonText("Add a pedal to the board");
     boardContent_.addAndMakeVisible(trayAdd_);
     trayAdd_.onClick = [this] { showTrayMenu(); };
 
@@ -187,14 +195,29 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     chorusMode_.onSelect = [this](int idx) {
         chorusModeAttach_->setValueAsCompleteGesture((float)idx);
     };
+    // Right-click on any of these four is the host's parameter gesture, not a toggle.
+    bright_.onSecondaryClick = [this](juce::Component& c) {
+        showHostParameterMenu(c, proc_.apvts.getParameter(pid::bright));
+    };
+    cab_.onSecondaryClick = [this](juce::Component& c) {
+        showHostParameterMenu(c, proc_.apvts.getParameter(pid::cab));
+    };
+    power_.onSecondaryClick = [this](juce::Component& c) {
+        showHostParameterMenu(c, proc_.apvts.getParameter(pid::ampOn));
+    };
+    chorusMode_.setOnSecondaryClick([this](juce::Component& c) {
+        showHostParameterMenu(c, proc_.apvts.getParameter(pid::chorusMode));
+    });
 
     // ---- top-bar selectors ----------------------------------------------------
     ampVoiceBox_.addItemList({"Clean 120", "Eight Hundred", "Twin Sixty-Five", "Thirty"}, 1);
+    ampVoiceBox_.setTitle("Amp voice");
     addAndMakeVisible(ampVoiceBox_);
     ampVoiceAttach_ = std::make_unique<ComboAttach>(proc_.apvts, pid::ampModel, ampVoiceBox_);
     oversampleBox_.addItemList({juce::String::fromUTF8("1×"), juce::String::fromUTF8("2×"),
                                juce::String::fromUTF8("4×"), juce::String::fromUTF8("8×")},
                               1);
+    oversampleBox_.setTitle("Oversampling");
     addAndMakeVisible(oversampleBox_);
     oversampleAttach_ =
         std::make_unique<ComboAttach>(proc_.apvts, pid::oversampling, oversampleBox_);
@@ -267,11 +290,7 @@ void ClipperAudioProcessorEditor::rebuildBoard() {
         card->onRemove = [this, card] { removePedalAt(cards_.indexOf(card)); };
         card->onSwap = [this, card](int t) { swapPedalAt(cards_.indexOf(card), t); };
         card->onDragTo = [this, card](int x) { dragCardTo(cards_.indexOf(card), x); };
-        card->onDragEnd = [this] {
-            draggingCard_ = -1;
-            autoScroll_.stopTimer();
-            repaint();
-        };
+        card->onDragEnd = [this] { endCardDrag(); };
     }
     // Every type already on the board is unavailable to add.
     trayAdd_.setChipEnabled((int)chain.size() < kMaxChain);
@@ -296,7 +315,7 @@ void ClipperAudioProcessorEditor::setBoardScroll(double proportion) {
 // Lay the chain out INSIDE the scrolled content, at each card's full width — no
 // squeeze. The content is as wide as the chain needs (or the viewport, whichever is
 // larger, so the rail always reaches both edges) and the viewport does the rest.
-void ClipperAudioProcessorEditor::layoutBoardContent() {
+void ClipperAudioProcessorEditor::layoutBoardContent(bool fullContentRepaint) {
     const int visW = juce::jmax(0, boardView_.getWidth());
     int need = 2 * kRailPad + kTrayW + kChainGap * cards_.size();
     for (auto* c : cards_) need += preferredPedalWidth(c->type());
@@ -305,6 +324,8 @@ void ClipperAudioProcessorEditor::layoutBoardContent() {
     // that fits gets the full height for its cards.
     const bool overflows = need > visW;
     const int visH = juce::jmax(0, boardView_.getHeight() - (overflows ? kScrollBarH : 0));
+    const bool sizeChanged = boardContent_.getWidth() != juce::jmax(need, visW) ||
+                             boardContent_.getHeight() != visH;
     boardContent_.setSize(juce::jmax(need, visW), visH);
 
     const int cardH = juce::jmax(40, visH - kRailLip);
@@ -326,7 +347,76 @@ void ClipperAudioProcessorEditor::layoutBoardContent() {
     if (boardView_.getViewPositionX() > hidden) boardView_.setViewPosition(hidden, 0);
     boardFade_.setEdges(hidden > 0 && boardView_.getViewPositionX() > 0,
                         hidden > 0 && boardView_.getViewPositionX() < hidden);
-    boardContent_.repaint();
+#if CLIPPER_PAINT_METRICS
+    if (!skin::metrics::useNarrowRepaints) {
+        boardContent_.repaint();  // the pre-fix path, bench builds only
+        return;
+    }
+#endif
+    // A reorder permutes cards of unchanged size, so the rail and the tray caption are
+    // untouched: only the cables strung BETWEEN the cards moved. The cards themselves
+    // repaint anyway, because Component::setBounds dirties both the vacated and the
+    // newly occupied rectangle.
+    if (sizeChanged || fullContentRepaint)
+        boardContent_.repaint();
+    else
+        boardContent_.repaint(boardCableBand());
+}
+
+// The band the inter-card cables occupy, in CONTENT coordinates: they hang off the jack
+// line at 0.42 of the card height and sag by up to the 70 px cap in skin::drawCable,
+// plus the 8 px tube and its 3 px cast shadow.
+juce::Rectangle<int> ClipperAudioProcessorEditor::boardCableBand() const {
+    const int cardH = juce::jmax(40, boardContent_.getHeight() - kRailLip);
+    const int jackY = (int)((float)cardH * 0.42f);
+    return {0, jackY - 12, boardContent_.getWidth(), 70 + 12 + 24};
+}
+
+// The geometry of the two boundary cables, shared by paint() and repaintBoundaryCables()
+// so the dirty region can never disagree with what is actually drawn.
+ClipperAudioProcessorEditor::BoundaryCables
+ClipperAudioProcessorEditor::boundaryCables() const {
+    BoundaryCables c;
+    const float jackY = (float)cardInput_.getY() + (float)cardInput_.getHeight() * 0.42f;
+    const float ampJackY = (float)cardAmp_.getY() + (float)cardAmp_.getHeight() * 0.42f;
+    c.inputOut = {(float)cardInput_.getRight(), jackY};
+    c.ampIn = {(float)cardAmp_.getX(), ampJackY};
+    if (cards_.isEmpty()) return c;  // an EMPTY board is valid: one cable straight across
+
+    c.haveCards = true;
+    const float viewL = (float)boardView_.getX();
+    const float viewR = viewL + (float)boardView_.getMaximumVisibleWidth();
+    const float dx = viewL - (float)boardView_.getViewPositionX();
+    const float dy = (float)boardView_.getY();
+    auto toBench = [&](juce::Point<float> p, bool& clamped) {
+        juce::Point<float> q{p.x + dx, p.y + dy};
+        clamped = q.x < viewL || q.x > viewR;
+        q.x = juce::jlimit(viewL, viewR, q.x);
+        return q;
+    };
+    c.firstIn = toBench(cards_.getFirst()->inJack(), c.clampedIn);
+    c.lastOut = toBench(cards_.getLast()->outJack(), c.clampedOut);
+    return c;
+}
+
+void ClipperAudioProcessorEditor::repaintBoundaryCables() {
+    const BoundaryCables c = boundaryCables();
+    // One cable's bounding box: the two ends plus the sag beneath the lower of them,
+    // plus a margin for the 8 px tube, its shadow and the 10 px plug discs.
+    auto band = [](juce::Point<float> a, juce::Point<float> b) {
+        const float sag = juce::jlimit(16.0f, 70.0f, std::abs(b.x - a.x) * 0.16f + 14.0f);
+        const float top = juce::jmin(a.y, b.y) - 10.0f;
+        const float bottom = juce::jmax(a.y, b.y) + sag + 12.0f;
+        return juce::Rectangle<float>(juce::jmin(a.x, b.x) - 8.0f, top,
+                                      std::abs(b.x - a.x) + 16.0f, bottom - top)
+            .getSmallestIntegerContainer();
+    };
+    if (!c.haveCards) {
+        repaint(band(c.inputOut, c.ampIn));
+        return;
+    }
+    repaint(band(c.inputOut, c.firstIn));
+    repaint(band(c.lastOut, c.ampIn));
 }
 
 // Rebuild AFTER the current event finishes. An add/remove/swap is requested from a
@@ -406,7 +496,13 @@ void ClipperAudioProcessorEditor::movePedal(int from, int to) {
     const int moved = chain[(size_t)from];
     chain.erase(chain.begin() + from);
     chain.insert(chain.begin() + to, moved);
-    proc_.setChainOrder(chain);
+    // MID-DRAG the order goes to the AUDIO THREAD only, so the reorder still sounds
+    // (declicked by the engine) without writing the persisted board node on every
+    // boundary the pointer crosses. The tree is written once, at drag end (docs §40).
+    if (draggingCard_ >= 0)
+        proc_.setChainOrderLive(chain);
+    else
+        proc_.setChainOrder(chain);
 
     // A MOVE keeps every card alive — it only permutes them. That matters: a live
     // drag calls this from inside a card's own mouse handler, so destroying and
@@ -414,8 +510,17 @@ void ClipperAudioProcessorEditor::movePedal(int from, int to) {
     cards_.move(from, to);
     for (int i = 0; i < cards_.size(); ++i) cards_[i]->setPosition(i, cards_.size());
     boardVersion_ = proc_.chainVersion();
-    resized();
-    repaint();
+#if CLIPPER_PAINT_METRICS
+    if (!skin::metrics::useNarrowRepaints) {
+        resized();  // the pre-fix path, bench builds only
+        repaint();
+        return;
+    }
+#endif
+    // Only the board changed. A full resized() recomputed the top bar, the input card
+    // and the whole amp face, and a full repaint() redrew all of them — per crossing.
+    layoutBoardContent(/*fullContentRepaint=*/false);
+    repaintBoundaryCables();
 }
 
 // A card's grip reports the pointer in CONTENT coordinates (the card's parent is now
@@ -423,11 +528,26 @@ void ClipperAudioProcessorEditor::movePedal(int from, int to) {
 // the pointer has reached a viewport edge — the auto-scroll pump that lets a pedal be
 // dragged somewhere that is currently off screen.
 void ClipperAudioProcessorEditor::dragCardTo(int cardIndex, int contentX) {
+    // Once a drag is under way the editor already tracks the card the pointer is
+    // carrying (reorderUnderPointer moves it), so the caller's index only starts one.
+    // The real grip passes cards_.indexOf(card), which is that same index, so this is a
+    // no-op for the shipped path and is what lets the bench drive a whole gesture.
+    if (draggingCard_ >= 0 && draggingCard_ < cards_.size()) cardIndex = draggingCard_;
     if (cardIndex < 0 || cardIndex >= cards_.size()) return;
     draggingCard_ = cardIndex;
     dragViewX_ = contentX - boardView_.getViewPositionX();
     reorderUnderPointer(contentX);
     updateAutoScroll();
+}
+
+void ClipperAudioProcessorEditor::endCardDrag() {
+    draggingCard_ = -1;
+    autoScroll_.stopTimer();
+    // The gesture is over: write the order the drag arrived at to the persisted board
+    // node, ONCE (docs §40).
+    proc_.commitChainOrder();
+    boardVersion_ = proc_.chainVersion();
+    repaintBoundaryCables();
 }
 
 void ClipperAudioProcessorEditor::reorderUnderPointer(int contentX) {
@@ -473,7 +593,7 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
     showMode_ = false;
 
     auto show = [](NeuKnob& k, const juce::String& nm, juce::Colour ac) {
-        k.setName(nm);
+        k.setKnobName(nm);  // sets the caption AND the slider's accessible title
         k.setAccent(ac);
         k.setVisible(true);
     };
@@ -737,37 +857,19 @@ void ClipperAudioProcessorEditor::paint(juce::Graphics& g) {
     //
     // Drawn BEFORE the child components (JUCE paints the parent first), so each end
     // disappears under a chassis and into its socket — the web's cable z-order.
+    // The geometry itself lives in boundaryCables(), because repaintBoundaryCables()
+    // has to dirty exactly the region this draws into (docs §40).
     {
-        const float jackY = (float)cardInput_.getY() + cardInput_.getHeight() * 0.42f;
-        const float ampJackY = (float)cardAmp_.getY() + cardAmp_.getHeight() * 0.42f;
-        const juce::Point<float> inputOut{(float)cardInput_.getRight(), jackY};
-        const juce::Point<float> ampIn{(float)cardAmp_.getX(), ampJackY};
-
-        if (cards_.isEmpty()) {
-            skin::drawCable(g, inputOut, ampIn);  // an EMPTY board is valid
+        const BoundaryCables c = boundaryCables();
+        if (!c.haveCards) {
+            skin::drawCable(g, c.inputOut, c.ampIn);  // an EMPTY board is valid
         } else {
-            const float viewL = (float)boardView_.getX();
-            const float viewR = viewL + (float)boardView_.getMaximumVisibleWidth();
-            const float dx = viewL - (float)boardView_.getViewPositionX();
-            const float dy = (float)boardView_.getY();
-
-            auto toBench = [&](juce::Point<float> p, bool& clamped) {
-                juce::Point<float> q{p.x + dx, p.y + dy};
-                clamped = q.x < viewL || q.x > viewR;
-                q.x = juce::jlimit(viewL, viewR, q.x);
-                return q;
-            };
-
-            bool clampedIn = false, clampedOut = false;
-            const juce::Point<float> firstIn = toBench(cards_.getFirst()->inJack(), clampedIn);
-            const juce::Point<float> lastOut = toBench(cards_.getLast()->outJack(), clampedOut);
-
-            skin::drawCable(g, inputOut, firstIn);
-            skin::drawCable(g, lastOut, ampIn);
+            skin::drawCable(g, c.inputOut, c.firstIn);
+            skin::drawCable(g, c.lastOut, c.ampIn);
             // The grommet only appears when the cable actually terminates at the
             // board's edge; when the pedal is on screen it already draws its own jack.
-            if (clampedIn) skin::drawJack(g, firstIn, 16.0f);
-            if (clampedOut) skin::drawJack(g, lastOut, 16.0f);
+            if (c.clampedIn) skin::drawJack(g, c.firstIn, 16.0f);
+            if (c.clampedOut) skin::drawJack(g, c.lastOut, 16.0f);
         }
     }
 

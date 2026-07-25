@@ -166,6 +166,9 @@ ClipperAudioProcessor::ClipperAudioProcessor()
 }
 
 std::vector<int> ClipperAudioProcessor::chainOrder() const {
+    // A drag in progress has published its order to the audio thread but not yet to the
+    // tree, so the live order is the truth until it commits (docs §40).
+    if (liveChainPending_) return liveChain_;
     auto node = apvts.state.getChildWithName(kBoardNode);
     if (!node.isValid()) return defaultChain();
     return parseChain(node.getProperty(kBoardOrder).toString());
@@ -179,6 +182,26 @@ void ClipperAudioProcessor::setChainOrder(const std::vector<int>& types) {
     node.setProperty(kBoardOrder, chainToString(clean), nullptr);
     packedChain_.store(packChain(clean));
     chainVersion_.fetch_add(1);
+    liveChain_.clear();
+    liveChainPending_ = false;
+#if CLIPPER_PAINT_METRICS
+    ++skin::metrics::valueTreeWrites;
+#endif
+}
+
+void ClipperAudioProcessor::setChainOrderLive(const std::vector<int>& types) {
+    // Everything setChainOrder does EXCEPT the ValueTree write.
+    liveChain_ = parseChain(chainToString(types));
+    liveChainPending_ = true;
+    packedChain_.store(packChain(liveChain_));
+    chainVersion_.fetch_add(1);
+}
+
+void ClipperAudioProcessor::commitChainOrder() {
+    if (!liveChainPending_) return;
+    const std::vector<int> pending = liveChain_;
+    liveChainPending_ = false;  // so setChainOrder's own clear is not fighting us
+    setChainOrder(pending);
 }
 
 void ClipperAudioProcessor::syncChainFromState(bool legacyFallback) {
@@ -317,6 +340,10 @@ void ClipperAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 }
 
 void ClipperAudioProcessor::getStateInformation(juce::MemoryBlock& destData) {
+    // A host can save while a grip drag is still in flight, and the drag's order lives
+    // outside the tree until it commits (docs §40) — so flush it first, or the session
+    // would come back one reorder behind what the player could hear.
+    commitChainOrder();
     if (auto xml = apvts.copyState().createXml())
         copyXmlToBinary(*xml, destData);
 }

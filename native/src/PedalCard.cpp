@@ -71,10 +71,21 @@ juce::String pedalMenuLabel(int type) {
 PedalCard::PedalCard(ClipperAudioProcessor& p, int type) : proc_(p), type_(type) {
     const PedalFace& face = pedalFace(type_);
 
+    // The chassis is painted, not a child component, so the CARD is what assistive tech
+    // should announce as the group containing these controls.
+    setTitle(juce::String(face.wordmark) + " pedal");
+
     for (const auto& k : face.knobs) {
         auto knob = std::make_unique<NeuKnob>();
-        knob->setName(k.name);
+        // setKnobName, NOT setName: the old NeuKnob::setName shadowed the non-virtual
+        // Component::setName, so every knob was anonymous to assistive tech (docs §40).
+        knob->setKnobName(k.name);
         knob->setAccent(face.accent);
+        // A right-click is the host's automation gesture, so hand it the parameter
+        // rather than eating it.
+        knob->setOnSecondaryClick([this, id = k.paramId](juce::Component& c) {
+            showHostParameterMenu(c, proc_.apvts.getParameter(id));
+        });
         addAndMakeVisible(*knob);
         knobAttach_.push_back(
             std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
@@ -84,6 +95,11 @@ PedalCard::PedalCard(ClipperAudioProcessor& p, int type) : proc_(p), type_(type)
 
     stomp_.setAccent(face.accent);
     stomp_.setShape(face.shape);
+    // The spoken name of the switch, which is not the "STOMP" caption printed on it.
+    stomp_.setButtonText(juce::String(face.wordmark) + " footswitch");
+    stomp_.onSecondaryClick = [this](juce::Component& c) {
+        showHostParameterMenu(c, proc_.apvts.getParameter(pedalFace(type_).onParamId));
+    };
     // Only the round stomps carry a caption; the treadle/pad wear their name
     // embossed on the face itself (and nothing sits below them), as in the web.
     const bool round = face.shape == Footswitch::Shape::Round ||
@@ -108,6 +124,13 @@ PedalCard::PedalCard(ClipperAudioProcessor& p, int type) : proc_(p), type_(type)
 
     // ---- the chain-position rack ------------------------------------------
     for (ChipButton* c : {&grip_, &left_, &right_, &swap_, &remove_}) addAndMakeVisible(*c);
+    // The glyph on each chip is a pictogram (⠿ ◀ ▶ ⇄ ✕); the button TEXT is what a
+    // screen reader says, so it has to be words.
+    grip_.setButtonText("Drag to reorder");
+    left_.setButtonText("Move earlier in the chain");
+    right_.setButtonText("Move later in the chain");
+    swap_.setButtonText("Swap this pedal");
+    remove_.setButtonText("Remove this pedal");
     grip_.setTint(skin::inkFaint);
     grip_.onDrag = [this](int x) { if (onDragTo) onDragTo(getX() + x); };
     grip_.onDragEnd = [this] { if (onDragEnd) onDragEnd(); };

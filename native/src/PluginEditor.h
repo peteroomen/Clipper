@@ -137,6 +137,20 @@ public:
     // assertion that a scene really does overflow.
     int boardOverflow() const;
 
+    // A card's grip reports its drag through these two. Public because they are also
+    // the paint bench's entry point for a synthetic drag-reorder
+    // (native/tools/paint_bench.cpp) — the cards themselves are private, and a drag is
+    // the gesture whose cost this slice had to measure. `contentX` is in the scrolled
+    // content's coordinate space, and `cardIndex` only STARTS a drag: once one is under
+    // way the editor already knows which card the pointer is carrying.
+    void dragCardTo(int cardIndex, int contentX);
+    void endCardDrag();
+
+    // The two painted chain cards, so the layout audit can assert that no amp control
+    // has escaped the amp chassis (the harness's hook for the minimum-width sweep).
+    juce::Rectangle<int> inputCardBounds() const { return cardInput_; }
+    juce::Rectangle<int> ampCardBounds() const { return cardAmp_; }
+
 private:
     using ComboAttach = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
     using SliderAttach = juce::AudioProcessorValueTreeState::SliderAttachment;
@@ -146,7 +160,9 @@ private:
 
     void rebuildBoard();          // recreate the cards from the processor's chain
     void scheduleBoardRefresh();  // ...but never from inside a card's own callback
-    void layoutBoardContent();    // size + place the cards inside the scrolled content
+    // `fullContentRepaint` false repaints only the band the inter-card cables occupy,
+    // which is all that changes when a reorder permutes cards of unchanged size.
+    void layoutBoardContent(bool fullContentRepaint = true);
     void updateAutoScroll();      // start/stop the drag-to-edge scroll pump
     void reorderUnderPointer(int contentX);  // the live-reorder rule, given a content x
     void paintBoardContent(juce::Graphics&); // the rail + the cables between cards
@@ -154,7 +170,25 @@ private:
     void updateAmpFace();     // rebuild the visible amp control set for the voice
     void updateEnablement();  // dim bypassed sections' knobs
     void layoutAmpCard(juce::Rectangle<int>);
-    void dragCardTo(int cardIndex, int parentX);  // pointer-driven live reorder
+
+    // --- the repaint-storm fix (docs §40) ------------------------------------
+    // The only editor-painted thing that moves when the board scrolls or a card is
+    // dragged is the pair of BOUNDARY cables (input -> first pedal, last pedal -> amp),
+    // which have one end on the fixed bench and one inside the scrolling content.
+    // Repainting the whole editor to re-strike them redrew the bench, both chain cards
+    // and all ten amp knobs — at the drag pump's 42 Hz.
+    struct BoundaryCables {
+        bool haveCards = false;
+        juce::Point<float> inputOut, firstIn, lastOut, ampIn;
+        bool clampedIn = false, clampedOut = false;
+    };
+    BoundaryCables boundaryCables() const;
+    // The two bands those cables occupy, in editor coordinates (one band when the
+    // board is empty). Deliberately stops AT each card's edge: the card paints its own
+    // jack over the plug, so there is no reason to dirty the card.
+    void repaintBoundaryCables();
+    // The band the inter-card cables occupy, in CONTENT coordinates.
+    juce::Rectangle<int> boardCableBand() const;
 
     ClipperAudioProcessor& proc_;
     ClipperLookAndFeel lnf_;

@@ -33,6 +33,13 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 
+// The host-parameter context menu helper below needs only a pointer to this; the
+// widget kit deliberately does not pull juce_audio_processors into its header (the
+// definition lives in ClipperLookAndFeel.cpp, which does include it).
+namespace juce {
+class AudioProcessorParameter;
+}
+
 namespace clipper::native {
 
 // ---------------------------------------------------------------------------
@@ -99,6 +106,59 @@ inline const juce::Colour accentClean {0xffF03B24};  // Clean 120 → red accent
 // Diagonal fill approximating a CSS linear-gradient(~150deg) across a rect.
 void fillDiagGradient(juce::Graphics&, juce::Rectangle<float>, juce::Colour from,
                       juce::Colour to);
+
+// ---------------------------------------------------------------------------
+// CAST SHADOWS — every one of them goes through here (docs §40).
+//
+// Each `juce::DropShadow::drawForPath` allocates an offscreen image and box-blurs it.
+// This kit is built out of neumorphic surfaces, so one PedalCard::paint used to do
+// ELEVEN of them (2 chassis + 1 per knob + 1 per rack chip + 1 stomp), and a board
+// being auto-scrolled at the drag pump's 42 Hz repainted the whole editor each tick.
+// A shadow is a pure function of (shape, size, corner radius, colour, blur radius,
+// offset), so it is rendered once into a bounded LRU image cache and blitted after.
+//
+// Fidelity note: JUCE renders a drop shadow at LOGICAL resolution and upscales it to
+// the physical pixel grid, so caching at logical resolution is pixel-equivalent. The
+// one difference is that the blit origin is rounded to whole pixels, i.e. a shadow
+// can sit up to half a pixel from where it did — under a 22 px blur.
+//
+// MESSAGE THREAD ONLY. That is where painting happens; nothing here may be reached
+// from the audio thread.
+enum class ShadowShape { RoundedRect, Ellipse };
+
+struct ShadowSpec {
+    juce::Colour colour;
+    int radius;               // blur radius in px
+    juce::Point<int> offset;  // shadow displacement in px
+};
+
+// Draw `count` (1..kMaxShadowSpecs) stacked shadows for `bounds`. `corner` is
+// ignored for ShadowShape::Ellipse.
+constexpr int kMaxShadowSpecs = 2;
+void drawShadows(juce::Graphics&, juce::Rectangle<float> bounds, float corner,
+                 ShadowShape, const ShadowSpec* specs, int count);
+// The single-shadow case, which is most of them.
+void drawShadow(juce::Graphics&, juce::Rectangle<float> bounds, float corner,
+                ShadowShape, ShadowSpec);
+
+#if CLIPPER_PAINT_METRICS
+// Paint counters + the A/B switches for the dev-only paint bench
+// (native/tools/paint_bench.cpp). Compiled in ONLY when the CLIPPER_BUILD_PAINT_BENCH
+// CMake option is on, so NONE of this — counters or switches — exists in a release
+// plugin, standalone or VST3 build. The switches are what let one bench run print the
+// audit's "before" row and this slice's "after" row side by side, measured rather than
+// remembered: `useShadowCache = false` is literally the pre-fix drawing path, and
+// `useNarrowRepaints = false` restores the pre-fix full-editor repaint() calls.
+namespace metrics {
+extern long long blurPasses;       // juce::DropShadow::drawForPath invocations
+extern long long shadowImages;     // offscreen images the shadow cache allocated
+extern long long shadowCacheHits;  // shadows served from the cache
+extern long long valueTreeWrites;  // ClipperAudioProcessor::setChainOrder calls
+extern bool useShadowCache;        // false = the pre-fix, blur-every-time path
+extern bool useNarrowRepaints;     // false = the pre-fix full-editor repaint()
+void reset();
+}  // namespace metrics
+#endif
 
 // A raised dark-chassis card: warm cast shadow(s) on the bench + body gradient +
 // inset light top rim + inset dark edge. `radius` in px.
@@ -183,10 +243,77 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// Widget kit — small custom Components sharing the language. All are driven by an
+// Widget kit — small custom widgets sharing the language. All are driven by an
 // external `on`/value + a click callback; they store no parameter state (the
 // editor binds them to the APVTS).
+//
+// EVERY ONE OF THEM DERIVES FROM juce::Button OR juce::Slider (docs §40, ADR 012).
+// They used to derive from bare juce::Component, which cost two things a player
+// notices:
+//
+//   * INPUT SAFETY. `mouseDown` fired the control from ANY mouse button, with no
+//     drag-off-to-abort — so a right-click, the gesture that opens a host's
+//     parameter-automation menu, silently toggled it. An accidental mid-song
+//     Power-off is the worst live failure mode in either build (audit UI finding).
+//     juce::Button already acts on mouse-UP INSIDE and aborts if the press drags
+//     off; BenchButton below adds the missing "left button only" and hands the
+//     secondary click to the host.
+//   * ACCESSIBILITY + KEYBOARD. A bare Component has no role, no name, no state and
+//     no keyboard path, so the whole editor was mouse-only and invisible to
+//     assistive tech. juce::Button/juce::Slider bring the role, the checked state,
+//     Space/Return activation and the focus order for free.
 // ---------------------------------------------------------------------------
+
+// Open the HOST's parameter context menu for `param`, anchored on `anchor`. This is
+// what a right-click is supposed to do in a plugin (automation lane, MIDI learn, …).
+// A no-op in the Standalone and in any host that provides no menu — which is exactly
+// right: doing nothing is still infinitely better than toggling the control.
+void showHostParameterMenu(juce::Component& anchor, juce::AudioProcessorParameter* param);
+
+// The shared input contract for every button in the kit: primary (left, non-popup)
+// button only, action on mouse-UP inside, press aborts if the pointer drags off, and
+// the secondary click is handed on rather than swallowed.
+class BenchButton : public juce::Button {
+public:
+    explicit BenchButton(const juce::String& name) : juce::Button(name) {}
+
+    // Fired on a right-click / ctrl-click. The argument is the widget itself, so the
+    // editor can anchor the host menu on it without capturing `this`.
+    std::function<void(juce::Component&)> onSecondaryClick;
+
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
+
+protected:
+    // True between a primary press and its release. A subclass that turns the gesture
+    // into a drag uses this to know it owns the press.
+    bool primaryHeld() const { return primaryHeld_; }
+    // Drop the press WITHOUT firing a click — for a gesture that became a drag.
+    void abortPress(const juce::MouseEvent&);
+    // The keyboard focus ring, drawn by every widget in the kit so "it is operable
+    // from the keyboard" is also visible.
+    void paintFocusRing(juce::Graphics&, juce::Rectangle<float>, float corner,
+                        juce::Colour) const;
+
+private:
+    bool primaryHeld_{false};
+};
+
+// The same contract for a rotary: with JUCE's own popup menu disabled (the default) a
+// RIGHT-DRAG on a juce::Slider turns the knob. Not in the audit — same defect.
+class BenchSlider : public juce::Slider {
+public:
+    BenchSlider();
+    std::function<void(juce::Component&)> onSecondaryClick;
+
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
+
+private:
+    bool primaryHeld_{false};
+};
 
 // A labelled sculpted knob: a rotary Slider (drawn by the LnF) with the knob NAME
 // and the numeric readout beneath, both tinted by the section accent. The value
@@ -194,15 +321,32 @@ public:
 class NeuKnob : public juce::Component {
 public:
     NeuKnob();
-    void setName(const juce::String&);
+
+    // Sets the printed caption, the Component name AND the inner slider's accessible
+    // TITLE — the slider is the child that actually takes focus, so it is what
+    // assistive tech announces.
+    //
+    // The audit filed this as "NeuKnob::setName shadows the non-virtual
+    // Component::setName". Measured against JUCE 8.0.4 the mechanism is different and
+    // the consequence is the same: juce_Component.h:94 declares `virtual void setName`,
+    // so the old NeuKnob::setName was an OVERRIDE — one that never called the base and
+    // never touched a title. Component::getName() therefore stayed empty, the slider's
+    // accessible title stayed empty, and all 17+ knobs were anonymous. setName is kept
+    // as a CORRECT override below so a caller holding a Component* lands in the same
+    // place; setKnobName is the spelling to use, because it says what it does.
+    void setKnobName(const juce::String&);
+    void setName(const juce::String&) override;
+
     void setAccent(juce::Colour);
     void setDimmed(bool);  // bypassed → arc + readout dim (.pedal:not(.on))
     juce::Slider& slider() { return slider_; }
+    // Forwarded to the slider, whose right-click opens the host's parameter menu.
+    void setOnSecondaryClick(std::function<void(juce::Component&)>);
     void resized() override;
 
 private:
     void refreshReadout();
-    juce::Slider slider_;
+    BenchSlider slider_;
     juce::Label nameLabel_, valueLabel_;
     juce::Colour accent_{skin::accentRat};
     bool dimmed_{false};
@@ -225,7 +369,9 @@ private:
 // press; the engaged STATE is shown by the card's LED, never by this widget. It
 // therefore no longer draws an LED of its own — the old stacked-LED layout is
 // what the stomp's drop shadow was painting over.
-class Footswitch : public juce::Component, private juce::Timer {
+//
+// `onClick` is now juce::Button::onClick — same signature, so no call site moved.
+class Footswitch : public BenchButton, private juce::Timer {
 public:
     enum class Shape { Round, BigRound, Treadle, Pad };
 
@@ -237,20 +383,20 @@ public:
     void setWordmark(const juce::String& w) { wordmark_ = w; repaint(); }
     // Dim the embossed wordmark when the pedal is bypassed (.pedal:not(.on)).
     void setEngaged(bool e) { engaged_ = e; repaint(); }
-    std::function<void()> onClick;
 
-    void paint(juce::Graphics&) override;
-    void mouseDown(const juce::MouseEvent&) override;
+    void paintButton(juce::Graphics&, bool highlighted, bool down) override;
+    using juce::Button::clicked;  // the ModifierKeys overload stays visible
 
 private:
+    void clicked() override;  // starts the 130 ms thunk
     void timerCallback() override;
-    void paintRound(juce::Graphics&, juce::Rectangle<float>);
-    void paintTreadle(juce::Graphics&, juce::Rectangle<float>);
-    void paintPad(juce::Graphics&, juce::Rectangle<float>);
+    void paintRound(juce::Graphics&, juce::Rectangle<float>, bool down);
+    void paintTreadle(juce::Graphics&, juce::Rectangle<float>, bool down);
+    void paintPad(juce::Graphics&, juce::Rectangle<float>, bool down);
 
     juce::Colour accent_{skin::accentRat};
     Shape shape_{Shape::Round};
-    bool pressed_{false};
+    bool thunk_{false};
     bool engaged_{true};
     juce::String caption_{"Stomp"};
     juce::String wordmark_;
@@ -259,81 +405,89 @@ private:
 // A small neumorphic CHIP button — the board.css `.rack-btn` / `.tray-add` family:
 // a rounded cap-edge pill with a dual shadow that inverts to an inset one while
 // held. Used for the per-card reorder/swap/remove rack and the gear tray.
-class ChipButton : public juce::Component {
+// `text_` is kept separate from Button::getButtonText because the glyph on the chip is
+// a pictogram (⠿ ◀ ▶ ⇄ ✕); the button TEXT carries the spoken name instead, which is
+// what assistive tech reads out.
+class ChipButton : public BenchButton {
 public:
     explicit ChipButton(const juce::String& text = {});
     void setText(const juce::String& t) { text_ = t; repaint(); }
     void setTint(juce::Colour c) { tint_ = c; repaint(); }
-    void setChipEnabled(bool e) { enabled_ = e; setInterceptsMouseClicks(e, false); repaint(); }
-    bool chipEnabled() const { return enabled_; }
+    void setChipEnabled(bool e) { setEnabled(e); repaint(); }
+    bool chipEnabled() const { return isEnabled(); }
     // Optional drag reporting (the grip): x is in the PARENT's coordinate space.
-    std::function<void()> onClick;
     std::function<void(int parentX)> onDrag;
     std::function<void()> onDragEnd;
 
-    void paint(juce::Graphics&) override;
-    void mouseDown(const juce::MouseEvent&) override;
+    void paintButton(juce::Graphics&, bool highlighted, bool down) override;
     void mouseDrag(const juce::MouseEvent&) override;
     void mouseUp(const juce::MouseEvent&) override;
 
 private:
     juce::String text_;
     juce::Colour tint_{skin::inkDim};
-    bool enabled_{true};
-    bool held_{false};
     bool dragged_{false};
 };
 
 // A carved-slot lever toggle (the amp Bright/Cab levers): a recessed well with a
 // cap lever that slides down + lights (accent) when on. Caption beneath.
-class LeverToggle : public juce::Component {
+//
+// `setToggleable(true)` without `setClickingTogglesState` — the PARAMETER owns the
+// state (the editor's ParameterAttachment writes it back), but assistive tech still
+// reports the control as checkable and reports whether it is checked.
+class LeverToggle : public BenchButton {
 public:
     LeverToggle();
     void setAccent(juce::Colour c) { accent_ = c; repaint(); }
-    void setOn(bool o) { on_ = o; repaint(); }
-    bool isOn() const { return on_; }
-    void setCaption(const juce::String& c) { caption_ = c; repaint(); }
-    std::function<void()> onClick;
+    void setOn(bool o) { setToggleState(o, juce::dontSendNotification); }
+    bool isOn() const { return getToggleState(); }
+    void setCaption(const juce::String&);
 
-    void paint(juce::Graphics&) override;
-    void mouseDown(const juce::MouseEvent&) override;
+    void paintButton(juce::Graphics&, bool highlighted, bool down) override;
 
 private:
     juce::Colour accent_{skin::accentRat};
-    bool on_{false};
     juce::String caption_{"Bright"};
 };
 
 // The amp POWER control: a glowing jewel over a rocker, caption "Power".
-class PowerControl : public juce::Component {
+class PowerControl : public BenchButton {
 public:
     PowerControl();
     void setAccent(juce::Colour c) { accent_ = c; repaint(); }
-    void setOn(bool o) { on_ = o; repaint(); }
-    bool isOn() const { return on_; }
-    std::function<void()> onClick;
+    void setOn(bool o) { setToggleState(o, juce::dontSendNotification); }
+    bool isOn() const { return getToggleState(); }
 
-    void paint(juce::Graphics&) override;
-    void mouseDown(const juce::MouseEvent&) override;
+    void paintButton(juce::Graphics&, bool highlighted, bool down) override;
 
 private:
     juce::Colour accent_{skin::accentRat};
-    bool on_{true};
 };
 
 // The 3-way chorus MODE switch: three carved segments stacked in a well, the
 // active one lit. Reports the chosen index (0 Off / 1 Chorus / 2 Vibrato).
+//
+// A 3-position switch is not a button, so this one is a CONTAINER of three
+// radio-grouped BenchButtons rather than a Button itself: each position is then its
+// own tab stop with its own name and its own checked state, which is exactly how a
+// radio group is meant to read. The well and the "MODE" caption are painted by the
+// container, behind its children.
 class ModeSwitch : public juce::Component {
 public:
     ModeSwitch();
-    void setSelected(int idx) { selected_ = idx; repaint(); }
+    ~ModeSwitch() override;
+    void setSelected(int idx);
     int selected() const { return selected_; }
     std::function<void(int)> onSelect;
+    // A right-click on ANY segment opens the host menu for the mode parameter.
+    void setOnSecondaryClick(std::function<void(juce::Component&)>);
 
     void paint(juce::Graphics&) override;
-    void mouseDown(const juce::MouseEvent&) override;
+    void resized() override;
 
 private:
+    class Segment;
+    juce::OwnedArray<Segment> segments_;
     juce::StringArray labels_{"Off", "Chorus", "Vibrato"};
     int selected_{0};
     juce::Colour accent_{skin::accentClean};

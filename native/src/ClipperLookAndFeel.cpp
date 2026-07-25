@@ -1,5 +1,13 @@
 #include "ClipperLookAndFeel.h"
 
+// Only for showHostParameterMenu() below: the widget-kit HEADER stays GUI-only, so the
+// one place that needs a juce::AudioProcessorParameter includes the module here.
+#include <juce_audio_processors/juce_audio_processors.h>
+
+#include <cstring>
+#include <memory>
+#include <vector>
+
 namespace clipper::native {
 
 namespace {
@@ -28,13 +36,177 @@ void fillDiagGradient(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour 
     g.fillRect(r);
 }
 
+// ---------------------------------------------------------------------------
+// The shadow cache (docs §40). See the header for why this exists.
+// ---------------------------------------------------------------------------
+#if CLIPPER_PAINT_METRICS
+namespace metrics {
+long long blurPasses = 0;
+long long shadowImages = 0;
+long long shadowCacheHits = 0;
+long long valueTreeWrites = 0;
+bool useShadowCache = true;
+bool useNarrowRepaints = true;
+void reset() {
+    blurPasses = shadowImages = shadowCacheHits = valueTreeWrites = 0;
+}
+}  // namespace metrics
+#define CLIPPER_COUNT(field) (++clipper::native::skin::metrics::field)
+#else
+#define CLIPPER_COUNT(field) ((void)0)
+#endif
+
+namespace {
+
+// Sizes are quantized to whole pixels and the corner radius to quarter-pixels: two
+// knobs whose bodies differ by a third of a pixel share one blurred image, which is
+// invisible under the blur and is what makes the cache hit at all.
+struct ShadowKey {
+    int w = 0, h = 0, corner4 = 0, shape = 0, count = 0;
+    juce::int64 argb[kMaxShadowSpecs] = {};
+    int radius[kMaxShadowSpecs] = {};
+    int ox[kMaxShadowSpecs] = {};
+    int oy[kMaxShadowSpecs] = {};
+
+    bool operator==(const ShadowKey& o) const {
+        if (w != o.w || h != o.h || corner4 != o.corner4 || shape != o.shape ||
+            count != o.count)
+            return false;
+        for (int i = 0; i < count; ++i)
+            if (argb[i] != o.argb[i] || radius[i] != o.radius[i] || ox[i] != o.ox[i] ||
+                oy[i] != o.oy[i])
+                return false;
+        return true;
+    }
+};
+
+struct ShadowEntry {
+    ShadowKey key;
+    juce::Image image;
+    int pad = 0;
+    long long lastUsed = 0;
+};
+
+// Bounded: a window resize sweeps a new size per pixel of drag, so an unbounded cache
+// would be a slow leak. 64 entries covers every card, knob, chip and lever on screen
+// at one window size with room to spare; the least-recently-used one is evicted.
+constexpr size_t kShadowCacheMax = 64;
+
+std::vector<ShadowEntry>& shadowCache() {
+    static std::vector<ShadowEntry> cache;
+    return cache;
+}
+
+juce::Path shadowPath(ShadowShape shape, juce::Rectangle<float> r, float corner) {
+    juce::Path p;
+    if (shape == ShadowShape::Ellipse)
+        p.addEllipse(r);
+    else
+        p.addRoundedRectangle(r, corner);
+    return p;
+}
+}  // namespace
+
+void drawShadows(juce::Graphics& g, juce::Rectangle<float> bounds, float corner,
+                 ShadowShape shape, const ShadowSpec* specs, int count) {
+    count = juce::jlimit(0, kMaxShadowSpecs, count);
+    if (count == 0 || specs == nullptr) return;
+    const int w = juce::roundToInt(bounds.getWidth());
+    const int h = juce::roundToInt(bounds.getHeight());
+    if (w < 1 || h < 1) return;
+
+    // The margin the blurs need around the body, so nothing is cropped.
+    int pad = 1;
+    for (int i = 0; i < count; ++i)
+        pad = juce::jmax(pad, specs[i].radius + 2 +
+                                  juce::jmax(std::abs(specs[i].offset.x),
+                                             std::abs(specs[i].offset.y)));
+
+#if CLIPPER_PAINT_METRICS
+    // The pre-fix path, kept ONLY in the bench build so the "before" row is measured
+    // from the real code rather than remembered: blur straight onto `g`, every paint.
+    if (!metrics::useShadowCache) {
+        const juce::Path p = shadowPath(shape, bounds, corner);
+        for (int i = 0; i < count; ++i) {
+            juce::DropShadow(specs[i].colour, specs[i].radius, specs[i].offset)
+                .drawForPath(g, p);
+            CLIPPER_COUNT(blurPasses);
+        }
+        return;
+    }
+#endif
+
+    ShadowKey key;
+    key.w = w;
+    key.h = h;
+    key.corner4 = juce::roundToInt(corner * 4.0f);
+    key.shape = (int)shape;
+    key.count = count;
+    for (int i = 0; i < count; ++i) {
+        key.argb[i] = (juce::int64)specs[i].colour.getARGB();
+        key.radius[i] = specs[i].radius;
+        key.ox[i] = specs[i].offset.x;
+        key.oy[i] = specs[i].offset.y;
+    }
+
+    static long long clock = 0;
+    ++clock;
+
+    auto& cache = shadowCache();
+    ShadowEntry* hit = nullptr;
+    for (auto& e : cache)
+        if (e.key == key) {
+            hit = &e;
+            break;
+        }
+
+    if (hit == nullptr) {
+        if (cache.size() >= kShadowCacheMax) {
+            size_t oldest = 0;
+            for (size_t i = 1; i < cache.size(); ++i)
+                if (cache[i].lastUsed < cache[oldest].lastUsed) oldest = i;
+            cache.erase(cache.begin() + (std::ptrdiff_t)oldest);
+        }
+        ShadowEntry e;
+        e.key = key;
+        e.pad = pad;
+        e.image = juce::Image(juce::Image::ARGB, w + 2 * pad, h + 2 * pad, true);
+        CLIPPER_COUNT(shadowImages);
+        {
+            juce::Graphics ig(e.image);
+            const juce::Path p = shadowPath(
+                shape, juce::Rectangle<float>((float)pad, (float)pad, (float)w, (float)h),
+                corner);
+            for (int i = 0; i < count; ++i) {
+                juce::DropShadow(specs[i].colour, specs[i].radius, specs[i].offset)
+                    .drawForPath(ig, p);
+                CLIPPER_COUNT(blurPasses);
+            }
+        }
+        cache.push_back(std::move(e));
+        hit = &cache.back();
+    } else {
+        CLIPPER_COUNT(shadowCacheHits);
+    }
+
+    hit->lastUsed = clock;
+    g.drawImageAt(hit->image, juce::roundToInt(bounds.getX()) - hit->pad,
+                  juce::roundToInt(bounds.getY()) - hit->pad);
+}
+
+void drawShadow(juce::Graphics& g, juce::Rectangle<float> bounds, float corner,
+                ShadowShape shape, ShadowSpec spec) {
+    drawShadows(g, bounds, corner, shape, &spec, 1);
+}
+
 void drawChassisCard(juce::Graphics& g, juce::Rectangle<float> r, float radius) {
     auto path = roundedRectPath(r, radius);
 
     // Two warm cast shadows on the bench (the .pedal.raised dual box-shadow):
     // 16px 18px 34px @ .30, then a tighter 3px 4px 10px @ .22.
-    juce::DropShadow(castShadow, 22, {11, 13}).drawForPath(g, path);
-    juce::DropShadow(castShadow.withAlpha(0.22f), 8, {3, 4}).drawForPath(g, path);
+    const ShadowSpec cast[] = {{castShadow, 22, {11, 13}},
+                               {castShadow.withAlpha(0.22f), 8, {3, 4}}};
+    drawShadows(g, r, radius, ShadowShape::RoundedRect, cast, 2);
 
     // Body — the dark island (--panel-grad 160deg).
     {
@@ -319,11 +491,11 @@ void ClipperLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int w
     if (dim) accent = accent.withAlpha(0.30f);
 
     // --- body cast shadow (6px 6px 14 dark / -5 -5 12 light dual) ---
-    {
-        juce::Path bp;
-        bp.addEllipse(centre.x - bodyR, centre.y - bodyR, bodyR * 2.0f, bodyR * 2.0f);
-        juce::DropShadow(skin::shDark, (int)(bodyR * 0.55f), {3, 4}).drawForPath(g, bp);
-    }
+    skin::drawShadow(g,
+                     juce::Rectangle<float>(centre.x - bodyR, centre.y - bodyR,
+                                            bodyR * 2.0f, bodyR * 2.0f),
+                     0.0f, skin::ShadowShape::Ellipse,
+                     {skin::shDark, (int)(bodyR * 0.55f), {3, 4}});
     // --- body (--cap-edge 145deg: #1E2126 → #2C3036) ---
     {
         juce::Rectangle<float> br(centre.x - bodyR, centre.y - bodyR, bodyR * 2.0f,
@@ -391,8 +563,8 @@ void ClipperLookAndFeel::drawComboBox(juce::Graphics& g, int w, int h, bool /*is
     auto r = juce::Rectangle<float>(0, 0, (float)w, (float)h).reduced(1.0f);
     const float radius = juce::jmin(10.0f, h * 0.4f);
     // A raised neumorphic pill (cap-edge) with a dual outer shadow.
-    juce::Path p = roundedRectPath(r, radius);
-    juce::DropShadow(skin::shDark, 8, {3, 3}).drawForPath(g, p);
+    skin::drawShadow(g, r, radius, skin::ShadowShape::RoundedRect,
+                     {skin::shDark, 8, {3, 3}});
     skin::fillDiagGradient(g, r, skin::capEdgeBot, skin::capEdgeTop);
     g.setColour(juce::Colour(0x14FFFFFF));
     g.strokePath(roundedRectPath(r.reduced(0.5f), radius), juce::PathStrokeType(1.0f));
@@ -459,6 +631,102 @@ void ClipperLookAndFeel::drawScrollbar(juce::Graphics& g, juce::ScrollBar&, int 
 }
 
 // ===========================================================================
+// The host's parameter context menu (docs §40)
+// ===========================================================================
+void showHostParameterMenu(juce::Component& anchor, juce::AudioProcessorParameter* param) {
+    if (param == nullptr) return;
+    auto* editor = anchor.findParentComponentOfClass<juce::AudioProcessorEditor>();
+    if (editor == nullptr) return;
+    auto* host = editor->getHostContext();
+    if (host == nullptr) return;  // Standalone, or a host that offers no menu
+    auto provided = host->getContextMenuForParameter(param);
+    if (provided == nullptr) return;
+    juce::PopupMenu menu = provided->getEquivalentPopupMenu();
+    if (menu.getNumItems() == 0) return;
+    menu.setLookAndFeel(&anchor.getLookAndFeel());
+    // The host object owns the item actions, so it has to outlive the async menu.
+    auto keepAlive =
+        std::make_shared<std::unique_ptr<juce::HostProvidedContextMenu>>(std::move(provided));
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&anchor),
+                       [keepAlive](int) {});
+}
+
+// ===========================================================================
+// BenchButton / BenchSlider — the shared input contract (docs §40, ADR 012)
+// ===========================================================================
+namespace {
+// A press only counts if it is the PRIMARY button. `isPopupMenu()` also covers macOS
+// ctrl-click, which is the same host gesture as a right-click.
+bool isPrimaryPress(const juce::MouseEvent& e) {
+    return e.mods.isLeftButtonDown() && !e.mods.isPopupMenu();
+}
+}  // namespace
+
+void BenchButton::mouseDown(const juce::MouseEvent& e) {
+    if (!isPrimaryPress(e)) return;  // never enters the down state at all
+    primaryHeld_ = true;
+    juce::Button::mouseDown(e);
+}
+
+void BenchButton::mouseDrag(const juce::MouseEvent& e) {
+    if (!primaryHeld_) return;
+    juce::Button::mouseDrag(e);  // leaving the bounds clears the down state → aborts
+}
+
+void BenchButton::mouseUp(const juce::MouseEvent& e) {
+    if (!primaryHeld_) {
+        // The gesture we deliberately did not consume. Hand it to the host instead of
+        // toggling the control behind the player's back.
+        if (e.mods.isPopupMenu() && onSecondaryClick) onSecondaryClick(*this);
+        return;
+    }
+    primaryHeld_ = false;
+    juce::Button::mouseUp(e);  // clicks only if the pointer is still inside
+}
+
+void BenchButton::abortPress(const juce::MouseEvent& e) {
+    primaryHeld_ = false;
+    juce::Button::mouseExit(e);  // drops over/down state; fires no click
+}
+
+void BenchButton::paintFocusRing(juce::Graphics& g, juce::Rectangle<float> r, float corner,
+                                 juce::Colour accent) const {
+    if (!hasKeyboardFocus(false)) return;
+    g.setColour(accent.withAlpha(0.85f));
+    if (corner <= 0.0f)
+        g.drawEllipse(r.reduced(1.0f), 2.0f);
+    else
+        g.drawRoundedRectangle(r.reduced(1.0f), corner, 2.0f);
+}
+
+BenchSlider::BenchSlider() {
+    // JUCE's own right-click menu (rotary/velocity mode) is not wanted here, and with
+    // it disabled Slider::mouseDown falls straight through to a DRAG on any button —
+    // so a right-drag turned the knob. Guarded below instead.
+    setPopupMenuEnabled(false);
+}
+
+void BenchSlider::mouseDown(const juce::MouseEvent& e) {
+    if (!isPrimaryPress(e)) return;
+    primaryHeld_ = true;
+    juce::Slider::mouseDown(e);
+}
+
+void BenchSlider::mouseDrag(const juce::MouseEvent& e) {
+    if (!primaryHeld_) return;
+    juce::Slider::mouseDrag(e);
+}
+
+void BenchSlider::mouseUp(const juce::MouseEvent& e) {
+    if (!primaryHeld_) {
+        if (e.mods.isPopupMenu() && onSecondaryClick) onSecondaryClick(*this);
+        return;
+    }
+    primaryHeld_ = false;
+    juce::Slider::mouseUp(e);
+}
+
+// ===========================================================================
 // NeuKnob
 // ===========================================================================
 NeuKnob::NeuKnob() {
@@ -467,7 +735,18 @@ NeuKnob::NeuKnob() {
     slider_.setRotaryParameters(juce::MathConstants<float>::pi * 1.25f,
                                 juce::MathConstants<float>::pi * 2.75f, true);
     slider_.setColour(juce::Slider::rotarySliderFillColourId, accent_);
+    // What assistive tech READS OUT for the value has to be the number the player can
+    // SEE, which is the web's round(value*100), not JUCE's 0.00–1.00.
+    slider_.textFromValueFunction = [](double v) {
+        return juce::String(juce::roundToInt(v * 100.0));
+    };
     addAndMakeVisible(slider_);
+
+    // The two captions are decoration on top of the slider; the slider carries the
+    // name and the value for the accessibility tree (see setKnobName), so exposing the
+    // labels a second time would just make every knob read out twice.
+    nameLabel_.setAccessible(false);
+    valueLabel_.setAccessible(false);
 
     nameLabel_.setJustificationType(juce::Justification::centred);
     nameLabel_.setColour(juce::Label::textColourId, skin::inkDim);
@@ -485,8 +764,22 @@ NeuKnob::NeuKnob() {
     refreshReadout();
 }
 
-void NeuKnob::setName(const juce::String& n) {
+void NeuKnob::setKnobName(const juce::String& n) {
     nameLabel_.setText(n.toUpperCase(), juce::dontSendNotification);
+    // All of these, deliberately. The QUALIFIED base call is what the old override
+    // omitted; setTitle on the SLIDER is what assistive tech actually reads, because
+    // the slider is the child that takes focus.
+    juce::Component::setName(n);
+    setTitle(n);
+    slider_.setTitle(n);
+}
+
+void NeuKnob::setName(const juce::String& n) {
+    setKnobName(n);  // a caller holding a Component* must land in the same place
+}
+
+void NeuKnob::setOnSecondaryClick(std::function<void(juce::Component&)> fn) {
+    slider_.onSecondaryClick = std::move(fn);
 }
 
 void NeuKnob::setAccent(juce::Colour c) {
@@ -524,34 +817,37 @@ void NeuKnob::resized() {
 // ===========================================================================
 // Footswitch — the four web morphologies (pedal.css .fsw / -treadle / -pad)
 // ===========================================================================
-Footswitch::Footswitch() {}
+Footswitch::Footswitch() : BenchButton("Footswitch") {
+    setButtonText("Stomp");  // the spoken name until the card sets a real one
+}
 
-void Footswitch::mouseDown(const juce::MouseEvent&) {
-    // The thunk: press for ~130 ms (the web's transient `.stomped`), then release.
-    pressed_ = true;
+void Footswitch::clicked() {
+    // The thunk: the web's transient `.stomped`, ~130 ms after the switch actually
+    // fires — which is now on RELEASE, not on press.
+    thunk_ = true;
     repaint();
     startTimer(130);
-    if (onClick) onClick();
 }
 
 void Footswitch::timerCallback() {
     stopTimer();
-    pressed_ = false;
+    thunk_ = false;
     repaint();
 }
 
-void Footswitch::paint(juce::Graphics& g) {
+void Footswitch::paintButton(juce::Graphics& g, bool /*highlighted*/, bool down) {
     auto r = getLocalBounds().toFloat();
+    const bool pressed = down || thunk_;
     // `.fsw:active { transform: translateY(2px) }` — the whole switch drops.
-    if (pressed_) r = r.translated(0.0f, 2.0f);
+    if (pressed) r = r.translated(0.0f, 2.0f);
     switch (shape_) {
-        case Shape::Treadle: paintTreadle(g, r); break;
-        case Shape::Pad:     paintPad(g, r); break;
-        default:             paintRound(g, r); break;
+        case Shape::Treadle: paintTreadle(g, r, pressed); break;
+        case Shape::Pad:     paintPad(g, r, pressed); break;
+        default:             paintRound(g, r, pressed); break;
     }
 }
 
-void Footswitch::paintRound(juce::Graphics& g, juce::Rectangle<float> r) {
+void Footswitch::paintRound(juce::Graphics& g, juce::Rectangle<float> r, bool pressed) {
     const float capH = caption_.isEmpty() ? 0.0f : 16.0f;
     // The web disc is 88 px (104 on the Muff's wide face); scale down only if the
     // slot is genuinely smaller than that.
@@ -563,12 +859,10 @@ void Footswitch::paintRound(juce::Graphics& g, juce::Rectangle<float> r) {
     const float top = r.getY() + juce::jmax(0.0f, (r.getHeight() - d - capH - 4.0f) * 0.5f);
     juce::Rectangle<float> stomp(r.getCentreX() - d * 0.5f, top, d, d);
 
-    juce::Path sp;
-    sp.addEllipse(stomp);
     // 8px 8px 18px --sh-dark (raised) collapsing to 3/3/8 while pressed.
-    juce::DropShadow(skin::shDark, pressed_ ? 8 : 16, pressed_ ? juce::Point<int>{3, 3}
-                                                               : juce::Point<int>{5, 6})
-        .drawForPath(g, sp);
+    skin::drawShadow(g, stomp, 0.0f, skin::ShadowShape::Ellipse,
+                     {skin::shDark, pressed ? 8 : 16,
+                      pressed ? juce::Point<int>{3, 3} : juce::Point<int>{5, 6}});
     g.setGradientFill(juce::ColourGradient(skin::capEdgeTop, stomp.getTopLeft(),
                                            skin::capEdgeBot, stomp.getBottomRight(), false));
     g.fillEllipse(stomp);
@@ -579,7 +873,7 @@ void Footswitch::paintRound(juce::Graphics& g, juce::Rectangle<float> r) {
     g.fillEllipse(inner);
     g.setColour(juce::Colour(0x14FFFFFF));
     g.drawEllipse(inner.reduced(0.5f), 1.0f);
-    if (pressed_) {  // inset 2px 2px 6px --sh-darker
+    if (pressed) {  // inset 2px 2px 6px --sh-darker
         g.setColour(skin::shDarker);
         g.drawEllipse(stomp.reduced(1.4f), 2.6f);
     }
@@ -600,19 +894,18 @@ void Footswitch::paintRound(juce::Graphics& g, juce::Rectangle<float> r) {
                                           capH),
                    juce::Justification::centred);
     }
+    paintFocusRing(g, stomp.expanded(3.0f), 0.0f, accent_);
 }
 
-void Footswitch::paintTreadle(juce::Graphics& g, juce::Rectangle<float> r) {
+void Footswitch::paintTreadle(juce::Graphics& g, juce::Rectangle<float> r, bool pressed) {
     // .fsw-treadle: a wide BLACK RUBBER pad owning the LOWER body — the web drops
     // it to the bottom of the enclosure with nothing beneath it, and that placement
     // is half the Boss-compact read. Explicitly darker/mattes than the metal knobs.
     const float h = juce::jmin(r.getHeight(), 150.0f);
     auto body = r.withTop(r.getBottom() - h);
-    juce::Path bp;
-    bp.addRoundedRectangle(body, 18.0f);
-    juce::DropShadow(skin::shDark, pressed_ ? 10 : 20, pressed_ ? juce::Point<int>{3, 4}
-                                                                : juce::Point<int>{7, 9})
-        .drawForPath(g, bp);
+    skin::drawShadow(g, body, 18.0f, skin::ShadowShape::RoundedRect,
+                     {skin::shDark, pressed ? 10 : 20,
+                      pressed ? juce::Point<int>{3, 4} : juce::Point<int>{7, 9}});
     g.setGradientFill(juce::ColourGradient(juce::Colour(0xff26282D), body.getTopLeft(),
                                            juce::Colour(0xff17181C), body.getBottomRight(),
                                            false));
@@ -655,18 +948,17 @@ void Footswitch::paintTreadle(juce::Graphics& g, juce::Rectangle<float> r) {
         g.setColour(juce::Colour(0xffD9DBDF).withAlpha(engaged_ ? 0.92f : 0.55f));
         g.drawText(wordmark_.toUpperCase(), tw, juce::Justification::centred);
     }
+    paintFocusRing(g, body.expanded(2.0f), 18.0f, accent_);
 }
 
-void Footswitch::paintPad(juce::Graphics& g, juce::Rectangle<float> r) {
+void Footswitch::paintPad(juce::Graphics& g, juce::Rectangle<float> r, bool pressed) {
     // .fsw-pad: the Ibanez-format hinged METAL plate — wide, low, brushed, and (like
     // the treadle) owning the bottom of the enclosure with nothing below it.
     const float h = juce::jmin(r.getHeight(), 96.0f);
     auto body = r.withTop(r.getBottom() - h);
-    juce::Path bp;
-    bp.addRoundedRectangle(body, 12.0f);
-    juce::DropShadow(skin::shDark, pressed_ ? 10 : 20, pressed_ ? juce::Point<int>{3, 4}
-                                                                : juce::Point<int>{7, 9})
-        .drawForPath(g, bp);
+    skin::drawShadow(g, body, 12.0f, skin::ShadowShape::RoundedRect,
+                     {skin::shDark, pressed ? 10 : 20,
+                      pressed ? juce::Point<int>{3, 4} : juce::Point<int>{7, 9}});
     g.setGradientFill(juce::ColourGradient(juce::Colour(0xff2C3036), body.getTopLeft(),
                                            juce::Colour(0xff1C1E22), body.getBottomRight(),
                                            false));
@@ -695,80 +987,85 @@ void Footswitch::paintPad(juce::Graphics& g, juce::Rectangle<float> r) {
         g.setColour(skin::inkFaint.withAlpha(engaged_ ? 1.0f : 0.55f));
         g.drawText(wordmark_.toUpperCase(), tw, juce::Justification::centred);
     }
+    paintFocusRing(g, body.expanded(2.0f), 12.0f, accent_);
 }
 
 // ===========================================================================
 // ChipButton (the .rack-btn / .tray-add pill)
 // ===========================================================================
-ChipButton::ChipButton(const juce::String& text) : text_(text) {}
-
-void ChipButton::mouseDown(const juce::MouseEvent&) {
-    if (!enabled_) return;
-    held_ = true;
-    dragged_ = false;
-    repaint();
-}
+ChipButton::ChipButton(const juce::String& text) : BenchButton("Chip"), text_(text) {}
 
 void ChipButton::mouseDrag(const juce::MouseEvent& e) {
-    if (!enabled_ || !onDrag) return;
+    BenchButton::mouseDrag(e);
+    if (!primaryHeld() || !isEnabled() || !onDrag) return;
     // Only start dragging past a small threshold, so a click never reorders.
     if (!dragged_ && e.getDistanceFromDragStart() < 4) return;
     dragged_ = true;
     onDrag(getX() + e.x);
 }
 
-void ChipButton::mouseUp(const juce::MouseEvent&) {
-    const bool wasDragged = dragged_;
-    held_ = false;
-    dragged_ = false;
-    repaint();
-    if (!enabled_) return;
-    if (wasDragged) {
+void ChipButton::mouseUp(const juce::MouseEvent& e) {
+    if (dragged_) {
+        // The gesture became a DRAG, so it must not also click: a grip released back
+        // inside its own 24x20 chip would otherwise fire onClick as well.
+        dragged_ = false;
+        abortPress(e);
+        repaint();
         if (onDragEnd) onDragEnd();
-    } else if (onClick) {
-        onClick();
+        return;
     }
+    BenchButton::mouseUp(e);
 }
 
-void ChipButton::paint(juce::Graphics& g) {
+void ChipButton::paintButton(juce::Graphics& g, bool /*highlighted*/, bool down) {
     auto r = getLocalBounds().toFloat().reduced(1.0f);
     const float radius = juce::jmin(7.0f, r.getHeight() * 0.35f);
-    if (held_) {
+    if (down) {
         // :active — the raised pill inverts to a recess.
         g.setColour(skin::well);
         g.fillRoundedRectangle(r, radius);
         g.setColour(skin::shDarker);
         g.drawRoundedRectangle(r.reduced(0.5f).translated(0.6f, 0.7f), radius, 1.6f);
     } else {
-        juce::Path p = roundedRectPath(r, radius);
-        juce::DropShadow(skin::shDark, 5, {2, 2}).drawForPath(g, p);
+        skin::drawShadow(g, r, radius, skin::ShadowShape::RoundedRect,
+                         {skin::shDark, 5, {2, 2}});
         skin::fillDiagGradient(g, r, skin::capEdgeTop, skin::capEdgeBot);
         g.setColour(juce::Colour(0x12FFFFFF));
         g.strokePath(roundedRectPath(r.reduced(0.5f), radius), juce::PathStrokeType(1.0f));
     }
-    g.setColour(enabled_ ? tint_ : tint_.withAlpha(0.35f));
+    g.setColour(isEnabled() ? tint_ : tint_.withAlpha(0.35f));
     g.setFont(skin::monoFont(juce::jmin(12.0f, r.getHeight() * 0.62f)));
     g.drawText(text_, r, juce::Justification::centred);
+    paintFocusRing(g, r, radius, tint_);
 }
 
 // ===========================================================================
 // LeverToggle (carved slot + sliding cap lever)
 // ===========================================================================
-LeverToggle::LeverToggle() {}
-
-void LeverToggle::mouseDown(const juce::MouseEvent&) {
-    if (onClick) onClick();
+LeverToggle::LeverToggle() : BenchButton("Lever") {
+    // Checkable but NOT self-toggling: the APVTS parameter owns the state and writes
+    // it back through the editor's ParameterAttachment.
+    setToggleable(true);
+    setClickingTogglesState(false);
+    setButtonText("Bright");
 }
 
-void LeverToggle::paint(juce::Graphics& g) {
+void LeverToggle::setCaption(const juce::String& c) {
+    caption_ = c;
+    setButtonText(c);  // the spoken name
+    repaint();
+}
+
+void LeverToggle::paintButton(juce::Graphics& g, bool /*highlighted*/, bool down) {
+    const bool on = getToggleState();
     auto r = getLocalBounds().toFloat();
     const float slotW = 30.0f, slotH = 54.0f;
     juce::Rectangle<float> slot(r.getCentreX() - slotW * 0.5f, r.getY(), slotW, slotH);
     skin::drawWell(g, slot, 15.0f);
     // lever cap (top when off, bottom when on; lit accent when on).
-    auto lever = juce::Rectangle<float>(slot.getX() + 4.0f, slot.getY() + (on_ ? 26.0f : 4.0f),
+    auto lever = juce::Rectangle<float>(slot.getX() + 4.0f, slot.getY() + (on ? 26.0f : 4.0f),
                                         slotW - 8.0f, 24.0f);
-    if (on_) {
+    if (on) {
         g.setGradientFill(juce::ColourGradient(accent_.interpolatedWith(skin::ground, 0.4f),
                                                lever.getTopLeft(),
                                                accent_.interpolatedWith(juce::Colours::black,
@@ -781,35 +1078,44 @@ void LeverToggle::paint(juce::Graphics& g) {
     g.fillRoundedRectangle(lever, 12.0f);
     g.setColour(juce::Colour(0x18FFFFFF));
     g.drawRoundedRectangle(lever.reduced(0.5f), 12.0f, 1.0f);
+    // While held, the lever reads as being pushed — the press feedback a control that
+    // now fires on RELEASE needs in order not to feel unresponsive.
+    if (down) {
+        g.setColour(skin::shDarker.withAlpha(0.55f));
+        g.fillRoundedRectangle(lever, 12.0f);
+    }
     // caption.
     g.setColour(skin::inkDim);
     g.setFont(skin::monoFont(9.5f));
     g.drawText(caption_.toUpperCase(), r.withTop(slot.getBottom() + 3.0f),
                juce::Justification::centred);
+    paintFocusRing(g, slot.expanded(2.0f), 15.0f, accent_);
 }
 
 // ===========================================================================
 // PowerControl (jewel + rocker)
 // ===========================================================================
-PowerControl::PowerControl() {}
-
-void PowerControl::mouseDown(const juce::MouseEvent&) {
-    if (onClick) onClick();
+PowerControl::PowerControl() : BenchButton("Power") {
+    setToggleable(true);
+    setClickingTogglesState(false);
+    setToggleState(true, juce::dontSendNotification);  // an amp opens powered up
+    setButtonText("Power");
 }
 
-void PowerControl::paint(juce::Graphics& g) {
+void PowerControl::paintButton(juce::Graphics& g, bool /*highlighted*/, bool down) {
+    const bool on = getToggleState();
     auto r = getLocalBounds().toFloat();
     const float jewelD = 15.0f;
     auto jewel = juce::Rectangle<float>(r.getCentreX() - jewelD * 0.5f, r.getY(), jewelD,
                                         jewelD);
-    // The jewel is drawn LAST (see below): the rocker's DropShadow reaches back over
+    // The jewel is drawn LAST (see below): the rocker's cast shadow reaches back over
     // this band and used to paint out the lit halo — the "lights are covered over"
     // bug. The rocker also gets a wider gap so the shadow starts clear of the glow.
     auto rockArea = r.withTrimmedTop(jewelD + 14.0f).withTrimmedBottom(16.0f);
     float rw = 44.0f, rh = juce::jmin(60.0f, rockArea.getHeight());
     juce::Rectangle<float> rocker(rockArea.getCentreX() - rw * 0.5f, rockArea.getY(), rw, rh);
-    juce::Path rp = roundedRectPath(rocker, 11.0f);
-    juce::DropShadow(skin::shDark, 8, {3, 3}).drawForPath(g, rp);
+    skin::drawShadow(g, rocker, 11.0f, skin::ShadowShape::RoundedRect,
+                     {skin::shDark, 8, {3, 3}});
     skin::fillDiagGradient(g, rocker, skin::capEdgeTop, skin::capEdgeBot);
     // two rocker halves; the pressed half is recessed.
     auto top = rocker.withHeight(rocker.getHeight() * 0.5f).reduced(6.0f, 5.0f);
@@ -823,53 +1129,106 @@ void PowerControl::paint(juce::Graphics& g) {
         }
         g.fillRoundedRectangle(h, 7.0f);
     };
-    drawHalf(top, !on_);  // when on, the TOP is pressed in (down)
-    drawHalf(bot, on_);
+    drawHalf(top, !on);  // when on, the TOP is pressed in (down)
+    drawHalf(bot, on);
+    // Held: the half that WOULD move darkens. Power is the one control where the
+    // difference between "I am pressing this" and "this has fired" matters most — it
+    // now fires on release, and dragging off it aborts.
+    if (down) {
+        g.setColour(skin::shDarker.withAlpha(0.5f));
+        g.fillRoundedRectangle(on ? bot : top, 7.0f);
+    }
     g.setColour(skin::inkFaint);
     g.setFont(skin::monoFont(9.5f));
     g.drawText("POWER", r.withTop(r.getBottom() - 14.0f), juce::Justification::centred);
 
     // The jewel goes on LAST, over the rocker's cast shadow — never under it.
-    skin::drawJewel(g, jewel, accent_, on_);
+    skin::drawJewel(g, jewel, accent_, on);
+    paintFocusRing(g, rocker.expanded(3.0f), 11.0f, accent_);
 }
 
 // ===========================================================================
-// ModeSwitch (3 stacked carved segments)
+// ModeSwitch (3 stacked carved segments, each its own radio button)
 // ===========================================================================
-ModeSwitch::ModeSwitch() {}
+class ModeSwitch::Segment : public BenchButton {
+public:
+    Segment(const juce::String& label, juce::Colour accent)
+        : BenchButton(label), accent_(accent) {
+        setButtonText(label);
+        setToggleable(true);
+        setClickingTogglesState(false);  // the parameter owns the selection
+        setRadioGroupId(1);              // -> AccessibilityRole::radioButton
+    }
 
-void ModeSwitch::mouseDown(const juce::MouseEvent& e) {
-    auto r = getLocalBounds().withTrimmedBottom(16);
-    int segH = r.getHeight() / labels_.size();
-    int idx = juce::jlimit(0, labels_.size() - 1, (e.y - r.getY()) / juce::jmax(1, segH));
-    if (onSelect) onSelect(idx);
-}
-
-void ModeSwitch::paint(juce::Graphics& g) {
-    auto full = getLocalBounds().toFloat();
-    auto r = full.withTrimmedBottom(16.0f);
-    skin::drawWell(g, r, 12.0f);
-    int n = labels_.size();
-    float segH = r.getHeight() / (float)n;
-    for (int i = 0; i < n; ++i) {
-        auto seg = juce::Rectangle<float>(r.getX(), r.getY() + segH * i, r.getWidth(), segH)
-                       .reduced(3.0f, 2.0f);
-        bool on = (i == selected_);
-        if (on) {
-            g.setGradientFill(juce::ColourGradient(accent_.interpolatedWith(skin::ground,
-                                                                            0.45f),
-                                                   seg.getTopLeft(),
-                                                   accent_.interpolatedWith(juce::Colours::black,
-                                                                            0.18f),
-                                                   seg.getBottomRight(), false));
+    void paintButton(juce::Graphics& g, bool /*highlighted*/, bool down) override {
+        auto seg = getLocalBounds().toFloat();
+        if (getToggleState()) {
+            g.setGradientFill(juce::ColourGradient(
+                accent_.interpolatedWith(skin::ground, 0.45f), seg.getTopLeft(),
+                accent_.interpolatedWith(juce::Colours::black, 0.18f), seg.getBottomRight(),
+                false));
             g.fillRoundedRectangle(seg, 7.0f);
             g.setColour(skin::ink);
         } else {
+            if (down) {
+                g.setColour(skin::shDarker.withAlpha(0.45f));
+                g.fillRoundedRectangle(seg, 7.0f);
+            }
             g.setColour(skin::inkDim);
         }
         g.setFont(skin::monoFont(11.0f));
-        g.drawText(labels_[i], seg, juce::Justification::centred);
+        g.drawText(getButtonText(), seg, juce::Justification::centred);
+        paintFocusRing(g, seg, 7.0f, accent_);
     }
+
+private:
+    juce::Colour accent_;
+};
+
+ModeSwitch::ModeSwitch() {
+    setTitle("Mode");
+    for (const auto& label : labels_) {
+        auto* seg = segments_.add(new Segment(label, accent_));
+        addAndMakeVisible(seg);
+        const int idx = segments_.size() - 1;
+        seg->onClick = [this, idx] {
+            if (onSelect) onSelect(idx);
+        };
+    }
+    setSelected(selected_);
+}
+
+ModeSwitch::~ModeSwitch() = default;
+
+void ModeSwitch::setSelected(int idx) {
+    selected_ = juce::jlimit(0, juce::jmax(0, segments_.size() - 1), idx);
+    for (int i = 0; i < segments_.size(); ++i)
+        segments_[i]->setToggleState(i == selected_, juce::dontSendNotification);
+    repaint();
+}
+
+void ModeSwitch::setOnSecondaryClick(std::function<void(juce::Component&)> fn) {
+    for (auto* seg : segments_) seg->onSecondaryClick = fn;
+}
+
+void ModeSwitch::resized() {
+    auto r = getLocalBounds().withTrimmedBottom(16);
+    const int n = juce::jmax(1, segments_.size());
+    const float segH = (float)r.getHeight() / (float)n;
+    for (int i = 0; i < segments_.size(); ++i)
+        segments_[i]->setBounds(juce::Rectangle<float>((float)r.getX(),
+                                                       (float)r.getY() + segH * (float)i,
+                                                       (float)r.getWidth(), segH)
+                                    .reduced(3.0f, 2.0f)
+                                    .getSmallestIntegerContainer());
+}
+
+void ModeSwitch::paint(juce::Graphics& g) {
+    // The container paints only the carved well behind the segments and the caption
+    // below them; each segment paints itself (children paint after their parent).
+    auto full = getLocalBounds().toFloat();
+    auto r = full.withTrimmedBottom(16.0f);
+    skin::drawWell(g, r, 12.0f);
     g.setColour(skin::inkDim);
     g.setFont(skin::monoFont(9.5f));
     g.drawText("MODE", full.withTop(r.getBottom() + 2.0f), juce::Justification::centred);
