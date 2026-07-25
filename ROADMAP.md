@@ -348,7 +348,11 @@ what the PLAYER hears, permanently:
 - **Live-convention testing**: every C-ABI entry point rendered in-place at
   128-frame blocks (the worklet's exact convention) vs separate-buffer
   big-block — bit-identical today, pinned forever (the in-place convolver-bug
-  catcher).
+  catcher). *Amended 2026-07-25 (docs §29): the tolerance was `2e-5` where the
+  real answer is `0`, and 128 is the units' own internal chunk size, so the
+  comparison could not fail. Now bit-identical at 128 AND run at a **ragged 100
+  frames** — the only segmentation that can catch a block-size bug, and the one
+  that found the dirt pedals' control-rate parameter sampling.*
 - **Golden "first five minutes" renders** (five default rigs, 944 KB of 16-bit
   48 k WAVs) gated per third-octave band at ±1.5 dB — lossless refactors pass,
   voicing drift fails; regeneration only via `scripts/update-goldens.sh`.
@@ -357,6 +361,44 @@ what the PLAYER hears, permanently:
   click-free. **Found + fixed a real latent bug:** the worklet stomp (pedal
   bypass / amp power) was the one topology change not declick-bracketed — it
   popped audibly; stomps now ride the shared raised-cosine declick.
+
+### M12 — Tests that assert real properties ✅ *(shipped 2026-07-25 — docs §29)*
+
+The 2026-07-24 audit's **systemic** finding, and the gate on everything after it:
+"a recurring class of test asserts an identity, a tautology, or the
+implementation against a reference derived from the same code — so wrong
+topologies and wrong constants pass." Deliberately sequenced BEFORE the circuit
+fixes (findings 4, 5, 7), because those changes will be judged by this suite and
+re-blessing a golden against an unverified change is how a regression becomes
+canon. Tests + CMake + docs only; zero DSP change; goldens untouched.
+
+- **`-UNDEBUG` was behind `if(NOT MSVC)`** — so on MSVC the entire 1129-line
+  expectations suite compiled to a no-op `main` that printed its success banner
+  with zero goldens present. Fixed on every platform, and
+  `core/tests/support/AssertsLive.h` makes it a **build error** if `NDEBUG` ever
+  reaches a test TU again.
+- **The XFAIL ratchet** (`core/tests/support/Xfail.h`): a known-bad property is
+  measured, its real number printed, the finding named — and **an XPASS is a hard
+  failure**, so an XFAIL cannot outlive its defect. Open XFAILs show as
+  `<target>_xfail_ledger ... ***Skipped` in a plain `ctest` run.
+- **The phase inverter measured properly for the first time**: plate as a
+  *fraction* of B+, standing current from *Ohm's law on the plate load*, and the
+  *leg-gain ratio* — which nothing checked anywhere. The old assertion was a
+  160 V window on a 410 V rail, admitting both a healthy PI and the starved one
+  that actually ships.
+- DC offset asserted **on signal** (with a DC-offset-input case, because deleting
+  a coupling cap changes nothing on a clean input); the JCM800 push-pull
+  **algebraic identity** deleted; block B **bit-identical + a ragged block size**;
+  `OptoTremolo` gets its first test; three amp-swap "no pop" tests land the swap
+  **mid-render**; three perf-smoke tautologies now assert real audio; a finiteness
+  guard over every render in `audio.spec.ts`.
+- **Every rewritten test was perturbed and confirmed red**, then reverted — the
+  table is in docs §29.
+
+Leaves **11 XFAILs** covering findings 7, 8, 16 and two Medium/DSP items, each
+naming the slice that owns the fix. Still open by choice: the tone-stack class
+(discrete MNA vs an analytic `H(jω)` from the same netlist) needs published
+response curves per amp.
 
 ### Pre-commercialization checklist (if that day comes)
 

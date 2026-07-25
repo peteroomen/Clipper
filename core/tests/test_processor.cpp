@@ -3,6 +3,8 @@
 
 #include "clipper/Processor.h"
 
+#include "support/AssertsLive.h"
+
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -114,6 +116,7 @@ void testSmoothingRamps() {
 }  // namespace
 
 int main() {
+    clipper::test::requireAssertsLive();
     std::printf("Running clipper::Processor tests...\n");
     testGainAppliedAfterSettle();
     testNoNaNs();
