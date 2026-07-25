@@ -1,0 +1,137 @@
+/* amp — the CLEAN 120 panel from the approved design ("Design Direction 01").
+   Ported verbatim from the artifact's `.amp` block (deliberately left out of M4,
+   added in M5). Reuses the same neu tokens/recipes as the pedal; the knob
+   anatomy itself lives in pedal.css and is shared (the amp just shrinks it via
+   `--kd`). */
+
+.amp-wing { display: flex; flex-direction: column; gap: 44px; flex: 1; min-width: 340px; }
+.amp { border-radius: 26px; padding: 22px 26px 24px; position: relative; z-index: 1; }
+.amp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.amp-name { font-family: Anton, "Arial Narrow", sans-serif; font-size: 25px; text-transform: uppercase;
+  letter-spacing: .03em; color: var(--ink); }
+.amp-name small { font-size: 11px; letter-spacing: .3em; color: var(--ink-faint); display: block;
+  font-family: ui-monospace, Menlo, monospace; margin-top: 2px; }
+.amp-controls { display: flex; align-items: flex-start; gap: 20px; flex-wrap: wrap; }
+.amp .knob { --kd: 56px; }
+.amp-right { margin-left: auto; display: flex; gap: 22px; align-items: flex-start; }
+
+/* the amp's value arcs dim when powered off (mirrors the pedal's .k-arc dim) */
+.amp:not(.on) .k-arc { opacity: .3; }
+
+/* M9.4 JCM800 face — the ONE morphology/colour cue per the M6.8.1 doctrine (docs
+   §17): the shared dark chassis is unchanged, identity is a small-area GOLD/BRASS
+   accent. Setting --pedal-accent makes the shared knob anatomy (pedal.css .k-arc /
+   .k-val, which read var(--pedal-accent, …)) paint gold, and the model wordmark +
+   power jewel pick up the same brass — a knowing plexi-gold wink, homage not
+   replica. The six-knob control row wraps like the clean face. */
+.amp[data-amp-type="jcm800"] {
+  --pedal-accent: var(--accent-jcm);
+  --pedal-accent-glow: var(--accent-jcm-glow);
+}
+.amp[data-amp-type="jcm800"] .amp-name { color: var(--accent-jcm); }
+.amp[data-amp-type="jcm800"].on .jewel {
+  background: radial-gradient(circle at 35% 30%, #FFF0C8, var(--accent-jcm) 55%, #6B4E08);
+  box-shadow: 0 0 16px var(--accent-jcm-glow), 0 0 5px var(--accent-jcm-glow);
+}
+.amp[data-amp-type="jcm800"] .jewel {
+  background: color-mix(in srgb, var(--accent-jcm) 18%, var(--well));
+}
+
+/* M10.1 Twin face — same doctrine as the JCM: the shared dark chassis is unchanged,
+   identity is a small-area COOL SILVER-BLUE accent (the blackface panel wink). The
+   panel stays light/bench-style exactly like the Eight Hundred face — no new panel
+   philosophy. The knob arcs/wordmark/jewel pick up the silver-blue. */
+.amp[data-amp-type="twin"] {
+  --pedal-accent: var(--accent-twin);
+  --pedal-accent-glow: var(--accent-twin-glow);
+}
+.amp[data-amp-type="twin"] .amp-name { color: var(--accent-twin); }
+.amp[data-amp-type="twin"].on .jewel {
+  background: radial-gradient(circle at 35% 30%, #EAF2FF, var(--accent-twin) 55%, #24405E);
+  box-shadow: 0 0 16px var(--accent-twin-glow), 0 0 5px var(--accent-twin-glow);
+}
+.amp[data-amp-type="twin"] .jewel {
+  background: color-mix(in srgb, var(--accent-twin) 18%, var(--well));
+}
+
+/* v1.1 AC30 face — same doctrine: the shared dark chassis is unchanged, identity is
+   a small-area WARM COPPER accent (the top-boost chime wink). The panel stays light/
+   bench-style like the other faces. The knob arcs/wordmark/jewel pick up the copper. */
+.amp[data-amp-type="ac30"] {
+  --pedal-accent: var(--accent-ac30);
+  --pedal-accent-glow: var(--accent-ac30-glow);
+}
+.amp[data-amp-type="ac30"] .amp-name { color: var(--accent-ac30); }
+.amp[data-amp-type="ac30"].on .jewel {
+  background: radial-gradient(circle at 35% 30%, #FFE7CE, var(--accent-ac30) 55%, #5A2E0F);
+  box-shadow: 0 0 16px var(--accent-ac30-glow), 0 0 5px var(--accent-ac30-glow);
+}
+.amp[data-amp-type="ac30"] .jewel {
+  background: color-mix(in srgb, var(--accent-ac30) 18%, var(--well));
+}
+
+/* toggle (bright / cab) — a lever in a carved slot */
+.toggle { display: flex; flex-direction: column; align-items: center; gap: 9px; cursor: pointer;
+  background: none; border: none; padding: 0; font: inherit; }
+.t-slot { width: 30px; height: 54px; border-radius: 15px; background: var(--well);
+  box-shadow: inset 4px 4px 9px var(--sh-darker), inset -3px -3px 7px var(--sh-light);
+  position: relative; }
+.t-lever { position: absolute; left: 4px; right: 4px; top: 4px; height: 24px; border-radius: 12px;
+  background: var(--cap);
+  box-shadow: 2px 3px 6px var(--sh-dark), inset 0 1px 1px var(--sh-light);
+  transition: top .16s cubic-bezier(.34,1.56,.64,1); }
+.toggle.on .t-lever { top: 26px; background: linear-gradient(145deg,
+  color-mix(in srgb, var(--led) 60%, var(--ground)),
+  color-mix(in srgb, var(--led) 85%, #000)); }
+.toggle:focus-visible { outline: 2px solid var(--ai); outline-offset: 4px; border-radius: 6px; }
+.toggle .k-name { color: var(--ink-dim); }
+
+/* M6.3 chorus/vibrato — a second facia row carved off the panel by a top rule */
+.amp-chorus { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--sh-darker);
+  display: flex; align-items: flex-start; gap: 20px; flex-wrap: wrap; }
+.amp-chorus-label { font-family: Anton, "Arial Narrow", sans-serif; font-size: 14px;
+  text-transform: uppercase; letter-spacing: .22em; color: var(--ink-faint);
+  writing-mode: vertical-rl; transform: rotate(180deg); align-self: stretch;
+  padding: 2px 0; }
+.amp-chorus-controls { display: flex; align-items: flex-start; gap: 20px; flex-wrap: wrap; }
+
+/* 3-way mode selector — three carved segments stacked in a well, the active one
+   lit like the bright/cab levers */
+.mode-switch { display: flex; flex-direction: column; align-items: center; gap: 9px;
+  --seg-w: 78px; }
+.mode-opt { width: var(--seg-w); padding: 8px 10px; border: none; cursor: pointer;
+  font: inherit; font-size: 12px; letter-spacing: .04em; color: var(--ink-dim);
+  background: var(--well); box-shadow: inset 3px 3px 7px var(--sh-darker),
+  inset -3px -3px 6px var(--sh-light); }
+.mode-opt + .mode-opt { margin-top: -1px; }
+.mode-switch .mode-opt:nth-of-type(1) { border-radius: 12px 12px 0 0; }
+.mode-switch .mode-opt:nth-of-type(3) { border-radius: 0 0 12px 12px; }
+.mode-opt.on { color: var(--ink); background: linear-gradient(145deg,
+  color-mix(in srgb, var(--led) 55%, var(--ground)),
+  color-mix(in srgb, var(--led) 82%, #000));
+  box-shadow: 2px 3px 6px var(--sh-dark), inset 0 1px 1px var(--sh-light); }
+.mode-opt:focus-visible { outline: 2px solid var(--ai); outline-offset: 3px; }
+.amp:not(.on) .mode-opt.on { filter: saturate(.4) brightness(.9); }
+
+/* rocker power + jewel */
+.power { display: flex; flex-direction: column; align-items: center; gap: 9px; cursor: pointer;
+  background: none; border: none; padding: 0; font: inherit; }
+.jewel { width: 16px; height: 16px; border-radius: 50%; margin-bottom: 2px;
+  background: color-mix(in srgb, var(--led) 18%, var(--well));
+  box-shadow: inset 2px 2px 4px var(--sh-darker); transition: all .2s; }
+.amp.on .jewel { background: radial-gradient(circle at 35% 30%, #FFD9CF, var(--led) 55%, #90170A);
+  box-shadow: 0 0 16px var(--led-glow), 0 0 5px var(--led-glow); }
+.rocker { width: 46px; height: 64px; border-radius: 12px; background: var(--cap-edge);
+  box-shadow: 5px 5px 12px var(--sh-dark), -4px -4px 10px var(--sh-light);
+  position: relative; overflow: hidden; }
+.rocker::before, .rocker::after {
+  content: ""; position: absolute; left: 6px; right: 6px; height: 24px; border-radius: 8px;
+  transition: all .15s; }
+.rocker::before { top: 6px; background: var(--cap);
+  box-shadow: inset 1px 2px 3px var(--sh-light), inset -1px -2px 4px var(--sh-darker); }
+.rocker::after { bottom: 6px; background: var(--well);
+  box-shadow: inset 3px 3px 6px var(--sh-darker); }
+.amp.on .rocker::before { background: var(--well); box-shadow: inset 3px 3px 6px var(--sh-darker); }
+.amp.on .rocker::after { background: var(--cap);
+  box-shadow: inset 1px 2px 3px var(--sh-light), inset -1px -2px 4px var(--sh-darker); }
+.power:focus-visible { outline: 2px solid var(--ai); outline-offset: 4px; border-radius: 6px; }

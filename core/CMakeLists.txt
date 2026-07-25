@@ -1,0 +1,300 @@
+cmake_minimum_required(VERSION 3.16)
+project(clipper_core LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# Portable DSP core. Zero platform/OS/browser dependencies. This target must
+# build with any standard C++17 compiler (native or Emscripten).
+add_library(clipper_core STATIC
+    src/Processor.cpp
+)
+target_include_directories(clipper_core PUBLIC include)
+
+if(NOT MSVC)
+    target_compile_options(clipper_core PRIVATE -Wall -Wextra)
+endif()
+
+# The C ABI wrapper is a separate object so native builds can exercise it too.
+# It exports both the M0 gain core and (since M3) the RAT model, so it links
+# clipper_dsp as well. clipper_dsp is defined further down; CMake resolves the
+# target name at generation time regardless of declaration order.
+add_library(clipper_c_api STATIC
+    src/clipper_c_api.cpp
+)
+target_link_libraries(clipper_c_api PUBLIC clipper_core clipper_dsp)
+
+# --- M1: RAT diode-clipper model ---------------------------------------------
+# The pedal model is NEW code beside the M0 gain core (which the WASM pipeline
+# still uses unchanged). It depends on chowdsp_wdf for the WDF diode stage.
+#
+# chowdsp_wdf is header-only, pulled via FetchContent and PINNED to release
+# v1.0.0 (commit 36b5775555af21f0f417d2bc866ba7b4b2788614). FetchContent caches
+# the checkout under build/_deps, so a re-configure of an already-populated
+# build does not re-download. SYSTEM marks its headers as system includes so
+# they do not trip our -Wall -Wextra. The library's own tests/benchmarks are
+# force-disabled (they are off by default when not top-level, but be explicit).
+include(FetchContent)
+# chowdsp_wdf v1.0.0 declares an old cmake_minimum_required that CMake 4.x
+# refuses outright. This variable (introduced in CMake 4, silently ignored by
+# older CMakes) tells CMake to configure such subprojects as if they required
+# at least 3.5. Remove once the pin moves to a release that raises its minimum.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+set(CHOWDSP_WDF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(CHOWDSP_WDF_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(chowdsp_wdf
+    GIT_REPOSITORY https://github.com/Chowdhury-DSP/chowdsp_wdf.git
+    GIT_TAG        36b5775555af21f0f417d2bc866ba7b4b2788614  # v1.0.0
+    GIT_SHALLOW    TRUE
+    SYSTEM
+)
+FetchContent_MakeAvailable(chowdsp_wdf)
+
+# Portable DSP models. Still platform-free C++17 (no OS/browser/Emscripten deps);
+# chowdsp_wdf is likewise header-only and portable.
+#   - RatModel.cpp     : M1/M2 RAT pedal (WDF diode clipper, oversampled)
+#   - AmpModel.cpp     : M5 JC-120-style clean amp (linear tone stack)
+#   - ReverbModel.cpp  : M6.7 spring-flavored algorithmic reverb (owned by AmpModel)
+#   - CabConvolver.cpp : M5 partitioned FFT cab convolver
+#   - CabIR.cpp        : M5 procedural default 2x12 cab impulse response
+#   - TriodeStage.cpp  : M9.1 12AX7 common-cathode gain stage (Koren + nodal Newton)
+#   - Jcm800Preamp.cpp : M9.2 JCM800 2204 preamp (4x TriodeStage + TMB tone stack)
+#   - Jcm800PowerAmp.cpp: M9.3 JCM800 2204 power section (LTP PI + push-pull EL34 +
+#                        output transformer + NFB/presence + B+ sag)
+#   - Jcm800Amp.cpp    : M9.3 composed full 2204 (preamp -> power section)
+add_library(clipper_dsp STATIC
+    src/dsp/RatModel.cpp
+    src/dsp/OverdriveEngine.cpp
+    src/dsp/SdModel.cpp
+    src/dsp/TsModel.cpp
+    src/dsp/AmpModel.cpp
+    src/dsp/ChorusModel.cpp
+    src/dsp/PhaserModel.cpp
+    src/dsp/ReverbModel.cpp
+    src/dsp/CabConvolver.cpp
+    src/dsp/CabIR.cpp
+    src/dsp/TriodeStage.cpp
+    src/dsp/Jcm800Preamp.cpp
+    src/dsp/Jcm800PowerAmp.cpp
+    src/dsp/Jcm800Amp.cpp
+    src/dsp/OptoTremolo.cpp
+    src/dsp/TwinPreamp.cpp
+    src/dsp/TwinPowerAmp.cpp
+    src/dsp/TwinAmp.cpp
+    src/dsp/BjtStage.cpp
+    src/dsp/MuffModel.cpp
+    src/dsp/GoldModel.cpp
+    src/dsp/Ac30Preamp.cpp
+    src/dsp/Ac30PowerAmp.cpp
+    src/dsp/Ac30Amp.cpp
+)
+target_include_directories(clipper_dsp PUBLIC include)
+target_link_libraries(clipper_dsp PUBLIC chowdsp_wdf)
+if(NOT MSVC)
+    target_compile_options(clipper_dsp PRIVATE -Wall -Wextra)
+endif()
+
+# --- Tests (native only; skipped under Emscripten) ---------------------------
+if(NOT EMSCRIPTEN)
+    enable_testing()
+    add_executable(clipper_tests tests/test_processor.cpp)
+    target_link_libraries(clipper_tests PRIVATE clipper_core)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live even in a Release build (the documented
+        # build type), so these tests actually check something.
+        target_compile_options(clipper_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME clipper_tests COMMAND clipper_tests)
+
+    add_executable(clipper_rat_tests tests/test_rat_model.cpp)
+    target_link_libraries(clipper_rat_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (aliasing metric) lives under tools/measure and is
+    # included by both the tests and the render CLI. Never part of the DSP core.
+    target_include_directories(clipper_rat_tests PRIVATE tools)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live even in a Release build (the documented
+        # build type), so these tests actually check something.
+        target_compile_options(clipper_rat_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_rat_tests COMMAND clipper_rat_tests)
+
+    # --- M8: SD-1 model tests -------------------------------------------------
+    add_executable(clipper_sd_tests tests/test_sd_model.cpp)
+    target_link_libraries(clipper_sd_tests PRIVATE clipper_dsp)
+    # Shares the tools/measure aliasing metric with the RAT tests.
+    target_include_directories(clipper_sd_tests PRIVATE tools)
+    if(NOT MSVC)
+        target_compile_options(clipper_sd_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_sd_tests COMMAND clipper_sd_tests)
+
+    # --- v1.1: TS808-style "Screamer" model tests -----------------------------
+    add_executable(clipper_ts_tests tests/test_ts_model.cpp)
+    target_link_libraries(clipper_ts_tests PRIVATE clipper_dsp)
+    # Shares the tools/measure aliasing metric with the RAT/SD-1 tests.
+    target_include_directories(clipper_ts_tests PRIVATE tools)
+    if(NOT MSVC)
+        target_compile_options(clipper_ts_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_ts_tests COMMAND clipper_ts_tests)
+    # --- v1.1: phaser ("Ninety") model tests ----------------------------------
+    add_executable(clipper_phaser_tests tests/test_phaser_model.cpp)
+    target_link_libraries(clipper_phaser_tests PRIVATE clipper_dsp)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_phaser_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_phaser_tests COMMAND clipper_phaser_tests)
+
+    # --- M5: amp + cab tests --------------------------------------------------
+    add_executable(clipper_amp_tests tests/test_amp_model.cpp)
+    target_link_libraries(clipper_amp_tests PRIVATE clipper_dsp)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_amp_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_amp_tests COMMAND clipper_amp_tests)
+
+    # --- M9.1: 12AX7 triode stage tests ---------------------------------------
+    add_executable(clipper_triode_tests tests/test_triode_stage.cpp)
+    target_link_libraries(clipper_triode_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (aliasing metric) under tools/measure.
+    target_include_directories(clipper_triode_tests PRIVATE tools)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_triode_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_triode_tests COMMAND clipper_triode_tests)
+
+    # --- M9.2: JCM800 2204 preamp tests ---------------------------------------
+    add_executable(clipper_jcm800_tests tests/test_jcm800_preamp.cpp)
+    target_link_libraries(clipper_jcm800_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (aliasing metric) under tools/measure.
+    target_include_directories(clipper_jcm800_tests PRIVATE tools)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_jcm800_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_jcm800_tests COMMAND clipper_jcm800_tests)
+
+    # --- M9.3: JCM800 2204 power section + full amp tests ----------------------
+    add_executable(clipper_jcm800_power_tests tests/test_jcm800_power.cpp)
+    target_link_libraries(clipper_jcm800_power_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (aliasing metric) under tools/measure.
+    target_include_directories(clipper_jcm800_power_tests PRIVATE tools)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_jcm800_power_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_jcm800_power_tests COMMAND clipper_jcm800_power_tests)
+
+    # --- M10.1: Twin (Fender blackface) amp tests -----------------------------
+    add_executable(clipper_twin_tests tests/test_twin_amp.cpp)
+    target_link_libraries(clipper_twin_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (aliasing metric) under tools/measure.
+    target_include_directories(clipper_twin_tests PRIVATE tools)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_twin_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_twin_tests COMMAND clipper_twin_tests)
+
+    # --- v1.1 item 4: Muff fuzz + reusable BjtStage (Ebers-Moll BJT) tests -----
+    add_executable(clipper_muff_tests tests/test_muff_model.cpp)
+    target_link_libraries(clipper_muff_tests PRIVATE clipper_dsp)
+    # Shares the tools/measure aliasing metric with the RAT/SD-1/TS tests.
+    target_include_directories(clipper_muff_tests PRIVATE tools)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_muff_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_muff_tests COMMAND clipper_muff_tests)
+
+    # --- v1.1 item 6: GOLD overdrive (clean-blend + germanium WDF) tests -------
+    add_executable(clipper_gold_tests tests/test_gold_model.cpp)
+    target_link_libraries(clipper_gold_tests PRIVATE clipper_dsp)
+    # Shares the tools/measure aliasing metric with the RAT/SD-1/TS/Muff tests.
+    target_include_directories(clipper_gold_tests PRIVATE tools)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_gold_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_gold_tests COMMAND clipper_gold_tests)
+    # --- M10.2: AC30 (Vox top boost) amp tests --------------------------------
+    add_executable(clipper_ac30_tests tests/test_ac30_amp.cpp)
+    target_link_libraries(clipper_ac30_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (aliasing metric) under tools/measure.
+    target_include_directories(clipper_ac30_tests PRIVATE tools)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_ac30_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_ac30_tests COMMAND clipper_ac30_tests)
+
+    # --- M11: Player Expectations Suite ---------------------------------------
+    # Tests the PLAYER'S expectations, not the circuit (docs §26): universal gear
+    # invariants (min-knob usability, hum torture, knob monotonicity, level
+    # sanity), live-convention processing (in-place 128-frame blocks — the way
+    # the worklet actually calls the C ABI), and golden "first five minutes" rig
+    # renders gated per third-octave band (goldens under tests/goldens/;
+    # regenerate ONLY via --update-goldens / scripts/update-goldens.sh).
+    # Links clipper_c_api because block B drives the exact worklet entry points.
+    add_executable(clipper_player_expectations_tests tests/test_player_expectations.cpp)
+    target_link_libraries(clipper_player_expectations_tests PRIVATE clipper_c_api)
+    # dr_wav (golden WAV IO) + shared measurement infra live under tools/, never
+    # in the DSP core.
+    target_include_directories(clipper_player_expectations_tests PRIVATE tools tools/third_party)
+    target_compile_definitions(clipper_player_expectations_tests PRIVATE
+        CLIPPER_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/goldens")
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_player_expectations_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_player_expectations_tests COMMAND clipper_player_expectations_tests)
+
+    # --- Perf diagnosis: anti-denormal guard tests ----------------------------
+    # Proves Biquad / OnePoleSmoother never leave recursive state in the subnormal
+    # float range on a decaying tail (the amp-independent WASM crackle — see
+    # Denormal.h and docs §25). Header-only guard, so this links clipper_dsp only
+    # for the rbj:: coefficient designers.
+    add_executable(clipper_denormal_tests tests/test_denormal.cpp)
+    target_link_libraries(clipper_denormal_tests PRIVATE clipper_dsp)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_denormal_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_denormal_tests COMMAND clipper_denormal_tests)
+
+    # --- Solver-perf pass: tube-solver early-exit regression (docs §25) -------
+    # Renders a riff through each valve amp voice at production solver tolerances
+    # and at 1000x-tighter reference tolerances; the two must agree below
+    # -120 dBFS. Pins the accuracy contract behind every solver speed shortcut.
+    add_executable(clipper_tube_solver_tests tests/test_tube_solver.cpp)
+    target_link_libraries(clipper_tube_solver_tests PRIVATE clipper_dsp)
+    if(NOT MSVC)
+        target_compile_options(clipper_tube_solver_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_tube_solver_tests COMMAND clipper_tube_solver_tests)
+
+    # --- Per-unit CPU cost benchmark (native only; docs §25) ------------------
+    add_executable(clipper-bench tools/bench/main.cpp)
+    target_link_libraries(clipper-bench PRIVATE clipper_dsp)
+    if(NOT MSVC)
+        target_compile_options(clipper-bench PRIVATE -Wall -Wextra)
+    endif()
+
+    # --- CLI render harness (native only, NOT part of the WASM build) ---------
+    add_executable(clipper-render tools/render/main.cpp)
+    target_link_libraries(clipper-render PRIVATE clipper_dsp)
+    # dr_wav lives here and is included ONLY by the tool, never by the DSP core.
+    # tools/ also carries the shared measurement infra (measure/AliasMetric.h).
+    target_include_directories(clipper-render PRIVATE tools/third_party tools)
+    if(NOT MSVC)
+        target_compile_options(clipper-render PRIVATE -Wall -Wextra)
+    endif()
+endif()

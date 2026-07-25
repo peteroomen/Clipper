@@ -1,0 +1,24 @@
+# Build outputs
+core/build/
+native/build/
+build/
+web/dist/
+web/node_modules/
+
+# Generated WASM artifact (produced by scripts/build-wasm.sh)
+
+# Playwright
+web/test-results/
+web/playwright-report/
+web/.playwright/
+
+# Emscripten SDK (installed outside the repo, but ignore if placed inside)
+/emsdk/
+
+# Misc
+.DS_Store
+*.log
+
+# M6.1 A/B evidence (untracked scratch renders)
+core/.ab-scratch/
+.claude/worktrees/

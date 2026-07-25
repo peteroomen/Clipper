@@ -1,0 +1,373 @@
+/* pedal — DARK CHASSIS FOR ALL, REFERENCE VIA ACCENT (M6.8.1)
+   One sculpted neumorphic chassis (.pedal.raised) in ONE shared charcoal wash
+   (--chassis-tint) for every pedal. Per-pedal identity is no longer a full-body
+   hue; it is carried by three subtle cues: a small-area ACCENT (--pedal-accent,
+   applied to the knob value arcs + value readouts + LED), one MORPHOLOGY cue (the
+   SD-1's treadle vs the RAT's round stomp), and a knowing NAME. See docs §17. */
+.pedal {
+  width: 320px; padding: 26px 24px 30px; flex-shrink: 0;
+  border-radius: 30px;
+  position: relative; z-index: 1;
+}
+
+/* Per-type ACCENT only — the chassis is identical across all pedals. The accent
+   is a saturated small-area color that reads neumorphic-safe on the dark chassis
+   (tokens.css, both themes). */
+.pedal[data-pedal-type="rat"]   { --pedal-accent: var(--accent-rat);   --pedal-accent-glow: var(--accent-rat-glow); }
+.pedal[data-pedal-type="sd1"]   { --pedal-accent: var(--accent-sd);    --pedal-accent-glow: var(--accent-sd-glow); }
+.pedal[data-pedal-type="ts"]    { --pedal-accent: var(--accent-ts);    --pedal-accent-glow: var(--accent-ts-glow); }
+.pedal[data-pedal-type="muff"]  { --pedal-accent: var(--accent-muff);  --pedal-accent-glow: var(--accent-muff-glow); }
+.pedal[data-pedal-type="tuner"] { --pedal-accent: var(--accent-tuner); --pedal-accent-glow: var(--accent-tuner-glow); }
+.pedal[data-pedal-type="phaser"] { --pedal-accent: var(--accent-phaser); --pedal-accent-glow: var(--accent-phaser-glow); }
+.pedal[data-pedal-type="gold"]  { --pedal-accent: var(--accent-gold);  --pedal-accent-glow: var(--accent-gold-glow); }
+.pedal.raised {
+  background:
+    linear-gradient(160deg, var(--chassis-tint, transparent), var(--chassis-tint, transparent)),
+    var(--panel-grad);
+}
+
+/* ---- DARK CHASSIS IN BOTH THEMES (M6.8.2) ----
+   The doctrine: "the bench is light, the hardware is dark." In dark theme the
+   pedal already reads as dark charcoal; in LIGHT theme it used to go pale gray
+   (the shared --chassis-tint is only ~16% alpha over the light panel), so the
+   "dark RAT box on a light desk" never happened. Fix: make the pedal a DARK
+   ISLAND — its interior neumorphic token context (panel surface, wells, knob
+   caps, ink) is pinned to the dark-theme values on EVERY theme, so knobs read as
+   dark metal, labels flip to light ink, and the accent arcs glow. These values
+   are byte-for-byte the dark-theme tokens, so this is a no-op in dark theme and
+   never regresses it. The BOARD/bench + amp panel keep the page tokens and stay
+   light. See docs §17 (chassis-darkness rule). */
+.pedal {
+  --panel-grad: linear-gradient(160deg, #292c32, #222529);
+  --well: #1d2025;
+  --ink: #e8e9eb;
+  --ink-dim: #969ba3;
+  --ink-faint: #6a6f77;
+  --arc-track: rgba(255, 255, 255, 0.07);
+  --cap: linear-gradient(145deg, #2e3238, #212429);
+  --cap-edge: linear-gradient(145deg, #1e2126, #2c3036);
+}
+
+/* The interior SCULPTING shadows must also go dark so the knobs/wells read as
+   dark neumorphic hardware. This only fires in EFFECTIVE-LIGHT theme (explicit
+   light, or system-light with no override); in dark theme the page tokens are
+   already these values. Because it darkens --sh-*, the pedal's OWN outer drop
+   shadow (from .raised, which reads --sh-*) is re-declared just below so the dark
+   enclosure still casts a real, bench-appropriate shadow on the light desk. */
+:root[data-theme='light'] .pedal {
+  --sh-dark: rgba(9, 11, 14, 0.85);
+  --sh-darker: rgba(5, 6, 8, 0.6);
+  --sh-light: rgba(255, 255, 255, 0.055);
+}
+:root[data-theme='light'] .pedal.raised {
+  /* dark hardware on light porcelain: a soft warm cast shadow + a crisp dark
+     edge + a faint top bevel rim (light catching the top of the enclosure). */
+  box-shadow:
+    16px 18px 34px rgba(54, 50, 44, 0.3),
+    3px 4px 10px rgba(54, 50, 44, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.38);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .pedal {
+    --sh-dark: rgba(9, 11, 14, 0.85);
+    --sh-darker: rgba(5, 6, 8, 0.6);
+    --sh-light: rgba(255, 255, 255, 0.055);
+  }
+  :root:not([data-theme]) .pedal.raised {
+    box-shadow:
+      16px 18px 34px rgba(54, 50, 44, 0.3),
+      3px 4px 10px rgba(54, 50, 44, 0.22),
+      inset 0 1px 0 rgba(255, 255, 255, 0.07),
+      inset 0 0 0 1px rgba(0, 0, 0, 0.38);
+  }
+}
+
+.pedal-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.pedal-model { font-size: 10px; letter-spacing: .28em; color: var(--ink-faint); text-transform: uppercase;
+  font-family: ui-monospace, Menlo, monospace; }
+.led { width: 14px; height: 14px; border-radius: 50%;
+  background: color-mix(in srgb, var(--pedal-accent, var(--led)) 22%, var(--well));
+  box-shadow: inset 2px 2px 4px var(--sh-darker), inset -1px -1px 3px var(--sh-light);
+  transition: box-shadow .18s, background .18s; }
+.pedal.on .led { background: var(--pedal-accent, var(--led));
+  box-shadow: 0 0 14px var(--pedal-accent-glow, var(--led-glow)), 0 0 4px var(--pedal-accent-glow, var(--led-glow)),
+    inset 0 -2px 4px rgba(0,0,0,.25); }
+.pedal-logo {
+  font-family: Anton, "Arial Narrow", sans-serif;
+  font-size: 58px; line-height: 1; text-transform: uppercase; letter-spacing: .015em;
+  margin: 4px 0 22px;
+  /* Light lettering on the now-dark charcoal face (the original Clipper-on-
+     charcoal look). The old `1px 1px 0 white` read as a cheap sticker drop-shadow
+     in light theme; replaced with a subtle engraved emboss (dark below, faint
+     light above) that reads as printed-on-metal, not a decal. */
+  color: var(--ink);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.45), 0 -1px 0 rgba(255, 255, 255, 0.04);
+}
+.knob-row { display: flex; justify-content: space-between; gap: 8px; }
+
+/* knob */
+.knob { display: flex; flex-direction: column; align-items: center; gap: 9px; user-select: none;
+  touch-action: none; cursor: grab; }
+.knob:active { cursor: grabbing; }
+.k-stack { position: relative; width: var(--kd, 74px); height: var(--kd, 74px); }
+.k-arc { position: absolute; inset: -9px; border-radius: 50%;
+  background: conic-gradient(from 225deg,
+    var(--pedal-accent, var(--led)) calc(var(--deg, 180) * 1deg),
+    var(--arc-track) calc(var(--deg, 180) * 1deg) 270deg,
+    transparent 270deg);
+  -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 4.5px), #000 calc(100% - 3.5px));
+  mask: radial-gradient(closest-side, transparent calc(100% - 4.5px), #000 calc(100% - 3.5px));
+  transition: opacity .25s; }
+.pedal:not(.on) .k-arc { opacity: .3; }
+.k-body { position: absolute; inset: 0; border-radius: 50%;
+  background: var(--cap-edge);
+  box-shadow: 6px 6px 14px var(--sh-dark), -5px -5px 12px var(--sh-light); }
+.k-knurl { position: absolute; inset: 3px; border-radius: 50%;
+  background: repeating-conic-gradient(var(--sh-dark) 0deg 2.5deg, transparent 2.5deg 9deg);
+  opacity: .35; }
+.k-cap { position: absolute; inset: 9px; border-radius: 50%;
+  background: var(--cap);
+  box-shadow: inset 1px 1px 2px var(--sh-light), inset -2px -2px 5px var(--sh-darker),
+    2px 3px 6px var(--sh-darker); }
+.k-ptr { position: absolute; inset: 9px; border-radius: 50%;
+  transform: rotate(calc((var(--deg, 180) - 135) * 1deg)); }
+.k-ptr::after { content: ""; position: absolute; left: 50%; top: 9%;
+  width: 3.5px; height: 30%; margin-left: -1.75px; border-radius: 3px;
+  background: var(--ink); opacity: .85; }
+.k-name { font-size: 10px; letter-spacing: .24em; color: var(--ink-dim); text-transform: uppercase;
+  font-family: ui-monospace, Menlo, monospace; }
+/* Value readout picks up the pedal ACCENT (SD-1 yellow, RAT red, …) so the
+   reference cue lives in the reading, not the body. Amp knobs (no --pedal-accent)
+   fall back to the faint ink. Dims on bypass with the arc. */
+.k-val { font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+  color: var(--pedal-accent, var(--ink-faint));
+  min-width: 3ch; text-align: center; font-weight: 600; }
+.pedal:not(.on) .k-val { opacity: .45; }
+
+/* footswitch */
+.fsw-zone { margin-top: 30px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.fsw { width: 88px; height: 88px; border-radius: 50%; border: none; cursor: pointer;
+  background: var(--cap-edge);
+  box-shadow: 8px 8px 18px var(--sh-dark), -7px -7px 16px var(--sh-light);
+  position: relative; transition: box-shadow .12s ease, transform .12s ease; }
+.fsw::before { content: ""; position: absolute; inset: 10px; border-radius: 50%;
+  background: var(--cap);
+  box-shadow: inset 1px 1px 2px var(--sh-light), inset -3px -3px 7px var(--sh-darker); }
+.fsw::after { content: ""; position: absolute; inset: 30px; border-radius: 50%;
+  background: repeating-conic-gradient(var(--sh-darker) 0 12deg, transparent 12deg 24deg);
+  opacity: .3; }
+.fsw:active, .fsw.stomped { transform: translateY(2px);
+  box-shadow: 3px 3px 8px var(--sh-dark), -3px -3px 7px var(--sh-light),
+    inset 2px 2px 6px var(--sh-darker); }
+.fsw:focus-visible { outline: 2px solid var(--ai); outline-offset: 4px; }
+.fsw-label { font-size: 10px; letter-spacing: .3em; color: var(--ink-faint);
+  font-family: ui-monospace, Menlo, monospace; text-transform: uppercase; }
+
+/* ---- SD-1 'compact' face: Boss-compact HOMAGE ----
+   Real Boss: knobs across the TOP, a big treadle owning the LOWER body, nothing
+   below it. Knobs ride the top edge with clear AIR between them (wider gaps than
+   M6.8); the treadle is the footswitch (not a round stomp) and drops to the
+   bottom. The morphology — the treadle itself — is the reference cue. */
+.pedal[data-face="compact"] {
+  width: 336px; /* a touch wider so three knobs get real air between them */
+  padding-top: 22px;
+}
+.pedal[data-face="compact"] .pedal-model { letter-spacing: .2em; }
+.pedal[data-face="compact"] .knob-row {
+  --kd: 56px; /* smaller knobs so three ride the top row */
+  gap: 30px; /* clear air between knobs (was 14px — flagged too cramped) */
+  justify-content: center;
+  margin: 12px 0 26px;
+}
+.pedal[data-face="compact"] .k-name { letter-spacing: .16em; }
+
+/* Treadle owns the lower body and sits at the BOTTOM (was riding too high). The
+   compact face drops the "Stomp" caption entirely — nothing sits below the pad. */
+.treadle-zone { margin-top: 20px; margin-bottom: 0; }
+/* The wide flat treadle — BLACK RUBBER in both themes (M6.8.2). A real Boss
+   treadle is a black rubber pad; the pad IS the SD-1 morphology cue, so it gets
+   an EXPLICIT dark rubber surface (independent of theme) that reads distinctly
+   darker/mattes than the metal knobs, with a fine pebbled rubber texture and the
+   grip ribs at the toe. Embossed LIGHT "SUPER DRIVE" lettering (call 2/3). */
+.fsw-treadle {
+  width: 100%;
+  height: 150px;
+  border-radius: 18px;
+  background: linear-gradient(160deg, #26282d, #17181c);
+  box-shadow: 7px 9px 20px var(--sh-dark), -6px -6px 14px var(--sh-light),
+    inset 0 2px 0 rgba(255, 255, 255, 0.05);
+  display: flex; align-items: flex-end; justify-content: center;
+  padding-bottom: 16px;
+  overflow: hidden;
+}
+.fsw-treadle::before { /* the rubber tread face — matte dark panel + pebble texture */
+  content: ""; position: absolute; inset: 6px; border-radius: 13px;
+  background:
+    radial-gradient(rgba(255, 255, 255, 0.022) 0.9px, transparent 1.4px) 0 0 / 5px 5px,
+    linear-gradient(160deg, #1f2125, #131417);
+  box-shadow: inset 1px 2px 4px rgba(255, 255, 255, 0.035), inset 0 -4px 10px rgba(0, 0, 0, 0.55); }
+.fsw-treadle::after { /* grip ribs across the toe — raised rubber ridges */
+  content: ""; position: absolute; left: 22px; right: 22px; bottom: 14px; height: 18px;
+  border-radius: 4px;
+  background: repeating-linear-gradient(90deg,
+    rgba(0, 0, 0, 0.55) 0 2px, rgba(255, 255, 255, 0.035) 2px 3px, transparent 3px 8px);
+  opacity: .55; }
+.fsw-treadle:active, .fsw-treadle.stomped {
+  transform: translateY(2px);
+  box-shadow: 3px 4px 10px var(--sh-dark), -3px -3px 8px var(--sh-light),
+    inset 2px 3px 7px rgba(0, 0, 0, 0.6); }
+.treadle-wordmark {
+  position: relative; z-index: 1;
+  font-family: "Avenir Next", Avenir, "Segoe UI", system-ui, sans-serif;
+  font-weight: 700; font-size: 21px; letter-spacing: .04em;
+  color: #d9dbdf; text-transform: uppercase;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.6), 0 -1px 0 rgba(255, 255, 255, 0.05); opacity: .92; }
+.pedal[data-face="compact"]:not(.on) .treadle-wordmark { opacity: .55; }
+
+/* ---- TS808 'slim' face: the GREEN Screamer, Ibanez-format box (v1.1) ----
+   Ibanez format: a knob row across the TOP, the script wordmark on the mid body,
+   and a RECTANGULAR hinged stomp PAD in the lower body. Slimmer than the RAT
+   stack and, crucially, NOT the Boss-compact SD-1 treadle — a different silhouette
+   at a glance (grayscale too: the morphology carries it). Green accent. */
+.pedal[data-face="slim"] {
+  width: 300px; /* slimmer than the RAT (320) / SD-1 (336) — the Ibanez footprint */
+  padding-top: 22px;
+}
+.pedal[data-face="slim"] .knob-row {
+  --kd: 58px; /* three knobs ride the top row with air */
+  gap: 24px;
+  justify-content: center;
+  margin: 10px 0 18px;
+}
+.pedal[data-face="slim"] .k-name { letter-spacing: .16em; }
+/* Script-ish wordmark on the mid body (the green-box logo cue). */
+.slim-wordmark {
+  text-align: center;
+  font-family: "Snell Roundhand", "Brush Script MT", "Segoe Script", cursive;
+  font-size: 34px; line-height: 1; letter-spacing: .01em;
+  margin: 2px 0 16px;
+  color: var(--pedal-accent, var(--ink));
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5), 0 -1px 0 rgba(255, 255, 255, 0.05);
+}
+.pedal[data-face="slim"]:not(.on) .slim-wordmark { opacity: .6; }
+/* The pad zone owns the lower body; nothing below it. */
+.pad-zone { margin-top: 8px; margin-bottom: 0; display: flex; justify-content: center; }
+/* The rectangular hinged stomp PAD — a metal jack-plate stomp (Ibanez cue), NOT a
+   round stomp and NOT the SD-1's rubber treadle. Wide, low, brushed metal. */
+.fsw-pad {
+  width: 100%;
+  height: 96px;
+  border-radius: 12px;
+  background: linear-gradient(160deg, #2c3036, #1c1e22);
+  box-shadow: 7px 9px 20px var(--sh-dark), -6px -6px 14px var(--sh-light),
+    inset 0 2px 0 rgba(255, 255, 255, 0.06);
+}
+.fsw-pad::before { /* brushed metal plate face */
+  content: ""; position: absolute; inset: 8px; border-radius: 8px;
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0 1px, transparent 1px 3px),
+    linear-gradient(160deg, #33373d, #232529);
+  box-shadow: inset 1px 2px 4px rgba(255, 255, 255, 0.05), inset 0 -4px 10px rgba(0, 0, 0, 0.5); }
+.fsw-pad::after { /* the hinge line across the toe */
+  content: ""; position: absolute; left: 18px; right: 18px; bottom: 20px; height: 3px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, transparent, rgba(0,0,0,0.5) 20%, rgba(0,0,0,0.5) 80%, transparent);
+  opacity: .7; }
+.fsw-pad:active, .fsw-pad.stomped {
+  transform: translateY(2px);
+  box-shadow: 3px 4px 10px var(--sh-dark), -3px -3px 8px var(--sh-light),
+    inset 2px 3px 7px rgba(0, 0, 0, 0.55); }
+/* ---- phaser 'single' face: the iconic ONE-KNOB script box ----
+   Shares the vertical 'stack' skeleton (hero wordmark, knob, round stomp) but
+   centers a SINGLE big SPEED knob — the one-control face that reads instantly as
+   the orange script phaser. The ORANGE accent (var(--accent-phaser)) is the
+   reference cue; the big lone knob is the morphology cue; "Ninety" is the name. */
+.pedal[data-face="single"] .knob-row {
+  --kd: 96px;            /* one big knob dominates the face */
+  justify-content: center;
+  margin: 8px 0 20px;
+}
+.pedal[data-face="single"] .k-name { letter-spacing: .3em; }
+/* A subtle orange sweep arc etched around the hero knob's zone, echoing the LFO
+   motion — small-area accent, neumorphic-safe. */
+.pedal[data-face="single"] .pedal-logo { margin-bottom: 14px; }
+
+/* ---- GOLD 'plate' face: the engraved gold box (v1.1 item 6) ----
+   The original is remembered for two things: the colour, and the fact that its
+   enclosure is ENGRAVED rather than printed. We take the colour (fair game) and the
+   IDEA of an engraved nameplate — never the artwork, and emphatically not the
+   figure that is the actual trademark. Morphology cue: a milled NAMEPLATE band
+   across the mid body between the knob row and a round stomp, with a hairline gold
+   rule above and below. Slightly wider than the RAT stack, squarer than the
+   Ibanez-format 'slim'. GOLD accent (arcs / readouts / LED). */
+.pedal[data-face="plate"] {
+  width: 344px;
+  padding-top: 22px;
+}
+.pedal[data-face="plate"] .knob-row {
+  --kd: 60px; /* three knobs ride the top row with air */
+  gap: 26px;
+  justify-content: center;
+  margin: 12px 0 20px;
+}
+.pedal[data-face="plate"] .k-name { letter-spacing: .16em; }
+/* The milled plate: a recessed band with engraved (not printed) lettering — the
+   text is cut INTO the surface (dark shadow above, faint light below), the inverse
+   of the RAT logo's raised emboss. */
+.name-plate {
+  margin: 2px 0 18px;
+  padding: 13px 0 12px;
+  border-radius: 6px;
+  text-align: center;
+  background: linear-gradient(160deg, #23262b, #1b1e22);
+  box-shadow:
+    inset 2px 3px 6px var(--sh-darker),
+    inset -1px -1px 3px var(--sh-light),
+    0 1px 0 rgba(255, 255, 255, 0.04);
+  border-top: 1px solid color-mix(in srgb, var(--pedal-accent, #b9932f) 55%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--pedal-accent, #b9932f) 40%, transparent);
+}
+.name-plate-text {
+  font-family: "Optima", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 27px; line-height: 1;
+  text-transform: uppercase; letter-spacing: .42em; text-indent: .42em;
+  color: color-mix(in srgb, var(--pedal-accent, #b9932f) 78%, var(--ink));
+  /* engraved: cut in from above, catching light on the lower lip */
+  text-shadow: 0 -1px 1px rgba(0, 0, 0, 0.75), 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+.pedal[data-face="plate"]:not(.on) .name-plate-text { opacity: .55; }
+.pedal[data-face="plate"] .fsw-zone { margin-top: 18px; }
+
+/* ---- Muff "Pi" 'wide' face: the physically HUGE fuzz (v1.1 item 4) ----
+   The Muff is a big box — that's its morphology cue. A BROADER enclosure with the
+   three knobs in the classic TRIANGLE (SUSTAIN top-left, VOLUME top-right, TONE
+   centered below) and a BIG round stomp low-center. Hero "Pi" wordmark large and
+   central; VIOLET accent (the "violet era" wink). Shares the vertical 'stack'
+   skeleton (hero wordmark → knobs → round stomp) — only the width + knob grid +
+   stomp size change. Trademark-safe: "Pi" only, no EHX/Big Muff text. */
+.pedal[data-face="wide"] {
+  width: 360px; /* broader than the RAT (320) — the Muff's big-box morphology */
+  padding-top: 24px;
+}
+.pedal[data-face="wide"] .pedal-logo {
+  font-size: 82px; /* "Pi" large and central */
+  text-align: center;
+  letter-spacing: .02em;
+  margin: 6px 0 20px;
+}
+/* The three knobs in a TRIANGLE via a 2-col grid: child 1 (Sustain) top-left,
+   child 2 (Volume) top-right, child 3 (Tone) spans both columns, centered below. */
+.pedal[data-face="wide"] .knob-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px 44px;
+  justify-items: center;
+  align-items: start;
+  margin: 8px 12px 26px;
+}
+.pedal[data-face="wide"] .knob-row > :nth-child(3) { grid-column: 1 / 3; }
+.pedal[data-face="wide"] .k-name { letter-spacing: .18em; }
+/* The big round stomp low-center — larger than the standard RAT stomp. */
+.pedal[data-face="wide"] .fsw-zone { margin-top: 22px; }
+.pedal[data-face="wide"] .fsw { width: 104px; height: 104px; }

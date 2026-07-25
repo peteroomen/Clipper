@@ -1,0 +1,37 @@
+/* ---------- base ---------- */
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "Avenir Next", Avenir, "Segoe UI", Roboto, system-ui, sans-serif;
+  font-size: 15.5px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+.display { font-family: Anton, "Arial Narrow", sans-serif; font-weight: 400; letter-spacing: 0.01em; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+.eyebrow {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--ink-dim);
+}
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px; }
+
+/* ---------- neu recipes ---------- */
+.raised {
+  background: var(--panel-grad);
+  border-radius: 26px;
+  box-shadow:
+    10px 10px 24px var(--sh-dark),
+    -10px -10px 22px var(--sh-light),
+    inset 0 1px 0 var(--sh-light);
+}
+.well {
+  background: var(--well);
+  border-radius: 18px;
+  box-shadow:
+    inset 5px 5px 12px var(--sh-darker),
+    inset -4px -4px 10px var(--sh-light);
+}

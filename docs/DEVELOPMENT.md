@@ -1,0 +1,5035 @@
+# Clipper — Development
+
+Milestone 0 (walking skeleton). This document lists the exact, tested commands
+to set up the toolchain, build the portable core, compile it to WASM, and run
+the web app plus its automated audio verification.
+
+All commands assume the repository root unless noted. On this machine the repo
+lives at `/home/user/Clipper`.
+
+## Repository layout
+
+```
+core/                     Portable C++17 DSP core — ZERO platform/OS/browser deps
+  include/clipper/        Public headers (Processor.h)
+  src/                    Processor.cpp + clipper_c_api.cpp (C ABI for WASM/FFI)
+  tests/                  Plain-assert native tests (no framework)
+  CMakeLists.txt
+web/                      Vite + React + TS app
+  src/                    UI (App.tsx), audio engine (audio.ts), params
+  worklet/                AudioWorklet processor source (plain JS)
+  public/generated/       WASM build output (git-ignored) — clipper.js + worklet copy
+  tests/                  Playwright OfflineAudioContext audio test
+  scripts/check-artifact.mjs
+scripts/
+  setup-emsdk.sh          Idempotent Emscripten SDK install
+  build-wasm.sh           core -> web/public/generated/clipper.js (WASM ES module)
+docs/DEVELOPMENT.md
+```
+
+## Prerequisites
+
+- CMake >= 3.16 and a C++17 compiler (clang++ or g++) for the native core.
+- Node 18+ and npm for the web app.
+- Emscripten SDK for the WASM build (installed by `scripts/setup-emsdk.sh`).
+
+## 1. Native core: build and test
+
+The core has no external dependencies.
+
+```bash
+cd core
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+./build/clipper_tests
+```
+
+Expected: `All tests passed.` The tests cover gain applied after smoothing
+settles, absence of NaNs/infinities, and that the one-pole gain smoothing ramps
+gradually across a block (no zipper noise on parameter jumps).
+
+## 2. Install Emscripten (once)
+
+```bash
+bash scripts/setup-emsdk.sh
+```
+
+Idempotent: it is a no-op if `emcc` is already on `PATH`, and skips the download
+if `/home/user/emsdk` already contains an activated SDK. Override the location
+with `EMSDK_DIR=/some/path bash scripts/setup-emsdk.sh`.
+
+Installed version on this machine: **emsdk 6.0.3** (emcc 6.0.3).
+
+## 3. Build the WASM artifact
+
+```bash
+bash scripts/build-wasm.sh
+```
+
+This compiles the core with `-O3 -msimd128` (SIMD enabled, as required for later
+oversampled nonlinear stages) and emits a single self-contained ES module to
+`web/public/generated/clipper.js`, then copies the worklet
+(`web/worklet/clipper-processor.js`) alongside it.
+
+The script sources emsdk automatically if `emcc` is not already on `PATH`.
+
+### WASM loading approach (and why)
+
+Built with **`MODULARIZE=1 EXPORT_ES6=1 SINGLE_FILE=1`**:
+
+- **`SINGLE_FILE`** embeds the `.wasm` as a base64 data URI inside the emitted
+  `.js`. AudioWorkletGlobalScope has no `fetch`/`XHR`, so embedding the binary is
+  the robust way to get it into the worklet — no network fetch at all.
+- **`EXPORT_ES6` + `MODULARIZE`** produce an ES module whose default export is a
+  factory. The worklet statically `import`s it (Chromium supports static ES
+  imports in AudioWorklet module scripts).
+- This avoids `SharedArrayBuffer` / COOP-COEP headers entirely.
+
+Both the WASM module and the worklet are placed under `web/public/`, so they are
+served verbatim by Vite in **dev, preview, and production** and are never run
+through the bundler. The worklet's `import './clipper.js'` therefore resolves
+identically everywhere as a sibling file — sidestepping the known fragility of
+bundling AudioWorklet modules. The four exported C functions
+(`clipper_create/destroy/set_param/process`) plus `_malloc`/`_free` and
+`HEAPF32` are used by the worklet to run each 128-frame render quantum through
+the C++ core.
+
+Since **M3** the module also compiles the RAT model (`src/dsp/RatModel.cpp`) and
+exports the `rat_*` C ABI (`rat_create/destroy/set_param/set_oversampling/`
+`latency_samples/process`) alongside the original `clipper_*` gain exports (kept
+so the M0 path still links). The RAT model needs the header-only `chowdsp_wdf`
+includes; `build-wasm.sh` locates them under `core/build/_deps/chowdsp_wdf-src/`
+`include` (the FetchContent checkout) and, if they are missing, runs a `cmake`
+configure of `core/` to populate them, failing with an actionable message rather
+than a raw include error. Configure the native core once (§6) before the first
+WASM build so the dependency is present offline.
+
+The web build/test will fail with a clear message
+(`web/scripts/check-artifact.mjs`) if this artifact is missing.
+
+## 4. Web app: install, build, run
+
+```bash
+cd web
+npm install
+npm run build      # type-checks (tsc --noEmit) then vite build; checks artifact first
+npm run dev        # dev server at http://localhost:5173
+```
+
+Open http://localhost:5173. Click **Start audio** (an AudioContext needs a user
+gesture to start). Since **M3** the app is the RAT pedal: pick a **source** (test
+tone or live input), then dial the **Distortion / Filter / Level** sliders,
+toggle **Bypass**, and pick an **Oversampling** factor; status text shows context
+state, sample rate, and latency. The graph is `source (220 Hz oscillator or
+getUserMedia) -> AudioWorkletNode (WASM RatModel) -> destination`. You cannot
+hear it inside the container; the audio proof is the Playwright suite (§8). (The
+M0 gain graph description is superseded — the gain export still ships in the WASM
+module but the app no longer wires it.)
+
+## 5. Automated browser verification
+
+```bash
+cd web
+npm test
+```
+
+This builds the app, serves it with `vite preview` on port 4173, and runs the
+Playwright suite headless in Chromium:
+
+- **Audio test:** renders the 220 Hz sine through the WASM worklet in an
+  `OfflineAudioContext` at gain 1.0 and 0.5, asserting the output is non-silent
+  and that the steady-state RMS ratio is ~2x (tolerance 1.8–2.2 for the smoothing
+  ramp). This proves audio actually flows through the WASM worklet without
+  speakers or a microphone.
+- **UI test:** asserts the Start audio button and the 0..2 gain slider render.
+
+### Browser note
+
+The container ships a preinstalled Chromium under `PLAYWRIGHT_BROWSERS_PATH`
+(`/opt/pw-browsers`). Do **not** run `playwright install`. `playwright.config.ts`
+auto-discovers the `chromium-<build>/chrome-linux/chrome` binary and launches it
+with `--no-sandbox` (required when running as root).
+
+## 6. M1 — RAT diode-clipper model (offline)
+
+M1 adds the first real DSP model — a RAT-style diode-clipper distortion — as
+**new code beside** the M0 gain core. It is developed and tested entirely
+offline (no browser). Wiring it into the worklet is deferred to M3, so nothing
+in `web/` or `scripts/build-wasm.sh` changed.
+
+New source:
+
+```
+core/include/clipper/dsp/OnePoleSmoother.h   one-pole param smoother (extracted from M0 gain smoothing)
+core/include/clipper/dsp/RatModel.h          public API (pimpl; hides the WDF template tree)
+core/src/dsp/RatModel.cpp                     the 3-stage model + all circuit values/mappings
+core/tests/test_rat_model.cpp                 plain-assert tests (Goertzel, no FFT/framework)
+core/tools/render/main.cpp                    clipper-render CLI (native only)
+core/tools/third_party/dr_wav.h              vendored WAV I/O (tool-only; never in the DSP core)
+```
+
+### Dependency: chowdsp_wdf
+
+The WDF diode stage uses [`chowdsp_wdf`](https://github.com/Chowdhury-DSP/chowdsp_wdf),
+pulled by CMake `FetchContent` and **pinned to release v1.0.0**
+(commit `36b5775555af21f0f417d2bc866ba7b4b2788614`). It is header-only; the
+checkout is cached under `core/build/_deps`, so re-configuring an
+already-populated build does not re-download. Its headers are included as
+`SYSTEM` so they do not trip our `-Wall -Wextra`. The library's own
+tests/benchmarks are force-disabled (no transitive CPM downloads).
+
+`dr_wav` (public domain, `mackron/dr_libs`, v0.14.6, commit
+`34a89ffe6bfc4d78db6888fef76cd408dba18185`) is vendored verbatim and included
+**only** by the render tool.
+
+### Build and test
+
+Same flow as §1 — the M1 targets are added to the existing `core` build:
+
+```bash
+cd core
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+./build/clipper_tests       # M0 gain tests: "All tests passed."
+./build/clipper_rat_tests   # M1 model tests: "All RatModel tests passed."
+```
+
+The first configure clones `chowdsp_wdf` (needs network); later builds are
+offline. `clipper_rat_tests` is compiled with `-UNDEBUG` so `assert()` stays
+live even in a Release build.
+
+### Render harness (`clipper-render`)
+
+WAV in → WAV out, or a generated test signal (no input file needed). Output is
+**32-bit float mono**; input may be mono/stereo 16/24-bit PCM or 32-bit float
+(stereo is down-mixed to mono). Params are knob positions in `[0,1]`; defaults
+are distortion 0.7, filter 0.4, level 0.8. Run from `core/`:
+
+```bash
+# Generated 220 Hz sine, 2 s, three distortion settings, dumping spectra:
+./build/clipper-render --gen sine:220:2.0 /tmp/s220_d30.wav --distortion 0.30 --filter 0.3 --level 0.8 --spectrum /tmp/s220_d30.csv
+./build/clipper-render --gen sine:220:2.0 /tmp/s220_d70.wav --distortion 0.70 --filter 0.3 --level 0.8 --spectrum /tmp/s220_d70.csv
+./build/clipper-render --gen sine:220:2.0 /tmp/s220_d95.wav --distortion 0.95 --filter 0.3 --level 0.8 --spectrum /tmp/s220_d95.csv
+
+# Log sweep 20 Hz -> 20 kHz over 4 s:
+./build/clipper-render --gen sweep:20:20000:4.0 /tmp/sweep.wav --distortion 0.8 --filter 0.4 --level 0.8
+
+# Process a real WAV file:
+./build/clipper-render in.wav out.wav --distortion 0.5 --filter 0.6 --level 0.7
+```
+
+Other flags: `--sr SR` (sample rate for `--gen`, default 48000), `--amp A`
+(generated amplitude in "volts", default 0.3), `--spectrum file.csv` (magnitude
+spectrum of the last second, `freq,magnitude_db` rows at ~1 Hz resolution up to
+20 kHz — harmonics of a periodic tone land on bins).
+
+Sanity check: the odd harmonics of a 220 Hz tone grow with distortion while even
+harmonics stay near the noise floor (symmetric clipping), e.g. from the CSVs
+above the 660 Hz / 1100 Hz bins rise roughly `-21.7 / -28.8 dB` (dist 0.30) →
+`-17.7 / -22.7 dB` (dist 0.95), while 440 Hz sits below `-190 dB`.
+
+### Parameter mapping
+
+All three params are normalized knob positions `[0,1]` (`clipper::dsp::RatModel::ParamId`),
+mapped internally and one-pole smoothed (~5 ms, the M0 philosophy):
+
+| Param (id) | Knob 0 | Knob 1 | Mapping | Notes |
+|---|---|---|---|---|
+| `PARAM_DISTORTION` (0) | 0 dB | +66 dB | linear-in-dB pre-clip gain | plus the two-corner RAT feedback voicing (see below; M6.1 re-voice — was +54 dB + a single 320 Hz shelf) |
+| `PARAM_FILTER` (1) | 20 kHz (bright) | 500 Hz (dark) | log-swept one-pole LP cutoff | RAT convention: clockwise = darker |
+| `PARAM_LEVEL` (2) | 0.0 | 1.0 | identity linear gain | audio-taper law is a future refinement |
+
+### Circuit model & assumptions (circuit-informed, NOT SPICE-accurate)
+
+Reference level: input float `1.0f == 1.0 V` at the diode stage (a hot humbucker
+DI peaks ~0.3 V), so pre-gain must lift the signal past the diode knee to clip —
+as the real LM308 stage does.
+
+1. **Gain / shaping (LM308 non-inverting amp).** Variable pre-gain 0…**+66 dB**
+   (M6.1: was +54 dB). The real RAT non-inverting gain is `1 + P1/(R1‖R2)` with
+   P1 = 100 k Distortion pot; at max the two ground legs short to R1‖R2 ≈ 43 Ω
+   → +67.3 dB HF plateau, so +66 dB is essentially that plateau. **Pre-clip
+   voicing (M6.1 re-voice against the real circuit).** The RAT feedback network
+   has TWO series-RC legs from the inverting input to ground —
+   **560 Ω + 4.7 µF** (corner ≈ 60.5 Hz) and **47 Ω + 2.2 µF** (corner ≈ 1539 Hz)
+   — so the stage gain **rises with frequency in two steps** and falls toward
+   unity below ~60 Hz (NOT a fixed −10.5 dB shelf below 320 Hz, which the old M1
+   single shelf used). Normalized to the HF plateau (= the knob's dB), the
+   response reduces exactly to `shaped = x − g1·LP₆₀(x) − g2·LP₁₅₃₉(x)`
+   (g1 = 0.0774, g2 = 0.9222 — two one-pole low-passes at the leg corners; see
+   `RatModel.cpp`). *Validation* (core test `testPreClipVoicing`, small-signal
+   shape vs the analytical `A(f)` at Rf = 100 k, dB relative to the 3 kHz plateau,
+   measured within **±1.5 dB** — worst 0.67 dB at 44.1 k): 82 Hz **−18.2 dB**,
+   320 Hz **−11.5 dB**, 1539 Hz **−1.8 dB**, 5 kHz **≈ 0 dB** (analytical targets
+   −18.9 / −11.8 / −2.1 / −0.4 dB). *Assumption:* the shape is fixed at Rf = 100 k
+   (the real pot-dependent shape flattens at low DISTORTION). The op-amp's
+   bandwidth + slew limits (the LM308) are modeled as of **§11.4 M6.5** — placed
+   at the op-amp output inside oversampling, before the diode clamp.
+2. **Clipper (WDF, `chowdsp_wdf`).** Antiparallel silicon diode pair to ground
+   (1N914-ish: Is = 2.52 nA, Vt = 25.85 mV, one diode/side → ±0.6 V knee), built
+   exactly like the library's RC diode-clipper example: a resistive voltage
+   source (series Rs = 1 kΩ) in **parallel** with a shunt capacitor (Cp = 10 nF),
+   feeding a `DiodePairT` root (Werner et al. "Best" model). Output is the
+   voltage across the shunt cap (= the clipping-node voltage). The shunt cap is
+   from the library example — it aids stability and adds a gentle ~16 kHz HF
+   corner. *Assumptions:* Rs and Cp are modeling choices, not measured RAT values.
+3. **Tone / output (RAT "Filter" + "Volume").** One-pole passive low-pass whose
+   cutoff the FILTER knob log-sweeps (bright→dark), then LEVEL as clean linear
+   gain.
+
+**No oversampling/antialiasing in M1** (that is M2): high-gain settings alias
+("fizz") on purpose. The model runs at the host sample rate; the WDF stage runs
+in `double` for numerical stability.
+
+## 7. M2 — Antialiasing (oversampling + ADAA)
+
+M2 kills the aliasing ("fizz") that M1 left in on purpose. Only the **nonlinear**
+stage-2 clipper is antialiased; stages 1 (gain/shaping) and 3 (tone LP) are
+linear and stay at the base rate. Everything here is measurement-driven — the
+tests assert on measured spectra, not vibes.
+
+New source (all header-only DSP, platform-free C++17):
+
+```
+core/include/clipper/dsp/HalfbandFilter.h    Kaiser halfband taps + polyphase 2x interp/decim
+core/include/clipper/dsp/Oversampler.h       1x/2x/4x/8x cascade of 2x halfband stages
+core/include/clipper/dsp/DiodeClipperADAA.h  memoryless tanh clipper w/ 1st-order ADAA (experimental)
+core/tools/measure/AliasMetric.h             shared aliasing metric (Goertzel) for tests + CLI
+```
+
+`RatModel.cpp` gains `setOversampling`, `setStage2Mode`, `latencySamples`, and an
+internal `processChunk` (see below). No `web/` or `scripts/build-wasm.sh` change:
+the WASM build still ships only the M0 gain core; the RAT model is wired to the
+browser in M3.
+
+### New RatModel API
+
+| Method | Effect |
+|---|---|
+| `setOversampling(int factor)` | Select 1 / 2 / 4 / 8× for the nonlinear stage (other values snap **down** to the nearest valid power of two). **Default 4×.** Takes effect **immediately**, resetting the oversampling filter state and re-preparing the WDF cap at the oversampled rate (a click is possible on a live change — set it before playing). |
+| `oversampling()` | Current factor. |
+| `latencySamples()` | Round-trip group delay of the OS filters, in **base-rate** samples (0 at 1×). |
+| `setStage2Mode(mode)` | `STAGE2_WDF` (production default) or `STAGE2_ADAA` (experimental memoryless comparison path). |
+
+The public 3-param knob API is unchanged. **Factor 1 reproduces the M1 signal
+path bit-for-bit** (verified: `max |os1 − M1 golden| = 0.0`), so it is the
+regression guard.
+
+`process()` now **chunks** the input into ≤ `maxBlockSize` sub-blocks internally
+(the render tool and tests hand it the whole signal at once), so the fixed
+oversampling scratch — allocated once in `prepare()` for the 8× worst case — is
+never overrun and `process()` performs **no heap allocation**.
+
+### Oversampling filter design
+
+A hand-rolled **polyphase halfband cascade**: each 2× stage is a Kaiser-windowed
+halfband FIR (cutoff π/2; every even tap zero except the centre = 0.5). 4× = two
+stages, 8× = three. Up = zero-stuff + halfband LP (the even output phase is a
+delayed copy of the input via the centre tap, the odd phase is the odd polyphase
+branch); down = halfband LP + decimate (sparse FIR, one output per two inputs).
+Coefficients are generated at `prepare()` (`makeHalfband(M, beta)`), never in
+`process()`.
+
+The **first** (lowest-rate) 2× stage has the tightest transition: at a 44.1 kHz
+base the 20 kHz audio edge sits at 0.2268 of the 88.2 kHz stage rate, just below
+the π/2 (0.25) cutoff. Every later stage runs at ≥ 176.4 kHz where 20 kHz is a
+small fraction of the rate, so a much shorter halfband clears the stopband target
+with margin.
+
+| Stage | Taps (L = 2M+1) | Kaiser β | Passband ripple (≤20 kHz @ 44.1k) | Stopband |
+|---|---|---|---|---|
+| First 2× (tight) | **129** (M=64) | 7.857 | 0.0013 dB | −81 dB |
+| Later 2× (relaxed) | **33** (M=16) | 7.857 | ≤ 0.0006 dB | −88 dB |
+
+Cascaded passband ripple ≪ ±0.1 dB (measured 1 kHz through-gain shift 1× → 4× is
+**0.0007 dB**). Group delay (base-rate samples), from `latencySamples()`:
+
+| Factor | Stages | Latency (base samples @ 44.1k) |
+|---|---|---|
+| 1× | 0 | 0 |
+| 2× | 1 | 64 |
+| 4× | 2 | 72 |
+| 8× | 3 | 76 |
+
+The WDF capacitor is `prepare()`d at the **oversampled** rate (`sampleRate ×
+factor`) so its ~16 kHz HF corner lands correctly; the diode impedance
+propagates from the cap.
+
+### ADAA comparison path (experimental)
+
+`DiodeClipperADAA` is a **memoryless** stand-in for the WDF diode stage, used only
+to compare first-order antiderivative antialiasing against oversampling — it is
+**not** the production clipper.
+
+- **Transfer curve match:** `f(x) = Vk·tanh(x/Vk)`, `Vk = 0.35`. The WDF diode
+  node's *static* curve (measured by settling the WDF at DC) has small-signal
+  slope ≈ 1 (diodes off) and a soft knee whose output saturates around
+  0.33–0.39 V under realistic overdrive (it keeps rising ~logarithmically rather
+  than hard-limiting at 0.6 V). `tanh(x/Vk)·Vk` matches the unity origin slope
+  exactly and limits at ±Vk; Vk = 0.35 places the ceiling in the WDF's measured
+  mid/high-drive band. The tanh flattens where the diode keeps creeping up — a
+  documented approximation; the comparison is about aliasing, not an exact curve.
+- **ADAA:** first-order (Parker/Esqueda/Bilbao/Välimäki 2016)
+  `y[n] = (F1(x[n]) − F1(x[n−1]))/(x[n] − x[n−1])`, `F1(x) = Vk²·ln(cosh(x/Vk))`
+  (evaluated stably), with the divided-difference fall-back
+  `f((x[n]+x[n−1])/2)` when successive inputs are within 1e−6.
+
+**Findings** (f0 = 4186 Hz, dist 0.9, fs = 44.1 kHz, worst-alias dB rel.
+fundamental; CPU = ms to process 1 s of audio in 128-frame blocks, native
+`-O3`):
+
+| Path | worst-alias | sum-alias | CPU (ms/s) |
+|---|---|---|---|
+| WDF 1× (M1 baseline) | −18.4 | −13.2 | 2.9 |
+| WDF 2× | −26.7 | −21.0 | 27.9 |
+| **WDF 4× (shipped default)** | **−86.6** | **−80.3** | **45.3** |
+| WDF 8× | −90.6 | −88.2 | 81.0 |
+| ADAA 1× | −25.3 | −24.2 | 1.6 |
+| ADAA 2× | −38.5 | −36.7 | 25.3 |
+| ADAA 4× | −115.0 | −107.8 | 40.0 |
+
+**Verdict.** ADAA@1× (−25.3 dB, 1.6 ms) beats WDF@1× (−18.4 dB) for *less* CPU,
+and ADAA@2× (−38.5 dB) beats WDF@2× by ~12 dB — first-order ADAA is a cheap,
+genuine win at low oversampling. But it **plateaus**: it does not on its own reach
+the ≥60-dB-below-fundamental "inaudible alias" bar. Oversampling does — WDF@4×
+hits −86.6 dB, limited by the ~81 dB halfband stopband floor (which is why 8× only
+adds ~4 dB over 4× here: 4× already sits near the filter floor). At high factors
+the halfband filtering dominates CPU, so WDF and ADAA converge (81 vs 70 ms @ 8×).
+**Shipped default: WDF + 4× oversampling** — inaudible aliasing at ~0.045× real
+time natively, with generous headroom. ADAA stays available (`--stage2 adaa`) for
+measurement and as a future cheap low-OS option.
+
+On a first-order ADAA note: its benefit grows with input frequency, so the
+in-test demonstration uses f0 = 12 kHz (odd harmonics fold hard), where ADAA beats
+the naive memoryless clipper by **15.6 dB** (worst) / 16.5 dB (sum). Avoid
+f0 = fs/4 for these measurements — every odd harmonic folds onto the fundamental
+(degenerate).
+
+### CLI additions (`clipper-render`)
+
+```bash
+# Aliasing metric table for os=1/2/4/8 (renders a 4186 Hz tone at high drive):
+./build/clipper-render --alias-report --sr 44100 --distortion 0.9
+./build/clipper-render --alias-report --sr 44100 --distortion 0.9 --stage2 adaa
+
+# Render with an explicit oversampling factor / stage-2 mode:
+./build/clipper-render --gen sine:4186:1.0 out.wav --distortion 0.9 --os 8
+./build/clipper-render in.wav out.wav --os 4 --stage2 wdf
+
+# Sweep A/B: alias foldover in the last-second spectrum, 1x vs 8x (high drive):
+./build/clipper-render --gen sweep:20:20000:4.0 s1.wav --distortion 0.9 --filter 0.0 --level 0.9 --sr 44100 --os 1 --spectrum s1.csv
+./build/clipper-render --gen sweep:20:20000:4.0 s8.wav --distortion 0.9 --filter 0.0 --level 0.9 --sr 44100 --os 8 --spectrum s8.csv
+```
+
+The `--alias-report` table prints worst-alias, sum-alias, fundamental amplitude,
+and latency per factor — the expected monotonic story at 44.1 kHz:
+
+```
+  os  worst-alias(dB)  sum-alias(dB)  fund-amp   latency(smp)
+   1         -18.4          -13.2    0.44726   0
+   2         -26.7          -21.0    0.45470   64
+   4         -86.6          -80.3    0.46202   72
+   8         -90.6          -88.2    0.46580   76
+```
+
+For the sweep A/B: the last-second spectrum's **sub-2 kHz** band (no legitimate
+signal there — the fundamental is 3.5–20 kHz over that second) carries the alias
+foldover. Summing that band's energy from the two CSVs gives **1×  −24.4 dB vs
+8×  −45.2 dB = 20.7 dB less aliasing**, while full-band energy is unchanged
+(0.2 dB) — oversampling removes aliases without altering the tone.
+
+### Build and test (M2)
+
+Same flow as §6; the M2 tests are added to `clipper_rat_tests`:
+
+```bash
+cd core
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+./build/clipper_rat_tests   # M1 + M2 tests: "All RatModel tests passed."
+```
+
+M2 test coverage (all Goertzel-based, no FFT): aliasing improves monotonically
+1×→2×→4×→8× (strict at 44.1 kHz; weaker floor-limited checks at 96 kHz), 4× ≥ 20 dB
+better than 1×, 8× worst-alias < −60 dB; passband integrity (1 kHz within 0.2 dB,
+3rd/5th harmonic ratios within 3 dB of 1×); factor-1 bit-regression vs an M1
+golden; ADAA ≥ 12 dB better than the naive memoryless clipper; and an 8× perf
+sanity bound (1 s in ≪ 500 ms; measured ~60–75 ms).
+
+## 8. M3 — Live in the browser
+
+M3 wires the M2 RAT model into the AudioWorklet skeleton and makes it playable
+live: **guitar → audio interface → `getUserMedia` → worklet (RatModel) →
+speakers**, plus a built-in **test tone** so everything works with no instrument
+connected.
+
+What changed:
+
+- **C ABI** (`core/src/clipper_c_api.cpp`): added `rat_create(sr)`,
+  `rat_destroy`, `rat_set_param(h,id,v)`, `rat_set_oversampling(h,factor)`,
+  `rat_latency_samples(h)`, `rat_process(h,in,out,n)` beside the gain exports
+  (opaque handle, `EMSCRIPTEN_KEEPALIVE`). `prepare` uses maxBlockSize 128.
+  `clipper_c_api` now links `clipper_dsp` so this compiles/links natively too.
+- **`scripts/build-wasm.sh`**: compiles `dsp/RatModel.cpp`, adds the chowdsp_wdf
+  include dir, exports the `rat_*` functions. SIMD + SINGLE_FILE + EXPORT_ES6
+  unchanged.
+- **Worklet** (`web/worklet/clipper-processor.js`): runs the RAT model. Messages:
+  `{type:'param', id, value}` (the 3 knobs, 0..1), `{type:'oversampling',
+  factor}` (1/2/4/8), `{type:'bypass', on}` (bypass is done **in the worklet** —
+  input passed through untouched, so it works even before WASM is ready). Ready
+  handshake + pending-queue kept; the `ready` (and post-oversampling `latency`)
+  message carries `latencySamples`.
+- **App** (`web/src/{audio.ts,App.tsx,params.ts}`): source select (test tone /
+  live input), optional input-device selector, Distortion/Filter/Level sliders
+  (0..100 display, 0..1 to the core), Bypass toggle, Oversampling select (default
+  4×), Start/Stop, a latency/status readout, and a persistent headphone/feedback
+  hint when live input is selected.
+
+### Plugging in (real hardware: interface → browser)
+
+1. Connect the guitar to the audio interface (e.g. an **Alesis MultiMix 8** into
+   a Mac over USB) and select that interface as the system audio input.
+2. Open the app, choose **Live input** as the source, press **Start audio**, and
+   grant the microphone permission when the browser prompts. (Chrome first;
+   Safari has known getUserMedia/worklet quirks — not blocking per the roadmap.)
+3. If several inputs exist, a **device selector** appears (populated by
+   `enumerateDevices` after permission — labels are only exposed once permission
+   has been granted, a browser privacy rule).
+
+### Constraint rationale (why we disable browser DSP)
+
+Live input requests `getUserMedia({ audio: { echoCancellation:false,
+noiseSuppression:false, autoGainControl:false, channelCount:1 } })`. Those three
+processors are tuned for **speech on laptop mics** and destroy a guitar DI:
+echo cancellation comb-filters and gates, noise suppression chews sustain and
+pick attack, AGC pumps the level out from under the distortion. We want the raw,
+unprocessed signal — the pedal model is the only thing allowed to shape it. Mono
+(`channelCount:1`) matches the model's mono in/out.
+
+### Latency expectations
+
+Two contributions, both shown in the status readout:
+
+- **Model latency** — the oversampling filters' round-trip group delay
+  (`rat_latency_samples`): **72 base-rate samples at the default 4×** ≈ **1.6 ms
+  @ 44.1 kHz** (0 at 1×, 64 at 2×, 76 at 8×). Small.
+- **I/O latency** — `AudioContext.baseLatency + outputLatency`, dominated by the
+  interface + OS audio buffer, not our code.
+
+Total felt round trip is the roadmap's **~20–40 ms** — playable but noticeable.
+(The headless CI context reports ~40 ms I/O for its fake device, so the UI shows
+~41.6 ms total there; real Mac + MultiMix numbers will differ and depend on the
+interface's buffer size.) Lower latency is the deferred **native** answer (JUCE
+wrap of the identical core), not more web engineering.
+
+### Headphones / feedback
+
+When **live input** is selected the app shows a persistent hint recommending
+**headphones**: guitar into a live mic/interface with the modeled output on
+**speakers** can feed back (mic → speaker → mic loop), and at high distortion the
+model's gain makes that worse. Headphones break the loop.
+
+### Commands (verified)
+
+```bash
+# 1. Native core + tests (also fetches chowdsp_wdf on first configure):
+cd core && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+./build/clipper_tests        # "All tests passed."
+./build/clipper_rat_tests    # "All RatModel tests passed."
+
+# 2. Build the WASM artifact (now includes the RAT model):
+cd .. && bash scripts/build-wasm.sh
+
+# 3. Web build + headless Playwright suite:
+cd web && npm install && npm run build && npm test   # 4 passed
+
+# 4. Dev server:
+npm run dev   # http://localhost:5173
+```
+
+### M3 test coverage (`web/tests/audio.spec.ts`)
+
+- **UI:** Start button, Source select, Distortion/Filter/Level sliders (0..100),
+  Bypass checkbox, Oversampling select all render.
+- **Harmonics + LEVEL:** 220 Hz sine at high distortion through the worklet
+  (bright filter, default 4×) — an in-page Goertzel confirms the **3rd harmonic
+  (660 Hz) is strong**, the **2nd (440 Hz) sits near the floor** (symmetric diode
+  clipping = odd harmonics), and **LEVEL 1.0 vs 0.5 halves RMS** (clean linear
+  gain).
+- **Bypass:** with bypass on, output ≈ the raw oscillator (RMS ~0.71, no added
+  3rd harmonic); with it off the processed path clearly adds one.
+- **Live input (smoke):** using Chromium's fake-media flags
+  (`--use-fake-device-for-media-stream`, `--use-fake-ui-for-media-stream`, set in
+  `playwright.config.ts`), select Live input, Start, and assert the AudioContext
+  reaches `running` with **no console errors**. Reliable here; safe to skip on a
+  runner where the fake device misbehaves, since the offline tests already cover
+  the DSP.
+
+## 9. M4 — Pedal UI
+
+M4 replaces the placeholder sliders with the approved visual design
+("Design Direction 01 — soft-touch neumorphism + liquid glass") and makes the
+whole rig a single serializable structure. **No audio-path changes**: the worklet
+(`web/worklet/clipper-processor.js`), the C ABI, and `scripts/build-wasm.sh` are
+untouched. The UI still talks to the engine through the same message path
+(`param` / `oversampling` / `bypass`) from M3.
+
+### Design system (`web/src/styles/`, plain CSS custom properties)
+
+The tokens and neumorphic recipes are ported **verbatim** from the approved
+artifact — no framework, no preprocessor.
+
+```
+web/src/styles/
+  tokens.css   @font-face (Anton, base64 woff2 — copied as-is) + all design
+               tokens. Base :root = light "porcelain"; @media
+               (prefers-color-scheme: dark) = "graphite"; both forced via
+               :root[data-theme="light"|"dark"] (the theme toggle stamps
+               data-theme on <html>, which wins over the media query).
+  base.css     reset, body, typography helpers (.display = Anton, .mono, .wrap)
+               and the two neu recipes used this milestone: .raised / .well.
+  pedal.css    the pedal face, knob anatomy (.k-arc/.k-body/.k-knurl/.k-cap/
+               .k-ptr), LED, and footswitch — verbatim from the artifact.
+  app.css      page chrome + the restyled secondary M3 controls (selects in
+               carved wells, raised transport buttons, status readout, theme
+               toggle). Written for this app; uses the same tokens/recipes.
+```
+
+**Token map to the artifact.** `tokens.css` is a direct extract of the artifact's
+`:root` blocks; `pedal.css` is its `.pedal`/`.knob`/`.fsw` rules (the one
+`.amp:not(.on)` selector was dropped — no amp until M5). Knob anatomy: red value
+arc is a `conic-gradient` from `225deg` spanning `270deg`, driven by a `--deg`
+custom property (`value * 270`) set on `.k-stack` and inherited by the arc and
+pointer; the arc dims to `opacity: .3` under `.pedal:not(.on)`. The LED lights
+via `.pedal.on .led`. **Glass is intentionally unused this milestone** — it is
+reserved for the M6 AI assistant (its tokens still ship in `tokens.css`).
+
+### Components (`web/src/components/`, plain React + CSS)
+
+- **`Knob.tsx`** — controlled 0..1 value with a label and 0..100 readout, exposed
+  as an accessible `role="slider"` (`aria-valuemin/max/now`, `aria-label`) so it
+  is both screen-reader- and test-addressable. Interactions ported from the
+  artifact: vertical **drag** with pointer capture, **wheel**, **double-click**
+  reset to a per-knob default (`KNOB_DEFAULTS`), **ArrowUp/Down/Left/Right**. A
+  very quiet **tick** plays as the value crosses a detent.
+- **`Pedal.tsx`** — the CLIPPER face: model line `DIRT Nº1 · RAT-TYPE`, Anton
+  logo, LED, three knobs (Dist/Filter/Level), and a footswitch (`role="switch"`,
+  `aria-checked` = engaged) that toggles bypass with a low **thunk**.
+
+The tick/thunk sounds (`web/src/ui-sound.ts`, ported from the artifact) run on
+their **own** lazily-created `AudioContext`, created on first interaction (a user
+gesture). This context is **completely separate** from the processing graph in
+`audio.ts` and must never be injected into the pedal signal path.
+
+### Rig state (`web/src/rig.ts`) — the AI tool-call surface
+
+The whole rig is one typed, serializable structure. It is the single source of
+truth in `App` state; the knobs, footswitch, and selects all read/write it, and
+every change both propagates to the worklet and persists to `localStorage`
+(restored on load, defaults on any parse failure). **This JSON is the surface the
+M6 assistant reads and mutates**, and the future preset format.
+
+```jsonc
+{
+  "pedal": {
+    "type": "rat",
+    "engaged": true,           // false = bypassed (LED dark, arcs dimmed)
+    "params": {                // all normalized knob positions, 0..1
+      "distortion": 0.7,
+      "filter": 0.4,
+      "level": 0.8
+    }
+  },
+  "oversampling": 4,           // 1 | 2 | 4 | 8
+  "source": "test"            // "test" | "live"
+}
+```
+
+`serializeRig()` / `deserializeRig()` round-trip a valid rig exactly;
+`deserializeRig` runs `normalizeRig`, which coerces unknown/partial input back to
+a valid rig (per-field fallback to `DEFAULT_RIG`), so widening the schema later
+(e.g. `pedal` → a `pedals[]` chain for the M5 amp/cab) stays backward-compatible.
+`engaged` is the inverse of the worklet's `bypass` flag (`bypass = !engaged`).
+
+`App` mirrors the live rig (and the last worklet param/bypass message) onto
+`window.__CLIPPER_TEST__` — a small, stable hook used by the Playwright tests and,
+later, a convenient read seam for the assistant.
+
+### Test coverage (`web/tests/audio.spec.ts`)
+
+The two offline-render DSP proofs from M3 are unchanged (they post messages to
+the worklet directly) and now run **first**, before any test creates a live
+`AudioContext` — many live contexts in one browser process can starve later
+`OfflineAudioContext` renders. New UI/state tests: knobs are found by
+`role="slider"` (name = param); a **knob interaction** test drives Distortion by
+keyboard and asserts both the readout and the worklet param message; a
+**footswitch** test asserts the engaged/LED state flip and the bypass message; a
+**rig round-trip** test checks exact JSON serialize→deserialize equality and
+`localStorage` restore across a reload. Both themes were screenshotted via
+Playwright (forcing `data-theme`) to `web/test-results/pedal-{light,dark}.png`
+(+ `-bypassed` variants) — molded surfaces, NW light, and red value arcs are
+visible and correct in light and dark; bypassed shows the dark LED and dimmed
+arcs.
+
+## 10. M5 — Clean amp + cab
+
+M5 adds a JC-120-inspired **clean amp** and a **cab IR convolver**, making the
+signal chain `input → RAT pedal → amp (volume + tone stack + bright) → cab IR →
+out`. The amp is modeled **LINEAR** (the roadmap's deliberate scope choice: a
+solid-state clean platform is honest to model linearly; drive comes from the
+pedal). The pedal (`rat_*`) and amp (`amp_*`) are **separate WASM instances**
+driven in sequence by the worklet; the cab is part of the amp instance.
+
+New source (all platform-free C++17, `-Wall -Wextra` clean, no allocation in
+`process()`):
+
+```
+core/include/clipper/dsp/Biquad.h        TDF2 biquad + RBJ cookbook designers (shelf/peak/HP/LP)
+core/include/clipper/dsp/FFT.h           hand-rolled radix-2 complex FFT (no deps)
+core/include/clipper/dsp/AmpModel.h      public API (pimpl)
+core/include/clipper/dsp/CabConvolver.h  partitioned FFT convolver API
+core/include/clipper/dsp/CabIR.h         default cab IR generator declaration
+core/src/dsp/AmpModel.cpp                linear tone stack + volume + bright
+core/src/dsp/CabConvolver.cpp            uniform-partitioned overlap-save convolution
+core/src/dsp/CabIR.cpp                   procedural 2x12 IR (seeded, deterministic)
+core/tests/test_amp_model.cpp            plain-assert amp+cab tests (44.1k + 96k)
+```
+
+### Amp model — tone-stack assumptions
+
+JC-120-informed, **not** a measured transfer function — a musically-sensible
+linear approximation (same spirit as the RAT model's circuit-informed comments).
+All params are normalized knob positions in `[0,1]`; the three tone controls are
+flat at `0.5`.
+
+| Param (id) | Type / center | Range | Notes |
+|---|---|---|---|
+| `PARAM_VOLUME` (0) | linear-in-dB | −40 … +6 dB | knob 0 = **true silence** (fades out below 3% knob); `db = −40 + 46·knob` above that |
+| `PARAM_BASS` (1) | low-shelf @ **100 Hz** | ±12 dB (S=0.8) | knob 0 = −12, 0.5 = 0, 1 = +12 |
+| `PARAM_MIDDLE` (2) | peaking @ **650 Hz** | ±9 dB (Q=0.7) | broad mid, JC-voiced |
+| `PARAM_TREBLE` (3) | high-shelf @ **3.5 kHz** | ±12 dB (S=0.8) | |
+| `PARAM_BRIGHT` (4) | high-shelf @ **3 kHz** | +5 dB (0/1 toggle) | fixed shelf; real bright switches scale with volume — simplified for M5 |
+| `AMP_PARAM_CAB` (5) | cab on/off (0/1) | — | **chain-level** id handled by the C ABI wrapper (bypasses the convolver for A/B), not by `AmpModel` |
+
+Signal order: bass → middle → treble → bright → volume. The stack is flat within
+~±0.5 dB at all knobs = 0.5 (tested). **Smoothing:** the tone gains (dB) and the
+volume (linear) are one-pole smoothed (~8 ms); the four biquads are recomputed
+from the smoothed dB values every **32 samples** (a control rate). Because the dB
+inputs move only a hair per control tick, the coefficient steps are tiny and
+there is no zipper noise on a knob sweep (verified: max per-sample delta stays
+below 1.5× the signal's own slope through an abrupt volume jump).
+
+### Cab IR generator — rationale + measured response
+
+`generateDefaultCab2x12IR(sampleRate)` builds a plausible closed-back 2×12 IR
+deterministically (a seeded LCG feeds a small diffuse tail — **no**
+`random_device`/Date, so tests rely on it). It is a documented **placeholder**
+until real IR upload lands. Recipe (see `CabIR.cpp`):
+
+- **1024 samples** @ 48 kHz (length scales with sample rate);
+- a direct hit + **two small early reflections** (amplitudes 0.10 / 0.06 — kept
+  low so their comb ripple stays < ~1 dB and the smooth filter response
+  dominates) + a **tiny seeded exponential-decay tail** (0.02);
+- **spectral shaping:** 2nd-order high-pass @ 95 Hz (low cut) → **four cascaded**
+  2nd-order low-passes @ 5 kHz (≈ 48 dB/oct speaker rolloff) → peaking +3.5 dB @
+  2.5 kHz (presence);
+- **normalized to unity passband** (`|H(1 kHz)| = 1`), *not* unit time-domain
+  peak — so the cab colors the tone rather than shoving the level ~+14 dB.
+
+Measured magnitude response, **raw DTFT of the IR** (dB relative to 1 kHz; the
+right tool for an IR — a Hann-windowed sinusoid-amplitude Goertzel gives
+meaningless low-frequency numbers here). The test asserts this shape at 44.1 k
+and 96 k:
+
+| Freq | 44.1 kHz | 96 kHz | Expectation |
+|---|---|---|---|
+| 60 Hz | −8.6 dB | −9.5 dB | sub-bass cut |
+| 100 Hz | −2.8 dB | −2.6 dB | low cut easing in |
+| 1 kHz | 0 dB | 0 dB | reference / passband |
+| 2.5 kHz | +2.5 dB | +6.2 dB | presence bump, not collapsed |
+| 5 kHz | −10.9 dB | −9.3 dB | into the speaker rolloff |
+| 8 kHz | −37.6 dB | −32.6 dB | far down the steep rolloff |
+
+### Convolver design (partition size, FFT, latency)
+
+Uniform-partitioned **overlap-save** convolution, "one partition behind":
+
+- **Partition P = 128** (matches the worklet render quantum), **FFT N = 2P =
+  256** (hand-rolled radix-2, `FFT.h`).
+- The IR is split into `K = ceil(irLen/P)` partitions, each forward-transformed
+  once at `prepare()`. Per block: FFT the `[prev P, current P]` window, push into
+  a frequency-domain delay line, `Y = Σ FDL[k+1]·H_k` (the `+1` defers the newest
+  block one cycle), inverse-FFT, take the last P samples.
+- **Latency = exactly one partition = 128 samples.** The `+1` offset realizes it;
+  an impulse comes out as the IR delayed by 128 samples (`latencySamples()`
+  matches the measured impulse delay; the impulse reproduces the IR to ~3e-17 —
+  the FFT partitioning is exact). If the IR sample rate ≠ engine rate it is
+  linearly resampled at load (fine for the smooth synthetic IR; a documented
+  compromise for future real IRs).
+- `process()` allocates nothing (all FFT scratch, the FDL, and the IR spectra are
+  sized in `prepare()`). The amp+cab chain processes 1 s of audio in ~6 ms (44.1
+  k) / ~12 ms (96 k) — far under real time.
+
+### Total chain latency (reported in the UI)
+
+`Latency · model+cab` in the status readout = **pedal oversampling latency + cab
+partition**. At the defaults (4× pedal, cab on): **72 + 128 = 200 base-rate
+samples** ≈ **4.5 ms @ 44.1 kHz** (~4.2 ms @ 48 k). Bypassing the cab (Cab off)
+or powering the amp off removes the 128; the worklet re-reports latency on those
+changes. This matches theory (M2's 72-sample 4× figure plus one 128-sample cab
+partition).
+
+### C ABI (`core/src/clipper_c_api.cpp`)
+
+Added beside the `rat_*` exports: `amp_create(sr)` / `amp_destroy` /
+`amp_set_param(h,id,v)` / `amp_latency_samples(h)` / `amp_process(h,in,out,n)`.
+The amp handle is a small `AmpChain { AmpModel amp; CabConvolver cab; bool cabOn; }`
+— `amp_process` runs amp → cab (in-place); `AMP_PARAM_CAB` (id 5) toggles the cab;
+`amp_latency_samples` returns the cab partition when engaged, else 0. The default
+IR is generated at the engine rate (no resampling).
+
+### Worklet + rig message shapes
+
+The worklet (`web/worklet/clipper-processor.js`) now owns **two** instances and
+runs `input → rat → amp+cab → out` with per-unit worklet-local bypass. Messages
+gained a `unit` field (back-compatible — a missing `unit` targets the pedal):
+
+```jsonc
+{ "type": "param",  "unit": "pedal"|"amp", "id": <int>, "value": <0..1> }
+{ "type": "bypass", "unit": "pedal"|"amp", "on": <bool> }   // pedal skip / amp power-off
+{ "type": "oversampling", "factor": 1|2|4|8 }                // pedal only
+```
+
+The worklet posts a `{type:'latency', latencySamples}` echo on oversampling,
+cab-toggle, and amp-bypass changes (the offline tests await this echo as a
+delivery/flush barrier before `startRendering`, since a synchronous offline
+render can otherwise finish before a just-posted message reaches the processor).
+
+### Rig state (`web/src/rig.ts`)
+
+`RigState` gained an `amp` block; `normalizeRig` fills it from defaults, so an
+**M4-shaped saved rig (no `amp`) migrates cleanly** (tested):
+
+```jsonc
+{
+  "pedal": { "type": "rat", "engaged": true, "params": { "distortion": 0.7, "filter": 0.4, "level": 0.8 } },
+  "amp": {
+    "type": "clean120",
+    "engaged": true,                 // false = amp+cab bypassed (jewel dark)
+    "params": {                      // 0..1; tone flat at 0.5; bright/cab are 0/1
+      "volume": 0.4, "bass": 0.5, "middle": 0.5, "treble": 0.6, "bright": 0, "cab": 1
+    }
+  },
+  "oversampling": 4,
+  "source": "test"
+}
+```
+
+### UI (`web/src/components/Amp.tsx`, `web/src/styles/amp.css`)
+
+The **CLEAN 120** panel per the approved design: Anton name, four small knobs
+(Vol/Bass/Mid/Treble, reusing `Knob`), a **Bright** lever, a **Cab** lever, and a
+**Power** rocker with a jewel lamp (lit when engaged; dark + arcs dimmed when
+off). `amp.css` is the artifact's `.amp` block (deliberately omitted in M4).
+Layout: pedal + amp side by side (`.rig`, wraps on narrow), control desk below.
+
+### Build and test (M5)
+
+```bash
+# Native core + all suites (M0/M1-M2/M5), at 44.1k and 96k where specified:
+cd core && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+./build/clipper_tests        # "All tests passed."
+./build/clipper_rat_tests    # "All RatModel tests passed."
+./build/clipper_amp_tests    # "All AmpModel + CabConvolver tests passed."
+ctest --test-dir build       # 3/3 pass
+
+# WASM (now compiles AmpModel/CabConvolver/CabIR, exports amp_*):
+cd .. && bash scripts/build-wasm.sh
+
+# Web build + headless Playwright suite (10 tests):
+cd web && npm install && npm run build && npm test   # 10 passed
+```
+
+## 11. M6 — The assistant (MVP ships)
+
+M6 adds the conversational **tone coach** — the product's differentiator. A user
+says "give me the rhythm tone from The Bends," and the assistant reasons about
+their guitar + current rig, changes parameters via tool calls (the knobs
+visibly move), explains *why* in terms of what the ear hears, and iterates on
+feedback — including non-rig advice ("roll your guitar volume back to 8")
+alongside knob moves. **No audio-path changes**: the worklet, C ABI, `core/`,
+and `scripts/` are all untouched — the assistant drives the same `RigState`
+setters the knobs use.
+
+### Architecture
+
+```
+browser (web/)                          server/ (zero-dep Node proxy)
+  Chat.tsx ── POST /api/chat ─────────▶  index.mjs ── x-api-key ──▶ api.anthropic.com
+   │  (system, tools, messages)              (injects model, max_tokens,
+   │                                          stream, thinking; pipes SSE back)
+   ├─ assistant/client.ts   SSE parse + tool-use loop (cap 6 iterations)
+   ├─ assistant/tools.ts    executes tool_use against the live rig (RigController)
+   ├─ assistant/prompt.ts   coaching system prompt + per-turn context preamble
+   └─ guitar.ts             guitar profile (localStorage, separate key)
+```
+
+- **Proxy (`server/`)** — a minimal Node 22 HTTP server, **zero npm
+  dependencies** (built-in `http` + global `fetch`). `server/index.mjs` is the
+  http glue (routing, CORS, body reading, SSE piping); `server/handler.mjs`
+  holds the request-shaping core and upstream call, written injectable so the
+  handler could be **lifted into a serverless function** (see the Vercel note
+  below). The API key lives only in the server's environment — never sent to the
+  client, never logged; message contents are never logged.
+  - `POST /api/chat` — accepts `{messages, tools, system}`, forwards to
+    `https://api.anthropic.com/v1/messages` with streaming, and pipes the SSE
+    response back verbatim. The proxy **injects** `model`, `max_tokens`,
+    `stream: true`, and `thinking: {type: "adaptive"}` server-side — a
+    client-supplied `model` is ignored, so the client can never choose the model.
+  - `GET /api/health` — `{ok: true, hasKey: boolean}` (advertises key presence
+    without leaking it). The chat surfaces `hasKey: false` as a clear notice.
+  - With **no key**: `/api/health` reports `hasKey:false` and `/api/chat` returns
+    a clear **500** with fix instructions; the UI shows that state gracefully.
+
+- **Client tool-use loop (`web/src/assistant/client.ts`)** — parses the SSE
+  stream (`message_start` / `content_block_start|delta|stop` /`message_delta` /
+  `message_stop`), accumulating content blocks: `text_delta` streams to the UI
+  live, `input_json_delta` accumulates each tool's input JSON. On
+  `stop_reason == "tool_use"` it executes **all** tool_use blocks locally, then
+  appends the assistant message (**full content array, including thinking blocks
+  with their signatures**) + **one** user message containing **all**
+  `tool_result` blocks, and continues. Loops until `end_turn` (capped at 6).
+  `refusal` and `max_tokens` are handled gracefully (in-chat notice, no crash).
+
+### Anthropic API facts (current — do not rely on training priors)
+
+- Model **`claude-opus-4-8`** (env `MODEL`), `max_tokens` **8192** (env
+  `MAX_TOKENS`), **streaming always** (`stream: true`).
+- **Thinking**: `thinking: {type: "adaptive"}` is sent explicitly — on Opus 4.8
+  omitting it runs *without* thinking. `budget_tokens` / `temperature` / `top_p`
+  / `top_k` are **never** sent (they 400 on Opus 4.8). Thinking blocks stream
+  with empty text (display omitted) — fine, but their signatures are preserved
+  when echoed back in the tool loop.
+- **System prompt** is an array with one stable text block carrying
+  `cache_control: {type: "ephemeral"}`; the big coaching prompt stays there.
+  **Volatile context (rig JSON + guitar profile) goes in the USER turn**, not
+  the system prompt, so caching works.
+
+### Tool schema (the AI's hands — small and typed)
+
+| Tool | Input | Effect |
+|---|---|---|
+| `set_param` | `{unit: "pedal"\|"amp", param, value 0..1}` | Sets a knob (clamped). Pedal: `dist`/`filter`/`level`; amp: `volume`/`bass`/`middle`/`treble`. |
+| `set_engaged` | `{unit: "pedal"\|"amp", engaged: boolean}` | Pedal bypass / amp power. |
+| `set_switch` | `{name: "bright"\|"cab", on: boolean}` | Amp bright / cab toggle. |
+
+Tool executor (`web/src/assistant/tools.ts`) operates through a `RigController`
+implemented by `App` over its existing setters, so the AI's changes move the
+knobs, reach the worklet, and persist. Each `tool_result` returns a short applied
+JSON (e.g. `{"applied":{"unit":"pedal","param":"dist","value":0.6}}`), and the
+change renders as a chip in the chat flow (e.g. `Dist 70 → 55`).
+
+### Guitar profile
+
+A small form in a settings well inside the chat panel (`Guitar` toggle):
+model (free text), pickup type (SSS/HSS/HH/P90/other), pickup position (free
+text or 1-5). Stored in localStorage under `clipper.guitar.v1` (separate from
+the rig's `clipper.rig.v1`), editable anytime, and injected into the assistant's
+per-turn context so advice is instrument-specific.
+
+### Chat UI (liquid glass)
+
+`web/src/components/Chat.tsx` + `web/src/styles/chat.css` port the approved glass
+design (backdrop blur, 1px specular edge, top sheen — `--glass-*` / `--ai`
+tokens): assistant bubbles on glass, user bubbles as inset wells, a typing
+indicator, applied tool calls as chips, and a pill input with a send button.
+Placed as a right-side panel next to the rig on wide screens; stacks below on
+narrow. Conversation is in memory (not persisted across reloads — fine for MVP).
+Error states (proxy down, no key) render as a clear in-chat notice with fix
+instructions.
+
+### How to run
+
+```bash
+# 1. The proxy needs a real Anthropic API key (this is the one path the test
+#    suite cannot cover — it must be verified live):
+export ANTHROPIC_API_KEY=sk-ant-...
+npm run server            # http://localhost:8787  (root package.json)
+
+# 2. The web app (separate terminal). Vite proxies /api -> :8787, so the app
+#    calls same-origin /api/chat and the key stays server-side.
+cd web && npm run dev     # http://localhost:5173
+```
+
+Model / env config (all read by `server/index.mjs`):
+
+| Env | Default | Meaning |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — (required for `/api/chat`) | Anthropic key; server-side only. |
+| `MODEL` | `claude-opus-4-8` | Injected server-side; client can't override. |
+| `MAX_TOKENS` | `8192` | Injected server-side. |
+| `PORT` | `8787` | Proxy port (matches the Vite dev proxy target). |
+| `MOCK` | `0` | `MOCK=1` **and no key** → `/api/chat` streams a canned `[mock]` SSE (dev, no spend). Ignored when a key is present. |
+
+### Security notes
+
+- The API key is read from the server's environment, used only as the
+  `x-api-key` header, and is **never** sent to the client, logged, or included in
+  any error body. Message contents are never logged. It does **not** appear in
+  the client bundle (the browser only ever talks to same-origin `/api`).
+- The tool surface is small and typed; the assistant never sends freeform
+  parameter values — only the three tools above, all clamped/validated.
+
+### Vercel-deploy note (handler is liftable)
+
+`server/handler.mjs` is dependency-free and split from the http glue on purpose:
+`buildUpstreamPayload` / `proxyChat` take an injected `fetch` and touch no Node
+globals. To deploy on Vercel, add `api/chat.js` and `api/health.js` (Vercel
+functions) that import from `handler.mjs`, read `process.env.ANTHROPIC_API_KEY` /
+`MODEL` / `MAX_TOKENS`, call `proxyChat`, and stream the upstream body back
+(`Response`/`ReadableStream`). Set the same env vars in the Vercel project;
+same-origin `/api/*` needs no CORS. `server/index.mjs` remains the local dev
+entry point.
+
+### Post-M6 hardening: history trimming, error categories, mock mode
+
+Three patterns ported (in spirit) from the sibling project *Riff* and adapted to
+Clipper's hand-rolled, dependency-free client + proxy.
+
+**1. Conversation-history trimming (`web/src/assistant/history.ts`).** A pure
+function, `trimHistory(messages)`, applied to the outgoing copy before **every**
+`/api/chat` request (in `client.ts`; the local `messages` array is left intact,
+so the live tool-use loop still echoes full thinking + tool_results). What it
+does and why:
+
+- **Caps** the window to the most recent `MAX_MESSAGES` (default **20**) — an
+  unbounded history grows cost + latency every turn.
+- For **older (completed) turns only**, it replaces each `tool_result`'s payload
+  with a tiny marker (`TRIMMED_MARKER = "[trimmed]"`) — the model still sees a
+  tool *ran*, without re-processing stale bytes — and **drops `thinking` /
+  `redacted_thinking` blocks** (they're only needed while a turn is live).
+- The **current in-flight turn is never touched**: thinking blocks (with their
+  signatures) and full tool_results in the active loop are echoed back verbatim,
+  as the API requires. The protected region is `min(current-turn-start,
+  last-KEEP_FULL)` (default `KEEP_FULL = 5`).
+- **Correctness invariants** (unit-tested): never exceeds the cap; the window
+  always starts on a genuine **user** turn (never a leading assistant turn or an
+  orphaned `tool_result` whose `tool_use` was capped away); `tool_use`/
+  `tool_result` pairing is preserved (a surviving `tool_use` keeps its block and
+  its matching `tool_result` survives with at least the marker); pure (no input
+  mutation). Constants are exported for testing.
+
+**2. Error classification (`web/src/assistant/errors.ts`).** A failed
+`/api/chat` is classified by HTTP status (or a network failure) into a
+`ChatErrorCode` with distinct, actionable copy (`CHAT_ERROR_COPY`), wired into
+the chat notice via `client.ts`:
+
+| Category | Trigger | Copy gist |
+|---|---|---|
+| `proxy_unreachable` | `fetch` itself throws (server down) | run `npm run server` |
+| `missing_key` | proxy **500** (also 401/403) | the proxy's own body (exact `export` command) is shown |
+| `rate_limited` | upstream **429** | wait a few seconds and retry |
+| `overloaded` | upstream **5xx** (529/503/502) | Anthropic briefly down, retry |
+| `unknown` | anything else | check the server logs |
+
+`refusal` (stop_reason) is still handled in the tool-use loop, unchanged. The
+proxy already **passes upstream status codes through faithfully** (`index.mjs`
+echoes `upstream.status`); a server test asserts 429/529/503/401 are not
+swallowed.
+
+**3. Keyless dev MOCK mode (`server/handler.mjs` `buildMockSse`).** When the
+server runs **without** `ANTHROPIC_API_KEY` **and** `MOCK=1`, `/api/chat` streams
+a canned SSE response instead of the 500, so the whole chat UX (streamed text +
+the tool-use loop + applied chips + a knob actually moving) works with **no key
+and no spend**. It is deterministic and clearly labeled `[mock]` in the text:
+
+- First request → a short `[mock]` line **+ one `set_param` tool_use** (pedal
+  `dist` → 0.40), so the loop runs and a knob visibly moves.
+- Follow-up request (now carries a `tool_result`) → a text-only `[mock]`
+  wrap-up.
+- `/api/health` reports `mock: true` (only when there's no key), so the chat
+  shows a friendly `[mock]` notice instead of the "no key" error.
+
+The **default keyless behavior is unchanged**: with no key and no `MOCK`,
+`/api/chat` still returns the clear 500 with fix instructions.
+
+```bash
+# Run the chat with no Anthropic key (canned, deterministic):
+MOCK=1 npm run server          # http://localhost:8787  hasKey=false, mock on
+cd web && npm run dev          # message -> streamed [mock] text + a knob moves
+```
+
+### Build and test (M6 + post-M6)
+
+```bash
+# Server unit tests (request shaping, status passthrough, mock SSE; fetch stubbed):
+npm run test:server            # 11 passed  (root package.json)
+
+# History-trimming unit tests (pure fn; Node 22 native TS type-stripping):
+npm run test:history           # 10 passed  (root package.json)
+
+# Web build + headless Playwright suite (15 tests = 10 audio/UI + 5 assistant):
+cd web && npm run build && npm test   # 15 passed
+```
+
+M6 web test coverage (`web/tests/assistant.spec.ts`, proxy MOCKED via
+`page.route` — **no live Anthropic call**): (a) streamed text renders in the
+chat; (b) a canned `set_param dist 0.55` tool_use visibly updates the knob
+readout + rig state and the follow-up request carries a `tool_result` block
+(asserted by inspecting the second request body); (c) proxy-down shows the error
+notice; (d) a 500 (no key) surfaces the server's error message; (e) a 429
+surfaces the friendly rate-limit copy (and the raw upstream text does **not**
+leak). The existing 10 audio/UI tests stay green. **The one thing the suite
+cannot cover is the live-key path** — a real end-to-end request to Anthropic
+requires a valid `ANTHROPIC_API_KEY` and must be verified by hand. The keyless
+`MOCK=1` path is verified against the real local server (curl / manual).
+
+## 11.1 M6.1 — RAT re-voice + input calibration + output level
+
+A bug-fix pass driven by a real-guitar report ("the RAT has no balls — even
+cranked it only gives a small amount of gain/saturation") plus a follow-up
+("it needs more volume — the whole rig is too quiet"). Root causes, in order of
+impact, and what changed.
+
+**Cause 1 (primary): input level.** A guitar through an audio interface arrives
+far below the model's `1.0f == 1 V` diode reference (DIs often peak 0.01–0.05),
+so at real-world knob settings the signal barely reaches the ±0.6 V diode knee —
+it stays clean/thin no matter how high DISTORTION goes. There was no calibration
+control. **Fix:** a rig-level **input trim** (−12…+24 dB, default 0 dB) applied in
+the worklet *before* the pedal (a sample multiply — no core change), plus a
+**peak meter** (the worklet reports the post-trim block peak; the UI meter marks
+the good zone ~−12…−3 dBFS). A/B (low-E pluck, `dist 0.5`, real level `amp 0.03`,
+tail RMS): **0.028** (no trim) → **0.077** (+12 dB) → **0.142** (+24 dB, into
+sustained clipping). This is the real "balls" fix.
+
+**Cause 2: over-aggressive / wrong pre-clip voicing.** M1 approximated the RAT
+op-amp EQ as a single low shelf cutting everything below 320 Hz to a flat
+−10.5 dB. **Fix:** re-voiced against the actual ProCo RAT LM308 non-inverting
+stage — `A(s) = 1 + Rf/Zg`, `Zg = (560 Ω+4.7 µF) ‖ (47 Ω+2.2 µF)` to ground,
+Rf = 100 k — a two-corner rise (≈60.5 Hz, ≈1539 Hz) that falls toward unity at DC
+rather than a fixed shelf floor. Implemented as `x − g1·LP₆₀ − g2·LP₁₅₃₉` (see §6
+bullet 1). Validated in `testPreClipVoicing` within **±1.5 dB** of the analytical
+target (worst 0.67 dB). *(ElectroSmash's ProCo Rat Analysis was requested for
+cross-check but the host is blocked by this environment's egress policy; the
+network is fully specified by the component values, so the response is derived
+analytically.)*
+
+**Cause 3: max gain too low.** `+54 dB` → **`+66 dB`** (`RAT_GAIN_DB_MAX`, i.e.
+`kDistMaxDb`) — the real RAT's ≈+66–67 dB HF plateau, so a cranked knob has the
+headroom to slam the diodes.
+
+**Cause 4 (task-1 live-path audit): no bug found.** Traced dist-knob →
+`setParam` → worklet `{param, unit:'pedal', id:0, value}` → `rat_set_param` →
+`RatModel::setParameter`: the 0..1 reaches the core **unscaled**; oversampling is
+a unity-passband cascade (the existing factor-1 bit-regression + 1 kHz
+0.0003 dB passband tests prove no gain is dropped); the worklet feeds the pedal
+the **raw** input (no hidden attenuation). Verified, no change.
+
+**Output level (task 4b).** The rig came out ~20 dB too quiet: the amp VOLUME
+default knob (0.4) sat at −21.6 dB under the M5 linear `−40…+6 dB` map, so a
+default render peaked at **−26.2 dBFS**. The cab IR is already ~unity-RMS
+(measured −1.1 dB for a guitar signal — no makeup needed), so the loss was
+entirely the volume taper. **Fix:** a loud-biased **audio taper**
+`db(knob) = +6 − 46·(1−knob)⁴`, so the design's default 0.4 == **unity** and the
+bottom third stays a usable quiet range (fades to silence at 0). A default render
+(0.1 input, 220 Hz) now peaks at **−2.7 dBFS** (+23.5 dB). A **soft limiter** on
+the worklet output (transparent below ±0.9, tanh knee to ±1.0) guarantees the
+louder staging never emits raw overs; a full-scale bypass passthrough picks up
+only ~0.6% 3rd harmonic. Validated: `testChainGain` (amp+cab ≈ unity at default),
+`testVolume` (audio taper: 0.4 = unity, +6 dB top, quiet bottom), and a Playwright
+full-chain render (healthy peak + never overs).
+
+**Assistant.** `set_param` now also accepts `unit:"input"`, `param:"trim"`
+(0..1 → −12…+24 dB); the per-turn rig context carries the input trim (dB) and the
+live post-trim peak (dBFS) so the coach can diagnose "no balls" as an input-level
+problem and raise the trim.
+
+**A/B evidence.** `bash core/scripts/ab_render.sh` builds the OLD model
+(HEAD `RatModel`, +54 dB + 320 Hz shelf) beside the NEW one and renders matched
+pluck/sine/sweep signals to an untracked `core/.ab-scratch/` (peak/RMS + spectra).
+Output-level before/after: default rig cab peak **−26.2 → −2.7 dBFS**.
+
+**Files changed.** Core: `src/dsp/RatModel.cpp` (voicing + +66 dB),
+`src/dsp/AmpModel.cpp` (+ `.h` comment; volume taper), `tools/render/main.cpp`
+(`pluck` generator), `tests/test_rat_model.cpp` (+`testPreClipVoicing`,
+regenerated factor-1 golden), `tests/test_amp_model.cpp` (+`testChainGain`,
+rewritten `testVolume`, updated smoothing bound), `scripts/ab_render.sh` (new).
+Web: `worklet/clipper-processor.js` (input trim + peak + limiter),
+`src/params.ts`, `src/rig.ts` (`input` section), `src/audio.ts`, `src/App.tsx`,
+`src/components/InputStage.tsx` (new), `src/styles/app.css`,
+`src/assistant/{tools,prompt}.ts`, `src/components/Chat.tsx`, and the two test
+specs (+ `playwright.config.ts` retries for the known WebAudio flake).
+
+## 11.2 M6.3 — JC-120 chorus & vibrato (the amp goes stereo)
+
+The Roland JC-120's soul is its stereo chorus/vibrato. This milestone models it
+and takes the rig **stereo from the amp stage on**.
+
+### Circuit rationale (what the real amp does)
+
+After the preamp and spring reverb, the JC-120's signal **forks into two
+independent power-amp + speaker paths**: one **dry**, one through a
+**bucket-brigade (BBD) delay** whose clock is swept by an LFO. The knobs are
+**Speed** and **Depth**; a 3-way selects the character:
+
+- **Chorus** — dry to the LEFT speaker, modulated-wet to the RIGHT. The famous
+  "chorus" is not a wet/dry electrical mix — it is the **acoustic sum of the two
+  speakers in the room** (or the listener's two ears): a ~5 ms delay difference
+  plus movement, heard as width and shimmer with comb-filter motion.
+- **Vibrato** — the modulated signal to **both** speakers (no dry reference), so
+  you hear true **pitch wobble** rather than chorus.
+
+We model the fork faithfully, not the room: **preamp/tone → chorus split →
+per-side cab**. There is no reverb block in Clipper yet, so the split sits right
+after the tone stack + volume.
+
+### DSP (`core/src/dsp/ChorusModel.{h,cpp}`)
+
+A single modulated delay line that splits mono → stereo, owned by `AmpModel`
+(which routes its `PARAM_CHORUS_*` here).
+
+- **Interpolation — 4-point Lagrange (cubic), not all-pass.** The read tap sweeps
+  continuously and **reverses direction twice per LFO cycle**. All-pass
+  interpolation is recursive (stateful), so a fast reversal rings its internal
+  filter and smears transients; Lagrange is **stateless** — every sample is
+  interpolated from scratch with flat-ish group delay and no reversal artifact.
+  Cubic (vs linear) keeps the moving-tap HF loss inaudible.
+- **LFO — sine, not triangle.** The BBD clock sweeps triangle-ish, but a
+  **triangle delay sweep makes the pitch deviation a square wave** — it snaps
+  between +Δ and −Δ cents with an audible chirp at each reversal. A **sine** delay
+  sweep gives a smooth cosine pitch deviation: musical, and what the ear reads as
+  "the JC chorus." (Documented tradeoff — authenticity of the clock waveform vs.
+  the artifact-free result; we chose the result.)
+- **Numbers (tuned in `ChorusModel.cpp`):**
+  - base delay **5.0 ms** — decorrelates the wet side for the stereo bloom;
+    long enough to widen, short enough not to read as slapback.
+  - depth `0..1` → sine sweep **0 .. 3.5 ms peak** (squared taper, `A = depth²·3.5 ms`;
+    widened from 1.5 ms linear on field feedback that the effect was too subtle).
+    Full depth swings the wet delay 5 ± 3.5 ms (1.5..8.5 ms) — always well inside the buffer and
+    far above the interpolator floor.
+  - speed `0..1` → LFO rate **~0.15 .. 8 Hz**, **log** mapped
+    (`rate = 0.15·(8/0.15)^speed`) so the musical 0.5–3 Hz range fills most of the
+    knob.
+- **Peak pitch deviation.** For `delay(t) = D0 + A·sin(ωt)` the instantaneous
+  fractional pitch shift is `−d(delay)/dt = −A·ω·cos(ωt)`, so the **peak** is
+  `A·2π·f`, i.e. in cents `≈ (1200/ln2)·A·2π·f ≈ 38.1 · depth² · f_Hz`
+  (with `A = depth²·3.5 ms`). Examples: **depth 1 @ 2 Hz ≈ 76 ¢**, depth 1 @ 5 Hz
+  ≈ 82 ¢, depth 0.5 @ 2 Hz ≈ 16 ¢. Deviation grows with **both** depth and rate
+  — the physical truth of a fixed-excursion swept delay; the 1.5 ms cap keeps a
+  full-depth mid-rate vibrato lush (~30–40 ¢) rather than seasick.
+- **OFF is bit-exact.** Mode 0 copies the input to both sides untouched
+  (`L == R`, and `== AmpModel::process()`'s mono voice, bit-for-bit).
+- Depth (as sweep-in-samples) and rate (Hz) are one-pole smoothed (~8 ms); the
+  LFO phase is continuous so a rate change never clicks. Mode is a **hard switch**
+  (a deliberate footswitch action, like the pedal/amp bypass elsewhere).
+
+### Stereo architecture & CPU
+
+`AmpModel::processStereo(in, outL, outR, n)` runs the tone stack + volume (the
+same mono voice as `process()`) into `outL` as scratch, then splits via the
+`ChorusModel`. The **cab IR runs per side** — two `CabConvolver` instances in the
+C ABI's `AmpChain` (`cabL`, `cabR`, same IR). This is required, not optional: in
+chorus mode L and R are genuinely different signals, so mono-summing before a
+single cab would collapse the bloom. The stereo entry points are additive:
+`amp_process_stereo` (C ABI) and the worklet's stereo output path; the old mono
+`amp_process` + single `cabL` stay for compatibility.
+
+**CPU (from `testChorusPerf`, amp + chorus + BOTH cabs, 1 s of audio):**
+
+| Sample rate | Time for 1 s | Fraction of one core |
+|---|---|---|
+| 44.1 kHz | ~6.3 ms | ~0.6 % |
+| 96 kHz | ~14.2 ms | ~1.4 % |
+
+The second convolution roughly doubles the cab cost (single cab was ~2.3 ms at
+44.1 k) but the whole stereo chain is still **>150× faster than real time** — the
+worklet can afford two proper per-side cabs comfortably, so we never compromise
+the chorus by summing to mono.
+
+### Test method — how the pitch deviation is measured
+
+`testChorusVibrato` (in `core/tests/test_amp_model.cpp`) renders a steady 1 kHz
+probe through vibrato at a **known** rate (the speed knob is inverted from the log
+map to hit exactly 3 Hz) and depth 0.7. It finds **positive-going zero crossings**
+with linear interpolation, converts each crossing-to-crossing period to an
+instantaneous frequency (`f = fs/period`), and takes the **peak** `|1200·log2(f/f0)|`
+over the tail. That measured peak is asserted within a broad band (½..1½×) of the
+`16.3·depth·f` prediction — deterministic, FFT-free, and it exercises the whole
+`AmpModel::processStereo` path. (Zero-crossing spacing averages over a signal
+period, so it reads slightly under the instantaneous peak; the band accounts for
+that.) Companion tests: `testChorusOff` (L==R bit-exact and == mono voice),
+`testChorusChorus` (L is the bit-exact dry voice; R's noise cross-correlation
+peaks at the ~5 ms base lag and is decorrelated at zero lag), `testChorusPerf`.
+
+### Web plumbing
+
+- **Worklet** (`web/worklet/clipper-processor.js`) allocates `outL`/`outR` heap
+  buffers and calls `amp_process_stereo`; the M6.1 soft limiter runs **per
+  channel**. Amp power-off copies the mono pedal signal to both sides. A
+  1-channel output (a mono `OfflineAudioContext`) takes the LEFT side only, so the
+  pre-M6.3 mono audio tests still read the same signal. The peak meter still taps
+  the **post-trim input** (mono, pre-pedal) — unchanged.
+- **Node** (`web/src/audio.ts`) is created with `outputChannelCount: [2]`.
+- **RigState** (`web/src/rig.ts`) `amp.params` gains `speed`, `depth`, and
+  `chorusMode` (0/1/2). `normalizeRig` fills them from defaults, so a pre-M6.3
+  saved rig loads with **chorus off** (migration tested).
+- **UI** (`web/src/components/Amp.tsx`, `styles/amp.css`) adds a second facia row:
+  **Speed** + **Depth** knobs (shared `Knob`) and an **Off / Chorus / Vibrato**
+  3-way selector (carved neu segments, active one lit like the bright/cab levers).
+- **Assistant** (`web/src/assistant/{tools,prompt}.ts`): `set_param` gains
+  `speed`/`depth` (unit `amp`); the 3-way mode reuses **`set_switch`** with the
+  name enum extended to `chorus`/`vibrato` (mutually exclusive — turning one on
+  selects it, off returns to mode 0), the minimal-diff option consistent with how
+  `bright`/`cab` already work. The per-turn rig context already carries the full
+  amp params, so the coach sees the chorus state for free.
+
+### Build and test (M6.3)
+
+```bash
+cd core && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+ctest --test-dir build          # 3/3 (clipper_amp_tests gains 4 chorus tests)
+cd .. && bash scripts/build-wasm.sh   # now compiles ChorusModel, exports amp_process_stereo
+cd web && npm run build && npm test   # 19 Playwright (17 + stereo chorus + assistant chorus)
+```
+
+## 11.3 M6.4 — Pedalboard visual pass (stackable, reorderable chain)
+
+M6.4 turns the single pedal into a **stackable, drag-reorderable chain** joined by
+neumorphic cables, with add / remove / swap from a gear tray and the amp fixed at
+the end (with an amp-swap affordance). This is the architecture every later pedal
+(M7 tuner, M8 SD-1) and amp (M9 JCM800) plugs into. **No core / C-ABI / `core/` /
+`scripts/` change** — the RAT model is already handle-based (pimpl, per-instance,
+only `constexpr`/pure helpers in its anonymous namespace), so **multiple RAT
+instances are independent and stack safely with no DSP changes** (verified). All
+the new work is in `web/`.
+
+### RigState — the chain (`web/src/rig.ts`)
+
+The single `pedal` became an **ordered chain** `pedals: PedalInstance[]`. Each
+instance has a stable `id` (used by the worklet to reuse its DSP handle across
+reorders, and by the UI as the React key / drag id), a `type` (`'rat'`), `engaged`,
+and `params`. The amp already carried `type: 'clean120'`.
+
+```jsonc
+{
+  "input": { "trim": 0.333 },
+  "pedals": [
+    { "id": "rat-1-x9f2a", "type": "rat", "engaged": true,
+      "params": { "distortion": 0.7, "filter": 0.4, "level": 0.8 } }
+    // ...more instances; may be EMPTY (guitar straight into the amp)
+  ],
+  "amp": { "type": "clean120", "engaged": true, "params": { /* … M6.3 … */ } },
+  "oversampling": 4,
+  "source": "test"
+}
+```
+
+**Migration (tested).** `normalizeRig` accepts three shapes, in priority order:
+(1) a `pedals` array (normalize each; an **empty** array is valid); (2) a legacy
+single `pedal` object (M4..M6.3) — **wrapped into a one-element chain**; (3)
+neither — the default one-RAT chain. So old saved rigs and preset JSON keep
+loading. `AVAILABLE_PEDAL_TYPES` / `AVAILABLE_AMP_TYPES` and `makePedal(type)` /
+`newPedalId(type)` are the seams the gear tray and future gear use. The JSON stays
+the round-trip preset format (a valid multi-pedal rig round-trips byte-for-byte).
+
+### Worklet — dynamic chain + click-free switching (`web/worklet/clipper-processor.js`)
+
+The worklet now owns an **ordered array** of pedal nodes `{ id, handle, engaged }`
+(created at construction with one default RAT so the legacy offline tests, which
+never send a `chain` message and address `unit:'pedal'`, keep working) plus the one
+amp instance. Per block it **ping-pongs** the mono signal through each *engaged*
+pedal (bypassed pedals are skipped), then the stereo amp stage. Latency now **sums
+the engaged pedals'** oversampling group delays + the cab partition.
+
+**Message protocol (additions).** A new `chain` message
+`{ type:'chain', pedals:[{id,type,engaged,params}] }` sets the whole topology;
+`param` / `bypass` gained an optional `pedalId` (missing = the first pedal, for
+back-compat). `oversampling` applies globally to every pedal handle.
+
+**Click-free chain edits — a declick output fade (documented choice).** Chain
+edits (add / remove / reorder / swap) can step the output waveform (a suddenly
+inserted distortion, a reordered nonlinear stage). Rather than crossfade two
+parallel chains (which would double-advance the handles that a reorder *reuses*),
+the worklet brackets every chain swap with a short **raised-cosine output fade**
+(`DECLICK_SECONDS = 6 ms` each way): on a `chain` message it prepares the new node
+list in the message handler (**reusing handles by id**, creating new ones,
+deferring destruction — *no allocation inside `process()`*), ramps the output to
+**zero**, performs the topology swap **exactly at that zero** (a cheap reference
+swap), then ramps back up. Because the discontinuity always lands at output-zero
+there is **no step/pop and no zipper**. A plain knob change is *not* bracketed —
+the core's ~5 ms one-pole smoothing already declicks those, so knob moves during
+play use the light `param` message (no fade). Verified click-free by an
+`OfflineAudioContext` render (the reorder test asserts same-order determinism —
+bit-identical — and that order A vs B differ).
+
+### UI — the board (`web/src/components/Board.tsx`, `styles/board.css`)
+
+`Board` replaces the old `pedal + amp` `.rig` row. Layout: a **guitar-in jack →
+pedal instances → amp** left-to-right chain that **wraps on overflow** (the app's
+`.wrap` caps content at 1120 px, so 2+ pedals wrap — expected). Each unit is a
+positioning wrapper carrying two **side jacks** (carved sockets) and a floating
+**control rack** (drag grip, ◀ ▶ move, ⇄ swap, ✕ remove, position number).
+
+**Neumorphic cables.** An absolute SVG overlay *behind* the units draws one
+**catenary path** per hop (`source.out → pedal0.in → … → amp.in`): a cubic Bézier
+with both control points pulled **down** (gravity droop, sag ∝ span). Each cable is
+three layered strokes — a `--cable` rubber body, a `--cable-hi` specular top edge
+(nudged up 1.4 px), and `--cable-plug` end plugs — under a `drop-shadow(var(--sh-
+dark))` cast shadow, so it reads as a rubber patch cable lying on the surface. Jack
+centers are **measured from the live DOM** (`getBoundingClientRect`) and the paths
+**redraw on** mount, chain edit, `ResizeObserver`, window resize, and every
+`requestAnimationFrame` during a drag. New tokens `--cable` / `--cable-hi` /
+`--cable-plug` were added to all four theme blocks in `tokens.css`
+(porcelain/graphite) — everything stays inside the token system.
+
+**Drag reorder — hand-rolled, no @dnd-kit (justified).** Reorder is pointer-event
+based with pointer capture and **live reorder** (the dragged unit keeps its
+`key={id}`, so its DOM node — and the capture — survive the array change): the same
+proven pattern as `Knob.tsx`. We deliberately **did not** add `@dnd-kit`: this is a
+single horizontal list of a few items, the repo has **zero UI dependencies**, and
+avoiding the dep keeps the offline build hermetic. **Keyboard accessibility** is
+covered by explicit ◀ ▶ move buttons (focusable, `aria-label`ed) on each pedal.
+
+**Gear tray + amp slot.** An "Add pedal" tray (popover listing
+`AVAILABLE_PEDAL_TYPES` = RAT today, with a "more coming" note) sits before the
+amp; **swap** = a per-pedal ⇄ menu (remove+add in place — plumbing ready for when
+more types exist); the **amp slot** has a "Clean 120 (JC-120 style) ▾" select with
+the same pattern ("more amps coming"). **Empty chain** shows a "guitar straight into
+the amp" note and still runs.
+
+### Assistant — chain awareness (`web/src/assistant/{tools,prompt}.ts`)
+
+`set_param` / `set_engaged` gained an optional **`pedal`** field (0-based instance
+index, default 0) so the coach can address a specific instance; chips tag the
+position (`Dist #2 70 → 30`) when there is more than one pedal. Three small typed
+chain ops were added — **`add_pedal`** `{type, position?}`, **`remove_pedal`**
+`{index}`, **`move_pedal`** `{from, to}` — keeping the surface minimal and typed.
+The per-turn rig context already dumps the full `pedals` array (ids + order), so the
+coach sees the chain for free; the system prompt now teaches that the chain is an
+ordered, editable list (order matters for nonlinear dirt) addressed by index.
+
+### Build and test (M6.4)
+
+```bash
+# Core is UNCHANGED (verified multi-instance needs no C ABI change):
+cd core && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+ctest --test-dir build          # 3/3
+cd .. && bash scripts/build-wasm.sh   # WASM binary unchanged; re-copies the new worklet
+cd web && npm run build && npm test   # 25 Playwright (19 + 6 new)
+```
+
+New Playwright coverage (`tests/audio.spec.ts`, `tests/assistant.spec.ts`):
+reorder of two RATs changes the render (order A vs B differ) and same order is
+bit-deterministic; adding a pedal changes the sound and an **empty chain** passes
+through clean; the board draws SVG cables between units and the gear tray
+adds/removes pedals (empty-chain note appears, cable count tracks the chain); the
+move buttons reorder the chain in rig state + worklet; an old single-`pedal` rig
+migrates to a one-element chain; the multi-pedal rig round-trips through JSON; and
+the assistant can address a pedal **instance by index** (`set_param` `pedal:1`
+moves the second pedal only). Both themes were screenshotted at the 2-pedal state
+(board with cables, gear tray, amp swap) for the visual eyeball.
+
+## 11.4 M6.5 — Fizz fixes: LM308 op-amp model + clean-path re-staging
+
+Two independent fixes for a user report that the rig sounds **fizzy** — "the audio
+model is updated but it's fizzy," and, critically, "it's fizzy with it [the RAT]
+off too." The second clause pointed at the **clean, pedal-bypassed** path, which
+turned out to be the *dominant* fizz source. Both are reported below with numbers.
+
+### Fix A (dominant): the clean path was soft-clipping every cycle
+
+**What was missing / wrong.** With the RAT bypassed the chain is `input(trim) →
+amp (linear) → cab (linear) → output soft-limiter`. The only nonlinearity is the
+M6.1 output limiter (transparent below ±0.9, tanh knee to ±1.0). M6.1 also made
+the amp **loud**: a quartic volume taper with a **+6 dB ceiling** whose default
+knob (0.4) sat at **unity**. At realistic input levels (the trim's −12…−3 dBFS
+target zone) the amp+cab output ran **past full scale** — so the limiter
+soft-clipped **on every cycle**. Soft-clipping a clean amp = fizz.
+
+Measured *before* (default rig, pedal bypassed, 44.1 k, sine at a −3 dBFS input
+peak, tail THD):
+
+| f0 | amp+cab out-peak (no limiter) | THD with 0.9 limiter |
+|---|---|---|
+| 220 Hz | 1.67 | **−35.7 dB** (audibly fizzy) |
+| 2.5 kHz | 1.77 | **−33.3 dB** |
+
+**Fix — one coherent level plan.** The amp is a **clean platform**, so its
+ceiling is **unity (clean full scale)**, not +6 dB, and the safety limiter is
+raised and given real headroom:
+
+```
+guitar/DI ──▶ input trim ──▶ [pedal chain] ──▶ amp volume taper ──▶ cab ──▶ output limiter ──▶ out
+             target post-trim   (RAT, bypassable)   quartic, UNITY ceiling   ~unity      SAFETY only,
+             peak −12…−3 dBFS                        default knob 0.4≈−6 dB   passband    transparent <0.97
+```
+
+- **Volume taper** (`AmpModel.cpp`): `db(knob) = kVolMaxDb − 46·(1−knob)⁴` with
+  **`kVolMaxDb = 0`** (was +6). Same *shape/feel* (span unchanged, so the tone/
+  volume-sweep tests, which assert on spans, are untouched); the ceiling is pulled
+  to unity. Default 0.4 now sits at **−6 dB** — deliberate headroom, still ~+16 dB
+  louder than the original M5 default (−21.6 dB), so the M6.1 "more volume" win is
+  kept and the knob still offers ~+6 dB of clean boost above the default.
+- **Output limiter** (`OutputLimiter.h`, mirrored in the worklet as `LIM_THRESH`):
+  threshold **0.9 → 0.97**, a narrow tanh safety knee. It now only catches genuine
+  transient overs.
+
+Measured *after* (default rig, pedal bypassed): the amp+cab output peaks at a
+−3 dBFS input are **0.72 (220 Hz) / 0.48 (1 kHz) / 0.84 (96 k 220 Hz) / 0.63
+(low-E pluck)** — all **below 0.97**, so the limiter is **bit-transparent** (never
+engages) → the clean path adds **zero** distortion. A/B render (pedal-bypassed
+`--chain clean`, 220 Hz sine at a −3 dBFS input): **OLD staging peaks 1.000**
+(constant limiting) → **NEW staging peaks 0.856** (dormant).
+
+`testCleanPathTHD` (both sample rates, sines + a low-E pluck) asserts the exact
+fix: amp+cab out-peak **< 0.97** and the limiter **bit-transparent**. We do *not*
+assert an absolute THD bar because the M5 cab convolver has pre-existing
+discrete-bin float-FFT artifacts (present with or without the limiter, at both
+rates for some frequencies) that would confound it; the limiter-dormancy pair is
+exact, SR-independent, and *is* the fix. `testChainGain` was updated for the new
+staging (amp 0.4 ≈ −6 dB, amp+cab in a headroom band below unity).
+
+### Fix B: the LM308 op-amp — the classic digital-RAT fizz
+
+**What was missing.** M1..M6.1 used an **ideal** op-amp in the RAT gain stage:
+infinite bandwidth and slew rate passed razor edges straight to the diode clamp.
+The real ProCo RAT's **LM308** has two limits the model now reproduces
+(`LM308Stage.h`), placed at the **op-amp output node** — after the
+frequency-dependent gain, before the shunt-diode clamp, **inside** oversampling:
+
+1. **Gain-tracking closed-loop bandwidth.** One-pole low-pass with corner
+   `f_c = GBW / A_noise`, where `A_noise` is the DISTORTION-knob plateau (noise)
+   gain, refreshed per chunk from the smoothed pre-gain (so it glides click-free).
+   **`GBW = 1.0 MHz`** — the LM308's documented unity-gain bandwidth with its
+   ~30 pF compensation (the "0.5–1 MHz" range). At the +66 dB plateau (A ≈ 1995)
+   the corner **collapses to ~500 Hz** (thick, not fizzy); at unity gain it is
+   1 MHz (clamped to the oversampled Nyquist — transparent).
+2. **Slew-rate limiter.** A hard per-sample dV clamp at **`SR = 0.3 V/µs`**
+   (LM308 datasheet-typical with standard compensation; referred to our
+   `1.0f == 1 V`, i.e. 0.3e6 V/s). Rounds the steep edges. It is a genuine
+   nonlinearity — hence inside oversampling; ADAA is not trivially applicable to a
+   slew clamp, so **measurement decides** (below).
+
+It is the pedal's fixed identity (no user knob). `setIdealOpAmp(true)` bypasses it
+for measurement only (like `setStage2Mode`); the render tool exposes it as
+`--ideal-opamp`.
+
+**Closed-loop corner tracks GBW / A** (`testClosedLoopBandwidth`, measured by
+ratioing the small-signal response at high gain against DISTORTION=0 so the
+shaping / shunt-cap / FILTER / diode-slope all cancel):
+
+| DISTORTION | plateau gain A | analytic f_c = GBW/A | measured f_c (44.1 k / 96 k) |
+|---|---|---|---|
+| 0.0 | ×1 | 1.00 MHz | (clamped to Nyquist — transparent) |
+| 0.5 | ×44.7 | 22.4 kHz | (above audio) |
+| 0.7 | ×204 | **4898 Hz** | **4975 / 4956 Hz** |
+| 0.85 | ×638 | 1567 Hz | — |
+| 1.0 (+66 dB) | ×1995 | **501 Hz** | **512 / 512 Hz** |
+
+**Slew limiter** (`testSlewRate`, LM308Stage unit-tested with a big step + a 1 kHz
+square): measured max |dV/dt| = **0.3000 V/µs** at both 44.1 k and 96 k (exact —
+the clamp caps every per-sample delta at SR·dt). Verified it does not itself alias
+badly at the shipped 4× (below); at **2×** the slew nonlinearity *is* a few dB
+worse than 1× (documented tradeoff — 2× is not the shipped factor).
+
+**Aliasing re-measured at dist = 1.0 (+66 dB)** — 12 dB hotter into the clipper
+than M2's dist-0.9 bar (`testAliasingAtMaxGain`, f0 = 4186 Hz, worst-alias rel.
+fundamental, shipped 4×, LM308 on):
+
+| base rate | 4× worst-alias (LM308 on) | M2 audibility bar | margin |
+|---|---|---|---|
+| 44.1 kHz | **−88.5 dB** | −60 dB | 28.5 dB |
+| 96 kHz | **−104.4 dB** | −60 dB | 44.4 dB |
+
+So 4× **passes the M2 bar with wide margin at +66 dB** — no OS increase needed;
+the BW/slew band-limiting actually *helps* at 4× (−88.5 vs −80.9 dB ideal-op-amp).
+Because the slew nonlinearity aliases at low OS, the M2 monotonic regression
+(`testAliasingMonotonic`) now measures the **oversampled clipper in isolation**
+(`setIdealOpAmp(true)`), reproducing the exact pre-M6.5 numbers (1×=−18.6 →
+8×=−90.5 at 44.1 k); the shipped LM308 path's max-gain aliasing is the table
+above. The factor-1 golden regression was regenerated (the LM308 is in the path at
+every factor).
+
+**Perceptual (HF-energy) note — an honest, modest result.** For a low-E+high-E
+dyad at dist 1.0 / filter 0.3, the LM308 drops the output **spectral centroid
+1082 → 950 Hz** (darker — "thick not fizzy"), but the absolute >5 kHz output
+energy barely moves (~0.5–0.9 dB): in *this* model the post-clip **Filter** knob
+and the hard diode clamp already govern output brightness, so the LM308's LP
+(which sits *before* the clamp) mainly shapes what the clipper *sees* — its larger
+quantified wins are the aliasing headroom above and the edge/transient rounding.
+The user's *dominant* fizz was Fix A (the clean path). Listen via the A/B renders.
+
+### A/B renders + verification (M6.5)
+
+`bash core/scripts/ab_render.sh` now also emits (untracked `core/.ab-scratch/`):
+
+- **Fizz A/B (RAT):** high-E pluck + high-E sine, dist 1.0, `--ideal-opamp` (LM308
+  **off** = fizzy) vs on (thick), with spectra.
+- **Clean-path A/B:** pedal-bypassed `--chain clean`, **OLD** binary
+  (`--limiter-thresh 0.9`, HEAD +6 dB taper) vs **NEW** (`0.97`, unity taper), at a
+  −3 dBFS input — OLD peaks 1.000 (limiting), NEW ~0.86 (dormant).
+
+New render-tool flags: `--ideal-opamp`, `--chain rat|clean`, `--limiter-thresh T`.
+
+```bash
+# Core (all suites green, 44.1k + 96k): M0 + RAT(+LM308 corner/slew/max-gain) + amp(+clean-path)
+cd core && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build && ctest --test-dir build   # 3/3
+# WASM (LM308 in RatModel; worklet LIM_THRESH 0.97) — COMMITTED artifacts update:
+cd .. && bash scripts/build-wasm.sh
+# Web (no UI change — the LM308 is not a knob) + full suite:
+cd web && npm run build && npm test        # 25 Playwright
+cd .. && npm run test:history              # 10
+node --test server/handler.test.mjs        # 11
+# A/B evidence:
+bash core/scripts/ab_render.sh
+```
+
+**Files changed (M6.5).** Core: `include/clipper/dsp/LM308Stage.h` (new),
+`include/clipper/dsp/OutputLimiter.h` (new), `src/dsp/RatModel.{h,cpp}` (LM308 +
+`setIdealOpAmp`), `src/dsp/AmpModel.cpp` (unity volume ceiling),
+`tools/render/main.cpp` (`--ideal-opamp` / `--chain` / `--limiter-thresh`, clean
+chain), `tests/test_rat_model.cpp` (closed-loop BW + slew + max-gain aliasing tests,
+monotonic isolates the clipper, regenerated golden), `tests/test_amp_model.cpp`
+(clean-path THD test, updated chain-gain), `scripts/ab_render.sh` (fizz + clean
+A/B). Web: `worklet/clipper-processor.js` (`LIM_THRESH` 0.97),
+`public/generated/clipper.js` + `clipper-processor.js` (rebuilt, committed). No UI
+changes (no new knobs — the LM308 is the pedal's identity, not user-adjustable).
+
+## 11.5 M6.6 — Clean-path fizz, root-caused: gain-riding limiter + peak-normalized cab IR
+
+Field report after M6.5: still "fizzy — only with the cab on; the RAT is fixed."
+Two root causes, both structural:
+
+1. **The cab IR could BOOST.** The IR was normalized to unity at 1 kHz, leaving
+   its +3 dB presence bump (2.5 kHz) above unity — engaging the cab pushed
+   presence-band peaks INTO the output limiter. Fix: the IR is now normalized to
+   its SPECTRAL PEAK (max |H(f)| = 1 over 40 Hz–16 kHz): a cab may color, never
+   boost. 1 kHz now sits ≈ −3 dB; the documented relative shape is unchanged;
+   default chain gain moved from ≈ −7 dB to ≈ −10..−12 dB (testChainGain band
+   updated; the Playwright loudness floor updated accordingly).
+2. **The limiter was a waveshaper.** Any tanh knee bends every sample above
+   threshold into harmonics — riding into it at ALL means fizz. Replaced with a
+   **lookahead gain-rider** (`OutputLimiter`, mirrored as `LookaheadLimiter` in
+   the worklet): 64-sample lookahead delay + monotonic-deque sliding maximum →
+   target gain = ceiling/peak; attack completes inside the window, **50 ms
+   hold** (prevents inter-peak gain ripple = AM sidebands), 40 ms release,
+   double-precision gain accumulator (a float32 gain stalls below the
+   snap-to-unity threshold near 1.0 — observed at 96 kHz). Gain scaling adds
+   ZERO harmonics; when no over is in the window the gain is exactly 1.0 and the
+   output is bit-identical to the delayed input. Hard clamp at ±1 remains as a
+   never-engaged backstop. Latency +64 samples (~1.3–1.5 ms).
+
+Measured (`testLimiterGainRiding`, 44.1 k & 96 k): steady 220 Hz at +1 dB over →
+output pinned at the 0.97 ceiling with THD < −70 dB (the tanh measured ~−35 dB
+here — that WAS the fizz); after the over ends the gain recovers to EXACT unity
+(bit-transparent) within ~0.4 s. `testCleanPathTHD` transparency is now
+delayed-bit-identity through the real stateful limiter.
+
+Render-tool contrast: `--limiter-thresh` now sets the gain-rider ceiling; the
+legacy tanh `softLimit()` remains in the tool ONLY for OLD-tree A/B builds.
+
+## 11.6 M8 — Boss SD-1 Super Overdrive: the soft, asymmetric contrast to the RAT
+
+The second dirt box, and a deliberate topology contrast. Where the RAT clamps
+hard and symmetrically to ground (odd harmonics, aggressive), the SD-1 clips
+**softly and asymmetrically inside the op-amp feedback loop** — a clean signal
+component always passes, the knee is gradual, and 2-vs-1 diodes add even-harmonic
+warmth. Files: `core/include/clipper/dsp/{SdModel.h,AsymSoftClipper.h}`,
+`core/src/dsp/SdModel.cpp`, `core/tests/test_sd_model.cpp`; C ABI `sd_*` in
+`clipper_c_api.cpp`; `--pedal sd1` in the render CLI; worklet `sd1` dispatch;
+`rig.ts` / Pedal / gear-tray / assistant wiring.
+
+### The circuit → the model (analytic targets, all derived from the values)
+
+- **Non-inverting gain with feedback clip.** `V_out = V_in + f(K·HP720(V_in))`,
+  where `f` is the asymmetric soft clipper. Feedback `Zf` = 1 MΩ DRIVE pot;
+  to-ground leg `Zg` = 4.7 kΩ + 0.047 µF. The non-inverting gain
+  `A(s) = 1 + Zf/Zg = 1 + K·HP(s)` is a **mid-hump**: unity at DC, rising through
+  the corner `f_mid = 1/(2π·4.7k·0.047µF) = 720.5 Hz` to the HF plateau `1+K`.
+  `K = Zf/R_g`; at max DRIVE `K = 1e6/4.7e3 = 212.8` → plateau **+46.6 dB**. The
+  clean `+V_in` pedestal is the Tube-Screamer trait: bass below ~720 Hz stays
+  comparatively clean while mids/highs are slammed.
+- **DRIVE** maps linear-in-dB over plateau `[+12, +46.6] dB` (K = 4 .. 214). Min
+  is NOT unity — a hot input still clears the ~0.5 V knee, so there is no fully
+  clean setting (measured light clip, THD ≈ 1 % at 0.30 V, DRIVE 0).
+- **Asymmetric soft clip** (`AsymSoftClipper`, ADAA): `f(u) = Vc·tanh(u/Vc)` with
+  `Vc = Vp = 0.95 V` (2 diodes) for `u ≥ 0`, `Vn = 0.50 V` (1 diode) for `u < 0`.
+  Continuous C1 antiderivative → first-order ADAA applies across the sign
+  boundary. **Why ADAA not WDF:** chowdsp_wdf ships a *symmetric* diode pair only;
+  the SD-1's soft feedback limiter is well-captured by the tanh closed form and
+  ADAA antialiases it cleanly, so ADAA is the SD-1's PRODUCTION nonlinearity
+  (RAT stays WDF). A naive path is kept for the aliasing A/B.
+- **4558 op-amp** (`LM308Stage` reused, 4558 values GBW = 3 MHz, slew = 1.7 V/µs
+  — much faster than the RAT's LM308). Closed-loop corner `GBW/A_noise`; at the
+  +46.6 dB max (A = 214) it sits at **14.0 kHz** — high enough that the mid-hump
+  voicing is unaffected in-band, only a gentle top-octave softening at max drive.
+  *Approximation (as M6.5):* the band-limit/slew act on the amplified feedback
+  drive `u`, not the unity-gain clean pedestal (whose own corner is GBW/1 = 3 MHz).
+- **Tone control** — a first-order treble TILT about a ~1 kHz pivot, ±12 dB as
+  TONE sweeps 0..1, **transparent at noon** (0.5). This matches the published
+  SD-1 tone response SHAPE (progressive treble cut/boost, bass ~fixed) without
+  modelling the exact 10k-pot/0.018µF/0.027µF network — a documented
+  approximation. A ~12 Hz output DC-blocker (the coupling cap) removes the DC the
+  asymmetric clip produces. LEVEL is a clean linear gain (identity, as the RAT).
+- **M2 reused directly:** only the feedback clip runs oversampled (default 4×);
+  the op-amp model and ADAA both live at the oversampled rate; the pedestal is
+  upsampled alongside so it stays sample-aligned (no separate delay line).
+
+### Validation (ctest `clipper_sd_tests`, 44.1 k + 96 k, assert-backed)
+
+- **Mid-hump corner ≈ 720 Hz:** small-signal shelf matches the analytic
+  `1 + K·HP720` within **0.04 dB worst** (44.1 k) / 0.07 dB (96 k), well inside
+  the ±1.5 dB bar; 720 Hz measures **−2.87 dB** below the plateau (the −3 dB
+  corner), 82 Hz **−18.5 dB** (bass shelved unity-ward).
+- **Asymmetry → even harmonics:** 220 Hz at moderate drive → 2nd harmonic
+  **−20.9 dBc** (asymmetric) vs **−152.6 dBc** with the diodes forced symmetric —
+  a **131.7 dB** contrast (the even harmonic is entirely asymmetry-driven).
+- **Soft knee vs the RAT's hard clamp:** compression-knee width (input ratio over
+  which the fundamental compresses −0.9 → −6 dB) = **3.95×** for the SD-1 vs
+  **2.47×** for the RAT — **1.60× softer**; THD rises gradually
+  4.3 % → 16.9 % → 24.5 % across input 0.05/0.15/0.30.
+- **4558 op-amp corner:** extracted (real vs ideal-op-amp ratio) at max DRIVE =
+  **14 308 Hz** (44.1 k) / 14 096 Hz (96 k) vs analytic GBW/A = **14 032 Hz**
+  (≈2 %).
+- **Aliasing (M2 bar):** shipped 4× ADAA at max DRIVE worst-alias
+  **−116.5 dB** (44.1 k) / −126.1 dB (96 k), far below the −60 dB bar; ADAA beats
+  naive by ~8 dB at 1×.
+
+### A/B render commands
+
+```
+# SD-1 (soft, asymmetric) vs RAT (hard, symmetric), same knobs, plucked low A:
+clipper-render --gen pluck:110:2.0 sd1.wav --pedal sd1 --distortion 0.6 --filter 0.5 --level 0.8 --sr 48000
+clipper-render --gen pluck:110:2.0 rat.wav --pedal rat --distortion 0.6 --filter 0.5 --level 0.8 --sr 48000
+#   -> SD-1 peak 1.22 / rms 0.20 (clean pedestal + soft clip keeps rising);
+#      RAT  peak 0.30 / rms 0.14 (hard shunt clamp pins the output near the knee).
+# Even-harmonic (asymmetry) A/B on a 220 Hz sine, with spectra:
+clipper-render --gen sine:220:1.0 sd1_220.wav --pedal sd1 --distortion 0.6 --sr 48000 --spectrum sd1_220.csv
+# Op-amp / ideal A/B at max drive (14 kHz top-octave softening):
+clipper-render --gen sweep:20:20000:4.0 sd1_real.wav  --pedal sd1 --distortion 1.0 --sr 96000
+clipper-render --gen sweep:20:20000:4.0 sd1_ideal.wav --pedal sd1 --distortion 1.0 --sr 96000 --ideal-opamp
+```
+
+### Integration notes
+
+- **Shared param shape.** Both dirt pedals keep `PedalParams {distortion, filter,
+  level}` (the chain/worklet/serializer ABI, ids 0/1/2). For an SD-1 those slots
+  READ as **Drive / Tone / Level** — the Pedal component relabels, tokens add an
+  amber LED/arc accent (`--led-sd`, both themes), and the assistant accepts
+  `drive`/`tone` aliases (→ distortion/filter). One shape keeps everything pedal-
+  agnostic and the change to shared files additive. The worklet dispatches
+  `sd_*`/`rat_*` per node `type`.
+- Core suites all green (M0 + RAT + **SD-1** + amp, 44.1 k + 96 k); web tsc +
+  vite build; Playwright 27 (25 + `SD-1 worklet: adds harmonics…` and
+  `assistant: set_param drive dials an SD-1 instance`); server 11; history 10.
+
+## 12. M9.1 — 12AX7 triode stage (the amp building block)
+
+M9 (JCM800 2204) is built bottom-up: its preamp is one 12AX7 common-cathode gain
+stage repeated 3-4× plus a cathode follower, so **phase 1 builds and validates
+that single stage standalone**, offline, with the M2 measurement discipline. No
+user-facing feature yet — **module fidelity IS the milestone**. Every future
+valve amp reuses it.
+
+New source (all portable, platform-free C++17; zero web/server/electron touch):
+
+```
+core/include/clipper/dsp/TriodeStage.h    Koren 12AX7 stage, nodal-Newton solver, config
+core/src/dsp/TriodeStage.cpp              device law + derivatives + per-sample solve
+core/tests/test_triode_stage.cpp          measurement suite (clipper_triode_tests)
+```
+
+CLI: `clipper-render --triode` renders a single stage alone (below). CMake adds
+`TriodeStage.cpp` to `clipper_dsp` and registers the `clipper_triode_tests` ctest.
+
+### Device model — Koren 12AX7
+
+Norman Koren's triode approximation ("Improved SPICE models for vacuum-tube
+amplifiers", 1996), the canonical law in the modelling literature. Published
+12AX7 parameters `mu=100, ex=1.4, kg1=1060, kp=600, kvb=300`:
+
+```
+E1 = (Va/kp)·ln(1 + exp(kp·(1/mu + Vgk/√(kvb + Va²))))
+Ip = (E1^ex / kg1)·(1 + sign(E1))          # sign() rectifies to cutoff
+```
+
+`Va` = plate-cathode V, `Vgk` = grid-cathode V. The `(1+sign(E1))` factor is part
+of the fit (with these constants a −2 V / 250 V bias gives ≈0.95 mA, matching the
+datasheet). `korenPlateCurrent()` is exposed `static` so the tests derive the
+analytic operating point / small-signal `rp, gm, mu` independently. Overflow-safe
+`softplus`/`sigmoid` guard the `exp` for large arguments.
+
+### Circuit — JCM800 first-stage-style (parameterizable `Config`)
+
+`B+ = 320 V`, `Ra = 100 k`, `Rk = 820 Ω` (self-bias) with optional bypass `Ck`
+(**0.68 µF** first-stage voicing, or **22 µF** fully bypassed), grid stopper
+`Rg = 68 k`, and the interstage **coupling cap `Cc = 22 nF` + next-stage grid
+leak `Rgl = 1 M`** (τ = `Rgl·Cc` = **22 ms** — the blocking-distortion RC). The
+stage is a faithful cascade element: an **input** coupling (the driving stage's
+output coupling / this grid's DC block) **and** an **output** coupling that both
+DC-blocks the output and **loads the plate with the next 1 M grid leak**, so the
+mid-band gain is `−gm·(Ra‖Rgl‖rp)`, not `−gm·(Ra‖rp)`. Every stage is identical,
+so both couplings share `Cc`/`Rgl`. Blocking distortion is testable on a single
+stage because it is *this* grid conducting into *this* input coupling cap that
+shifts the bias.
+
+Two large-signal behaviours the ideal transfer curve lacks:
+- **Grid conduction** — for `Vgk ≳ 0` the grid draws current (soft clamp,
+  `Igk = (Vgn/Rgk)·softplus((Vgk−Vgt)/Vgn)`, ≈2 kΩ conduction resistance, 0.1 V
+  knee so idle leakage at `Vgk≈−1.1 V` is negligible). Fed back through the 68 k
+  grid stopper it squashes positive grid peaks — the source of even-harmonic
+  (2nd) dominance / one-sided soft clip.
+- **Blocking distortion** — that same grid current charges `Cc`; it recovers
+  through `Rgl` with τ = 22 ms, so a hard burst shifts the bias toward cutoff and
+  recovers over ~one RC.
+
+### Solver — per-sample nodal Newton (3 unknowns: Va, Vg, Vk)
+
+Each sample solves the KCL system for the plate, grid and cathode nodes. The
+reactive elements (`Cc`, `Ck`) are **backward-Euler companions**: the input
+coupling network collapses to a Thévenin source into the grid; the cathode is
+`Rk‖Ck`; the output coupling is a series-RC companion loading the plate. Residuals
+`r1` (plate), `r2` (cathode), `r3` (grid) with an **analytic 3×3 Jacobian** from
+the Koren + grid-current derivatives; solved by Cramer's rule.
+
+**Convergence (measured):** warm-started from the previous sample's solution (the
+RC constants are ms, the step is µs), it converges in **2-4 iterations** in
+normal use and **≤8 even under a ±10 V slam** — cap `kMaxNewtonIter = 50`, never
+approached. Fallback: singular Jacobian → keep the current iterate; per-iteration
+steps are **damped** (`|ΔVa|≤60`, `|ΔVg|,|ΔVk|≤20 V`) to stay out of `exp`
+overflow. An **unbypassed** `Rk` is instantaneous local feedback (degeneration).
+At `prepare()`/OS change the stage **settles** silent samples to the exact
+discrete zero-input fixed point (no turn-on thump; silence→silence from sample 0).
+
+The whole (nonlinear + reactive) stage runs **oversampled** (the shared M2
+`Oversampler`); `setOversampling(1/2/4/8)`, default **4×**.
+
+### Validation — `clipper_triode_tests` (deterministic, 44.1 k & 96 k)
+
+All numbers below are asserted against analytic targets **derived in the test**
+(load-line bisection, central-difference small-signal params, complex cathode
+shelf) — the suite pins the solver against the physics, not against itself.
+
+1. **DC operating point** vs the analytic load line (`B+ = Va + Ra·Ip`,
+   self-bias `Vgk = −Ip·Rk`): **Va = 185.7 V** (analytic 185.6, ±5 %), **Iq =
+   1.34 mA**, `Vk = 1.10 V`. *Note:* the modelled JCM800 first stage runs a hot
+   bias — 1.34 mA sits just above the nominal 1.0-1.2 mA "textbook" figure, an
+   honest consequence of the published Koren fit + the 820 Ω self-bias; band
+   asserted 1.0-1.6 mA, Va 170-200 V.
+2. **Small-signal gain** at 10 mV / 1 kHz vs `−gm·(RL‖rp)` (bypassed) and
+   `−mu·RL/(RL+rp+(mu+1)·Rk)` (unbypassed), `RL = Ra‖Rgl = 90.9 k`, with
+   `gm = 2.20 mS, rp = 43.3 k, mu = 95.3` from the Koren linearisation:
+   **bypassed −64.4× (36.2 dB)**, **unbypassed −40.8× (32.2 dB)** — both within
+   **0.02 dB** of analytic (tol ±1.5 dB). The −64× lands in the JCM800
+   first-stage window; unbypassed is reduced exactly by the feedback term.
+3. **Transfer shape** (1 kHz, 0.68 µF): asymmetric soft clip — **2nd harmonic
+   dominant** (−43.9 dBc vs 3rd −71.6 dBc at 0.2 Vpk; window −30..−55 dBc),
+   **monotonic THD** 0.64 → 1.45 → 2.78 % across 0.2/0.5/1.0 Vpk, and
+   **27.8 % peak asymmetry** at 3 Vpk (cutoff vs saturation+conduction).
+4. **Blocking distortion**: a 2 Vpk / 200 Hz burst shifts the coupling-cap bias
+   **0.67 V**; after the burst it recovers to 1/e in **20.5 ms** vs the
+   `Rgl·Cc = 22 ms` RC (tol ±25 % — the tail discharges slightly faster while
+   residual conduction lingers early).
+5. **Stability**: white noise + DC steps + **±10 V slam** at 44.1 k/96 k, 4×/8×
+   — all finite, output bounded (~160 V plate scale), **max Newton iters 8**
+   (cap 50).
+6. **Cathode bypass** (0.68 µF): the gain shelf vs the analytic complex transfer
+   `|A(f)| = mu·RL/|RL+rp+(mu+1)·Zk|`, `Zk = Rk/(1+jω·Rk·Ck)`, shelf zero at
+   `1/(2π·Rk·Ck) = 285 Hz` — measured **40.3×(50 Hz) → 63.9×(3 kHz)**, worst
+   deviation **0.15 dB** (tol ±1.5 dB).
+
+### Aliasing & the oversampling requirement
+
+Same M2 sweep method (a hard-driven 4186 Hz tone, worst folded-alias vs
+fundamental). The smooth triode transfer + reactive band-limiting alias far less
+than a hard clipper:
+
+| base | 1× | 2× | 4× | 8× |
+|---|---|---|---|---|
+| 44.1 kHz | −54.4 dB | −89.2 dB | **−140.0 dB** | −137.7 dB |
+| 96 kHz   | −74.7 dB | −152.0 dB | −155.1 dB | −155.0 dB |
+
+**Required OS factor: 4× at a 44.1 kHz base** (matches the M2 pedal budget). 2×
+already clears −89 dB; 4× reaches the numerical floor; 8× buys nothing audible.
+The stage ships at **4×**.
+
+### Render harness (`clipper-render --triode`)
+
+```bash
+# A single 12AX7 stage, driven pluck (grid = input × drive), JCM800-voiced cathode:
+./build/clipper-render --gen pluck:110:2.0 --amp 0.3 \
+    --triode --triode-drive 4 --triode-cathode 0.68 out.wav
+# Sine + spectrum (even-harmonic signature); fully-bypassed cathode, 8×:
+./build/clipper-render --gen sine:220:2.0 --amp 0.3 --triode --triode-drive 5 \
+    --triode-cathode 22 --os 8 --spectrum spec.csv out.wav
+```
+
+Grid drive is the input × `--triode-drive` (a bare 0.3 V DI barely moves a 12AX7;
+~1-3 V grid is where it distorts). Output is the plate AC (next-grid) voltage in
+the tens of volts, peak-normalized to 0.9 for the WAV (raw plate peak reported).
+`--triode-cathode` sets the bypass µF (0 = unbypassed), `--os` the factor.
+
+## 14. M9.2 — JCM800 2204 preamp (the cascade + tone stack)
+
+M9 phase 2 composes the validated M9.1 TriodeStage into the **full 2204 preamp**:
+four 12AX7 triodes (three common-cathode gain stages + a direct-coupled cathode
+follower) driving the passive Marshall TMB tone stack, with GAIN and MASTER pots.
+Still no user-facing feature — **module fidelity is the milestone**; the power amp
++ sag (phase 3) and the UI/integration (phase 4) come later.
+
+New source (portable, platform-free C++17; zero web/server/electron touch):
+
+```
+core/include/clipper/dsp/Jcm800Preamp.h   4x TriodeStage + MarshallToneStack, knobs
+core/src/dsp/Jcm800Preamp.cpp             composition, follower bias, tone-stack MNA
+core/tests/test_jcm800_preamp.cpp         measurement suite (clipper_jcm800_tests)
+```
+
+TriodeStage gained ONE additive feature: a **`CathodeFollower` topology** (+ a
+`gridBias` field) for V2B — plate tied to B+, output at the cathode, grid DC-coupled
+to the driving stage's plate. The M9.1 `CommonCathode` path is byte-for-byte
+unchanged and `clipper_triode_tests` passes untouched.
+
+### Topology (canonical 2204 values, B+ ≈ 320 V throughout)
+
+```
+guitar → V1A → 0.022µF + 470k/1M GAIN pot → V1B → 0.022µF → V2A → V2B → TMB → MASTER
+```
+
+| stage | role | Ra | Rk | Ck | grid-leak Rgl |
+|---|---|---|---|---|---|
+| **V1A** | bright input CC | 100 k | 820 Ω | 0.68 µF (bypassed) | 1.47 M (= 470 k + 1 M GAIN pot) |
+| **V1B** | **cold** 2nd stage | 82 k | 10 k | — (UNBYPASSED) | 470 k |
+| **V2A** | bright CC → follower | 100 k | 820 Ω | 0.68 µF | 1 M |
+| **V2B** | cathode follower | — (plate = B+) | 100 k | — | direct-coupled |
+
+- **GAIN** (the drive knob) is the 1 M preamp-volume pot after the 470 k series
+  resistor: interstage scale = `0.68 · taper(gain)`, where `0.68 = 1M/(1M+470k)`
+  is the series divider and `taper(·)` the pot's audio law (below).
+- **V1B is the crunch source**: a 10 k *unbypassed* cathode biases it cold
+  (Vgk ≈ −3.1 V, Iq ≈ 0.31 mA) and degenerates its gain to ~5.6× — so it's the
+  first stage to run out of linear grid window as GAIN comes up (white-box test 4).
+- **V2A → V2B is DIRECT-COUPLED** (no cap): the follower's grid DC bias is *solved*
+  to V2A's quiescent plate voltage (185.7 V) at `prepare()`; the AC rides on it.
+  V2A's `Rgl = 1 M` is the honest compromise for TriodeStage's single shared Rgl
+  (its own input grid-leak, so blocking recovery τ = Rgl·Cc = 22 ms; the follower
+  grid is high-Z so 1 M barely loads the plate).
+- **Why the follower**: the passive TMB is lossy and impedance-sensitive; the
+  follower's low output impedance (**≈ 1/gm ‖ Rk = 372 Ω**, measured) drives the
+  stack so its response matches the (high-Z-source) analytic transfer.
+
+### Audio taper law (GAIN, MASTER)
+
+`taper(x) = (e^{4·x} − 1)/(e^4 − 1)` — a musical log/audio pot (~12 % at noon,
+0 at 0, 1 at 1). Documented and reproduced in the tests.
+
+### Marshall TMB tone stack (FMV) — passive, nodal MNA
+
+`MarshallToneStack` implements the FMV network by **modified nodal analysis**:
+trapezoidal (bilinear) capacitor companions, a 5×5 node system whose inverse is
+cached per knob change (per-sample cost = one 5×5 mat-vec). Netlist (nodes
+IN/N2/N3/N4/OUT): treble cap `Ct` IN–N2, slope `R1` IN–N3, treble pot
+`RT` split N2–OUT–N3 (wiper = output), bass pot `RB` (rheostat) + bass cap `Cb`
+N3–N4, mid pot `RM` (rheostat) + mid cap `Cm` N4–GND.
+
+Component values: slope **33 k**, treble pot **250 k**, bass **1 M**, mid **25 k**;
+caps **Ct = 470 pF, Cb = 22 nF, Cm = 22 nF**. *The spec's "0.47" treble cap is
+0.47 **nF** = 470 pF; a 0.47 µF treble cap would put the treble corner at ~1 Hz
+(unphysical) and destroy the mid notch — so it is read as nanofarads.* The test
+derives the analytic `H(jω)` from the **same** netlist via a complex nodal solve
+(caps = jωC) — independent of the runtime discretization.
+
+### Oversampling requirement — MEASURED (M2 sweep, 4186 Hz, max gain)
+
+Each TriodeStage antialiases itself (shared M2 `Oversampler`); the tone stack and
+interstage networks are linear (base rate). The **cascade** is the nonlinearity —
+measured worst folded-alias vs the fundamental at MAX gain:
+
+| base | 1× | 2× | 4× | 8× |
+|---|---|---|---|---|
+| 44.1 kHz | −21.9 dB | −31.8 dB | **−73.3 dB** | −73.8 dB |
+| 96 kHz   | −26.2 dB | −68.3 dB | **−68.3 dB** | −68.2 dB |
+
+**Required OS factor: 4×.** 4× reaches the cascade's compound alias **floor** (8×
+buys ~0 dB — the residual is inter-stage band-limiting, not per-stage aliasing) and
+clears the **M2 audibility bar (−60 dB)** with margin even at max gain. Ships at 4×
+(the M2 pedal budget), same as M9.1.
+
+### Validation — `clipper_jcm800_tests` (deterministic, 44.1 k & 96 k)
+
+Every number is asserted against an analytic target **derived in the test** (load-
+line bisection per stage, the follower's 1-D cathode solve, central-difference
+small-signal params, the complex cathode-bypass transfer, and the complex nodal
+tone-stack `H(jω)`).
+
+1. **Per-stage DC operating points** vs the load line (±5 %): **V1A/V2A**
+   Va = 185.7 V, Iq = 1.34 mA, Vk = 1.10 V; **V1B (cold)** Va = 294.6 V,
+   Iq = 0.309 mA, Vk = 3.09 V; **V2B follower** gridBias = 185.7 V (= V2A plate),
+   Vk_out = 185.9 V (analytic 186.0), Iq = 1.86 mA, Rout = 372 Ω. All within 0.1 %.
+2. **Small-signal chain gain** at low GAIN (0.03, linear region) vs the product
+   `A_V1A · gainScale · A_V1B · A_V2A · A_fol · |H_TMB(1 kHz)| · master`:
+   **measured 19.5 dB vs analytic 19.7 dB** (tol ±2 dB) [V1A 61.8×, V1B 5.6×,
+   V2A 61.1×, follower 0.996, gainScale 0.0016, H_TMB −11.0 dB].
+3. **Tone stack** vs analytic `H(s)` at 100/650/3000 Hz, scooped (1,0,1) and flat
+   (.5,.5,.5): **within 0.04 dB** (tol ±1.5 dB); the classic **Marshall mid notch
+   at 545 Hz, −16 dB** (asserted in the 300–800 Hz band).
+4. **Gain character**: THD **monotonic** 2.1 → 9.3 → 54.1 → 90.7 % across GAIN
+   0.1/0.3/0.6/1.0; **asymmetric clip** 53 % at max (crunch); and (white-box) V1B's
+   grid drive **4.27 V exceeds its 3.09 V cold-bias window** at high gain while
+   staying inside it at low gain.
+5. **Blocking / stability**: a 1.5 V / 180 Hz burst with ±10 V slams then silence —
+   all finite, bounded (peak ~19 V), and the coupling RCs recover (a decaying
+   low-frequency blocking wobble settles from rms 10.9 to 0.003) at 44.1 k/96 k,
+   4×/8×.
+6. **Aliasing**: the table above; shipped 4× clears the −60 dB M2 bar at max gain.
+7. The **five existing ctest suites still pass**, incl. `clipper_triode_tests`
+   **unchanged**.
+
+### Render harness (`clipper-render --jcm-pre`)
+
+```bash
+# Clean edge (low GAIN, sparkle):
+./build/clipper-render --gen pluck:110:2.0 --amp 0.2 --jcm-pre --jcm-drive 1.0 \
+    --jcm-gain 0.25 --jcm-master 0.6 --jcm-bass 0.5 --jcm-mid 0.6 --jcm-treble 0.6 clean.wav
+# Crunch (mid GAIN, scooped-ish):
+./build/clipper-render --gen pluck:110:2.0 --amp 0.3 --jcm-pre --jcm-drive 2.0 \
+    --jcm-gain 0.6 --jcm-master 0.5 --jcm-bass 0.6 --jcm-mid 0.4 --jcm-treble 0.7 crunch.wav
+# Full send (GAIN maxed, low E):
+./build/clipper-render --gen pluck:82:2.0 --amp 0.3 --jcm-pre --jcm-drive 3.0 \
+    --jcm-gain 1.0 --jcm-master 0.5 --jcm-bass 0.7 --jcm-mid 0.5 --jcm-treble 0.8 fullsend.wav
+```
+
+Grid drive = input × `--jcm-drive`; `--jcm-gain/-master/-bass/-mid/-treble` are the
+0..1 knobs; `--os` sets the per-stage oversampling (default 4). Output is the preamp
+voltage (tens of volts at high gain), peak-normalized to 0.9 for the WAV.
+
+## 18. M9.3 — JCM800 2204 power section + the full amp
+
+The 2204's 50 W push-pull EL34 **power section** (`core/src/dsp/Jcm800PowerAmp.{h,cpp}`)
+and the composed **full amp** `Jcm800Amp` (preamp → power). This is where a cranked
+Marshall's "responsive" character lives: the phase-inverter clip, the class-AB
+push-pull, the output transformer, global negative feedback + presence, and the B+
+supply **sag**. All from circuit physics and MEASURED, not vibed. Convention: real
+circuit VOLTS internally; `process()` output is normalized so **1.0 == full scale**.
+
+### The model (every simplification documented in the header)
+
+- **Phase inverter** — a 12AX7 **long-tailed pair** (`LtpInverter`), reusing the M9.1
+  Koren 12AX7 device law (no new fit). Shared 10 k tail, asymmetric 100 k/82 k plate
+  loads (large-signal balance). Solved per oversampled sample as a **3×3 nodal Newton**
+  (Va1, Va2, Vk_tail) with the analytic Koren Jacobian. At high drive one triode is
+  steered to cutoff → the PI's own asymmetric **soft clip**, part of the cranked sound.
+  PI grid-current blocking is deferred (the dominant PI clip is the tail-steering
+  cutoff, which the LTP solve already captures).
+- **EL34 push-pull, class AB** — **Koren pentode** law (Norman Koren, "Improved SPICE
+  models for vacuum-tube amplifiers", 1996). A widely-circulated EL34 fit (mu 11,
+  ex 1.35, kg1 650, kp 60, kvb 24, kg2 4200; pentode fits are looser than triodes →
+  the ±10 % validation band). Fixed bias −43 V (what THIS fit needs for the 2204's
+  operating point). Both tubes idle at ~38 mA → a measurable **crossover** at low
+  drive; the matched difference `Ip(+Vac) − Ip(−Vac)` is odd → **even harmonics
+  cancel**. EL34 grid conduction charges the PI→grid coupling caps → **blocking**
+  (τ = Rg·Cc) on overdrive. Plate-load saturation via a per-tube 1-D Newton
+  (Vp = rail − (Ip−Iq)·Raa/4).
+- **Output transformer** — LINEAR v1: Raa = 3.4 k reflected, turns ratio √(Raa/8) ≈
+  20.6, two documented one-pole corners (LF ~75 Hz magnetizing, HF ~12 kHz leakage).
+  Core saturation explicitly **deferred** (the nonlinearity lives in the tubes).
+- **NFB + presence** — global feedback from the OT secondary into the PI's V3B grid,
+  injected as **−β·V_secondary**. V3B's forward path to the secondary is NON-inverting
+  (V3A is the inverting input), so the loop **opposes** the output → true negative
+  feedback: **closed-loop gain is LOWER than open-loop**. β = the 2204 divider
+  5k/(5k+47k) = 0.0962; since β acts on the real secondary VOLTS the loop gain is
+  β·A_real (A_real ≈ 5), giving a **meaningful ~3.4 dB** of feedback. **Presence** (0..1)
+  low-passes the feedback (one-pole, ~1.5 kHz corner) so raising it REMOVES HF feedback
+  → **HF response RISES** (a shelf lift). *(This fixes the interrupted M9.3 run's
+  reported sign inversion — the shipped code and the `testFeedbackAndPresence`
+  inversion-catcher assert BOTH `gain(closed) < gain(open)` AND
+  `response(presence=1) > response(presence=0)` at 4 kHz, so a sign flip in either
+  cannot pass.)*
+- **Sag** — the B+ rail is a Thévenin source (Vsupply 480 V behind Rsupply 150 Ω) with
+  a 50 µF reservoir, plus a slower screen node (1 k / 22 µF). Both integrated backward-
+  Euler per oversampled sample from the total current draw; tube gain/headroom follow
+  the rail **and** (strongly) the screen. A loud burst blooms then compresses over one
+  reservoir RC (τ = 7.5 ms), recovering with the same RC — a deliberately **modest**
+  sag (the 2204 is a tight, solid-state-rectified amp).
+
+### Full-scale calibration
+
+`kFullScaleSecV = 26 V` maps the OT secondary to 1.0 full scale. Calibrated against the
+COMPOSED amp: **fully cranked** (GAIN 1, MASTER 1, hot input) a power sine peaks **~0.90**
+(measured 0.895–0.899 across 44.1/48/96 k), a normal full-send (MASTER 0.7) ~0.78 —
+headroom to 1.0 for transients. The NFB tap uses the real secondary volts, not the
+normalized output, so this constant is independent of the loop gain.
+
+### Validation — `clipper_jcm800_power_tests` (deterministic, 44.1 k / 48 k / 96 k)
+
+Every number is asserted against an analytic target **derived in the test** (the EL34
+bias fixed point from the Koren law, the matched-pair even-harmonic cancellation, the
+NFB reduction `1/(1+β·A_real)`, the presence one-pole shelf, the sag depth/RC).
+
+1. **EL34 quiescent** vs the analytic Koren fixed point (±10 %): **38.07 mA/tube**
+   (analytic 38.07), rail **467.4 V**, screen 459.7 V, plate dissipation 17.8 W (< 25 W
+   max). In the 33–42 mA / 460–472 V design window.
+2. **Push-pull even-harmonic suppression**: device-law reference — single-ended 2nd
+   harmonic **−16.5 dB**, matched push-pull 2nd **−240 dB** (a machine zero: even
+   harmonics cancel). Real amp 2nd **−26.8 dB** (well below the single tube; the LTP's
+   slight imbalance leaves the residual). Class-AB **crossover** THD present and
+   monotonic at low drive (0.42 / 0.84 / 1.66 %).
+3. **NFB sign + magnitude + presence (the inversion catcher)**: open-loop −14.2 dB →
+   **closed-loop −17.6 dB** = **−3.41 dB** of feedback (analytic −3.45, A_real 5.07) —
+   gain goes DOWN. Presence 0→1 **lifts** 4 kHz by **+3.1 dB** (analytic one-pole shelf
+   +2.1 dB, within the ±1.5 dB band) — highs go UP. A sign flip in either fails an assert.
+4. **Sag**: depth **3.4 dB** (in the 2–6 dB window), **bloom 10 ms** (5–20 ms), rail
+   467→432 V under the burst, **recovery 7.3–8.0 ms** vs the supply τ = 7.5 ms (±25 %).
+5. **Power compression** monotonic (output RMS rises, incremental gain falls, no
+   fold-back) and **±10 V slam** finite/bounded at both 4× and 8×, all three rates.
+6. **Aliasing** (max drive, M2 sweep): the **power section** clears the −60 dB bar by a
+   huge margin — 44.1/48/96 k **4× = −117 / −125 / −122 dB**, and 8× buys nothing (4× is
+   the requirement). The **composed full amp at max gain** is measured separately: its
+   power stage is fed the preamp's harmonically-dense output, so it hits a **compound
+   alias/IMD floor that 8× does NOT improve** — **4× = −74 / −58 / −69 dB** at 44.1/48/96 k.
+   It clears −60 dB at 44.1 k and 96 k and sits at the compound floor (~−58 dB) at 48 k,
+   at/near the audibility bar; raising OS does not help (measured), so **4× ships**.
+7. The **six existing ctest suites still pass**, incl. `clipper_triode_tests` (M9.1) and
+   `clipper_jcm800_tests` (M9.2) **unchanged**.
+
+**CPU** (single core, −O2, 4× at 48 k, cranked): the composed full amp runs ~**1.0×
+realtime** and the power section alone ~**2.0×** in the CI sandbox (which is CPU-throttled
+— the M9.2 preamp alone measures ~2× here too, so representative hardware is several ×
+faster). The per-sample nodal Newtons (LTP 3×3 + two grid + two plate solves × 4× OS) are
+the cost; an analytic plate-solve Jacobian is the obvious future optimization.
+
+### Render harness (`clipper-render --jcm` / `--jcm-cab`)
+
+```bash
+# Clean edge (low GAIN) through the full amp + brit412 4x12 cab:
+./build/clipper-render --gen pluck:110:2.5 --amp 0.22 --sr 48000 --jcm --jcm-cab \
+    --jcm-gain 0.3 --jcm-master 0.6 --jcm-treble 0.6 --jcm-presence 0.5 clean.wav
+# Full send (low E, cranked):
+./build/clipper-render --gen pluck:82:2.5 --amp 0.3 --sr 48000 --jcm --jcm-cab \
+    --jcm-drive 2.5 --jcm-gain 1.0 --jcm-master 0.7 --jcm-presence 0.6 fullsend.wav
+```
+
+`--jcm` renders the FULL 2204 (preamp → power); output is already normalized (1.0 ==
+full scale, NOT re-normalized). `--jcm-presence` is the power-amp presence knob;
+`--jcm-cab` runs it through the brit412 4×12 (shipped output limiter guarding the
+ceiling). Reuses `--jcm-drive/-gain/-master/-bass/-mid/-treble` and `--os`. `--jcm-pre`
+(M9.2 preamp alone) still works unchanged.
+
+## 19. M9.4 — JCM800 joins the amp registry (integration end-to-end)
+
+M9.1–9.3 built and validated the JCM800 2204 DSP (`Jcm800Amp` = preamp cascade →
+power section). **M9.4 wires it into the app as a second selectable amp voice**
+alongside the Clean 120, end-to-end: C ABI, worklet, rig serializer, React face,
+assistant, and the native JUCE plugin. No DSP was changed — this milestone is pure
+integration, and the load-bearing proof is that the **identical-core test is now
+bit-exact on BOTH amp models**.
+
+### One handle, two voices (the C ABI)
+
+`AmpChain` (`core/src/clipper_c_api.cpp`) now owns **both** `AmpModel amp` (Clean 120)
+and `Jcm800Amp jcm`, plus an `int model`. Both are **created and prepared up front**
+in `amp_create` (the JCM at its fixed **4× internal oversampling** — docs §18: 4×
+ships), so the new `amp_set_model(handle, which)` export is a **realtime-safe int
+flip**, never an allocation on the audio thread. The cab pair is **shared**: whichever
+voice is active feeds the same per-side `CabConvolver`s.
+
+- **Routing.** `amp_set_param` keeps **both** voices current at all times (a knob
+  moved just before a switch must already be reflected in the incoming voice). The two
+  models use **different id spaces** (`AmpModel::PARAM_VOLUME==0` vs
+  `Jcm800Amp::PARAM_GAIN==0`), so ids are **translated explicitly**, not forwarded
+  blindly: `BASS/MID/TREBLE` (ids 1/2/3) are **shared** → both; `volume/bright/chorus
+  (6/7/8)/reverb (9)` are Clean-120-only → `AmpModel`; the new **JCM-only ids 10/11/12
+  (gain/presence/master)** → `Jcm800Amp`. The JCM has **no bright/chorus/reverb** (a
+  real 2204 has none), so those simply never reach it.
+- **Mono head → dual-mono.** The JCM is a **mono valve head**; `amp_process_stereo`
+  renders it once into `out_l` and **mirrors to `out_r`** before the identical cab
+  pair (any stereo width there would be fake). The Clean 120 keeps its true stereo
+  chorus split.
+- **Latency.** `amp_latency_samples` adds the JCM's own oversampling group delay
+  (`jcm.latencySamples()` = preamp four serial halfband stages + the power-section
+  round trip) when it is the active voice; the linear Clean 120 adds nothing. Cab
+  (128) + limiter (64) as before. Measured: Clean 120 path **336**, JCM path **624**.
+
+### Click-free amp swap (the worklet)
+
+`web/worklet/clipper-processor.js` gained a `{ type: 'ampModel', model }` message and a
+`_pendingAmpModel`. Exactly like a cab swap, it is staged in the message handler and
+applied at the **declick fade-out zero** in `_commitPending` (which calls
+`_amp_set_model` then re-publishes latency, since the JCM path is longer). So switching
+amps mid-signal is a **smooth raised-cosine bracketed swap — no pop** (proven in
+`web/tests/amp.spec.ts`).
+
+### Rig, params, UI, assistant
+
+- **`rig.ts`.** `AmpType` becomes `'clean120' | 'jcm800'`; `AmpParams` gains **additive**
+  `gain/presence/master` (defaults 0.5/0.5/0.4). Migration is a seam: an unknown/absent
+  type coerces to `clean120`, and pre-M9.4 rigs load the JCM defaults — old saved rigs
+  round-trip **unchanged**. The pinned exact-JSON round-trip test literal in
+  `audio.spec.ts` was extended per the house pattern.
+- **`params.ts` / `audio.ts`.** New ids `AMP_PARAM_JCM_GAIN/PRESENCE/MASTER = 10/11/12`
+  and an `AMP_MODEL_INDEX` map; `setAmpModel(type)` posts the `ampModel` message. The
+  JCM knobs are sent on every start so both voices stay current.
+- **`Amp.tsx` — the JCM FACE (per §17 doctrine).** Same dark neumorphic chassis; identity
+  is a small-area **GOLD/BRASS accent** (`--accent-jcm`) on the knob arcs/readouts + the
+  "**Eight Hundred**" wordmark (model line **HEAD Nº2 · BRIT-TYPE**) — homage, never
+  replica. The era-correct 2204 control row is **PRESENCE · BASS · MIDDLE · TREBLE ·
+  MASTER · GAIN** (real front-panel order); **bright/chorus/reverb are hidden**; the Cab
+  lever + Power rocker stay. The two faces are separate components behind one `Amp`
+  wrapper switching on `amp.type`.
+- **`Board.tsx` / `App.tsx`.** The amp-slot menu lists both amps; `setAmpType` updates the
+  rig + engine click-free and, **when switching to the JCM with the Clean 2×12 still
+  loaded, drops a one-line hint suggesting the Brit 4×12 — but never auto-switches the
+  cab** (the player's choice stays theirs).
+- **Assistant.** New `set_amp` tool (`clipper120` | `jcm800`), the `gain/presence/master`
+  params, and coaching for the JCM voice — including the canonical **SD-1 boost into a
+  cranked JCM** move and the presence-vs-treble distinction (power-amp HF lift *after* the
+  distortion vs. the preamp tone stack *before* it).
+
+### Native (JUCE)
+
+`ClipperEngine`/`Params` gained `ampModel` + `jcmGain/jcmMaster/jcmPresence`; the APVTS
+adds an **Amp Model** choice (0 = Clean 120, 1 = JCM800) and the three JCM knobs.
+`bass/middle/treble` are updated on **both** tone stacks so the inactive voice is correct
+at a live switch; the process path mirrors the C ABI's mono-head dual-mono routing.
+
+### The proof — identical-core, both models
+
+`native/tests/identical_core_test.cpp` was refactored to parametrize `renderReference` /
+`renderPlugin` by `Params` and now runs **two cases**: the Clean 120 (linear stereo
+chorus + reverb) and the JCM800 (an SD-1 boost into a cranked head, dual-mono into the
+cab pair). Both are **bit-exact** (max |plugin − reference| = **0.0**, engine cross-check
+0.0, latency 336 / 624 matched) — the plugin and raw engine wrap the identical core for
+both voices.
+
+### Perf smoke
+
+`web/tests/amp.spec.ts` includes a perf smoke that times the **JCM800 WASM offline
+render** vs the Clean 120 and reports the ratio. Headless-CI steady state: clean120 ≈ 53
+ms, **jcm800 ≈ 2.27 s for 2 s of audio (~1.14× real-time, ~43× the linear clean amp)** —
+the expected cost of the per-sample tube Newton solves at 4× OS. The test asserts only a
+**generous** bound (a guard against pathological regressions like a lost fast-path or an
+accidental 8× OS), not a tight budget; an analytic plate-solve Jacobian remains the
+obvious future optimization (docs §18).
+
+### M10.1 addendum — the JCM800 gets a spring reverb (usability > authenticity)
+
+The real 2204 has **no reverb**. M10.1 nonetheless gives the JCM a **spring REVERB knob**
+— the deliberate house call that **authenticity yields to usability** here: the user wants
+the normal amp conveniences even where the original hardware lacked them (this is the ONE
+place we knowingly break the replica). It reuses `ReverbModel` (mono), placed **after the
+power amp, before the C-ABI dual-mono split** — the same placement logic as the Twin
+below. `Jcm800Amp::PARAM_REVERB` defaults to mix 0, which is a **bit-exact passthrough**, so
+every M9.3 power-section number is unchanged and the suite stays green. The face gains a
+Reverb knob; the identical-core JCM case now renders with reverb engaged and stays
+bit-exact.
+
+## 20. M10.1 — TwinAmp (the Fender blackface "Twin-style" clean benchmark)
+
+M10 opens with the **clean-headroom king**: a Fender blackface AB763-style **vibrato
+channel** — the glassy, high-headroom counterpoint to the JCM's crunch and the JC-120's
+solid-state clean. It joins the registry as the **third amp voice, `twin`**, end-to-end
+(C ABI, worklet, rig, React face, assistant, native). Built bottom-up from the proven valve
+toolbox (`TriodeStage`, the `LtpInverter`, the Koren pentode law, `ReverbModel`) plus one
+new reusable block (`OptoTremolo`), and MEASURED against analytic targets, same discipline
+as M9.
+
+### The model (canon values; every simplification in the ledger)
+
+New portable core (platform-free C++17):
+
+```
+core/include/clipper/dsp/OptoTremolo.h    reusable AB763 optical tremolo (LFO + LDR)
+core/include/clipper/dsp/TwinPreamp.h     2x 12AX7 + pre-gain Fender TMB stack (+FenderToneStack)
+core/include/clipper/dsp/TwinPowerAmp.h   12AT7 LTP PI (reused) + 6L6GC quad + OT + NFB + light sag
+core/include/clipper/dsp/TwinAmp.h        composed: preamp -> reverb -> tremolo -> power
+core/src/dsp/{OptoTremolo,TwinPreamp,TwinPowerAmp,TwinAmp}.cpp
+core/tests/test_twin_amp.cpp              measurement suite (clipper_twin_tests)
+```
+
+**Signal order (authentic AB763):** `guitar → TwinPreamp → [spring REVERB] → [optical
+TREMOLO] → (interstage trim) → TwinPowerAmp`. Reverb is blended AFTER the recovery stage /
+volume and BEFORE the tremolo and the PI; the tremolo modulates the blended signal; both run
+mono at the base rate.
+
+- **Preamp** (`TwinPreamp`): V1 12AX7 common-cathode (Ra 100k, Rk 1.5k ∥ 25 µF, B+ 410 V) →
+  **Fender TMB stack in the PRE-GAIN position** → recovery 12AX7 (same warm biasing) → VOLUME
+  (audio taper) + a BRIGHT treble-bleed. Contrast with the Marshall preamp: only two gain
+  stages, both **warmly** biased (no cold cathode, no follower), and the tone stack sits
+  BEFORE the recovery/volume. The two triode stages each antialias themselves (4× OS).
+- **Fender tone stack** (`FenderToneStack`): the FMV network — SAME MNA topology as the
+  Marshall stack — with **blackface values** (treble cap 250 pF, mid 0.047 µF, bass 0.1 µF;
+  treble pot 250k, bass 250k, mid 10k; **slope 100k** — Fender's, the deeper scoop), driven
+  from V1's **plate** (a HIGH source impedance ≈ Ra‖rp ≈ 32 kΩ — no cathode follower, so it
+  LOADS differently than the follower-driven Marshall stack). The signature **deep mid scoop**
+  exists even at "flat".
+- **Reverb**: reuses `ReverbModel` (the dispersive spring IS period-correct Fender-style),
+  mono here, mix 0 = bit-exact passthrough.
+- **Tremolo — the famous "vibrato" misnomer** (`OptoTremolo`): the AB763 optical tremolo. An
+  LFO (SPEED knob **log map ~1–10 Hz**) drives a neon lamp; an LDR "roach" follows the lamp
+  with **ASYMMETRIC lag — fast attack ≈ 5 ms, slow release ≈ 55 ms** (photocells darken fast,
+  recover slow), so the gain envelope is a soft-throb, NOT a pure sine. INTENSITY = modulation
+  depth. Built as a small reusable class (future amps want it).
+- **Power amp** (`TwinPowerAmp`): a 12AT7 **long-tailed-pair PI** — REUSES the M9.3
+  `LtpInverter` with a 12AT7 device fit (a **widely-circulated Koren 12AT7 set**: mu 60,
+  ex 1.35, kg1 460, kp 300, kvb 300 — a lower-mu, higher-current triode than the JCM's 12AX7
+  PI). The legs are **balanced to ~1 %** (a long 22k tail + a 100k/142k asymmetric plate pair,
+  measured swing ratio 1.007) — this cancellation is what keeps the push-pull's **even
+  harmonics down**, the key to a clean stage. **4× 6L6GC** push-pull via the **Koren pentode**
+  law (a widely-circulated 6L6GC fit: mu 8.7, ex 1.35, kg1 1460, kp 48, kvb 12, kg2 4500;
+  modelled as a PP pair of paralleled super-tubes, `kTubesPerSide = 2`). Fixed bias
+  **−50.5 V** (nominal Twin is ≈ −52 V; this Koren fit needs −50.5 V for the ~29 mA/tube
+  operating point — derived, not asserted against a datasheet), B+ ≈ 459 V loaded. OT linear
+  v1: **Raa ≈ 2 k** (4 tubes), n = √(Raa/8) ≈ 15.8, corners LF 40 Hz / HF 14 kHz. **Global
+  NFB (β_eff 0.16 on the modelled secondary), NO presence control** — the blackface Twin has
+  none (authenticity). SS-rectifier supply → **LIGHT sag** (~1–2 dB window, and asserted
+  SMALLER than the JCM's).
+- **Headroom is the product**: at typical settings the amp is CLEAN; breakup arrives late and
+  mostly from the PI/power stage.
+
+### Documented simplifications (the ledger)
+
+- The push-pull quad is modelled as a **PP pair of super-tubes** (2 paralleled 6L6 per side),
+  not four independent devices — the per-tube reflected plate load is `Raa/2` and currents
+  scale by `kTubesPerSide`; matched-tube assumption (no per-tube variance).
+- **Fixed bias derived to the fit** (−50.5 V lands ~29 mA), not the datasheet's −52 V; the
+  6L6/12AT7 Koren fits are **community parameter sets** (pentode fits looser → the ±10 % band).
+- OT is **linear** (core saturation deferred; the nonlinearity lives in the tubes), same as
+  M9.3.
+- The **bright switch** is a one-pole treble-bleed shelf whose boost rises as volume falls (a
+  faithful stand-in for the cap across the volume pot), not a full component model.
+- NFB carries a **unit delay at the OS rate** (explicit-loop decoupling), same as M9.3; β is an
+  **effective** divider referred to the modelled 8 Ω secondary (the real 820 Ω/100 Ω network
+  taps a speaker tap).
+- The tremolo runs at the **base rate** (a slow amplitude multiply — no aliasing to guard).
+
+### Validation — `clipper_twin_tests` (deterministic, 44.1 / 48 / 96 k; MEASURED)
+
+Every number is asserted against an analytic target derived IN THE TEST.
+
+1. **DC operating points** vs load-line analysis: V1/V2 on the self-bias load line
+   (B+ = Va + Ra·Iq, Vk = Iq·Rk) — **Va = 274 V, Iq = 1.36 mA**; 6L6 quiescent
+   **28.9 mA/tube** (= the analytic Koren fixed point, ±10 %) at rail **458.8 V**, screen
+   447.4 V, Pdiss 13.3 W (< 30 W); PI balanced **Va1 386.8 / Va2 381.5 V**.
+2. **Fender stack** vs analytic H(jω): discrete-vs-analytic worst **< 0.07 dB** at flat and
+   scooped; the **mid notch** at **339 Hz (flat) / 202 Hz (scooped)**, each below both
+   shoulders — the scoop is real even "flat", asserted ±1.5 dB.
+3. **NFB** sign + magnitude: open −18.7 dB → **closed −22.0 dB = −3.24 dB** (analytic −3.19),
+   gain goes DOWN, **no presence** shaping (flat). A sign flip fails the assert.
+4. **Tremolo**: DEPTH monotonic with INTENSITY (0 = bit-exact unity); RATE follows SPEED
+   (**1.0 / 3.16 / 10.0 Hz** at knob 0 / 0.5 / 1, the log-map midpoint); gain-waveform
+   **rise/fall asymmetry 2.16** (fast dip / slow recovery — NOT a sine), consistent with
+   τ_attack < τ_release.
+5. **Reverb placement**: mix 0 is a **bit-exact passthrough**; with reverb > 0 the wet tail
+   persists in the OUTPUT after the input stops (present **pre-PI**, running through the power
+   amp).
+6. **The product**: clean **THD 2.96 %** at volume 0.5 / hot input (the documented clean bar
+   < 4 %), **monotonic** growth to real breakup **40 %** at max volume (peak **0.89 ≈ 0.9**,
+   ≥ 6× dirtier than clean); **sag Twin ≈ 2.1 dB < JCM ≈ 3.5 dB** (light + stiff), same hard
+   burst; ±10 V slam finite/bounded.
+7. **Aliasing** at MAX volume (M2 sweep 4186 Hz): shipped **4× = −70 / −77 / −85 dB** at
+   44.1 / 48 / 96 k — the Twin is a CLEAN amp, so it clears the −60 dB M2 bar by a wide margin;
+   8× buys nothing → **4× ships**.
+8. All **7 existing ctest suites** still pass, incl. the M9 suites bit-exact (the JCM reverb
+   defaults to passthrough).
+
+### Integration (the M9.4 pattern, extended to three voices)
+
+- **C ABI** (`AmpChain`): third voice `twin` (`amp_set_model` 0|1|2), created + prepared up
+  front (4× OS) so the swap is a lock-free int flip. Param routing (all three voices kept
+  current): BASS/MID/TREBLE → all three; VOLUME → clean120 + twin; BRIGHT → clean120 + twin;
+  SPEED/DEPTH (6/7) → clean120 chorus **and** twin tremolo SPEED/INTENSITY; **REVERB (9) →
+  ALL THREE**; GAIN/PRESENCE/MASTER → jcm only; CHORUS_MODE → clean only. The Twin is a
+  **mono combo → dual-mono** into the shared cab pair; the app hints at the **clean212** cab
+  (a real Twin is a 2×12) when switching to twin with brit412 active.
+- **rig.ts / params.ts / audio.ts**: `twin` in `AmpType`/`AVAILABLE_AMP_TYPES` and
+  `AMP_MODEL_INDEX` (index 2); **no new params** (reuses volume/bass/middle/treble/bright/cab/
+  reverb/speed/depth). Migration coerces unknown types to clean120; old rigs round-trip.
+- **Worklet**: the model index is passed opaquely (2 = Twin), declick-bracketed swap, latency
+  re-published.
+- **UI face** (doctrine): `TwinFace` — model line **COMBO Nº3 · BLACK-PANEL**, wordmark **"Twin
+  Sixty-Five"**, a cool **silver-blue accent** (`--accent-twin`, all 4 theme blocks; the panel
+  stays light/bench-style like the Eight Hundred face). Controls: VOLUME · BASS · MIDDLE ·
+  TREBLE · REVERB + BRIGHT + a TREMOLO row (SPEED · INTENSITY) + cab + power; hidden
+  gain/master/presence/chorus-mode. A **REVERB knob was also added to the Eight Hundred face**
+  (the JCM usability add). Trademark-safe naming throughout (no "Fender/Twin Reverb").
+- **Assistant**: `set_amp` gains `twin`; coaching for the clean-headroom king, the
+  reverb-and-tremolo combo, and the bright switch that bites at low volume; the JCM reverb is
+  documented.
+- **Native**: `ClipperEngine`/APVTS gain the twin voice (Amp Model choice "Twin Sixty-Five",
+  index 2); the identical-core test gains a **third bit-exact case** (Twin: spring reverb +
+  tremolo) and the JCM case now exercises its reverb.
+
+### Render harness (`clipper-render --twin` / `--jcm-reverb`)
+
+```bash
+# Clean shimmer with spring reverb, through the clean212 2x12:
+./build/clipper-render --gen pluck:110:3.0 --amp 0.18 --sr 48000 --twin --twin-cab \
+    --twin-volume 0.5 --twin-reverb 0.3 clean.wav
+# Tremolo demo (~5 Hz, deep) with a touch of spring:
+./build/clipper-render --gen pluck:147:4.0 --amp 0.2 --sr 48000 --twin --twin-cab \
+    --twin-reverb 0.2 --twin-speed 0.7 --twin-intensity 0.7 trem.wav
+# Pushed-hard breakup at max volume (low E):
+./build/clipper-render --gen pluck:82:3.0 --amp 0.5 --sr 48000 --twin --twin-cab \
+    --twin-volume 1.0 breakup.wav
+```
+
+`--twin` renders the FULL composed amp (output normalized, 1.0 == full scale); `--twin-cab`
+runs the clean212 2×12 with the shipped limiter. `--jcm-reverb R` engages the JCM's new
+spring reverb. Reuses `--os`.
+
+### §20 amendment — tremolo ON/OFF (the field-requested switch)
+
+Field report: *"the fender needs on/off for its trem."* The real amp has one (the
+vibrato channel is footswitchable); we shipped SPEED/INTENSITY only, so the sole way
+to kill the throb was dialing INTENSITY to zero — losing the player's setting.
+
+The switch lives in `OptoTremolo` itself (`setEnabled`), gating the **effective
+depth** through a ~10 ms **linear** enable-ramp: linear (not one-pole) so the ramp
+reaches **exactly 0/1** — a settled-off tremolo multiplies every sample by exactly
+1.0 and is a **bit-exact bypass**, while the ramp keeps the live toggle click-free.
+The LFO + opto cell keep running while disabled, so re-enabling never jumps phase
+(like the real circuit, where the footswitch grounds the oscillator's output, not
+its supply). Plumbing reuses the `chorusMode` slot (the Twin has no chorus) — the
+same per-voice slot-reuse pattern as presence→CUT on the AC30: C-ABI param 8 ≥ 0.5 →
+`TwinAmp::PARAM_TREMOLO_ENABLE`, native `ClipperEngine` mirrors it, and the web Twin
+face grows an Off/On `mode-switch` beside SPEED/INTENSITY (`trem-switch`). The
+assistant gets `set_switch 'tremolo'`. **Default OFF** — old rigs serialize
+`chorusMode: 0` and round-trip with the trem bypassed bit-exact.
+
+Tests (core `test_twin_amp` + Playwright): OFF at full intensity is a bit-exact
+passthrough (`out[i] == in[i]`, enable-ramp snapped to 0 by `reset()`); the mid-stream
+toggle is click-free (per-sample gain step bounded by the ramp); intensity=0 remains
+a unity escape hatch; the web envelope test renders switch-on (pumping, CV > 0.15)
+vs switch-off at full intensity (flat, CV < 0.05); the identical-core Twin case runs
+trem ON so the throb stays covered end-to-end.
+
+## Built DSP artifacts are committed
+
+`web/public/generated/` (the Emscripten-built WASM engine + the worklet copy)
+is **checked into git** so that `git pull` alone updates the audio engine —
+no local Emscripten needed to build the web or Mac app. If you change
+`core/` or `web/worklet/`, run `bash scripts/build-wasm.sh` and commit the
+regenerated artifacts alongside the source change (a stale artifact means
+new UI bound to an old engine — trim knobs that do nothing, etc.).
+
+## Mac app (Electron)
+
+**One-shot build & launch (on the Mac):** `bash scripts/mac.sh` (Electron) or
+`bash scripts/native.sh` (JUCE Standalone — the LOW-LATENCY path; prefer it for
+playing, especially the tube amps: WASM runs the JCM800 near the realtime
+edge, native has ample headroom; `--plugins` also builds VST3 + AU for Logic) — builds the
+web app, packages the arm64 .app, and opens it. `--dmg` also produces the
+installer; `--dev` skips packaging for the fastest loop. Refuses to run under
+Rosetta Node.
+
+`electron/` wraps the exact same runtime as `npm run server` in a native macOS
+window. **Electron on purpose:** it ships the same Chromium the whole Playwright
+suite runs on, so the desktop app renders and behaves identically to the browser
+build — no second engine to reason about.
+
+### How it works (architecture)
+
+- **No new server.** On `ready`, `electron/main.mjs` starts the proxy
+  **in-process** via `electron/serve.mjs`, which **reuses `server/handler.mjs`
+  verbatim** (request shaping, upstream call, `[mock]` SSE — all imported, not
+  re-implemented). The only thing `serve.mjs` adds over `server/index.mjs` is
+  static serving of `web/dist` and an **ephemeral** localhost port (`port 0`), so
+  the window loads `http://localhost:<port>/` and the app's relative `/api/*`
+  fetches "just work". Behaviorally identical to `npm run server` fronted by a
+  static host — no `file://` hacks. (`server/index.mjs` isn't imported because it
+  self-`listen`s on a fixed port and serves no statics; the ~40 lines of http
+  glue that `serve.mjs` and it share are the only duplication.)
+- **API key resolution** (`electron/config.mjs`), first hit wins: (1)
+  `ANTHROPIC_API_KEY` env, (2) `config.json` in the app's `userData` dir, (3)
+  neither → a minimal in-app prompt to paste a key, saved to that `config.json`.
+  **`MOCK=1` runs keyless** (canned `[mock]` responses, no key, no spend).
+- **Key storage — v1 tradeoff:** the key is saved as **plain text** in
+  `~/Library/Application Support/Clipper/config.json` (mode `0600`), **not** the
+  macOS Keychain. Documented here as a known v1 limitation.
+- **Mic permission:** on startup the app calls
+  `systemPreferences.askForMediaAccess('microphone')`; the built app declares
+  `NSMicrophoneUsageDescription` (guitar input) in its Info.plist.
+- **Paths are `app.isPackaged`-aware:** in dev, `web/dist` and `server/` sit next
+  to the repo; when packaged, electron-builder copies them into the `.app`'s
+  `Resources/` (`web-dist/` and `server/`) and `main.mjs` resolves them via
+  `process.resourcesPath`.
+
+### Dev loop (any OS with Electron)
+
+```bash
+cd web && npm run build        # the shell serves web/dist — build it first
+cd ../electron && npm install  # downloads Electron for your platform
+MOCK=1 npm run dev             # keyless demo window (or set ANTHROPIC_API_KEY)
+```
+
+`npm test` (in `electron/`) runs the main-process unit suites with plain Node —
+no Electron needed: `serve.test.mjs` (ephemeral port, statics, SPA fallback,
+`/api` wired to the real handler, keyless-mock + no-key-500, path-traversal
+guard — 10 tests) and `config.test.mjs` (key resolution order — 6 tests).
+
+### Build a `.dmg` (on your Mac)
+
+macOS only — a `.dmg` cannot be produced on Linux/Windows.
+
+```bash
+cd web && npm run build                 # 1. build the web app
+cd ../electron && npm install           # 2. install shell deps (downloads Electron)
+npm run make-icon                        # 3. (optional) regenerate the placeholder icon
+npm run dist:mac                          # 4. builds dmg + zip for Apple Silicon (arm64)
+#    -> electron/dist-app/Clipper-<ver>-arm64.dmg
+# Intel Macs: npm run dist:mac:intel (x64; runs under Rosetta on Apple Silicon - avoid)
+```
+
+`predist:mac` re-runs the web build for you, so step 4 alone is enough if the web
+tree is current. Output lands in `electron/dist-app/`. `appId` is
+`com.clipper.app`; targets are `dmg` + `zip` for `arm64` (Apple Silicon) by default; `dist:mac:intel` builds `x64`. On an Apple Silicon Mac make sure Node itself is arm64 (`node -p process.arch` should print `arm64`), otherwise `npm install` fetches the Intel Electron binary and the dev app runs under Rosetta with audio lag.
+
+**Unsigned build — first-launch note.** The app is built **unsigned** (no Apple
+Developer ID; `hardenedRuntime: false`, `identity: null`). macOS Gatekeeper will
+refuse a double-click on first open. To run it: **right-click (or Control-click)
+the app → Open → Open**, once. After that it launches normally. (Signing +
+notarization is a later step; for local/personal use, unsigned is fine.)
+
+**Mic prompt.** On first launch macOS asks for microphone access — required for
+live guitar input. The reason string shown is the `NSMicrophoneUsageDescription`
+above.
+
+### What is verified vs. deferred to a Mac
+
+- **Verified in CI/container:** both Node unit suites (16 tests) pass, and
+  `electron-builder --dir` parses the `build` config and reaches the packaging
+  step (it only stops when it cannot download the Electron binary from GitHub —
+  an egress-policy restriction, not a config problem).
+- **Deferred to the user's Mac:** the actual GUI launch, the mic-permission
+  dialog, and producing the signed/unsigned `.dmg` — all require running the real
+  Electron binary on macOS.
+
+## 13. M7 — Tuner (chromatic needle tuner)
+
+A chromatic needle tuner as a chain pedal (`type: 'tuner'`), Polytune-mini in role
+but **chromatic only** (polyphonic multi-pitch is explicitly out of scope). It is
+**not a modeling problem** — pitch detection + mute — so there is **no core/DSP/
+C-ABI change**: detection runs in the WEB layer and the only worklet touch is a
+per-chain mute flag + a tap point. All the work is in `web/` plus one new
+dependency.
+
+### Detection — where, how, and the frame-size decision
+
+Detection uses the **McLeod pitch method (MPM)** via the **`pitchy`** npm package
+(MIT, tiny — the ONLY new dependency) on the **MAIN THREAD**, fed by frames the
+worklet taps off the **post-input-trim, pre-chain** signal (the raw guitar, before
+any pedal) — the same message-port tap pattern the M6.1 peak meter uses. The
+worklet keeps a ring buffer of the raw input and, **only while an engaged tuner is
+in the chain** (zero cost otherwise), posts the most recent `TUNER_FRAME_SIZE`
+samples every `TUNER_HOP_BLOCKS` render quanta as a `tunerFrame` message; `audio.ts`
+runs a reused `PitchDetector` over each frame and converts the result to a note +
+cents (`analyzePitch` in `web/src/tuner.ts`). Nothing streams into the assistant —
+it reads a throttled point-in-time snapshot.
+
+**Frame size = 4096 samples (~85 ms @ 48 k), hop = every 4th block.** MPM needs the
+analysis window to hold a couple of periods of the note for the NSDF
+autocorrelation peak at that lag to have enough overlap to lock. Measured on
+synthetic plucked tones (fundamental + decaying harmonics, 30 trials each):
+
+| frame | low B (B0, 30.87 Hz) | low E (82.41 Hz) | A4 (440 Hz) |
+|---|---|---|---|
+| **2048** (~43 ms) | **30/30 FAIL** (only ~1.3 periods) | 0.00 c, clarity 1.0 | −0.02 c |
+| **4096** (~85 ms) | −0.04 c, clarity 1.0, 0 fails | −0.02 c | −0.01 c |
+
+So 2048 (the size the peak meter would suggest) cannot see a 7-string low B at all,
+while 4096 (~2.6 periods of B0) locks it to **<0.1 cents**. The larger frame costs
+nothing the rest of the time because the tap only runs while the tuner is engaged.
+**Lowest reliable note: B0 (~31 Hz).** The gates in `tuner.ts` reject <27.5 Hz,
+>1400 Hz, or clarity <0.7. Reference pitch is fixed at **A=440** (12-TET:
+`MIDI = 69 + 12·log2(f/440)`; nearest integer = note, fractional remainder = cents).
+A hop of 4 blocks ≈ 93 readings/s, well above the 60 fps the needle interpolates at.
+`TUNER_FRAME_SIZE` / `TUNER_HOP_BLOCKS` are mirrored in the worklet with a sync
+comment (the worklet is un-bundled and can't import the module).
+
+### DSP behavior — engaged tuner MUTES the chain (`web/worklet/clipper-processor.js`)
+
+True tuner-pedal behavior: **engaged = muted** (stomp the tuner on, the rig goes
+silent, you tune; stomp off, audio returns). The tuner is a **handle-less chain
+node** — `_createPedal('…','tuner',…)` makes no WASM instance, the DSP loop skips
+it (pass-through), and it contributes 0 latency. `_refreshMute()` derives
+`_muteActive = any engaged tuner`, recomputed on every chain commit and bypass
+toggle. A per-sample `_muteGain` ramps toward the target (0 when muted) reusing the
+**same 6 ms raised-cosine step as the M6.4 declick fade**, so mute/unmute is
+click-free — the mute envelope multiplies the output alongside the declick
+envelope. The tap ring is written in the same input loop that computes the peak
+(only when `_muteActive`), and posted (no per-block allocation — a reused scratch
+buffer, structured-cloned by the postMessage) every hop.
+
+### UI — the tuner pedal (`web/src/components/Tuner.tsx`, `styles/tuner.css`)
+
+Pedal-format enclosure on the shared `.pedal raised` shell: model line
+`TUNE Nº0 · CHROMATIC`, a **lock LED** (green when |cents| ≤ 3 held ≥ 350 ms, red
+when off-pitch, dim when no signal), a **big note name + octave** (Anton display
+face), an **SVG arc needle** that sweeps with the cents deviation, a **±cents
+readout** (flat = amber, sharp = blue), and a footswitch labelled **Tune / Muted**.
+The needle sweep and LED run off a single `requestAnimationFrame` loop that eases
+toward the latest reading (~60 fps smoothing independent of the ~93/s detection
+rate); App throttles the reading state to ~30/s for text while keeping a full-rate
+ref for the assistant. Detection only runs while engaged, so a disengaged tuner
+rests the needle at center and shows `—`.
+
+### Integration & serialization
+
+`'tuner'` joins the pedal-type registry **additively** (kept minimal so the
+parallel SD-1 work merges cleanly): the `rig.ts` `PedalType` union, the gear-tray
+`AVAILABLE_PEDAL_TYPES`, `PEDAL_TYPE_LABEL`, the worklet chain dispatch, and
+`Board` rendering (a tuner instance renders `<Tuner>` instead of `<Pedal>`). A
+fresh tuner (`makePedal('tuner')`) starts **DISENGAGED** so dropping it on the
+board doesn't silence the rig, and carries the uniform `params` object (ignored —
+its only state is `engaged`), so it **round-trips through rig JSON** like any pedal
+and old rigs keep loading (`normalizePedal` coerces unknown types to the RAT).
+Assistant: `add_pedal` gains `type:'tuner'`; the coach can toggle it via
+`set_engaged`; the per-turn rig context adds a **`## Tuner`** section (nearest note
++ cents + flat/sharp) whenever a tuner is engaged, and the system prompt learns to
+suggest checking tuning ("that sourness is tuning, not tone").
+
+### Build and test (M7)
+
+```bash
+# No core change, but the worklet changed -> re-copy the committed artifact:
+bash scripts/build-wasm.sh            # WASM binary unchanged; re-copies the worklet
+cd web && npm install                 # pulls in pitchy@4.1.0 (the one new dep)
+npm run build && npm test             # 28 Playwright (25 + 3 new)
+```
+
+New Playwright coverage (`tests/tuner.spec.ts`): known frequencies (low E 82.41 Hz,
+A4 440 Hz, a +20-cent-sharp 445 Hz, and low B B0 ≈ 30.87 Hz) detect to the right
+note + cents within ±2 through the real McLeod path; an **offline render** proves an
+engaged tuner silences the chain (RMS ≈ 0) while a disengaged one passes audio; and
+the gear tray adds a tuner that renders the enclosure, starts disengaged, and
+engages on a footswitch stomp. Both themes were screenshotted with the tuner locked
+on the 220 Hz test tone (A3). (Two pre-existing offline-render WebAudio flakes may
+retry, per `playwright.config.ts`.)
+
+## 15. Cab expansion — Brit 4×12, user IR upload, modal cab rebuild
+
+Two roadmap items (a second built-in cab + user IR upload), plus a root-cause fix
+of the long-running "fizzy only with the cab on" report and a latent convolver
+bug found on the way.
+
+### 15.1 The fizz was the IR, not the convolver — modal rebuild
+
+Field report: fizz with the cab engaged, even pedal-bypassed, surviving every
+M6.5/M6.6 fix. Root cause, measured: the generated cab IRs built their tail from
+**seeded random noise** under an exponential envelope, plus a couple of discrete
+early reflections. On a steady sine (a linear system) this averages out — which
+is why every steady-state test passed — but on real playing each pick is an
+impulse that **re-fires a ~20 ms colored-noise burst**, heard as per-note hash.
+Measured on the old 2×12: tail energy after 3 ms only **−22.9 dB** below the
+direct sound, a ragged **comb** magnitude response (≈2 dB steps between adjacent
+log-spaced points, ~15 dB ripple 500 Hz–5 kHz), and — with a dense enough search
+grid — a normalized peak of **1.06** (the old 160-point normalization grid
+undershot the true peak, so the cab could still boost ~0.5 dB past unity).
+
+The cabs are now **deterministic modal synthesis** (`core/src/dsp/CabIR.cpp`): a
+direct impulse plus a small set (~10) of **exponentially-decaying resonant
+sinusoids** (damped modes standing in for box/cone/breakup resonances), shaped by
+the same biquad voicing cascade (low cut, presence bump, steep speaker rolloff),
+gated by a short raised-cosine **tail fade**, and **peak-normalized on a dense
+512-point grid**. A handful of tiny-amplitude modes gives natural body and a
+short (~2–5 ms) decay with **zero noise**; because each mode is a broad, gentle
+resonance the magnitude stays smooth. The coarse voicing is preserved so the amp
+still sounds like the amp — we removed the hash, not the character. (Note: a
+mode's spectral bump ≈ `amp·decay_samples/2`, so mode amplitudes are in the
+thousandths — the *voicing* comes from the cascade, the modes only season it.)
+
+### 15.2 Cab lineup + voicing
+
+| | Clean 2×12 (`clean212`) | Brit 4×12 (`brit412`) |
+|---|---|---|
+| role | JC-120 clean platform | Marshall-style rock cab (pairs with the JCM800) |
+| low cut | ~95 Hz (Q 0.6) | ~72 Hz (Q 0.6) — fuller lows |
+| low-mids | flat | broad **+2 dB @ ~215 Hz** (the 4×12 "chunk") |
+| presence | +3.5 dB @ 2.5 kHz | +3 dB @ 3 kHz |
+| top rolloff | 4× LP @ 5 kHz | **5× LP @ 4.6 kHz** — steeper, darker |
+| 5 kHz / 8 kHz (dB re 1 kHz) | −12 / −39 | **−19 / −56** (clearly darker) |
+
+The `brit412` is audibly thicker in the low-mids and much darker up top — the
+load-bearing distinction the assistant coaches and the Playwright spectrum test
+measures.
+
+### 15.3 "Sounds-not-wrong" metrics (ctest, both cabs, 44.1 / 48 / 96 kHz)
+
+`core/tests/test_amp_model.cpp` asserts four metrics on **every generated IR** so
+a regression back toward noise/comb fails the build. Before/after (2×12 @48k):
+
+| metric | old noise IR | modal 2×12 | modal brit412 | bound |
+|---|---|---|---|---|
+| tail energy after 3 ms | −22.9 dB | **−33.7** | **−30.5** (−27.4 @96k) | `< −25` |
+| body smoothness (500 Hz–4 kHz max step) | 1.21 dB | **0.25** | **0.38** | `< 0.5` |
+| rolloff monotone (4–8 kHz) | no (comb) | yes | yes | true |
+| tail flatness (modal vs noisy) | 0.35–0.53 | **0.11–0.14** | **0.04–0.07** | `< 0.25` |
+| spectral peak (M6.6) | ~1.06 | **1.0000** | **1.0000** | `≈ 1` |
+
+**Documented deviations from the original metric brief, by physics:** (1) the tail
+bound is **−25 dB, not −35 dB** — a steep speaker rolloff spreads the direct
+impulse (time/frequency tradeoff) and a fat 4×12 needs low-mid energy that rings a
+few ms, so −35 dB at a 3 ms split isn't reachable without gutting the voicing; the
+**low tail-flatness** assert (tonal, not noise) is the real anti-hash guarantee.
+(2) Smoothness is measured over **500 Hz–4 kHz** (the body, where comb hash lives)
+plus a separate **monotone** assert on the 4–8 kHz rolloff — a literal
+500 Hz–5 kHz step bound penalizes the (smooth, legitimate) steep rolloff knee near
+5 kHz, which is slope, not hash. A `clipper-render --chain clean --cab {clean212|
+brit412}` render of a low-E pluck reports the **post-attack residual** (~−38 dB re
+rms — clean decay, no noise burst).
+
+### 15.4 Convolver was exonerated — and a latent in-place bug fixed
+
+A permanent **null test** proves the partitioned-FFT `CabConvolver` equals a
+direct double-precision convolution to **−152 dB** (block-processed, 44.1/48/96k)
+— it was never the fizz. But building the custom-IR test surfaced a real latent
+bug: `CabConvolver::processBlock` wrote `out[i]` and *then* read `in[i]` to save
+the overlap-save history. The worklet runs the cab **in place**
+(`cab.process(out, out, n)` in `amp_process`/`amp_process_stereo`), so the overlap
+captured the *output*, not the input — corrupting the next block's window. On the
+smooth default IR the error looked harmless; on a peaky IR (a user cab, or the
+test comb) it **filled notches**. Fixed by saving the overlap from `in` *before*
+writing `out`; a dedicated **in-place comb null test** (−152 dB) now guards it.
+
+### 15.5 Cab selection + user IR upload — the pipeline
+
+- **RigState** (`web/src/rig.ts`): `amp.cabModel: 'clean212' | 'brit412' |
+  'custom'` (+ optional `customCabLabel`), persisted and **migrated** (old rigs →
+  `clean212`). This is separate from the `cab` 0/1 *enable* lever (which bypasses
+  the convolver). Presets/rig JSON **never embed IR data**.
+- **C ABI** (`core/src/clipper_c_api.cpp`): `amp_set_cab_builtin(handle, which)`
+  regenerates both per-side cabs; `amp_load_custom_ir(handle, ptr, len)` builds an
+  IR from the samples and **peak-normalizes it in the core** (M6.6 — never trust
+  the file's level: a cab must not boost) before preparing both sides. Same
+  convolver, same 128-partition → latency/CPU unchanged.
+- **Worklet** (`web/worklet/clipper-processor.js`): a `{type:'cab', builtin}` or
+  `{type:'cab', custom: Float32Array}` message stages the swap in the message
+  handler (malloc + heap copy) and applies it at the **M6.4 declick** fade-out
+  zero, so the IR change is click-free (RMS-continuity Playwright test).
+- **Upload pipeline** (`web/src/cab.ts`, main thread): `decodeAudioData` → mono-ize
+  (average channels) → resample to the engine rate via `OfflineAudioContext` → cap
+  at **4096 samples** (truncate with a short fade-out; the UI reports the original
+  length) → transfer the `Float32Array` to the worklet. The IR **samples** persist
+  in their own localStorage key (`clipper.customCab.v1`, base64), next to the rig.
+- **Fallback**: loading a rig that references `cabModel:'custom'` with the IR data
+  missing (e.g. shared to another browser) falls back to `clean212` with a UI note
+  (`App.tsx`, tested).
+- **Assistant** (`web/src/assistant/{tools,prompt}.ts`): the rig context carries
+  `amp.cabModel`; a `set_cab` tool switches between the **built-ins only** (never
+  `custom` — that needs a user upload); the coach knows 4×12 = thicker/darker Brit
+  voicing for rock/JCM tones, 2×12 = the clean platform.
+
+### 15.6 Build & test
+
+```bash
+cd core && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build && ctest
+bash scripts/build-wasm.sh            # regenerates web/public/generated/* (committed)
+cd web && npm run build && npx playwright test   # 35 specs incl. 5 new cab tests
+# demo (no post-attack noise burst): clean pluck through either cab
+core/build/clipper-render --gen pluck:82.4:2.0 out.wav --chain clean --cab brit412
+```
+
+## 16. M6.7 / M6.7-2 — Spring reverb (the JC-120's tank)
+
+M5 shipped the Clean 120 with **no reverb** — the real Roland JC-120 has a spring
+tank, and the panel had no knob because the block did not exist. M6.7 added an
+algorithmic reverb in the amp's **authentic position** with a single **REVERB** knob.
+**M6.7-2 replaced the algorithm inside `ReverbModel` with a TRUE DISPERSIVE SPRING**
+(same class, same one-knob interface, same position, same bit-exact-dry-at-0), which
+is what this section now describes. The interface story (position, C ABI, RigState,
+UI, assistant, native) is unchanged from M6.7; only the DSP core changed.
+
+> **The metallic/underwater postmortem (why M6.7-2 exists).** M6.7 was a bank of **4
+> short parallel feedback combs** + a **steep 4th-order 4.5 kHz in-loop lid**. The
+> user heard its two textbook weaknesses immediately:
+> * **"too metallic"** — 4 short combs ring on **harmonically-spaced** modes (each
+>   comb resonates at integer multiples of `1/delay`). Evenly-spaced modes fuse into
+>   a pitched, clangy "sproing". A real spring does not do this.
+> * **"underwater"** — a **steep 4.5 kHz lowpass *inside* the feedback loop** plus an
+>   allpass smear made a dull, phasey wash with no air on top.
+>
+> M6.7-2 fixes both by modelling the actual physics: a spring is a **dispersive**
+> waveguide (wave speed varies with frequency), so a transient arrives smeared into a
+> **downward-swept chirp** ("boing"), and — because the round-trip delay varies with
+> frequency — its modes are **stretched (inharmonic)** and never stack into a metallic
+> pitch. The steep in-loop lid is replaced by **gentle** damping, so the top stays
+> alive.
+
+### Position — why it lives inside `AmpModel::processStereo`
+
+The real signal path is **preamp/tone → spring tank → the stereo chorus fork →
+two power-amps + speakers**. So the reverb is a **mono** block (the split comes
+after it) sitting **after the tone stack + volume and before the chorus split**:
+
+```
+in ─► tone stack + volume (mono voice) ─► ReverbModel (mono) ─► ChorusModel split
+                                                              ─► per-side cab L / R
+```
+
+`ReverbModel` is **owned by `AmpModel`** (like `ChorusModel`), which routes
+`PARAM_REVERB` to it. Because it is upstream of the split, the wet tail **blooms in
+stereo through the chorus and both per-side cabs** — exactly like the hardware tank
+feeding the stereo section. The mono legacy `AmpModel::process()` path is left
+untouched (reverb is a stereo-path feature; it is the real amp's stereo voice).
+
+### DSP (`core/src/dsp/ReverbModel.{h,cpp}`) — the dispersive spring
+
+A mono network, in signal order:
+
+```
+in ─► transducer band-limit (2nd-order HP 150 Hz + 2nd-order LP 5.2 kHz)
+   ─► [ spring 1 ]  +  [ spring 2 ]      (0.5·sum; two detuned dispersive springs)
+   ─► transducer band-limit (HP 150 Hz + LP 5.2 kHz) ─► ×3.0 ─► wet
+out = cos(mix·π/2)·dry + sin(mix·π/2)·wet             [equal-power mix]
+
+each spring = FEEDBACK LOOP:
+  loopIn ─► bulk delay Dₖ ─► [ N first-order dispersion allpasses ]
+         ─► gentle in-loop damping (HF high-shelf + 120 Hz low-cut) ─► loopOut
+  feedback = g·loopOut ;  loopIn = band(dry) + feedback
+```
+
+- **Dispersion allpass cascade** — the heart. Each section is a **first-order allpass
+  in the DOWNWARD form** `H(z) = (z⁻¹ − a)/(1 − a·z⁻¹)` (pole at `+a`). Its group
+  delay **decreases with frequency** (≈ `(1+a)/(1−a)` samples at DC, `(1−a)/(1+a)` at
+  Nyquist), so **low frequencies are delayed more than highs** — a broadband impulse
+  exits as a **high→low descending chirp**. Cascading `N` of them accumulates the
+  sweep into an audible boing and makes the loop's round-trip delay
+  frequency-dependent, which **stretches the mode spacing** and kills M6.7's harmonic
+  (metallic) stacking. `a = 0.740 / 0.728` (in the 0.6–0.75 window); `N = 32 / 34`
+  sections per spring.
+- **Bulk delay** (`Dₖ = 1150 / 1219` @44.1k, scaled by `fs`) sets the round-trip
+  **echo period** together with the cascade's low-frequency group delay — **≈ 30 ms**.
+  This is deliberately the **short end** of the spring range: lengthening the loop
+  toward the 40–56 ms of a big tank let the *constant* bulk delay dominate the
+  *fixed-length* dispersion, and the modes **collapsed back to a harmonic comb**
+  (measured mode-spacing stretch fell from **≈3.3× to ≈1.0×** — the exact metallic
+  failure we are fixing). At ~30 ms the dispersion stays a large enough fraction of
+  the loop to keep the modes stretched, and successive ~12 ms chirps overlap into a
+  wash rather than discrete pings.
+- **Two detuned springs** — loop lengths differ ~6% with a slight coefficient
+  difference (`0.740` vs `0.728`); their sum gives the dual-tank shimmer/beat and
+  de-correlates the two mode series.
+- **In-loop damping — GENTLE.** A high-**shelf** (`−2.5 dB` above ~6 kHz, so the
+  spring loses a little top per pass) + a `120 Hz` low-cut (no boom). This is
+  deliberately **not** M6.7's steep 4.5 kHz in-loop lid — that lid was the
+  "underwater" culprit.
+- **Transducer band-limit** — 2nd-order HP `150 Hz` + 2nd-order LP `5.2 kHz` at input
+  **and** output. Gentler (2nd- vs 4th-order) and higher (5.2 vs 4.5 kHz) than M6.7,
+  so the tail keeps air (>6 kHz **down but not dead**) instead of sounding dull.
+- **Decay is FIXED** (the knob is a MIX, like the real REVERB pot): loop gain
+  `g = 0.90` over the ~30 ms round trip gives **RT60 ≈ 1.7 s** via
+  `RT60 ≈ −3·T_rt / log₁₀ g` — springs ring a touch longer than the plate-ish 1.5 s
+  M6.7 used.
+- **One parameter — `reverb` (0..1), an equal-power wet MIX.** `dryGain = cos(mix·π/2)`,
+  `wetGain = sin(mix·π/2)`. At `mix == 0`, `cos(0)==1` and `sin(0)==0` **exactly**
+  (IEEE), and the network is **skipped entirely** (fast path), so `reverb == 0` is a
+  **bit-exact dry passthrough** (asserted). Deterministic and allocation-free in
+  `process()` (all delay lines / allpass state sized in `prepare()`); a `1e-20`
+  anti-denormal offset injected at each spring's loop input keeps a decaying tail off
+  the denormal CPU cliff (removed by the 120 Hz / 150 Hz high-passes, so no audible
+  DC; >100 dB below anything audible).
+
+**Cross-rate note.** The dispersion is defined in **samples** (`N` fixed across `fs`);
+only the bulk delay scales with `fs`. So at 96 kHz the chirp sweep is a little faster
+and RT60 drifts from 1.77 s → 1.63 s — well inside tolerance — while the mode-stretch
+fingerprint holds (3.33× → 3.11×). Scaling `N` with `fs` would double the 96 kHz CPU
+for an inaudible gain, so it is left fixed and the drift is asserted within band.
+
+**Modulation — measured, not needed.** The brief allowed a small (<±0.3 sample) slow
+delay modulation *if* the tail still showed comb clustering. It does not: the
+dispersion alone already stretches the modes **3.3×** vs a comb's **1.0×**, so no
+modulation is used — keeping the model fully deterministic and cheaper.
+
+**The CPU tradeoff.** A genuine dispersion cascade is a long **sequential** allpass
+chain (each section depends on the previous, per sample) — latency-bound, not
+cheap like M6.7's combs. The brief targeted 100–200 sections; at `a ≈ 0.74` (upper
+end) each section carries enough group delay that **~32 sections/spring** reproduce
+the dispersion a lower-coefficient 150-section chain would, at ~1/4 the cost. That is
+the documented **chirp-rate/CPU tradeoff**: fewer sections → a slightly shorter chirp
+sweep, but the mode-stretch and boing survive (see the perf row below).
+
+### Validation (`testReverb*` in `core/tests/test_amp_model.cpp`, 44.1/48/96 kHz)
+
+The sound-validation house style — deterministic, framework-free, run at all three
+rates. Several tests run the new model **against an embedded OLD-M6.7 reference**
+(`OldSpringRef` in the test) as the A/B failing baseline, exactly as the brief asks.
+Measured numbers (44.1 kHz shown; 48/96 k in parens where they differ):
+
+| Test | Metric | NEW spring | OLD M6.7 | Bound |
+|---|---|---|---|---|
+| Passthrough | `reverb=0` vs dry | **bit-exact** | — | `==` |
+| Decay | RT60 (Schroeder T30) | **1.77 s** (1.75 / 1.63) | 1.52 | 0.9–2.5 s (design 1.6–2.2) |
+| Decay | tail energy, 100 ms windows | **monotone** ×38 | — | non-increasing (±2 %) |
+| **Chirp** | echo-1 centroid early→late | **1.85×** down (1.71 / 1.82) | **1.04×** (flat) | > 1.4 **and** > 1.4× OLD |
+| **Chirp** | echo period | **30 ms** | — | 20–45 ms |
+| Band | tail >6 kHz re mid | **−19.7 dB** (−18.5 / −8.2) | −20.4 | in [−26, −5] (down, not dead) |
+| Band | tail <100 Hz re mid | **−28.3 dB** | −26.2 | < −14 dB |
+| **Anti-metallic** | mode-spacing stretch hi/lo | **3.33×** (3.33 / 3.11) | **0.97×** | > 1.8 **and** > 1.5× OLD |
+| Density | mid-tail crest factor | **4.32** (4.34 / 4.77) | 6.17 | < 8 (diffuse) |
+| Stability | ±1 slam + noise | no NaN, **peak 1.9** | — | bounded, < 20 |
+| Placement | tail after input stops, L / R | **0.022 / 0.023** | — | both > 1e-3 (stereo bloom) |
+| Placement | `reverb=0` tail, L / R | **0 / 0** | — | < 1e-5 (clean bypass) |
+
+- **Chirp (the load-bearing test).** A single impulse → the first echo's **spectral
+  centroid drops** from its first half to its second (a downward sweep). The OLD comb
+  bank is essentially flat (1.04×), so the new spring must sweep **> 1.4×** *and*
+  markedly more than OLD. This is precisely what M6.7 could not do.
+- **Anti-metallic.** The dispersive loop's round-trip delay is frequency-dependent, so
+  its resonant modes **stretch**: high-band mode spacing ÷ low-band spacing ≈ **3.3×**.
+  A plain comb bank has **constant (harmonic) spacing ≈ 1.0×** — the metric is measured
+  identically on the embedded OLD reference (**0.97×**) as the failing baseline. Mode
+  spacing is read from the autocorrelation of the log-magnitude spectrum on a linear
+  grid, in a low (300–1200 Hz) vs high (2500–4500 Hz) sub-band.
+- RT60 is a **Schroeder backward energy-decay** curve (`−5 → −35 dB` T30, `RT60 =
+  2·T30`). Band energy is averaged `|H(f)|²` over several probes per band. Density is
+  the mid-tail **crest factor** over `[0.2, 0.6] s`. Placement drives the whole
+  `AmpModel::processStereo` with chorus on and reverb up.
+
+### CPU
+
+From `testReverbPerf` (1 s of audio through the reverb alone, plain `-O3` release):
+
+| Sample rate | Time for 1 s | Fraction of one core |
+|---|---|---|
+| 44.1 kHz | ~11.6 ms | ~1.2 % |
+| 48 kHz | ~12.5 ms | ~1.3 % |
+| 96 kHz | ~24.1 ms | ~2.4 % |
+
+This is **comparable to** the chorus + 2×cab stage it feeds (`testChorusPerf`:
+~10 ms @44.1k / ~26 ms @96k), not far under it — the honest price of a real
+sequential dispersion cascade (M6.7's combs were ~1.7 ms). It is still a small
+fraction of one core (the whole rig stays ~2–3 % of a core), i.e. comfortably
+real-time with large headroom; the perf test bounds it at < 0.1× real time so a slow
+CI box cannot flake. Section count was cut to ~32/spring precisely to keep it here.
+
+### Integration
+
+- **C ABI / worklet.** `PARAM_REVERB = 9` is appended additively to the amp ABI
+  (chorus stays 6/7/8, cab stays 5). The worklet passes amp param ids straight
+  through to `_amp_set_param` — **no special-casing** beyond the existing cab-toggle
+  latency echo — so the reverb needs zero worklet plumbing.
+- **RigState** (`web/src/rig.ts`). `amp.params.reverb` (0..1, default **0**),
+  persisted and migrated: a pre-M6.7 saved rig (no `reverb` field) loads at 0 (dry).
+- **UI** (`web/src/components/Amp.tsx`). A **REVERB** knob on the amp facia beside
+  the tone controls (Vol / Bass / Mid / **Treble / Reverb**), reusing the shared
+  `Knob` and existing tokens — where the real JC's reverb pot sits.
+- **Assistant** (`web/src/assistant/{tools,prompt}.ts`). `set_param 'reverb'` (unit
+  `amp`) plus a coaching line: the JC spring is surfy/ambient, keep it low (10–30)
+  for clarity and note definition, higher for ballads/ambient washes; the knob is a
+  mix, decay is fixed.
+- **Native** (`native/`). `Params.reverb` + an APVTS `reverb` knob (default 0)
+  keep the JUCE plugin chain-complete; the **identical-core test exercises the wet
+  path** (`reverb = 0.5` in its param set) and still passes **bit-exact**.
+
+
+
+- `core/` must never include platform/OS/browser/Emscripten headers. The only
+  Emscripten touch point is `EMSCRIPTEN_KEEPALIVE` in `src/clipper_c_api.cpp`,
+  guarded by `#if defined(__EMSCRIPTEN__)` so the file still builds natively.
+- Gain smoothing (one-pole, ~5 ms) lives in the core, not in JS, so parameter
+  changes are click-free regardless of the host.
+- Parameter ids are mirrored and must stay in sync. The **RAT** ids
+  (`PARAM_DISTORTION=0`, `PARAM_FILTER=1`, `PARAM_LEVEL=2`) live in
+  `core/include/clipper/dsp/RatModel.h` (`clipper::dsp::RatModel::ParamId`),
+  `web/src/params.ts`, and `web/worklet/clipper-processor.js`. The **AMP** ids
+  (`PARAM_VOLUME=0`, `PARAM_BASS=1`, `PARAM_MIDDLE=2`, `PARAM_TREBLE=3`,
+  `PARAM_BRIGHT=4` in `clipper::dsp::AmpModel::ParamId`, plus the chain-level
+  `AMP_PARAM_CAB=5` handled by the C ABI wrapper, the chorus
+  `PARAM_CHORUS_SPEED=6 / _DEPTH=7 / _MODE=8`, and the M6.7 `PARAM_REVERB=9`) are
+  likewise mirrored in `web/src/params.ts` and the worklet. The M0 gain id
+  (`clipper::ParamId::PARAM_GAIN=0` in `Processor.h`) still exists in the WASM
+  module but the live app no longer uses it.
+```
+
+## Native app (JUCE)
+
+`native/` is the desktop shell: a JUCE audio plugin (Standalone + VST3, plus AU
+on macOS) that wraps the **identical** portable core (`core/`) — the roadmap's
+"re-wrap, not a rewrite." It exists so the user can play through Logic (AU) on
+Apple Silicon at native buffer latency instead of the ~20–40 ms WebAudio round
+trip. Nothing in `core/`, `web/`, `server/`, or `electron/` changes; `native/`
+consumes `core/` as a CMake subproject and links `clipper_dsp` directly.
+
+### Architecture
+
+```
+mono in ──► × input trim (−12..+24 dB) ──► board[0] (if engaged) ──► board[1] …
+        ──► AmpModel.processStereo (tone stack + volume + bright + JC-120
+            chorus/vibrato split: mono → stereo) ──► per-side CabConvolver
+            (cabL / cabR, if cab on) ──► × declick envelope (chain edits only)
+        ──► OutputLimiter.processStereo ──► stereo out
+```
+
+The pedal stage is the **user-ordered board** — see **Native pedal-board parity**
+below. It was a fixed RAT → SD-1 pair through the first native phase.
+
+- **`native/src/ClipperEngine.{h,cpp}`** — the whole DSP chain, using the core
+  C++ classes **directly** (`RatModel`, `SdModel`, `TsModel`, `MuffModel`,
+  `PhaserModel`, `AmpModel` + its owned `ChorusModel`, two `CabConvolver`s,
+  `OutputLimiter`) — **not** the `clipper_c_api` C ABI. This mirrors `web/worklet/clipper-processor.js` sample-for-sample. It has
+  no JUCE dependency, so the console test can drive it standalone.
+- **`native/src/PluginProcessor.{h,cpp}`** — the JUCE `AudioProcessor`. Owns an
+  `AudioProcessorValueTreeState` (the param store + state save/restore) and one
+  `ClipperEngine`. Pure host glue: no DSP. Mono-in → stereo-out bus layout (also
+  accepts a stereo track and takes channel 0 as the mono source).
+- **`native/src/PluginEditor.{h,cpp}`** — the **neumorphic** custom editor (visual
+  pass): dark-chassis "island" cards on a light porcelain bench, sculpted rotary
+  knobs with colour value arcs + readouts, per-section accents, LEDs/jewels, lever
+  toggles and a face-switching amp card — the native translation of the web design
+  language (see **Editor (neumorphic visual pass)** below). All controls stay
+  APVTS-attached; the **build git hash** is shown bottom-right (`CLIPPER_GIT_HASH`).
+- **`native/src/ClipperLookAndFeel.{h,cpp}`** — the `LookAndFeel` + a small custom
+  **widget kit** (knob, footswitch in four morphologies, lever, power rocker, mode
+  switch, chip button, jack, patch cable) implementing that language. This is where
+  the CSS box-shadow/gradient recipes are translated to JUCE drawing.
+- **`native/src/PedalCard.{h,cpp}`** — one pedal card on the board: the per-type
+  face table (eyebrow / wordmark / accent / morphology / knobs), its APVTS
+  attachments, its LED and its chain-position chips.
+
+Mono in → stereo out so the chorus bloom works in Logic.
+
+### Parameter map (APVTS ↔ `web/src/rig.ts`)
+
+Knob params are plain `0..1` `AudioParameterFloat`s — the **core owns the taper
+laws** (audio-taper volume, RAT/SD gain maps, etc.), identical to the web build,
+so the host sees a linear normalized position and the value passes through
+unchanged. Toggles are `AudioParameterBool`; oversampling and chorus mode are
+`AudioParameterChoice`. Defaults mirror `DEFAULT_RIG` / `*_KNOB_DEFAULTS`.
+
+| APVTS id | type | default | core target |
+|---|---|---|---|
+| `inputTrim` | float 0..1 | 1/3 (= 0 dB) | worklet-style linear pre-gain |
+| `ratOn` | bool | true | chain: engage RAT |
+| `ratDist` / `ratFilter` / `ratLevel` | float | 0.7 / 0.4 / 0.8 | `RatModel` id 0 / 1 / 2 |
+| `sdOn` | bool | false | chain: engage SD-1 |
+| `sdDrive` / `sdTone` / `sdLevel` | float | 0.5 / 0.5 / 0.7 | `SdModel` id 0 / 1 / 2 |
+| `tsOn` | bool | true | board: engage the Screamer |
+| `tsDrive` / `tsTone` / `tsLevel` | float | 0.5 / 0.5 / 0.75 | `TsModel` id 0 / 1 / 2 |
+| `muffOn` | bool | true | board: engage the Pi |
+| `muffSustain` / `muffTone` / `muffVolume` | float | 0.6 / 0.5 / 0.6 | `MuffModel` id 0 / 1 / 2 |
+| `phaserOn` | bool | true | board: engage the Ninety |
+| `phaserSpeed` | float | 0.35 | `PhaserModel` id 0 (SPEED — its only knob) |
+| `ampOn` | bool | true | chain: amp power (off ⇒ stereo passthrough) |
+| `volume` / `bass` / `middle` / `treble` | float | 0.4 / 0.5 / 0.5 / 0.6 | `AmpModel` id 0 / 1 / 2 / 3 |
+| `bright` | bool | false | `AmpModel` id 4 |
+| `cab` | bool | true | chain-level cab on/off (per-side `CabConvolver`) |
+| `chorusMode` | choice Off/Chorus/Vibrato | Off | `AmpModel` id 8 (0/1/2) |
+| `chorusSpeed` / `chorusDepth` | float | 0.3 / 0.5 | `AmpModel` id 6 / 7 |
+| `oversampling` | choice 1x/2x/4x/8x | 4x | `RatModel`/`SdModel` `setOversampling` |
+
+Plus the **board** (which pedals, in what order) as a non-automatable child node of
+the state tree — see **Native pedal-board parity**.
+
+State save/restore is APVTS XML via `getStateInformation`/`setStateInformation`.
+
+**Smoothing:** the core already one-pole-smooths (~5 ms) every param, so the
+plugin does **not** double-smooth. Critically, `processBlock` applies only the
+params that **changed** since the previous block (`ClipperEngine::updateParams`),
+exactly like the web worklet sets a core param only on a knob message. Re-pushing
+an *unchanged* value every block would re-seed the smoother target and — through
+the RAT/SD-1 high-gain nonlinearity — perturb the output; change-only application
+keeps a steady chain bit-for-bit identical to a single-shot render (this is what
+the identical-core test proves). Setup params are pushed once and **snapped** in
+`prepareToPlay` (the smoother `prepare()` snaps value → target).
+
+### Latency reporting
+
+`setLatencySamples()` is published from the model latency accessors and updated on
+cab toggle / oversampling change:
+
+```
+latency = Σ over the BOARD, for each engaged pedal:
+              its model's latencySamples()            // OS group delay
+              (the phaser is linear -> 0)
+        + (ampOn && voice is a valve amp ? its latencySamples() : 0)
+        + (ampOn && cab ? 128 : 0)                    // CabConvolver partition
+        + 64                                          // OutputLimiter lookahead
+```
+
+Off-board pedals contribute nothing however their engaged flag reads — the sum
+follows the board, not a pair of fixed slots.
+
+At the default 4× oversampling each dirt pedal reports **72** samples, the cab
+partition is **128**, and the limiter lookahead is **64**, so a RAT + SD-1 board with
+cab and limiter reports **336** samples. The pedal group delay
+tracks the oversampling factor via each model's `latencySamples()` accessor; the
+value is re-published whenever `cab` or `oversampling` changes.
+
+### Oversampling
+
+Fixed **4×** default, exposed as an optional `oversampling` choice (1/2/4/8)
+mirroring the web select. A change routes to each pedal's `setOversampling`
+(resets only the oversampling filter state), never a full re-prepare, so it is
+realtime-safe.
+
+### Editor (neumorphic visual pass)
+
+The v1 editor was a tidy **flat** panel; this pass rebuilds it as the native sibling
+of the web UI — the roadmapped "native neumorphic UI" debt. The doctrine is the web's
+(docs §17): **dark chassis for all, reference via a small-area accent + one morphology
+cue + a knowing name**. It ships the **light-bench look only**; a dark theme is future
+work (the CSS already carries dark-theme tokens, so it is a token-swap when wanted).
+
+**`ClipperLookAndFeel` — how the CSS recipes translate.** Every value is lifted
+verbatim from `web/src/styles/{tokens,pedal,amp,board}.css` into the `skin::` palette,
+then the box-shadow/gradient recipes become JUCE draws:
+
+| Web (CSS) | Native (JUCE) |
+|---|---|
+| bench `--ground #E5E3DE` | `g.fillAll` + a soft vertical `ColourGradient` |
+| `.pedal.raised` dark island (`--panel-grad` 160°) + dual warm cast shadow + inset light top rim + inset dark edge | `skin::drawChassisCard`: two `juce::DropShadow` passes (16/18/34 @.30 and 3/4/10 @.22) → diagonal body gradient → top-edge light line + dark inner stroke |
+| recessed **well** (inset dark TL + light BR) | `skin::drawWell`: fill `--well` + offset inset strokes under a clip |
+| `.knob` anatomy: `--cap-edge` body w/ dual shadow, knurled skirt, `--cap` dome w/ inset rim, ink pointer, the floating **270° value arc** (`conic from 225deg`) + readout | `ClipperLookAndFeel::drawRotarySlider` (body shadow → cap-edge gradient → knurl ticks → cap dome + rims → pointer → `Path::addCentredArc` track+accent). Rotary range pinned to `1.25π…2.75π`; readout `= round(value*100)` in the accent, both dim when the section is bypassed (`.pedal:not(.on)` → `Slider::setEnabled(false)`) |
+| lit `.led` / `.jewel` (accent + `0 0 14px` glow) | `skin::drawJewel`: layered alpha glow rings + specular radial fill |
+| `.toggle` lever, `.rocker` power, `.mode-switch` | custom `LeverToggle` / `PowerControl` / `ModeSwitch` components |
+| Anton condensed hero wordmarks | `skin::wordmarkFont` — a **boldened, 0.82× horizontally-compressed** system sans (no font-file asset to bundle/decompress) |
+
+Accent tokens are the **light-theme root** values: RAT `#F03B24`, SD-1 `#B58900`, JCM
+`#A87A18`, Twin `#4E7BA8`, AC30 `#B4612C`, Clean red.
+
+**Layout.** Left→right on the bench: **INPUT** (trim) · the **pedal cards, in chain
+order** · the **gear tray** · **AMP** (a single card whose **face switches** with the
+amp-voice choice), joined by patch cables. An amp-voice + oversampling selector pill
+pair sits top-right; the build stamp bottom-right. Resizable from a minimum that
+tracks the board (1040 px empty, 1622 px with all five pedals) up to 2200×1200. The
+per-pedal faces live in `PedalCard.cpp`'s face table — see **Native pedal-board
+parity**.
+
+**The amp card mirrors the web faces exactly** (per-voice control visibility + accent),
+driven by `updateAmpFace()` off the `ampModel` APVTS choice:
+
+| Voice | Accent | Controls shown |
+|---|---|---|
+| **Clean 120** | red | Vol · Bass · Mid · Treble · Reverb · Bright · Cab · Power · Chorus row (Speed/Depth + Off/Chorus/Vibrato mode) |
+| **Eight Hundred** (JCM800) | gold | Presence · Bass · Mid · Treble · Master · Gain · Reverb · Cab · Power (no bright/chorus) |
+| **Twin Sixty-Five** | silver-blue | Vol · Bass · Mid · Treble · Reverb · Bright · Cab · Power · Tremolo row (Speed/Intensity, no mode) |
+| **Thirty** (AC30) | copper | Vol · Bass · Treble · **Cut** · Reverb · Cab · Power (no mid/bright/chorus) |
+
+`presence`/`jcmMaster`/`jcmGain` etc. are the same APVTS ids the web uses; the AC30
+"Cut" knob is the reused `jcmPresence` param, relabelled — no behaviour change.
+
+**Adding a future native pedal/amp face.** It mirrors the web's `FACES`/`Amp.tsx`
+tables. For a **pedal**: add a `PedalType`, a row in `PedalCard.cpp`'s `kFaces`
+table (eyebrow / wordmark / accent / morphology / knob ids), its APVTS parameters,
+and a `case` in the engine's `processPedal` / latency switches. A new footswitch
+shape is a new `Footswitch::Shape`. For an **amp voice**: add the `AudioParameterChoice` entry (already done in the
+processor), add a `case` in `updateAmpFace()` that sets the wordmark/eyebrow/accent and
+pushes the visible `NeuKnob*`s into `ampPrimaryKnobs_`/`ampModKnobs_`, and add the voice
+name to the `ampVoiceBox_` item list. For a **pedal**: add a card (a `Footswitch` + its
+`NeuKnob`s bound to the new params) and a `drawCard(...)` call in `paint()`. New chrome
+(a new knob/toggle morphology) is a new widget in `ClipperLookAndFeel`; the palette and
+`drawChassisCard`/`drawWell`/`drawRotarySlider` primitives are reused as-is.
+
+**Screenshots (headless).** A dev-only console target `clipper_editor_snap` (guarded by
+the CMake option `CLIPPER_BUILD_SNAPSHOT_TOOL`, default **OFF** — never in a release
+plugin build) opens the real editor and writes `Component::createComponentSnapshot`
+PNGs: one per amp voice, plus the parity scenes (`native_parity_*.png` — the default
+board, four- and five-pedal boards, a reorder, a bypassed pedal, and the chorus/
+tremolo rows at the minimum, default and maximum window sizes). Run headless under
+Xvfb:
+
+```bash
+cmake -B build -DCLIPPER_BUILD_SNAPSHOT_TOOL=ON
+cmake --build build --target clipper_editor_snap
+xvfb-run -a build/clipper_editor_snap_artefacts/Release/clipper_editor_snap <out-dir>
+# → clipper_native_{clean120,eight_hundred,twin,thirty}.png + native_parity_*.png
+```
+
+### Native pedal-board parity
+
+The first native phase shipped a **fixed two-pedal chain**: RAT, then SD-1, in that
+order, for ever. The web app had six pedal types on a stackable, reorderable board.
+The field report was blunt and correct — *"I can't move or swap pedals, meaning I
+can't test them all"* — along with four visual faults, and one instruction: **keep
+the left-to-right layout.** This section is what parity now means, and what the
+four visual bugs actually were.
+
+**What the board is now.** Any of the six AUDIO pedal types — RAT, SD-1, TS, Muff,
+Phaser, **Gold** — in any order, each engaged or true-bypassed independently, edited
+live. Each type is instantiable **once**, so the board is a subset and permutation of
+the six. That single constraint is what keeps the engine simple: every model stays a
+plain member of `ClipperEngine`, a reorder is a copy of six ints, and no audio-thread
+allocation, handle table or free is involved anywhere. (What it costs is duplicate
+instances — two Screamers in a row, which the web *can* express. See **Duplicate pedal
+instances** below for what lifting that would take.)
+
+**The tuner is deliberately absent.** It is display-only — no audio DSP; it mutes the
+chain and drives a needle from a pitch-detection tap. Shipping a native tuner means a
+detector, a needle widget and a repaint clock, and a fake one that looked right and
+read nothing would be worse than none. The gear tray lists it as *"Chromatic tuner
+(web only)"*, greyed, so the absence is visible rather than mysterious.
+
+#### Parameter model
+
+Two kinds of state, split by what they actually are:
+
+| | Knobs + engaged flags | The board (order + membership) |
+|---|---|---|
+| Where | APVTS **parameters** | a **child node of the APVTS state tree** |
+| Automatable | yes | no |
+| Why | they are continuous controls a host can sensibly ride | it is a *topology*; no host can meaningfully automate "the RAT moved after the Muff" |
+| Round-trips | with the session | with the session (`getStateInformation` saves the whole tree) |
+
+Every pedal type carries its full knob set as parameters, present whether or not the
+pedal is on the board — APVTS layouts are static, so a parameter cannot appear when a
+pedal is added. The engine simply ignores off-board pedals (and the identical-core
+test pins that: a case leaves the SD-1 *on* but *off the board* and proves it changes
+neither the audio nor the reported latency).
+
+New ids, all additive — **every pre-existing id is untouched**:
+
+| APVTS id | type | default | web source |
+|---|---|---|---|
+| `tsOn` / `tsDrive` / `tsTone` / `tsLevel` | bool, float ×3 | true, 0.5 / 0.5 / 0.75 | `TS_KNOB_DEFAULTS` |
+| `muffOn` / `muffSustain` / `muffTone` / `muffVolume` | bool, float ×3 | true, 0.6 / 0.5 / 0.6 | `MUFF_KNOB_DEFAULTS` |
+| `phaserOn` / `phaserSpeed` | bool, float | true, 0.35 | `PHASER_KNOB_DEFAULTS` |
+| `goldOn` / `goldGain` / `goldTreble` / `goldLevel` | bool, float ×3 | true, 0.35 / 0.5 / 0.7 | `GOLD_KNOB_DEFAULTS` |
+
+The phaser gets **one** knob. The web carries two unused slots so every pedal shares
+one param shape; exposing those to a host would advertise controls that do nothing.
+
+The board node stores a comma-separated key list (`"rat,muff,phaser"` — the same
+strings `web/src/rig.ts` uses). Parsing drops unknown keys, duplicates and overflow,
+so malformed state degrades to a valid board rather than failing. **The audio thread
+never reads the ValueTree**: `setChainOrder` also publishes a packed snapshot into an
+atomic that `snapshotParams()` unpacks lock-free. That snapshot was 3 bits of length
+plus five 3-bit type slots; the gold pedal made the board six deep, which 3-bit slots
+would still have held — but only just, and a seventh type would have aliased into a
+neighbour with no warning. It is now a 4-bit length plus six 4-bit slots, 28 bits,
+with `static_assert`s holding the invariants. Still one `uint32`, so still one store.
+
+Two different defaults, on purpose:
+
+- a **fresh instance** opens on the web's `DEFAULT_RIG`: a single RAT;
+- a **pre-parity session** has no board node, so it migrates to the old fixed
+  `rat, sd1` pair and reloads sounding exactly as it did — its `ratOn` / `sdOn`
+  flags still say which of the two were engaged.
+
+#### Declicked chain edits
+
+Add, remove, reorder, swap and engage-toggle are all topology changes: the signal
+path changes between one sample and the next. Each is bracketed by the web worklet's
+**6 ms raised-cosine fade** — ramp to zero, swap *at* the zero, ramp back — with the
+envelope applied to the amp output ahead of the limiter, exactly where the worklet
+applies it. When no edit is in flight the envelope is skipped **entirely** rather
+than multiplied by 1.0, which is what keeps a steady chain bit-exact.
+
+Two deliberate differences from the worklet:
+
+1. **Engage toggles are bracketed too.** The worklet flips `node.engaged`
+   immediately; switching a high-gain pedal in or out is a step the core's ~5 ms knob
+   smoothing does not cover.
+2. **A 6 ms zero HOLD sits between the swap and the fade back in.** Pedals keep their
+   internal state across a reorder (as they do in the web, which reuses each handle),
+   so after the swap a pedal is suddenly fed a differently-phased signal and *rings*
+   while its filters and oversampler settle. That settling peaks a few ms after the
+   swap — underneath the worklet's immediate fade-in, where the chain-edit test
+   measured it at ~70× the steady slew. Holding at zero through the settling window
+   costs 6 ms of extra gap, which reads as instant, and removes the tick.
+
+Latency now follows the board: every **engaged, on-board** pedal's oversampling group
+delay, summed in series (the phaser is linear and adds none), plus the cab partition
+and the limiter lookahead as before.
+
+#### The four visual bugs, and what they actually were
+
+| Reported | Root cause | Fix |
+|---|---|---|
+| *"The lights are covered over"* | **Paint order inside a component, not z-order.** `Footswitch::paint` drew the LED first and then ran a `juce::DropShadow` for the stomp body — a wide translucent-black blur that reached back over the jewel and ate its halo. `PowerControl` had the identical inversion under its rocker. | Jewels are painted **last** in their component, and the pedal LED moved onto the chassis header at the top right — where `.pedal-top` puts it in the web, and where nothing else draws. |
+| *"The knobs for the 120 chorus overlap the divider line"* | The divider was drawn at the modulation row's **top edge**, which is exactly where those knobs' floating value arcs live, and the mode switch was explicitly offset 4 px **above** the row. A knife-edge in the amp grid made it worse: column count came from `knobArea.width / 66`, so a 131 px area gave **one** column, five rows, and the block ran off the bottom of the card. | The row gets a real 40 px gap with the divider centred **in** it; the mode switch starts on the row line. Columns now come from a *minimum* cell width, and cell height shrinks to fit, so no window size can overflow the card. |
+| *"There are no cables"* | Never implemented natively. | `skin::drawCable` ports `board.css`: the sag law from `Board.tsx` (`min(70, max(16, abs(dx)·0.16 + 14))`), the shadow / tube / specular-highlight / plug layering, drawn **before** the enclosures so each end tucks into its socket, with `skin::drawJack` sockets on the card edges. |
+| *"The foot switches aren't correct"* | Only one generic round stomp existed, with an LED stacked above it. | All four web morphologies: the RAT/phaser round stomp, the Muff's larger one, the SD-1's black rubber **treadle** (pebble face, toe ribs, embossed name) and the TS's hinged metal **pad** — each anchored where the web anchors it, with the 130 ms press thunk. Engaged state is the LED's job, never the switch's. |
+
+#### Board UX
+
+`INPUT · pedal cards in chain order · gear tray · AMP`, left to right, joined by
+cables. Each card carries a chip rack: **⠿** drag grip, position number, **◀ ▶**
+move, **⇄** swap, **✕** remove. Dragging the grip reorders live under the pointer
+using the web's rule — drop before the first card whose centre is right of the
+pointer. The tray and the swap menu list only types **not** already on the board.
+
+Two implementation notes, one of which did not survive contact with the user:
+
+- a **move** only permutes the cards, never destroys them, because a live drag calls
+  it from inside a card's own mouse handler; add/remove/swap *do* rebuild, so they
+  defer to the message loop rather than deleting the chip mid-click;
+- ~~the window's **minimum width tracks the board**~~ — **superseded**, see below.
+
+#### The board scrolls (superseding "grow the window")
+
+The parity pass's second implementation note was that the window's minimum width
+tracked the board, so five pedals raised the floor to 1622 px. The reasoning was sound as far
+as it went — squeezing five cards into 1040 px had produced 64 px slivers and pushed
+the amp off its own card, and a legible board is worth asking for room. What it got
+wrong was **whose room it is**. The window belongs to the user; a plugin that widens
+itself because you added a fuzz is a plugin taking a decision that was never its own.
+And it does not scale: the answer to "what happens at eight pedals" was, embarrassingly,
+"a wider monitor".
+
+The field instruction was exact: *"let's do a scrollable pedal board, amp and input can
+stay, that way we can have n pedals."* So:
+
+- the pedal strip lives in a horizontal **`juce::Viewport`**. The **INPUT** card and the
+  **AMP** face stay pinned outside it — the two things you always want on screen are the
+  two ends of the signal path, and they are also the two that never move;
+- the window minimum is a flat **1040 × 560** again, whatever the chain holds;
+- cards **no longer squeeze**. They take their full width and the board overflows. The
+  squeeze law existed only to postpone the grow; with scrolling there is nothing to
+  postpone;
+- a plain **vertical wheel scrolls the board**. JUCE routes `deltaY` to the x axis when x
+  is the only scrollable one, so a mouse works, not just a trackpad. (A wheel over a
+  *knob* still moves the knob — that is the host-wide convention and the web behaves the
+  same; scroll over the chassis or the rail instead.)
+
+Two affordances, because overflow has to be *visible* before anyone thinks to scroll: a
+slim neumorphic **scrollbar** (`ClipperLookAndFeel::drawScrollbar` — a carved track and a
+soft capsule, so it belongs to the bench rather than arriving as a stock grey OS bar
+across the pedalboard), and a soft **edge veil** on whichever side still has board hidden
+past it.
+
+**Drag still works, and now auto-scrolls.** Drag a card within 56 px of either viewport
+edge and a 24 ms pump slides the board under a stationary pointer, re-evaluating the drop
+target each tick — so a pedal can be dragged to a position that is currently off screen.
+The card's grip reports in *content* coordinates; the editor keeps the pointer's
+*viewport* x separately, because during an auto-scroll the pointer is the thing standing
+still.
+
+#### The rail
+
+The pedals stand on something. A **channel milled into the porcelain bench** — the same
+inset recipe `board.css` uses for `.board-source`, scaled up to a plank — carrying a
+**ribbed rubber mat**. Nothing is photographed: the ribs are strokes (a light edge and a
+dark valley each, the way moulded matting catches a lamp) and the depth is shadow, per
+doctrine §17. The mat is deliberately a *warm* dark grey rather than the chassis's cool
+charcoal, so a pedal never dissolves into the thing it is standing on.
+
+It rides up behind the enclosures and leaves a lip in front, so only the slivers between
+pedals and that lip are ever seen — which is exactly what a loaded board looks like. And
+it spans the **whole scrolled content**, so on a long chain it runs off both edges of the
+viewport: the clearest possible statement that there is more board out there.
+
+#### Cables across the scroll seam
+
+Cables *between* pedals live inside the viewport and scroll for free — they are drawn by
+the component the cards live in, in the same coordinate space.
+
+The two **boundary** cables (input → first pedal, last pedal → amp) have one end on the
+fixed bench and one end inside the scrolling content. They **track the scroll**: the
+board-side jack is pushed through the viewport transform on every repaint, so the span and
+the sag follow the board as it moves. When that jack scrolls out past the viewport edge
+the end is **clamped to the edge** and a jack plate is drawn there — the cable then reads
+as entering a grommet on the side of the board, which is what a real board does with a
+lead that leaves it. Clamping is not a cosmetic nicety: an unclamped transform draws the
+input cable *backwards over the input card* the moment you scroll right.
+
+The cost is a full editor repaint per scroll step, which is what `BoardViewport::onScroll`
+is for. At this component count it is not close to a problem.
+
+#### Duplicate pedal instances (assessed, not built)
+
+"n pedals" has a second reading the native app does **not** yet satisfy. The web can host
+two of the *same* type — `createPedalId` mints a fresh id each time, so two Screamers in
+a row is a legal rig — where native is one-instance-per-type. Scrolling makes the gap
+newly obvious: the board can now be as long as you like, and yet it still tops out at six
+pedals because it tops out at six *types*.
+
+What it would actually take, in ascending order of awkwardness:
+
+1. **DSP state — easy.** Each type becomes a small pool rather than a member: e.g.
+   `std::array<TsModel, kMaxDup>` prepared up front, or an `OwnedArray` sized on the
+   message thread and swapped in at the declick zero. Either keeps the audio thread
+   allocation-free, which is the property worth defending. The chain becomes a list of
+   `(type, slot)` rather than a list of types, and the packed snapshot widens again —
+   at 4 bits of type plus 2-3 bits of slot per entry, eight entries no longer fit a
+   `uint32`, so the publish becomes a small double-buffered struct with a sequence
+   counter (still lock-free, no longer a single word).
+
+2. **Parameter model — the real cost.** APVTS layouts are **static**. Today's design
+   leans on that: every type's knobs exist always, and the engine ignores off-board
+   pedals. Duplicates break the one-knob-set-per-type assumption, and there are only
+   three honest options:
+   - **pre-declare N slots per type** (`ts1Drive`, `ts2Drive`, …). Automatable and
+     round-trips for free, but it multiplies the host's parameter list by N for a
+     feature most rigs never use, and picking N is picking an arbitrary ceiling —
+     which is the grow-the-window mistake wearing a different hat;
+   - **pre-declare a flat pool of generic slots** (`slot1Knob1…`, N × 3 floats + a
+     bool), with the board node saying which type occupies which slot. Bounded and
+     honest about being a pool, but host automation lanes read as `Slot 3 Knob 2` and
+     the mapping shifts when the board is edited — automation would silently re-point,
+     which is worse than not automating;
+   - **take duplicates out of the parameter system entirely** and store per-instance
+     knobs in the board node alongside the order. Clean, unbounded, round-trips with
+     the session — and gives up host automation for duplicated pedals, which for a
+     second Screamer used as a fixed boost is a genuinely reasonable trade.
+
+3. **Session round-trip — easy either way**, since the board node already carries
+   arbitrary state and already degrades malformed input to a valid board. A pre-duplicate
+   session has one entry per type and migrates untouched.
+
+**Recommendation: option 3 (per-instance knobs in the board node), and not yet.** It is
+the only one that delivers what "n pedals" actually means without inventing a ceiling,
+and it isolates the change to the state tree plus a pooled-DSP swap rather than doubling
+the automatable surface for everyone. But it also means two classes of pedal — automatable
+"first of type", non-automatable duplicates — which is a real wart, and worth confirming
+against a user who has actually wanted two of something before it is built. The identical-
+core test extends to it directly: a board with two Screamers at different drive settings,
+hand-composed against two `TsModel`s.
+
+#### Verification
+
+| Check | Result |
+|---|---|
+| `clipper_identical_core` — 4 amp voices + **4 multi-pedal boards** (one carrying the GOLD box) | ✅ max abs(plugin−ref) = 0.000e+00 (L and R), latency matches the composed models |
+| `clipper_chain_edit` — reorder / bypass / add / remove mid-signal | ✅ seam step inside the envelope bound; settles at the new board's own level; a knob move never arms the fade; the hard-splice control proves the bound can fail (15×) |
+| Full native `ctest` (2 native + 16 core suites) | ✅ 18/18 |
+| Editor snapshots, `native_parity_*.png` | ✅ default board, four- and five-pedal boards with cables + LEDs, a reorder, a bypassed pedal, the chorus row at min/default/max window, the Twin tremolo row, all four amp faces |
+| Editor snapshots, `native_scroll_*.png` | ✅ a **six**-pedal board at both scroll extremes and mid-scroll (rail overflowing, boundary cables clamped and tracking), the default board with no scrollbar, the minimum window with the board scrolled and input/amp still pinned, and the GOLD plate face lit and bypassed. The tool *asserts* the six-pedal board overflows, so the scene cannot quietly stop proving anything |
+
+### Build targets
+
+`juce_add_plugin(Clipper …)` with `FORMATS Standalone VST3` and — guarded by
+`if(APPLE)` — `AU`. CLAP was skipped (JUCE has no first-party CLAP target; it
+would add a helper-clap dependency for no phase-1 benefit). JUCE is pulled via
+`FetchContent`, **pinned to tag `8.0.4`**. `CMAKE_POSITION_INDEPENDENT_CODE ON`
+is set in `native/CMakeLists.txt` *before* adding `core/` so the static
+`clipper_dsp` links into the shared VST3/AU modules (core sources untouched).
+
+### Verified on Linux vs deferred to Mac
+
+| Item | Status |
+|---|---|
+| FetchContent JUCE 8.0.4 (clone through proxy) | ✅ works |
+| Configure + build **Standalone** (Linux) | ✅ |
+| Configure + build **VST3** (Linux) | ✅ |
+| **Identical-core** console test (bit-exact) | ✅ 0.0 diff L+R, latency matches (four voices + three multi-pedal boards) |
+| **Chain-edit** console test (declicked reorder/bypass/add/remove) | ✅ no discontinuity beyond the envelope |
+| Core ctest (all suites) still green | ✅ unchanged |
+| Neumorphic editor builds (LookAndFeel + widget kit), zero new warnings | ✅ |
+| Headless `clipper_editor_snap` PNGs under `xvfb-run` | ✅ four amp faces + every parity scene render correctly |
+| Headless Standalone launch under `xvfb-run` | ✅ starts, no crash (no audio HW in container — ALSA device warnings are expected) |
+| **AU** build + `auval` + Logic load | ⏳ mac-only, deferred |
+| VST3 in a real host (Reaper/Live) | ⏳ not run here |
+
+### The identical-core proof (`native/tests/identical_core_test.cpp`)
+
+The load-bearing test: it instantiates the **real** `ClipperAudioProcessor`,
+sets a known full-chain parameter set through the APVTS, and renders an M2-style
+220 Hz sine + exponential pluck at 48 kHz in 128-sample blocks. Independently it
+renders the same signal through a **from-scratch** chain built from the core
+classes directly (`RatModel`/`SdModel`/`AmpModel`/`CabConvolver`×2/`OutputLimiter`),
+then asserts the plugin's L **and** R output is **bit-exact** (≤ 1e-6, observed
+0.0) against that reference and that reported latency matches. A secondary check
+renders through `ClipperEngine` alone to isolate the engine from the JUCE wrapper.
+Because both paths run the same core and the same internal delays, they are
+time-aligned — no latency offset is applied in the comparison. Wired into `ctest`
+as `clipper_identical_core`.
+
+### Building on Linux
+
+```bash
+cd native
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release   # fetches JUCE (first run only)
+cmake --build build                                  # all targets
+ctest --test-dir build --output-on-failure           # identical-core + core suites
+# artefacts:
+#   build/Clipper_artefacts/Release/Standalone/Clipper
+#   build/Clipper_artefacts/Release/VST3/Clipper.vst3
+```
+
+Apt packages required for a JUCE Linux build (installed in the dev container):
+`libasound2-dev libjack-jackd2-dev libx11-dev libxcomposite-dev libxcursor-dev
+libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libfreetype-dev
+libfontconfig1-dev libglu1-mesa-dev libcurl4-openssl-dev libwebkit2gtk-4.1-dev`.
+
+### Building on the user's Mac (the actual target: AU into Logic)
+
+```bash
+cd native
+# Xcode generator (recommended for macOS; builds Standalone + VST3 + AU):
+cmake -B build -G Xcode -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+# …or plain Makefiles / Ninja also work:
+#   cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+```
+
+Default target is Apple Silicon (arm64) for the host machine. Artefacts land under
+`build/Clipper_artefacts/Release/`:
+- `Standalone/Clipper.app`
+- `VST3/Clipper.vst3`
+- `AU/Clipper.component`
+
+Getting the AU into Logic:
+1. Copy (or symlink) `Clipper.component` to
+   `~/Library/Audio/Plug-Ins/Components/`.
+2. Validate: `auval -v aufx Clp1 Clpr
+
+**No sound / no input on the Mac Standalone?** Two first checks:
+1. macOS mic permission — the app asks on first launch (fixed after phase 1;
+   rebuild if your binary predates the MICROPHONE_PERMISSION_ENABLED flag). If
+   you denied it once: System Settings → Privacy & Security → Microphone →
+   enable Clipper.
+2. In the Standalone: Options → Audio/MIDI Settings → set the INPUT device to
+   your interface and enable the input channel (JUCE standalones sometimes
+   default input to none).` (the codes are `PLUGIN_CODE=Clp1`,
+   `PLUGIN_MANUFACTURER_CODE=Clpr` from `native/CMakeLists.txt`). A clean
+   `auval` pass is what Logic's plugin manager gates on.
+3. Launch Logic; it rescans AUs on start. If it does not appear, reset the AU
+   cache (`killall -9 AudioComponentRegistrar`) and relaunch, or run
+   `auval` again to surface the validation error.
+
+**Unsigned caveat:** the artefacts are **not code-signed / notarized**. On a
+fresh Mac, Gatekeeper may quarantine an unsigned `.component`/`.vst3` downloaded
+from the internet; a locally-built one is usually fine, but if macOS blocks it,
+clear the quarantine bit with
+`xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/Clipper.component`.
+For distribution (not needed for local play) you would sign with a Developer ID
+and notarize. Standalone `.app` runs the same core through JUCE's own audio
+device I/O for a quick check without a host.
+
+## 17. M6.8 / M6.8.1 — Pedal visual identity: dark chassis for all, reference via accent
+
+**Doctrine amendment (copyright safety, by construction):** every reference
+must be TRADEMARK-SAFE from day one — knowing fantasy names only (Rodent,
+Super Drive, In-Tune, Eight Hundred), never a real mark, model number, or
+company name on any user-facing surface (UI text, menus, marketing); real
+gear names may appear only in code comments/docs as descriptive references.
+Trade dress: homage never replica — silhouette cues, never exact layouts,
+logos, or liveries. This is not just aesthetics; it is the pre-
+commercialization posture (see ROADMAP checklist). Known debt: the amp menu's
+"JC-120 style" wording and the "Super Drive" name (close to a real mark) are
+flagged for rename.
+
+### M6.8.1 — the doctrine revision (current)
+
+M6.8 shipped "shared chassis, distinct souls" with **full-body enclosure tints**
+(amber SD-1, slate tuner). Field review rejected the tints: *"the yellow is weird
+looking due to the saturation, but real yellow breaks the neumorphism… maybe we
+keep the darker, neumorphic RAT color for all pedals/amps (looks nice against the
+lighter background) and we reference the gear more subtly, like the rubber stomp
+pad on the SD-1 and color (yellow for the knob readings?)."* The revised doctrine —
+**the recipe for every future pedal with a real-world analog**:
+
+> **Dark chassis for all** (one shared charcoal wash, the RAT's colour); reference
+> the original gear via **(1) a small-area ACCENT colour** on the knob value arcs +
+> value readouts + LED, **(2) one MORPHOLOGY cue**, and **(3) a knowing NAME** a
+> pedal-lover will get. Homage, never replica — no trademarks/exact names.
+
+Why an accent is neumorphic-safe where a full-body hue is not: a saturated colour
+over a *small area* on a dark sculpted surface reads as a lit indicator, not a
+painted enclosure — the M4 RAT proved it with its floating red value arcs. A full
+body of the same saturation flattens the light/shadow that *is* the neumorphism.
+
+**What changed from M6.8:**
+
+- **One chassis colour.** `--chassis-tint` (the old RAT charcoal, both themes) is
+  composited over `--panel-grad` by `.pedal.raised` for **every** pedal type. The
+  per-enclosure `--rat-tint` / `--sd1-tint` / `--tuner-tint` slots are **retained
+  but neutralized to `transparent`** in all four theme blocks of `tokens.css`, so
+  nothing that referenced them breaks and future pedals still have a home.
+- **Per-pedal ACCENT tokens** (`tokens.css`, all four theme blocks):
+  `--accent-rat` (red/orange, = `--led`), `--accent-sd` (**yellow** — a readable
+  gold `#B58900` on light porcelain, a bright `#FFC94D` glow on the dark board),
+  `--accent-tuner` (green, = `--seg-green`, the lock colour) + `-glow` pairs.
+  `pedal.css` assigns `--pedal-accent` per `data-pedal-type`; the knob **value arc**
+  (`.k-arc`), the **value readout** (`.k-val`, now accent-coloured + semibold, dims
+  on bypass), and the **LED** all read `var(--pedal-accent, var(--led))` — so amp
+  knobs (no `--pedal-accent`) fall back to the original red/faint-ink.
+- **SD-1 morphology fixes.** The treadle now owns the **lower body and sits at the
+  bottom** (was riding too high). The `.treadle-zone` gains top margin and the pad
+  is taller; the compact face **drops the "Stomp" caption** — nothing sits below
+  the treadle (the wordmark is embossed on the pad itself). Knob spacing was
+  flagged cramped: the compact `.knob-row` gap goes `14px → 30px` and the pedal
+  widens `320 → 336px` so three knobs get real air.
+- **Tuner spacing fixes.** The lock LED sat right after the model line because the
+  centered flex column let `.pedal-top` shrink to content (so `space-between` did
+  nothing); `.pedal.tuner .pedal-top { width: 100% }` pushes the LED to the right
+  edge. The model line letter-spacing tightens to `.18em` to fit the longer name,
+  and the vertical rhythm (header → screen → strip → cents → footswitch) is
+  normalized to an even ~16px.
+- **Insider names** (homage, no trademarks): the RAT-type is wordmark **"Rodent"**
+  (the wink; "Clipper" is the *app* brand, not this pedal) with model line
+  `DIRT Nº1 · RODENT-TYPE`; the SD-1 is wordmark **"Super Drive"** with model line
+  `DRIVE Nº2 · YELLOW` (winks at the classic yellow overdrive and the new yellow
+  accent); the tuner is `IN-TUNE Nº0 · CHROMATIC` (winks at the poly-tuner family).
+  No test asserts these strings (selectors use testids + aria labels), so they stay
+  free to evolve.
+
+### M6.8.2 — chassis darkness in BOTH themes (orchestrator visual pass)
+
+M6.8.1 pinned one shared charcoal wash, but in **light** theme `--chassis-tint`
+is only ~16 % alpha over the light panel, so the pedals read as pale gray — the
+doctrine's "darker box against the lighter background" never actually happened.
+The rule, made explicit:
+
+> **The bench is light; the hardware is dark.** A pedal enclosure reads as genuine
+> dark charcoal in BOTH themes. The BOARD/bench and amp panel follow the page
+> theme (light in light, dark in dark); the pedal does NOT — it is dark either way.
+
+Mechanism (all in `pedal.css`, **no `tokens.css` change** — the shared tokens are
+left for the amp/bench and the M9.x work): the pedal is a **dark island**. Its
+interior neumorphic token context (`--panel-grad`, `--well`, `--ink*`, `--cap`,
+`--cap-edge`, `--arc-track`) is pinned to the **dark-theme values on `.pedal`
+unconditionally** — byte-for-byte the dark tokens, so it is a no-op in dark theme
+and cannot regress it, while in light theme it flips the knobs to dark metal, the
+labels to light ink, and lets the accent arcs glow. The interior **sculpting
+shadows** (`--sh-*`) are switched to the dark set only in effective-light theme,
+and the pedal's own outer drop shadow (`.pedal.raised`) is re-declared there so
+the dark enclosure still casts a real, bench-appropriate shadow on the light desk.
+
+Also in this pass: the RODENT/SUPER-DRIVE wordmarks lost their hard `1px 1px`
+white drop-shadow (read as a sticker) for a subtle engraved emboss on light
+lettering; the SD-1 treadle is now an **explicit black-rubber pad** (pebble
+texture + toe grip ribs, embossed light lettering) in both themes — the pad is
+the morphology cue; the tuner screen **centers the note-letter + accidental as a
+group** with the `♯` anchored at the letter's top-right shoulder and the octave as
+a bottom-right subscript, and the cents row shows the **live signed value**
+(`−18`, typographic minus) whenever a reading exists (bare `—` only for no
+reading); the unlit meter wells are **deepened** for unmistakable lit/unlit
+contrast; and the floating chain-chip toolbars were **lifted clear** of the
+enclosure top (`board.css`, `-16px → -34px` + head-room).
+
+### The identity system — how a future pedal declares its face
+
+Every knob pedal's identity lives in one `PedalFace` entry in
+`web/src/components/Pedal.tsx` (`FACES: Record<…, PedalFace>`). A face declares:
+
+1. **Accent colour** (was: enclosure tint) — the chassis is now identical for all;
+   identity is the small-area accent. Add an `--accent-<type>` (+ `-glow`) pair to
+   the four theme blocks of `tokens.css` and map it via `--pedal-accent` in the
+   `.pedal[data-pedal-type="…"]` rule of `pedal.css`. It colours the value arcs,
+   value readouts, and LED.
+2. **Face layout** — a `layout: 'stack' | 'compact'` field, surfaced as
+   `data-face` on the enclosure and styled in `pedal.css`:
+   - `stack` (RAT — *it is the reference*): tall box, big centered 3-knob trio,
+     stark condensed **Anton** wordmark, a round stomp, red accent.
+   - `compact` (SD-1 — Boss-compact **homage**): a knob row with clear air
+     (`--kd: 56px`, `gap: 30px`) riding the top edge over a **wide flat hinged
+     treadle** at the bottom (`.fsw-treadle` — the footswitch *is* the treadle,
+     grip ribs at the toe, embossed wordmark, nothing below it), a small model
+     line, yellow accent. Distinct from the RAT at a glance **even in grayscale**
+     (all pedals now share the chassis colour, so the *morphology* carries the
+     grayscale read entirely).
+3. **Name/typography** — the `model` line + `wordmark` field: the knowing homage
+   (RAT's condensed Anton "Rodent" logo vs the SD-1's bold Avenir "Super Drive"
+   treadle plate).
+
+To add a pedal: append a `FACES` entry (an `--accent-*` token pair in `tokens.css`
+×4 blocks, a `--pedal-accent` map in the `data-pedal-type` rule, and — only if it
+needs a new geometry — a `[data-face]` variant in `pedal.css`). The chassis is
+free. The footswitch keeps one shared `data-testid="footswitch"` + `role="switch"`
+across faces; only its *shape* changes. The recipe extends to **amps** too (they
+already sit on the neutral neumorphic chassis; a future amp accents the same way).
+
+### M6.8 (superseded) — original three-axis system
+
+The original pass used a full-body **enclosure tint** per type (`--rat-tint` cool
+graphite, `--sd1-tint` warm amber, `--tuner-tint` slate) as axis 1 and typography
+as axis 3. Both were revised above (tint → one chassis; typography → the *name*).
+The tuner TC-style face and the board's measured-cable layout below are unchanged.
+
+### TC-style tuner face (`Tuner.tsx`, `tuner.css`)
+
+The needle gauge is replaced by two segmented elements on the shared chassis:
+
+- **Segmented meter** — a horizontal strip of **11 discrete LED wells** (5 red per
+  side + 1 green center) in recessed neumorphic wells (off = unlit well, the
+  neumorphic charm). Full scale ±50 c ⇒ ~10 c/segment. Lit reds form a **bar from
+  center outward** on the flat (left) / sharp (right) side; count =
+  `clamp(round(|cents|/10), 1, 5)`. The **green center** lights only when
+  `|cents| ≤ IN_TUNE_CENTS` (3) held ≥ 350 ms (`LOCK_HOLD_MS`, same dwell the
+  needle build used). Segments are driven imperatively each rAF frame via refs
+  (`data-on`), so ~60 fps updates never churn React.
+- **Segmented note screen** — a big **7-segment** letter (built as SVG polygons,
+  no font download) on a recessed dark "screen" (`--seg-face`, dark in both themes,
+  like a real tuner readout). Unlit segments stay faintly visible (`--seg-dim`);
+  lit ones glow (`--seg-lit` + `--seg-lit-glow`). B and D use the lowercase forms
+  so all seven note letters read distinctly; `-` is the no-signal placeholder. A
+  sharp indicator (`♯`, CSS pseudo so it stays out of the a11y text) and the octave
+  ride beside it.
+- LED reds/greens are **tokens** (`--seg-red/-glow`, `--seg-green/-glow`) with
+  dark-theme variants (glow on dark, ink on light).
+
+Kept intact: mute-on-stomp (engaged = muted, the one DSP touch is unchanged),
+engaged/disengaged states, the ±cents readout (flat = amber, sharp = blue), A=440,
+and all testids/roles (`tuner`, `tuner-note` still reads `—` with no pitch via a
+visually-hidden text node, `tuner-footswitch`, `tuner-led`, `tuner-cents`). New
+`tuner-meter` segments carry `data-seg` / `data-on` for assertion.
+
+### Board
+
+No layout rework. Jacks are anchored at a fixed `top: 120px` on the `.board-unit`
+wrapper (not the pedal body), and the cable endpoints are **measured from the live
+DOM** every layout change / resize (`Board.measure()` reads each jack's
+`getBoundingClientRect`), so the now-**variable pedal heights** (the compact SD-1 is
+shorter than the RAT) anchor and route correctly with zero Board change — verified
+in both themes with RAT + SD-1 + tuner on the board.
+
+### Test seam
+
+`__CLIPPER_TEST__.pushTunerReading(reading)` (App.tsx, additive) injects a synthetic
+`TunerReading` straight into the tuner UI (bypassing the 33 ms live throttle) so the
+segmented meter/screen can be driven without a live audio path — used by the new
+face test and screenshot capture.
+
+### Build and test (M6.8 / M6.8.1)
+
+```bash
+cd web && npm run build && npm test   # tsc + vite clean; full Playwright green
+```
+
+The segmented-meter face test (`tests/tuner.spec.ts`) is unchanged and passes: a
+pushed flat reading lights red wells on the left only, a sharp reading on the right
+only, and an in-tune (0 c) reading lights the green center (after the hold) with
+reds dark. **M6.8.1 touched no selector or assertion** — the suite drives pedals
+by `data-testid` + aria labels (`Distortion`, `Drive`, `footswitch`, `tuner-*`),
+none of which the rename touched, and the "Clipper" heading assertions target the
+*app* `<h1>`, not the RAT wordmark (now "Rodent"). Both themes were screenshotted
+(board with all three pedals; the tuner engaged on a −18 c flat reading so the red
+segments and green screen show). **No core / C-ABI / worklet / engine change** —
+this remains a pure web visual pass.
+
+## 21. v1.1 item 1 — TS808 "Screamer": the symmetric sibling of the SD-1 (one shared engine)
+
+ROADMAP v1.1's first gear candidate, made real: **the SD-1 IS the Tube-Screamer
+topology**, so the TS808-style "Screamer" ships as a *separate pedal* (`ts`, not
+an SD-1 "mode") that reuses **all** of the SD-1's machinery. The two are literally
+one engine with two configs. Files: shared `core/include/clipper/dsp/OverdriveEngine.h`
++ `core/src/dsp/OverdriveEngine.cpp`; thin `core/include/clipper/dsp/TsModel.h`
++ `core/src/dsp/TsModel.cpp`; tests `core/tests/test_ts_model.cpp`
+(`clipper_ts_tests`); C ABI `ts_*` in `clipper_c_api.cpp`; `--pedal ts` in the
+render CLI; worklet `ts` dispatch; `rig.ts` / Pedal / gear-tray / assistant wiring.
+Trademark-safe throughout (no Ibanez/TS808/Tube Screamer on any user surface).
+
+### Reuse approach — refactor, don't copy-paste
+
+The M8 SD-1's processing guts were **extracted verbatim** into a shared
+`OverdriveEngine` parameterized by an `OverdriveConfig` (mid-hump corner, DRIVE
+plateau min/max dB, the two diode knees, 4558 op-amp GBW/slew, tone pivot/tilt,
+DC-block corner). `SdModel` and `TsModel` are now ~70-line wrappers that own an
+engine built from their config and forward every call. The SD-1 config reproduces
+the former in-line constants **exactly**, so the M8 suite passes **byte-for-byte
+unchanged** — verified: 2nd harmonic −20.9 dBc, op-amp corner 14 308 Hz, 4× ADAA
+worst-alias −116.5 dB all reproduced to the digit. Zero DSP duplication: the two
+pedals share the oversampled ADAA clip, the LM308Stage op-amp model, the mid-hump
+high-pass, and the tone/level/DC-block chain. The engine gains one measurement
+hook the family needs — `setDiodeKnees(vp, vn)` — so the symmetric TS can install
+the SD-1's asymmetric knees (and vice versa) for the harmonic A/B without touching
+production behaviour.
+
+### The circuit → the model (the TWO differences; everything else SHARED)
+
+- **SHARED family trait — the mid-hump.** Same to-ground leg `Zg = 4.7 kΩ +
+  0.047 µF`, so the same non-inverting-gain corner
+  `f_mid = 1/(2π·4.7k·0.047µF) = 720.5 Hz`, unity at DC rising to the HF plateau
+  `1 + K`. Same `V_out = V_in + f(K·HP720(V_in))` clean-pedestal topology, same
+  4558-class op-amp (3 MHz GBW / 1.7 V/µs slew), same tone tilt + LEVEL + DC block.
+- **DIFFERENCE 1 — SYMMETRIC clipping.** ONE silicon diode each way (1-vs-1), both
+  `Vf ≈ 0.60 V`, so `Vp == Vn == 0.60`. An ODD transfer curve ⇒ the 2nd (even)
+  harmonic is ~ABSENT — the **mirror** of the SD-1's 2-vs-1 asymmetry (`0.95 / 0.50`,
+  whose even harmonic is its warmth). Smoother, glassier grind.
+- **DIFFERENCE 2 — DRIVE pot 500 kΩ** (vs the SD-1's 1 MΩ). Max plateau
+  `1 + Zf/R_g = 1 + 500k/4.7k = 107.4×` = **+40.6 dB** (vs the SD-1's +46.6 dB —
+  6 dB less top gain). DRIVE maps linear-in-dB over `[12, 40.6] dB`; as with the
+  SD-1 the minimum is NOT unity (grinds lightly even at DRIVE 0). The 4558
+  closed-loop corner `GBW/A` at max DRIVE ≈ `3e6 / 107.4 ≈ 27.9 kHz` — above the
+  audio band, so (unlike the SD-1's 14 kHz) the op-amp adds no audible top-octave
+  softening.
+
+### Validation (ctest `clipper_ts_tests`, 44.1 k + 48 k + 96 k, assert-backed)
+
+- **Mid-hump corner ≈ 720 Hz (SHARED):** matches the analytic `1 + K·HP720` within
+  **0.04 dB worst** (44.1 k) / 0.07 dB (96 k), well inside the ±1.5 dB bar; 720 Hz
+  measures **−2.87 dB** below the plateau (the −3 dB corner), 82 Hz **−18.1 dB**.
+- **SYMMETRY → no even harmonic (the mirror of the SD-1's asymmetry):** 220 Hz at
+  moderate drive → 2nd harmonic **−159.6 dBc** (44.1 k) / −156.8 dBc (96 k) for the
+  symmetric TS, vs the SD-1's **−20.9 dBc** asymmetric warmth on the identical
+  stimulus — a ~139 dB contrast, entirely symmetry-driven (forcing the TS to the
+  SD-1's asymmetric knees restores the 2nd harmonic to **−19.1 dBc**, confirming
+  the curve).
+- **Max-DRIVE plateau ≈ 40.6 dB analytic:** measured **40.37 / 40.39 / 40.46 dB**
+  (44.1 / 48 / 96 k) vs the analytic `1 + 500k/4.7k` = **40.60 dB** (< 0.25 dB),
+  and distinctly below the SD-1's +46.6 dB (the 500k-vs-1M pot).
+- **Aliasing (M2 bar):** shipped 4× ADAA at max DRIVE worst-alias **−117.8 dB**
+  (44.1 k) / −123.2 dB (96 k), far below the −60 dB bar; ADAA beats naive by
+  ~8 dB at 1×. Soft-knee THD rises gradually 1.7 % → 10.3 % → 20.0 % across input
+  0.05 / 0.15 / 0.30; min-DRIVE THD 0.8 % at a 0.30 V input (light, not clean).
+
+### A/B render commands (ts vs sd1, same settings)
+
+```
+# Screamer (symmetric) vs SD-1 (asymmetric), same knobs, plucked low A:
+clipper-render --gen pluck:110:2.0 ts.wav  --pedal ts  --distortion 0.6 --filter 0.5 --level 0.8 --sr 48000
+clipper-render --gen pluck:110:2.0 sd1.wav --pedal sd1 --distortion 0.6 --filter 0.5 --level 0.8 --sr 48000
+#   -> TS  peak 0.98 / rms 0.147 (less top gain, symmetric — smoother);
+#      SD-1 peak 1.22 / rms 0.200 (more gain + asymmetric pedestal push).
+# Even-harmonic (symmetry) A/B on a 220 Hz sine (Goertzel of the render):
+#   -> TS 2nd harmonic -236.7 dBc (~absent) vs SD-1 -23.5 dBc; both share the odd 3rd (~-13 dBc).
+```
+
+### Integration notes
+
+- **One param shape, additive registries.** The Screamer keeps `PedalParams
+  {distortion, filter, level}` reading as **Drive / Tone / Level** (like the SD-1);
+  the shared registries each gain exactly one entry (`rig.ts` `PedalType` +
+  gear tray + `TS_KNOB_DEFAULTS` drive 0.5 / tone 0.5 / level 0.75; worklet `ts`
+  dispatch; `add_pedal` enum + coaching; `Pedal.tsx` FACES; `tokens.css`
+  `--accent-ts`). The worklet routes per-node by C-ABI prefix (`_rat`/`_sd`/`_ts`).
+- **Visual identity (doctrine §17).** Dark chassis (both themes), **GREEN accent**
+  (arcs / readouts / LED — the green box). Its own **`slim` face**: an Ibanez-format
+  box — knob row across the top, script **"Screamer"** wordmark, a **rectangular
+  hinged stomp pad** in the lower body — slimmer than the RAT stack and clearly NOT
+  the Boss-compact SD-1 treadle at a glance (grayscale too). Wordmark **"Screamer"**,
+  model line **`DRIVE Nº3 · GREEN`**. No trademarks.
+- **Assistant.** `add_pedal` gains `'ts'`; the coach knows the Screamer is THE
+  stacking pedal (low drive / high level as a mid-forward clean boost into a pushed
+  amp; symmetric/smoother vs the SD-1's asymmetric/warmer).
+- Core suites all green (M0 + RAT + **SD-1 (unchanged)** + **TS** + amp + triode +
+  JCM800, 44.1 k + 96 k); web tsc + vite build; Playwright +2 (`TS worklet:
+  Screamer clips SYMMETRICALLY…` and `assistant: add_pedal adds a TS Screamer…`).
+
+## 22. v1.1 item 3 — Phaser ("Ninety"): the script-era 4-stage phaser (docs §22)
+
+The first MODULATION pedal that isn't the amp's chorus: a homage to the script-logo
+MXR Phase 90. The spring reverb (§16) built deep first-order-allpass fluency, and
+this is where it pays off — the phaser IS a short, swept allpass cascade summed with
+the dry. `core/src/dsp/PhaserModel.{h,cpp}`, C ABI `phaser_*`, worklet `phaser`
+dispatch, rig type `phaser`, a single-knob `Pedal` face, assistant `add_pedal`
+'phaser' + coaching. **Trademark-safe:** wordmark **"Ninety"**, model line
+`PHASER Nº4 · SCRIPT`; no MXR/Phase 90 on any user surface (docs §17 doctrine).
+
+### The model — 4 first-order allpasses, one LFO, two moving notches
+
+```
+  in ─┬──────────────────────────────────────────► 0.5·dry ─┐
+      └─► [AP₁]─►[AP₂]─►[AP₃]─►[AP₄] ─────────────► 0.5·wet ─┴─► out
+```
+
+- **Four FIRST-ORDER allpass sections**, bilinear form `H(z) = (a + z⁻¹)/(1 + a·z⁻¹)`,
+  `a = (t−1)/(t+1)`, `t = tan(π·fc/fs)` — the −90° phase point sits at `fc` exactly
+  (prewarped). Each rotates phase 0 → −180°; four in series rotate 0 → −720°, so the
+  50/50 dry+wet sum has magnitude `|cos(θ/2)|` (θ = total allpass phase) and NULLS
+  wherever θ is an odd multiple of 180° — at −180° and −540°. That's **exactly TWO
+  notches** in-band (4 stages → 2 notches), the Phase-90 comb. For identical stages
+  the pair falls at `tan(22.5°)·fc ≈ 0.414·fc` and `tan(67.5°)·fc ≈ 2.414·fc`.
+- **Corner sweep** `fc ∈ [200, 2000] Hz` — a clean decade (the JFETs' ~decade of
+  drain-source resistance swing). Over a cycle the notches sweep `≈83…828 Hz` (lower)
+  and `≈483…4828 Hz` (upper) — the whoosh across the guitar's low-mids and presence.
+  **Depth (this span) is FIXED — script-authentic** (the script Phase 90 has no depth
+  control).
+- **ONE knob: SPEED** → `0.06…8 Hz`, log (`rate = 0.06·(8/0.06)^knob`) — the original's
+  famously wide range; slow tape-warble occupies most of the knob, the Leslie-ish fast
+  end is compressed at the top.
+- **NO feedback / regeneration** — that is the later block-logo ("Script switch"/
+  reissue) addition; the SCRIPT voicing modelled here omits it (smoother, less vocal).
+  **Ledger note** for a future variant: add a single feedback tap around the cascade
+  (`loopIn = dry + g·wet`) to get the block-logo's resonant peak.
+- **Per-stage detune ±1.5%** (fixed, deterministic `{0.985, 0.995, 1.005, 1.015}`):
+  real JFETs never match, so the four notch contributions don't stack into one
+  infinite null. A measurement hook (`setDetune(false)`) disables it for the clean
+  analytic reference.
+
+### LFO shape — a slightly-shark-toothed (rounded) TRIANGLE, and why
+
+The corner is modulated in **log-frequency**; the LFO is a **triangle blended with
+≈15% aligned cosine** (`roundedTriangle`). Rationale (documented tradeoff, mirrors
+the ChorusModel sine justification in §11.2):
+
+- **Triangle, not sine:** a triangle in log-`fc` sweeps the notches at a CONSTANT
+  musical rate — equal time per octave rising and falling, the even "searching"
+  Phase-90 movement. A sine dwells at the turnarounds (the corner sits at the extremes)
+  and reads as a phaser that "parks", not sweeps.
+- **Rounded, not pure triangle:** a pure triangle reverses instantaneously at its
+  peaks — a corner in `d(fc)/dt` that ticks. The real pedal's op-amp integrator + the
+  JFET's soft `R(Vgs)` law round those peaks; the 15% cosine blend reproduces that
+  "shark-tooth" (constant-slope body, rounded reversals). Verified by the no-zipper
+  spectral-floor test — the reversal leaves no turnaround tick.
+
+### Linear time-varying → no oversampling; zipper is the only risk
+
+There is no nonlinearity (no clipping), so **no oversampling** and **zero added
+latency** (`phaser_set_oversampling` is a documented no-op, `phaser_latency_samples`
+returns 0). The only aliasing risk is coefficient stepping as the corner sweeps, so the
+four allpass coefficients are recomputed **PER SAMPLE** from the continuous LFO (never
+block-stepped); the SPEED knob is one-pole smoothed (~8 ms) and the LFO phase is
+continuous, so a rate move never clicks and a fast sweep leaves a clean floor.
+
+### Validation — `clipper_phaser_tests` (deterministic, 44.1 / 48 / 96 kHz)
+
+The analytic reference is the EXACT discrete transfer function `0.5·(1 + Π AP_k)` built
+from the model's own published coefficient recipe (`cornerHzAtPhase` / `stageDetune`
+static accessors), so it cannot drift from the implementation. Measured numbers (44.1 k):
+
+- **(a) Static notch positions:** at frozen LFO phases the RENDERED notches match the
+  analytic response to **0.00%** (e.g. ph 0.25 → 262.1 Hz / 1521.9 Hz), EXACTLY 2
+  notches in-band, and the pair sits at ≈0.414·fc / ≈2.414·fc (the −8·atan physics).
+- **(b) Sweep tracking:** the upper notch measured at the quarter-cycle points rises
+  `482 → 1522 → 4677 Hz` (trough → centre → peak) and returns to `1522 Hz` at ¾ — it
+  tracks the LFO corner across the cycle.
+- **(c) SPEED map:** knob 0 → 0.060 Hz, knob 1 → 8.000 Hz, knob 0.5 → 0.693 Hz (log,
+  = √(lo·hi)).
+- **(d) Notch DEPTH (mix):** an allpass sum is never flat, so we assert DEPTH, not
+  flatness — the composite notch is **48–94 dB** deep even WITH detune on (bar: >20 dB).
+- **(e) No zipper:** a fast (8 Hz) sweep on a 1 kHz tone leaves the far-field floor
+  (5–11 kHz) at **−130 to −157 dB** rel carrier (bar: <−80 dB) — smooth per-sample
+  coefficients, no tick.
+- **(f) Bypass/level sanity:** silence → silence; a 0.5 sine stays ≤0.50 in steady
+  state (allpass-sum ~unity gain, no blow-up); a ~0 dB comb peak exists.
+
+All 8 native suites remain green (`ctest`): the phaser suite added, nothing else changed.
+
+### Integration (additive everywhere)
+
+- **C ABI** `phaser_create/destroy/set_param/set_oversampling(no-op)/latency_samples(0)/
+  process` — byte-for-byte the dirt-pedal opaque-handle shape, so the worklet's generic
+  per-node routing drives it uniformly. Param slot 0 = SPEED; slots 1/2 carried, unused.
+- **Worklet** (`clipper-processor.js`): a `phaser` branch in `_createPedal` /
+  `_destroyPedal` / `_pedalSetParam` / `_pedalSetOversampling` / `_pedalLatency` /
+  `_pedalProcess`. `build-wasm.sh` compiles `PhaserModel.cpp` and exports `_phaser_*`.
+- **rig.ts:** `PedalType` gains `'phaser'`; `AVAILABLE_PEDAL_TYPES`,
+  `PHASER_KNOB_DEFAULTS` (speed 0.35), `PEDAL_KNOB_DEFAULTS`, and the normalizer's type
+  coercion all extended — one entry each (strictly additive; old rigs load unchanged).
+- **Pedal face** (`Pedal.tsx` `FACES.phaser`, `pedal.css` `[data-face="single"]`,
+  `tokens.css` `--accent-phaser`): a NEW `'single'` layout — dark chassis, **ORANGE**
+  accent (`#C4611A` light / `#FF8C3A` dark), ONE big centered SPEED knob, round stomp,
+  wordmark "Ninety", model `PHASER Nº4 · SCRIPT`.
+- **Assistant** (`tools.ts`, `prompt.ts`): `add_pedal` enum gains `'phaser'`; a `'speed'`
+  pedal-param alias resolves to slot 0; coaching covers placement (AFTER dirt = vocal
+  EVH swoosh, BEFORE = subtler) and speed (slow = tape-warble, fast = Leslie-ish).
+- **Render harness:** `clipper-render --pedal phaser --distortion <speed>` (listening).
+
+### Listening pack (scratchpad)
+
+A clean strummed E-major chord (`make_chord.py`) rendered at `phaser_slow.wav`
+(speed 0.12 ≈ 0.11 Hz), `phaser_medium.wav` (0.42 ≈ 0.47 Hz), `phaser_fast.wav`
+(0.85 ≈ 3.84 Hz), and `phaser_post_rodent.wav` (through the RAT first — the post-dirt
+swoosh). All peak-safe (linear pedal, no clipping).
+
+## 23. M10.2 — Ac30Amp (the Vox AC30 "top boost" — class-A chime, cathode bias, no NFB)
+
+M10 continues with the **class-A chime**: a Vox AC30 "top boost"-style combo — the
+jangly, compressed counterpoint to the JCM's crunch and the Twin's headroom. It joins
+the registry as the **fourth amp voice, `ac30`**, end-to-end (C ABI, worklet, rig,
+React face, assistant, native). Built bottom-up from the valve toolbox (`TriodeStage`,
+the `LtpInverter`, the shared Koren pentode law, `ReverbModel`) plus a **new EL84 fit**
+and **new power-amp physics**, and MEASURED against analytic targets (same discipline
+as M9/M10.1). This milestone exists to build FOUR new pieces of machinery: **(a) EL84s,
+(b) CATHODE bias with real dynamics, (c) NO negative feedback, (d) tube-rectifier
+(GZ34) sag deeper than the JCM/Twin.**
+
+### The model (canon values; every simplification in the ledger)
+
+New portable core (platform-free C++17):
+
+```
+core/include/clipper/dsp/Ac30Preamp.h      1x 12AX7 + the interactive top-boost stack + volume (+ TopBoostToneStack)
+core/include/clipper/dsp/Ac30PowerAmp.h    hot 12AX7 LTP PI -> TOP CUT -> cathode-biased EL84 quad -> OT -> NO NFB -> GZ34 sag
+core/include/clipper/dsp/Ac30Amp.h         composed: preamp -> power -> spring reverb
+core/src/dsp/{Ac30Preamp,Ac30PowerAmp,Ac30Amp}.cpp
+core/tests/test_ac30_amp.cpp               measurement suite (clipper_ac30_tests)
+```
+
+**Signal order:** `guitar → Ac30Preamp → (interstage trim) → Ac30PowerAmp → [spring REVERB]`.
+
+- **Preamp (top boost)** (`Ac30Preamp`): one 12AX7 common-cathode gain stage (Ra 100k,
+  Rk 1.5k ∥ 25 µF, B+ 300 V) → the **TOP BOOST tone stack** → channel VOLUME (audio
+  taper). Contrast with the Marshall/Fender preamps: a SINGLE gain stage feeding an
+  interactive treble/bass network — the chime and jangle come from that bright lossy
+  stack plus the class-A power section, not stacked preamp gain. **On the AC30 the
+  VOLUME knob IS the overdrive** (it drives the hot phase inverter harder).
+- **Top-boost tone stack** (`TopBoostToneStack`): the Vox interactive treble/bass
+  "brilliance" network — MNA with trapezoidal cap companions, validated against the
+  analytic `H(jω)` derived from the SAME netlist (like the Marshall/Fender stacks).
+  Canon values: slope **100k**, treble pot **500k**, bass pot **1M**, caps **47 pF /
+  0.022 µF / 0.022 µF** (treble cap / bass cap / series input coupling). NO mid control.
+  Its signature: a **gain LOSS** through the passive stack (midband ~−4 dB at flat; no
+  makeup gain in the network) and a **strong treble/bass interaction** (the wiper taps
+  between the treble-cap node and the bass network — moving one knob shifts the other's
+  band). Driven from V1's PLATE (a high-Z source ≈ Ra‖rp, no cathode follower).
+- **Phase inverter** (reuses `LtpInverter` with the Koren 12AX7 fit — no new triode
+  fit): run HOT off a lower B+ node and DELIBERATELY less balanced than the Twin's
+  laser-matched PI (asymmetric 100k/110k plates) so it (i) clips early — its own
+  asymmetric soft clip is part of the sound — and (ii) leaves a residual even-harmonic
+  imbalance that, with the class-A power stage, is a source of the AC30's **chime**.
+- **TOP CUT** (the centerpiece control): the post-PI treble-cut — a pot + cap ACROSS
+  the PI outputs, modelled as a one-pole low-pass on each anti-phase PI plate AC drive
+  whose corner LOWERS as the knob rises (kTopCutHiHz 8 k → kTopCutLoHz 850 Hz, log
+  map). **CLOCKWISE = MORE CUT** (authentic INVERTED sense — the UI labels it **CUT**).
+  It sits AFTER the PI, so it tames the top WITHOUT touching the preamp stack's chime
+  the way turning the treble knob down would.
+- **EL84 push-pull quad, CATHODE-BIASED, class A — the CENTERPIECE.** Four EL84
+  pentodes via the shared Koren pentode law (same equations as the M9.3 EL34 / M10.1
+  6L6; only the six constants differ). **New EL84 fit** (documented community Koren
+  set, kg1/kg2 trimmed to land the operating point): `mu 20, ex 1.35, kg1 1300, kp 42,
+  kvb 24, kg2 2400` (±10 % pentode band). Modelled as a PP pair of super-tubes
+  (kTubesPerSide = 2). **CATHODE bias:** NO fixed negative supply — the grids sit at
+  0 V DC through their grid leaks, and the whole quad shares ONE cathode network
+  (**Rk = 50 Ω ∥ Ck = 50 µF**, canon AC30) to ground. The cathode voltage Vk = Rk·(total
+  cathode current), so each tube's bias is Vg1k = Vg − Vk (≈ −Vk ≈ −9.5 V at idle). The
+  network is modelled EXPLICITLY (a backward-Euler Rk∥Ck node) so the **bias moves with
+  the signal**: under sustained drive the average cathode current grows, the cap charges,
+  Vk RISES → the bias cools → the famous class-A **bloom** then squash, recovering on
+  Rk·Ck (τ = 2.5 ms).
+- **NO negative feedback:** `kFeedbackBeta = 0`. The forward path stands alone (the raw,
+  immediate voicing IS the point). `setFeedbackEnabled()` is retained ONLY as the test
+  seam for the **anti-NFB assertion** (the mirror of the JCM/Twin sign-catcher): toggling
+  it leaves the output BIT-EXACT because there is no loop.
+- **GZ34 tube-rectifier SAG (deeper than JCM > Twin).** Physics point that shaped the
+  model: a BALANCED class-A push-pull draws a **near-constant total B+ current** (the two
+  anti-phase tubes swap conduction; their SUM is flat), so — unlike the JCM's fixed-bias
+  class-AB, whose average current surges — the AC30's plate rail can't sag from average
+  draw. What the valve rectifier actually can't supply is the **delivered signal current**
+  (the differential push-pull current into the OT primary, which swells with output). So
+  the model is TWO parts: (a) the PHYSICAL rail/screen/cathode integration (a modest
+  soft-knee plate-rail droop + the cathode-bias dynamic above), and (b) the **GZ34 sag
+  proper** — a demand-envelope COMPRESSION of the delivered output (Idemand = idle draw +
+  |differential current|, fast-attack/slow-release, sag = 1/(1 + kSagCompGain·(Idemand −
+  Iidle))). Applying the rectifier sag to the delivered output rather than starving the
+  tube DC bias keeps the class-A cathode bloom intact — a **documented simplification**
+  (the rectifier's peak-current limit, not a full diode+reservoir SPICE). Sag lands in a
+  documented **4–8 dB window, DEEPER than the JCM's ~3.4 dB and MUCH deeper than the
+  Twin's ~2.1 dB** (ordering Twin < JCM < AC30, asserted).
+- **Output transformer** LINEAR v1 (Raa 8 k, n ≈ 31.6, LF 80 Hz / HF 11 kHz; core
+  saturation deferred, same as M9.3/M10.1). **Reverb** reuses `ReverbModel` (mono, after
+  the power amp; a usability add — the real top-boost channel has none — same call and
+  placement as the JCM's added reverb, docs §19; mix 0 = bit-exact passthrough).
+
+### Documented simplifications (the ledger)
+
+- The push-pull quad is a **PP pair of super-tubes** (2 paralleled EL84/side), matched,
+  no per-tube variance — same as the Twin's 6L6 quad.
+- The **EL84 Koren fit** is a community parameter set with kg1/kg2 trimmed to the operating
+  point (pentode fits are loose → ±10 % band); bias is DERIVED to the fit, not a datasheet.
+- OT is **linear** (core saturation deferred).
+- **GZ34 sag is an envelope model** (the rectifier's peak-current limit voiced as a
+  demand-envelope output compression), not a first-principles diode+reservoir SPICE —
+  chosen after establishing that a balanced class-A push-pull's near-constant average B+
+  current makes a literal rail-droop model produce almost no sag (see §6 in the header).
+- TOP CUT is a one-pole per-leg low-pass (the pot+cap across the PI outputs), not a full
+  component model; TOP BOOST stack is MNA with the canon values (analytic-H validated).
+- The reverb (usability add) has no analog in the real top-boost channel.
+
+### Validation — `clipper_ac30_tests` (deterministic, 44.1 / 48 / 96 k; MEASURED)
+
+Every number is asserted against an analytic target derived IN THE TEST.
+
+1. **DC operating points**: V1 on the self-bias load line (Va 202 V, Vk 1.46 V, Iq 0.98 mA);
+   **EL84 Iq 34.9 mA/tube** = the analytic shared-cathode Koren fixed point (±10 %), **Vk
+   9.52 V** = the analytic self-bias fixed point (±5 %), rail 309.5 V, screen 285.7 V,
+   **Pdiss 10.8 W** (< the ~12 W EL84 max — class A runs hot but bounded); PI balanced.
+2. **Top-boost stack** vs analytic `H(jω)`: discrete-vs-analytic worst **< 0.5 dB**; the
+   signature **GAIN LOSS** (midband ~−4 dB, |H| never > 0 dB); **treble/bass interaction**
+   present (moving bass shifts the treble/mid band); treble knob controls the top over a
+   **~20 dB** range.
+3. **NO NFB** (the anti-NFB catcher): open == closed **BIT-EXACT** (β = 0); the forward
+   voicing stands alone.
+4. **Cathode bias** (the centerpiece): idle Vk == analytic fixed point; under sustained
+   drive **Vk RISES ~0.75 V** (bias cools → the bloom); after the drive stops it recovers
+   toward idle with **τ ≈ 1.0–1.5 ms** vs the Rk·Ck = 2.5 ms RC (0.3–3× band — the demand +
+   cap dynamics).
+5. **TOP CUT** (inverted sense): 3 kHz drops **−9 → −11.3 → −17.6 dB** as CUT goes 0/.5/1
+   (MORE cut = darker), while 150 Hz is untouched (Δ < 0.1 dB).
+6. **Sag ordering + window**: **Twin ~2.1 < JCM ~3.5 < AC30 ~4.3 dB**, AC30 in the
+   documented 4–8 dB window (same hard-burst attack-vs-settle metric into all three).
+7. **Chime**: at moderate drive the AC30's **2nd harmonic (−27.6 dBc) is prominently above
+   the fixed-bias Twin's (−31.4 dBc)** at comparable output — the class-A even-harmonic chime.
+8. **The product**: chimey-clean THD 0.31 % at low volume, **monotonic** growth to real
+   breakup **31.9 %** at max (peak **0.858 ≈ 0.9**); ±10 V slam finite/bounded.
+9. **Aliasing** at MAX volume (M2 sweep 4186 Hz): shipped **4× = −159 / −169 / −171 dB** at
+   44.1 / 48 / 96 k — far below the −60 dB M2 bar (the smooth top-boost + sag compression
+   alias little); 8× buys nothing → **4× ships** (the M2 budget, same as M9/M10.1).
+10. All **10 prior ctest suites** still pass, incl. the M9/M10.1 suites bit-exact.
+
+### Integration (the M9.4 pattern, extended to four voices)
+
+- **C ABI** (`AmpChain`): fourth voice `ac30` (`amp_set_model` 0|1|2|3), created + prepared
+  up front (4× OS) so the swap is a lock-free int flip. Param routing (all four voices kept
+  current): VOLUME → clean120 + twin + **ac30**; BASS/TREBLE → all tone stacks incl. ac30's
+  top boost; **MIDDLE → NOT ac30** (the top boost has no mid — the knob is hidden on the
+  face); REVERB (9) → all four; **PRESENCE (id 11) is REUSED as the AC30's TOP CUT** (both
+  are power-amp HF controls — documented reuse + the inverted-sense mapping); GAIN/MASTER →
+  jcm only; BRIGHT/CHORUS → not ac30. The AC30 is a **mono 2×12 combo → dual-mono** into the
+  shared cab pair; the app hints at the **clean212** cab (closest 2×12 platform; a future
+  alnico 2×12 IR is ledgered) when switching to ac30 with brit412 active.
+- **rig.ts / params.ts / audio.ts**: `ac30` in `AmpType`/`AVAILABLE_AMP_TYPES` and
+  `AMP_MODEL_INDEX` (index 3); **no new params** (reuses volume/bass/treble/presence→cut/
+  reverb/cab). Migration coerces unknown types to clean120; old rigs round-trip.
+- **Worklet**: model index 3 passed opaquely, declick-bracketed swap, latency re-published.
+- **UI face** (doctrine §17): `Ac30Face` — model line **COMBO Nº4 · TOP-BOOST**, wordmark
+  **"Thirty"**, a warm **COPPER/tan accent** (`--accent-ac30`, all 4 theme blocks — the
+  diamond-grille brown wink without trade dress). Controls: VOLUME · TREBLE · BASS · **CUT**
+  · REVERB + cab + power; hidden middle/gain/master/bright/chorus. The CUT knob reuses the
+  presence param slot (labelled CUT, inverted sense). Trademark-safe naming (no "Vox/AC30").
+- **Assistant**: `set_amp` gains `ac30`; coaching for the chime/jangle, that the **VOLUME
+  knob IS the overdrive**, that **CUT tames the top WITHOUT losing chime** the way turning
+  treble down would, and the Rickenbacker/Beatles-to-Radiohead lore.
+- **Native**: `ClipperEngine`/APVTS gain the ac30 voice (Amp Model choice index 3); the
+  identical-core test gains a **fourth bit-exact case** (AC30: top boost + cathode-biased
+  EL84 + TOP CUT + reverb).
+
+### Render harness (`clipper-render --ac30`)
+
+```bash
+# Chime chord at moderate volume with a touch of spring, through the clean212 2x12:
+./build/clipper-render --gen pluck:110:3.0 --amp 0.2 --sr 48000 --ac30 --ac30-cab \
+    --ac30-volume 0.45 --ac30-treble 0.7 --ac30-cut 0.2 --ac30-reverb 0.2 chime.wav
+# Cranked bloom/compression (VOLUME maxed — the volume knob IS the overdrive):
+./build/clipper-render --gen pluck:82:4.0 --amp 0.5 --sr 48000 --ac30 --ac30-cab \
+    --ac30-volume 1.0 --ac30-drive 1.5 breakup.wav
+# TOP CUT swept dark (higher = darker, the inverted sense):
+./build/clipper-render --gen pluck:147:2.0 --amp 0.3 --sr 48000 --ac30 --ac30-cab \
+    --ac30-volume 0.7 --ac30-cut 0.8 topcut.wav
+```
+
+`--ac30` renders the FULL composed amp (output normalized, 1.0 == full scale); `--ac30-cab`
+runs the clean212 2×12 with the shipped limiter. `--ac30-cut` is the TOP CUT (inverted:
+higher = darker). Reuses `--os`.
+
+### §23 amendment — the "muddy" report: CUT knob re-taper (control law, not circuit)
+
+Field report: *"the vox sounds a little muddy to my ear."* The ear was right, and the
+cause was a **control-law** bug, not a circuit one. The AC30's CUT reuses the shared
+`presence` slot, whose default is **0.5** — and the original bare log map put knob 0.5
+at a ~2.6 kHz corner, i.e. the face *opened* with roughly half the top-cut engaged:
+measured ≈ 3 dB darker at 3 kHz than the voice with the cut backed off. A real
+top-boost is normally played with CUT near minimum — the chime amp was defaulting
+into its dark half.
+
+Fix: the corner is now log-mapped from the **skewed** knob `knob^2.3`
+(`kTopCutSkew`), so knob 0.5 → corner ≈ 5.1 kHz (a gentle top trim) while the
+endpoints are untouched (knob 0 → 8 kHz, knob 1 → 850 Hz — the full dark range still
+lives at the top of the travel, where the real control does its work). An analytic
+re-taper of the knob law; the filter and its reachable range are unchanged.
+
+Guards added to `test_ac30_amp`: the default 0.5 knob must sit within 2 dB of no-cut
+at 3 kHz AND full cut must still be ≥ 5 dB darker than noon (range preserved); plus a
+**character guard** — at opening defaults the Thirty must measure ≥ 6 dB brighter at
+3 kHz (rel 1 kHz) than the Twin at its defaults (measured ≈ 19 vs 7 dB), so no future
+regression can let the chime king open muddier than the blackface clean.
+
+### §23 second amendment — the "not enough breakup" report: the starved phase inverter
+
+Field report: *"I'm fairly sure the ac30 doesn't have enough gain/breakup, it breaks
+up less easy than the fender twin."* Measured first, and the ear was right again — but
+this time it was not a control law. **The voicing was INVERTED.** A 30 W cathode-biased
+class-A combo is the EARLY-breakup amp of the lineup (edge-of-breakup at moderate
+volume *is* the Vox sound); an 85 W blackface Twin is the clean-headroom king. Ours had
+them the wrong way round.
+
+#### The measurement that opened the case
+
+THD vs the VOLUME knob, 220 Hz, 48 kHz, composed voices at their opening tone knobs,
+no cab (it is linear and identical to both, so it cancels). JCM800 shown as the
+reference dirt voice (its GAIN knob swept, MASTER 0.5):
+
+**BEFORE** — hot-pickup level (0.316 V peak = −10 dBFS):
+
+| VOLUME | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 | 0.9 | 1.0 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **AC30** THD % | 0.80 | 0.78 | 0.76 | 0.74 | 0.74 | 0.83 | 1.18 | 2.18 | 4.40 | 8.74 |
+| **Twin** THD % | 4.11 | 4.18 | 4.29 | 4.45 | 4.67 | 4.90 | 4.99 | 4.60 | 5.98 | 14.13 |
+| **JCM800** THD % | 5.36 | 9.82 | 13.5 | 24.5 | 34.1 | 40.4 | 43.9 | 43.6 | 36.2 | 30.4 |
+
+The Thirty was **cleaner than the Twin at every knob position on its travel**, and only
+crossed 5 % THD wide open. At the standard −20 dBFS pluck level it was flatter still
+(0.25 % from VOLUME 0.1 all the way to 0.6). That is not an AC30; that is a very
+polite hi-fi amp with a Vox tone stack in front of it.
+
+#### The diagnosis, in circuit terms
+
+Stage-by-stage voltages told the story immediately (0.3 V peak in, VOLUME 1.0):
+
+| node | AC30 (before) | Twin |
+|---|---|---|
+| volts at the volume node | 3.65 V | 54.3 V |
+| × interstage handoff → PI grid | **1.10 V** | 8.68 V |
+| PI gain per leg | **×9.1** | ×7.4 (12AT7) |
+| PI idle current / plate | **83 µA, 291.7 V (97 % of B+)** | 232 µA, 386.8 V |
+
+**The AC30's phase inverter was biased nearly to cutoff.** `LtpInverter` is a
+TWO-TERMINAL long tail — grids at 0 V DC, tail resistor straight to ground — so the
+standing current is set entirely by `Rtail`, and at the configured 22 k the pair
+self-biased at **83 µA per triode with its plates parked 8 V below B+**. No real
+guitar-amp LTP idles there: a 12AX7 PI runs **0.5–0.9 mA per triode, plates at 70–85 %
+of B+, ~×25–35 per leg** (real circuits get there by returning the long tail to a
+negative reference, which a two-terminal tail cannot express). Ours measured ×9.1.
+
+That single number explains the whole field report. On an AC30 **the VOLUME knob IS
+the overdrive** — its only job is to drive the phase inverter hard enough to slam the
+EL84 grids (which sit at −9.5 V self-bias and need ~9.5 V of swing). With a PI that
+deaf, wide open with a hot pickup the model handed the power section 1.8 V when the
+section needs ~1.2 V just to *start* moving and ~2 V for 20 % THD. The class-A power
+amp — the cathode bias, the EL84 quad, the GZ34 sag, the entire reason M10.2 exists —
+was never being driven. The header's claim that the PI "runs HOT and clips early" was
+aspiration, contradicted by its own operating point.
+
+Two more constants were compensating for it downstream:
+
+- `Ac30Amp::kInterstageScale = 0.30`, documented as *"higher than the Twin's — the
+  AC30 PI is meant to run HOT"*. But that path is **passive** in the real amp (volume
+  wiper → coupling cap → grid stopper → channel mixing resistors → PI grid), so it can
+  only ever be a divider, and the AC30's wiper carries a single stage's volts where
+  the Twin's carries two stages'. 0.30 was an arbitrary trim, not a divider.
+- `Ac30PowerAmp::kFullScaleSecV = 7.5` — the output normalization. Because the tubes
+  were barely moving, the model needed a small divisor to reach a respectable level:
+  the calibration was **hiding the missing drive**.
+
+**Suspects checked and cleared** (recorded so nobody re-opens them):
+
+- *The preamp is one gain stage short of a real top-boost channel* — TRUE, and
+  measured: the real board is two ECC83 gain stages plus a cathode follower around the
+  treble/bass network; ours is one stage into a stack driven from that stage's plate.
+  But a second common-cathode 12AX7 in this configuration MEASURES **×59.3
+  (+35.5 dB)** on its own, and folding that into the corrected structure lands the
+  OPENING defaults (VOLUME 0.4, standard −20 dBFS pluck → 0.070 V at the PI grid
+  today) at **≈ 4.1 V** of PI drive — which the power section's measured sensitivity
+  curve puts at **> 20 % THD before the player has touched anything**. Permanently
+  saturated, no jangle left. The model therefore keeps the single stage; ledgered below.
+- *The cathode follower would recover the stack's loss* — measured, and it does not:
+  dropping the stack's source impedance from 33.4 kΩ (plate) to 700 Ω (a follower)
+  recovers only **1.8 dB at 220 Hz**. The Vox stack's ~13.8 dB loss is the network,
+  not the source. Not worth the extra triode solve.
+- *`kFullScaleSecV` should be the physical 15.5 V (√(30 W · 8 Ω))* — rejected. Every
+  voice is normalized to its own cranked peak (Twin 24 V, JCM 26 V) so the amps stay
+  level-comparable to each other; forcing the AC30 to a wattmeter would have made it
+  unable to reach full scale at all. It is a normalization, and it follows the
+  measured swing.
+- *The volume taper is starving the knob* — no: the shared `audioTaper` (k = 4) is the
+  same law the Twin and clean120 use, and it matches a real audio pot. The taper was
+  not the problem; what it was scaling was.
+
+#### The fix (gain structure — three constants, no waveshaper, no drive knob)
+
+| constant | before | after | why |
+|---|---|---|---|
+| `Ac30PowerAmp` PI `Rtail` | 22 kΩ | **2.2 kΩ** | lands the textbook 12AX7 LTP point: **0.53 mA/triode, plates 247.1/244.9 V (82 % of B+), gain ×32**. The model equivalent of the real long tail's negative reference. |
+| `Ac30Amp::kInterstageScale` | 0.30 | **0.67** | the wiper→PI-grid path is passive, so it can only be a divider: 0.67 is the two-channel mixing division (each wiper through its own 1 M into the shared PI grid). |
+| `Ac30PowerAmp::kFullScaleSecV` | 7.5 V | **10.0 V** | the normalization follows the measured swing, as the Twin's and JCM's do. Properly driven the secondary reaches 11.8 V cranked; 7.5 would have pushed the output 1.4 dB PAST full scale. Cranked power sine is back at peak **0.88**. |
+
+Nothing was added to the signal path: no distortion stage, no waveshaper, no hidden
+drive. The circuit is the same circuit — its phase inverter is now biased where a
+phase inverter is biased.
+
+Power-section **input sensitivity** after the fix (`Ac30PowerAmp` alone, 220 Hz, volts
+peak at the PI grid) — the curve the numbers above are read against, and the reason
+the amp is no longer deaf:
+
+| PI grid (V pk) | 0.05 | 0.10 | 0.20 | 0.30 | 0.50 | 0.80 | 1.20 | 2.00 | 5.00 | 8.00 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| THD % (after) | 1.05 | 2.09 | 4.07 | 6.23 | 10.4 | 11.9 | 14.6 | 22.1 | 24.2 | 30.5 |
+| THD % (before) | 0.12 | 0.25 | 0.58 | 1.00 | 2.21 | 4.87 | 9.48 | 18.9 | 35.7 | 40.4 |
+
+Same tubes, same EL84 fit, same sag: **the section always could break up — nothing was
+ever reaching it.**
+
+#### AFTER — the same sweeps
+
+Hot-pickup level (0.316 V peak = −10 dBFS):
+
+| VOLUME | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 | 0.9 | 1.0 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **AC30** THD % | 1.27 | 2.00 | 3.07 | 4.60 | 7.06 | **10.75** | 12.30 | 14.11 | 20.12 | 23.28 |
+| **Twin** THD % | 4.11 | 4.18 | 4.29 | 4.45 | 4.67 | **4.90** | 4.99 | 4.60 | 5.98 | 14.13 |
+| **JCM800** THD % | 5.36 | 9.82 | 13.5 | 24.5 | 34.1 | 40.4 | 43.9 | 43.6 | 36.2 | 30.4 |
+
+Standard pluck level (0.1 V peak = −20 dBFS) — the jangle side must survive:
+
+| VOLUME | 0.1 | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 | 0.9 | 1.0 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **AC30** THD % | 0.40 | 0.63 | 0.98 | 1.49 | 2.26 | 3.38 | 4.95 | 7.88 | 11.03 | 12.09 |
+| **Twin** THD % | 1.27 | 1.30 | 1.33 | 1.39 | 1.47 | 1.60 | 1.78 | 2.02 | 2.27 | 2.34 |
+
+Breakup onset (first 0.1 step reaching 5 % THD, hot pickup): **AC30 0.5, Twin 0.9**.
+At the documented mid-knob 0.6 the Thirty is **2.2× dirtier** than the blackface, and
+wide open it sits in saturated class-A crunch (23 % on a sine, 34 % on the suite's
+110 Hz / 0.5 V crank case) with the sag envelope holding a long, flat, compressed
+sustain — measured on the listening renders as a decay that moves only 0.1 dB over
+half a second, the cranked-Vox squash, with no gating or dropout.
+
+At its opening defaults the voice now sits **at** the edge of breakup instead of 15 dB
+below it, which is what a real AC30 at "4" does — and it is 13.3 dB louder at defaults
+than before (player-expectations RMS delta **−11.7 → +1.6 dB**, level with the JCM's
++1.7). That level move is the honest consequence of a knob that finally reaches the
+power tubes, and the per-gear window in `test_player_expectations.cpp` was re-centred
+to match.
+
+#### Honesty about the calibration
+
+The absolute gain is calibrated, not transcribed. A literal AC30 top-boost channel has
+far more preamp gain than this model (see the cleared suspect above) and a real one
+with a humbucker is crunching by "3" on the dial. Our target — audible breakup by
+VOLUME 0.5–0.6 at a hot-pickup level, clean jangle below it, saturation above — sits
+between our old model (~18 dB too clean) and a literal transcription (~17 dB too
+dirty), and it is chosen so the knob's *usable travel* spans clean → edge → crunch the
+way the real amp's does. What is NOT calibrated is the phase-inverter operating point:
+that is a plain circuit correction, and it is where the fix lives.
+
+One more honest note, recorded rather than fixed: **the Twin's 4–5 % THD floor** in
+these tables is preamp clipping, and it is flat across its volume travel because
+`TwinPreamp` places its VOLUME pot AFTER both gain stages (V1 → stack → V2 → volume)
+where the real AB763 puts it right after V1 — so the knob cannot back the clipping
+off. That is the mirror image of this amendment's bug and is **ledgered as a separate
+field item**; it is deliberately untouched here (it would move the Twin's goldens and
+its own suite), which is why the new guard below compares at a mid-volume point and a
+5 % onset threshold rather than assuming the Twin is pristine.
+
+#### The new permanent guard
+
+`test_ac30_amp.cpp` → `testBreakupOrdering` (48 kHz, the AudioWorklet rate the report
+was heard at; the voicing claim is rate-independent and the per-rate circuit behavior
+is already pinned by the nine tests above at 44.1/48/96 k):
+
+1. the AC30's **breakup-onset volume** (first 0.1 step at ≥ 5 % THD, hot pickup) must
+   be **≤ 0.65** — it must actually break up in the usable half of the knob; and
+2. it must be **≥ 0.2 of knob travel BELOW the Twin's** onset (measured 0.5 vs 0.9); and
+3. at the documented mid-volume **0.6** it must measure **≥ 8 % THD** and **≥ 1.8× the
+   Twin's** (measured 10.75 % vs 4.90 %, 2.2×).
+
+Character is guarded in the other direction by the §23 chime/character guard, which
+still passes with an **11.6 dB** margin, plus the class-A chime margin (now **9.0 dBc**
+of 2nd harmonic over the Twin, was 3.8), the sag ordering and its 4–8 dB window (now
+**5.8 dB**), the anti-NFB bit-exactness, the top-boost stack vs analytic H(jω), and
+every DC operating point.
+
+#### Two test probes retuned (they encoded the bug, not the physics)
+
+- **Cathode-bias bloom** (`testCathodeBias`): the probe injected **8 V** at the PI
+  grid. That was "sustained loud" only against a PI that was 11 dB deaf. With the
+  corrected inverter the musical range moved: **0.15 V** at the PI grid is now the
+  edge-of-breakup drive (≈ VOLUME 0.34 with a −10 dBFS pickup), and the bloom is
+  measured there (**Vk +0.44 V**, recovery τ ≈ 1.3 ms against Rk·Ck = 2.5 ms). Newly
+  MEASURED and documented: above ~0.22 V at the PI grid the EL84 grids start
+  conducting (7 V of swing against the −9.5 V self-bias), the coupling caps charge and
+  the bias shifts **COLD** instead — grid-leak blocking. Both regimes are real; the
+  crossover is now a documented property of the model rather than an accident:
+
+  | PI grid drive (V pk) | 0.05 | 0.10 | 0.15 | 0.20 | 0.25 | 0.30 | 0.50 | 1.0 | 8.0 | 45 |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | ΔVk (V) | +0.14 | +0.37 | **+0.44** | +0.25 | −0.10 | −0.51 | −1.65 | −2.39 | +0.14 | +0.56 |
+
+- **TOP CUT** (`testTopCut`): the probe drove the power amp at **0.5 V**, which against
+  the corrected PI is deep saturation — where the clipped level is drive-independent
+  and a treble cut barely moves the output, i.e. the test would have been measuring the
+  clipper instead of the filter. TOP CUT is a LINEAR one-pole per leg, so the probe is
+  now **0.05 V** (MEASURED THD 0.12 %), back in the section's linear region. The
+  re-taper guards from the first amendment are unchanged and still pass (noon is a
+  **0.7 dB** cut at 3 kHz, full cut **10.0 dB**, 150 Hz untouched at 0.12 dB).
+
+#### Golden regenerated — deliberately
+
+`core/tests/goldens/ts_ac30.wav` was regenerated with `scripts/update-goldens.sh`. This
+is exactly the conscious-drift decision the golden gate exists to force: the Thirty's
+voice changed on purpose. **Only that golden moved** — the other four "first five
+minutes" rigs re-render byte-identical, which is itself a useful check that the change
+is confined to the AC30 voice.
+
+#### Ledger additions (M10.2 simplifications)
+
+- The preamp remains **ONE 12AX7 gain stage** into the top-boost stack, where the real
+  top-boost board has two ECC83 gain stages and a cathode follower. Measured cost of
+  literal transcription: +30…+35 dB, which our volume taper cannot spend without
+  saturating the voice at its opening defaults. The absolute gain is therefore
+  calibrated at the (passive, ≤ 1) interstage handoff; the *shape* of the travel —
+  clean → edge → crunch — is what the model reproduces.
+- `LtpInverter` is a **two-terminal tail** (grids at 0 V, tail to ground), so a PI's
+  standing current is set solely by `Rtail`. The AC30's 2.2 kΩ is that network's model
+  equivalent, not a parts-bin value. (The JCM's 10 kΩ / Twin's 22 kΩ are untouched —
+  their voices and goldens are bit-identical.)
+
+#### A/B listening pack
+
+```bash
+# BEFORE/AFTER, same pluck, same knobs — the breakup arrives ~2 knob positions earlier:
+./build/clipper-render --gen pluck:110:3.0 --amp 0.3 --sr 48000 --ac30 --ac30-cab \
+    --ac30-volume 0.5 --ac30-treble 0.6 --ac30-cut 0.5 ac30_breakup_after_vol50.wav
+#   (repeat at --ac30-volume 0.7 / 1.0; the Twin reference for the ordering claim:)
+./build/clipper-render --gen pluck:110:3.0 --amp 0.3 --sr 48000 --twin --twin-cab \
+    --twin-volume 0.7 --twin-treble 0.6 twin_vol70.wav
+```
+
+Rendered peaks (normalized, 1.0 == full scale): AC30 vol 0.5 **0.144 → 0.557**,
+vol 0.7 **0.283 → 0.714**, vol 1.0 **0.561 → 0.781**; the Twin at vol 0.7 sits at
+0.300 and stays glassy. The post-fix VOLUME 0.5 render is now level-matched with the
+pre-fix VOLUME 1.0 render — the same amp, two knob positions of breakup recovered.
+
+## 24. v1.1 item 4 — Muff "Pi": the four-transistor fuzz + the reusable BjtStage
+
+ROADMAP v1.1's item 4, made real: a trademark-safe homage to the early-70s
+"ram's head"-family **Big Muff Pi**, shipped as the `muff` pedal **"Pi"**. Its REAL
+product is the **reusable BJT gain-stage machinery** — the Fuzz Face (item 5) and the
+RG100 (an M10 solid-state amp) both need it. Files: `core/include/clipper/dsp/BjtStage.h`
++ `core/src/dsp/BjtStage.cpp` (the device), `core/include/clipper/dsp/MuffModel.h` +
+`core/src/dsp/MuffModel.cpp` (the pedal), tests `core/tests/test_muff_model.cpp`
+(`clipper_muff_tests`); C ABI `muff_*` in `clipper_c_api.cpp`; `--pedal muff` in the
+render CLI; worklet `muff` dispatch; `rig.ts` / Pedal / gear-tray / assistant wiring.
+Trademark-safe throughout (wordmark "Pi", model line `FUZZ Nº5 · PI`; no EHX / Big
+Muff text on any user surface — docs §17 doctrine).
+
+### BjtStage — the first BJT (Ebers-Moll) device model (the reusable product)
+
+The BJT sibling of the M9.1 TriodeStage: same nodal-Newton house style, a transistor
+instead of a valve. **Device:** transport-form **Ebers-Moll NPN** (2N5088-class:
+`Is = 1e-14 A`, `βF = 400`, `βR = 4`, `Vt = 25.85 mV` at 300 K — the high β is why a
+Muff has so much gain). The reverse (`Ir`) term is kept, so the transistor SATURATES
+on the clip peaks — part of the compression, not a nicety. **Circuit:** a
+collector-feedback-biased common emitter (`Vcc 9 V`, `Rc 10 k`, feedback `Rf 470 k`,
+emitter degeneration `Re 390 Ω`, input coupling `Cin 100 nF`, feedback cap
+`Cf 470 pF`), optionally with an **antiparallel 1N4148 pair** across base↔collector
+(the clip stages). Because `Rf` is large and β high, a clip stage's idle collector-base
+voltage exceeds the diode knee, so **the clipping diodes conduct near idle** and pin the
+collector barely above the base — a stage with almost no clean headroom that clips
+essentially always. That is the root of the wall-of-sustain compression, and the DC
+solve therefore includes the diodes. **Solver:** per-sample 3×3 nodal Newton (`Vb`,
+`Vc`, `Ve`) with an analytic Jacobian, backward-Euler companions for `Cin`/`Cf`, and —
+crucially — a **backtracking line search** (Armijo-ish descent on the residual ∞-norm).
+A bare Newton oscillates and stalls on the STIFF diode-in-feedback system (the pre-fix
+cascade blew up to hundreds of volts from non-convergence); the line search + tangent-
+limited `exp`/diode currents make it converge in 6–9 iterations and stay finite/bounded
+on a ±10 V slam at every rate. BjtStage owns NO oversampler — MuffModel drives four of
+them per oversampled sample through ONE shared `Oversampler`, so the stages compose in a
+cascade (unlike TriodeStage, which oversamples itself).
+
+**Reuse notes (what item 5 / the RG100 inherit):** the whole Ebers-Moll device + solver
+is behind a `Config` (device params, the R/C bias network, an optional diode pair). The
+**Fuzz Face** is two of these with a germanium-ish `Config` (lower β, higher `Is`) and
+its 2-transistor direct-coupled feedback bias — plus the pickup-loading source-impedance
+model the roadmap flags. The **RG100** solid-state preamp is a BjtStage/op-amp clipping
+cascade. Nothing about MuffModel is special-cased into BjtStage; it is a clean building
+block, exactly like TriodeStage became for the JCM800 / Twin.
+
+### MuffModel — the 4-stage cascade
+
+`in → ×inputDrive → [Q1 boost] → SUSTAIN pot → [Q2 clip] → [Q3 clip] → mid-scoop TONE
+stack → [Q4 recovery] → VOLUME`, the whole nonlinear chain inside one 4× `Oversampler`
+so the four solves + the tone stack stay sample-aligned. **The famous mid-scoop tone
+stack** (`MuffToneStack`) blends a low-pass leg (`22 k / 0.01 µF`, 723 Hz) and a
+high-pass leg (`12 k / 0.01 µF`, 1326 Hz) by the TONE pot; at noon the two legs sum to a
+**notch ≈ 980 Hz** (the ~1 kHz scoop), TONE→0 goes dark (LP only), TONE→1 bright (HP
+only). Params: slot 0 = SUSTAIN, 1 = TONE, 2 = VOLUME (the real three knobs, the shared
+PedalParams shape). Output trim scales the loud recovery stage so the default (SUSTAIN 0.6
+/ VOLUME 0.6) peaks ~1.2 V (the downstream limiter guards the ceiling). **Q1 is a CLEAN
+input booster** (`kInputDrive 0.5`) and the SUSTAIN pot is a **full-range audio-taper
+attenuator into the first clipper** (`kClipDriveMax 6.0`, decibel-linear taper down to a
+−54 dB floor) — so the clipping/compression is developed by the high-gain Q2→Q3 cascade
+*after* the pot, and rolling SUSTAIN down genuinely cleans up (see the §24 postmortem).
+
+### Validation (`clipper_muff_tests`, 44.1 / 48 / 96 kHz, assert-backed)
+
+- **Per-stage DC vs an INDEPENDENT analytic bias solve (±10% bar):** all four stages
+  match to **<0.1%** — Q1/Q4 (no diodes) `Vc = 1.775 V` (`Ic 0.72 mA`), Q2/Q3 (clip)
+  `Vc = 1.213 V` (`Ic 0.78 mA`, diodes lightly conducting — the cold Muff bias). The
+  test re-derives the operating point with fresh code (numerical-Jacobian Newton), so
+  agreement genuinely cross-validates the device model + solver.
+- **Mid-scoop:** rendered response matches the analytic `H(s)` to **0.09 dB worst**;
+  the noon notch sits at **980 Hz** (−9.05 dB, 2.8 dB below both shoulders); tilt
+  extremes clear (TONE 1 is +16 dB brighter at 5 kHz, TONE 0 is +21 dB bassier at
+  120 Hz).
+- **THD RANGES with SUSTAIN (fixed — see the §24 field-fix postmortem below):** a fuzz,
+  not an overdrive, but SUSTAIN is now a full-range control: **min 0.0 → ~44%, default
+  0.6 → ~54%, max 1.0 → ~122%** THD (44.1/48/96 k). It RISES (min sustain sheds the wall;
+  the fine curve dips slightly near the cold-bias knee, so the test asserts the coarse
+  min→default→max trend). >100 % at max is canon fuzz: the ~1 kHz scoop + double clip
+  suppress the fundamental below the harmonic sum. (Pre-fix it was ~80–95 % at EVERY
+  setting — "no clean setting" — the bug.)
+- **Wall of sustain (moved to SUSTAIN ≥ 0.6 territory):** at **SUSTAIN 0.7** a **20 dB
+  input sweep** yields **2.4 dB** of output-RMS variation (20 dB in → 0.1 dB out) — the
+  compression signature. The test is STRENGTHENED with the collapse: at **SUSTAIN 0.0** the
+  same sweep spreads **6.2 dB** (20 dB in → 6.2 dB out) — dynamics return, the wall is gone.
+- **Single-coil HUM rejection (the field fix, permanent regression guard):** with a note
+  present the 60 Hz hum stays **−51 dB** below it at min sustain (bar ≤ −25 dB); a
+  **−40 dBFS hum-ALONE** comes out at **−61 dBFS** at min sustain vs **−10 dBFS** at max
+  (delta **51 dB** — min sustain is a real escape hatch). Pre-fix the hum-alone came out at
+  **−10 dBFS at EVERY sustain** (blown up to playing level — the reported bug).
+- **Aliasing (M2 bar):** shipped **4× worst-alias −103.8 dB** (44.1 k) / −104.4 dB (96 k),
+  far under the −60 dB bar; naive (1×) −18.1 dB. VOLUME linear; ±10 V slam finite +
+  bounded at all rates (peak ~4 V); silence→silence; deterministic.
+
+### A/B render commands (listening pack → scratchpad)
+
+```
+# Muff (fuzz-WALL) vs RAT (hard clip), matched knobs, plucked low A:
+clipper-render --gen pluck:110:2.0 muff_A.wav --pedal muff --distortion 0.7 --filter 0.5 --level 0.6 --sr 48000
+clipper-render --gen pluck:110:2.0 rat_A.wav  --pedal rat  --distortion 0.7 --filter 0.5 --level 0.6 --sr 48000
+#   -> Muff peak 1.39 / rms 0.38 (compressed, sustaining wall);
+#      RAT  peak 0.24 / rms 0.13 (hard clip pins near the knee, decays with the pluck).
+# TONE scoop sweep (rms drops at the noon scoop as the ~1 kHz notch removes energy):
+#   tone 0 -> rms 0.76 (dark) ; tone 0.5 -> rms 0.46 (SCOOPED) ; tone 1 -> rms 0.59 (bright).
+# The Gilmour move — Muff into a CLEAN Twin with headroom (two-step: muff, then --twin):
+clipper-render --gen pluck:110:2.5 muff_pre.wav --pedal muff --distortion 0.75 --filter 0.55 --level 0.6 --sr 48000
+clipper-render muff_pre.wav muff_into_twin.wav --twin --twin-volume 0.35 --twin-reverb 0.25 --twin-cab --sr 48000
+```
+
+### Integration (additive everywhere)
+
+- **One param shape, additive registries.** SUSTAIN/TONE/VOLUME ride the shared
+  `PedalParams {distortion, filter, level}`; each shared registry gains exactly one entry
+  (`rig.ts` `PedalType` + gear tray + `MUFF_KNOB_DEFAULTS` sustain 0.6 / tone 0.5 /
+  volume 0.6; worklet `_muff` prefix; C ABI `muff_*`; `add_pedal` enum + coaching;
+  `Pedal.tsx` FACES + a NEW `wide` layout; `tokens.css` `--accent-muff`). The worklet
+  routes per node by C-ABI prefix (`_rat`/`_sd`/`_ts`/`_muff`/`_phaser`).
+- **Visual identity (doctrine §17).** Dark chassis (both themes), **VIOLET accent** (the
+  "violet era" wink). Its own **`wide` face** — the Muff is physically HUGE, so a broader
+  enclosure with the three knobs in the classic TRIANGLE (SUSTAIN top-left, VOLUME
+  top-right, TONE centered below) and a big round stomp low-center. Hero wordmark **"Pi"**
+  large and central, model line `FUZZ Nº5 · PI`. No trademarks.
+- **Assistant.** `add_pedal` gains `'muff'`; the coach knows it is FUZZ not overdrive
+  (thick, saturated, endlessly-sustaining), that the TONE knob is a mid-SCOOP (band-mix
+  caveat: add mids elsewhere if it gets buried), and the classic move — a Muff into a
+  CLEAN amp with headroom, e.g. the Twin.
+- **Build note.** `build-wasm.sh` compiles `BjtStage.cpp` + `MuffModel.cpp` and exports
+  `_muff_*`; the two duplicate `EXPORTED_FUNCTIONS` lines left by the phaser/ts merge were
+  consolidated into ONE complete list (rat/sd/ts/muff/phaser + amp) so every pedal's
+  exports actually ship. Similarly the render CLI's stray empty `else if (a.pedal=="sd1")`
+  merge artifact was folded into the `sd1||ts` branch.
+- All 12 native suites green (`ctest`: M0 + RAT + SD-1 + TS + phaser + amp + triode +
+  JCM800 + JCM power + Twin + **Muff** + AC30); web tsc + vite build; Playwright (`muff
+  worklet: fuzz makes massive harmonics + a compressed sustain wall` — now also asserting
+  the min-sustain wall COLLAPSE — and `assistant: add_pedal adds a Muff Pi fuzz
+  (round-trip)`).
+
+### Field-fix postmortem — "the Pi blows out my single-coil hum, even at min sustain"
+
+**Report.** A player on a single-coil guitar: *"the Pi makes even just my single-coil hum
+blown out, even with minimum sustain."*
+
+**Diagnosis (measured).** Two compounding bugs, both in `MuffModel.cpp`'s level/knob
+mapping (the device models + tone stack were correct and are unchanged):
+
+1. **Input booster Q1 was overdriven.** `kInputDrive = 12.0` drove a guitar-level signal —
+   and even a −40 dBFS hum (0.007 V → 0.084 V at Q1's base) — into Q1's rail-clip region.
+   Q1 (no diodes, gain ≈ 19×, clean only below ~0.05 V in) put out a **7 V rail-clipped
+   square for essentially any input**. Because the SUSTAIN pot sits *after* Q1, no sustain
+   setting could undo that: the noise floor was already compressed up before the pot.
+   Measured Q1 THD: 15 % at −30 dBFS in, **116 % at −10 dBFS**.
+2. **SUSTAIN taper had a hot floor and the wrong law.** The pot was a **linear** map with a
+   **0.06 (−24 dB) floor** — so "min sustain" still passed −24 dB of a 7 V square into the
+   clippers. A real Big-Muff SUSTAIN is a 100 kA (audio) pot wired as a full-range input
+   attenuator that nearly grounds the clipper input at minimum.
+
+   Net effect (pre-fix, measured, 48 k): a **−40 dBFS hum-alone came out at −10.7 dBFS at
+   EVERY sustain** (min −10.7, max −11.8 — a **1 dB** difference; min sustain was useless),
+   and THD sat at ~80–95 % at all settings. **Hypothesis 3 (LF/hum filter) was checked and
+   REJECTED:** the canon `Cin = 100 nF` coupling already gives 60 Hz **−4.5 dB/stage** vs
+   midband (corner ~130 Hz), compounding across four stages — the hum was never
+   under-filtered, it was *clipped and compressed up*. No fantasy hum filter was added.
+
+**Fix (authentic gain structure).** Q1 is restored to a **clean booster** and the clipping
+drive is moved *after* the pot, so the SUSTAIN pot is a true full-range attenuator into the
+high-gain Q2→Q3 cascade (which is where a real Muff's compression is developed):
+
+| constant | was | now | why |
+|---|---|---|---|
+| `kInputDrive` (pre-Q1) | 12.0 | **0.5** | keep Q1 linear for hum/soft picking (clips only on loud playing) |
+| SUSTAIN taper | linear, `0.06 + 0.94·knob` | **decibel-linear audio** `kClipDriveMax·10^((−54/20)(1−knob))` | honest 100 kA pot; knob 0 ≈ −54 dB (≈0.012), knob 1 = `kClipDriveMax` |
+| clip drive @ max (`kClipDriveMax`) | — (was just ×1) | **6.0** | develop the wall in Q2→Q3 *after* the pot |
+| `kOutputTrim` | 0.32 | **0.40** | default (0.6/0.6) peaks ~1.2 V |
+
+**Per-stage drive @ SUSTAIN 0 (0.2 V hot input, 48 k):** Q1 out stays a clean ~2 V; the pot
+attenuates to ≈1.2 % of max, so Q2 sees only tens of mV and the Q2→Q3 cascade stays in its
+near-linear region → dynamics track the input. At SUSTAIN 1 the same cascade sees several
+volts and slams into the wall.
+
+**Result (measured, all rates).** THD now **ranges** 44 % (min) → 54 % (default) → 122 %
+(max). The wall lives at SUSTAIN ≥ 0.6 (0.7: 20 dB in → 0.1 dB out) and **collapses** at 0
+(20 dB in → 6.2 dB out). The **hum-alone drops from −10.7 dBFS to −61.1 dBFS at min sustain**
+(delta to max now **51 dB** — min sustain is the escape hatch); with a note present the
+60 Hz hum sits −51 dB below it. Aliasing at max improved to −103.8 dB. A/B renders in the
+listening pack confirm min-sustain hum-alone rms **0.293 → 0.001** (−50 dB) while the
+max-sustain fuzz keeps its thick, harmonic-dense sustaining character (H3/f1 ≈ 0.2 → 0.26,
+still a wall). The permanent guard is `testHumRejection` (the player's exact signal) plus
+the strengthened `testSustainRange` / `testSustainWall` and the web worklet spec's
+min-sustain collapse assertion.
+
+## 25. Performance — denormal guard, tube-solver pass, per-gear cost, load meter
+
+The field report behind this milestone: **audio lag/crackle on the web app (and the
+Mac build), even on the clean JC-120 path** — "random", periodic, independent of
+which amp or pedal is loaded. Two real causes were found and fixed, and the
+milestone adds the instrumentation to keep perf honest from here on: a per-unit
+cost benchmark (`clipper-bench`), a permanent solver-accuracy regression test, and
+a DSP load meter in the web UI.
+
+### 25.1 The denormal cliff (the amp-independent crackle)
+
+**Diagnosis.** A recursive float filter state fed a signal that decays to silence
+rings down through the **subnormal** float range (magnitudes below ~1.18e-38).
+Arithmetic on subnormals takes a microcoded slow path on real CPUs — and while
+native code *could* enable hardware flush-to-zero (FTZ/DAZ), we never did, and
+**WASM has no FTZ at all** (the runtime cannot be asked to flush). So every
+decaying note tail turned into thousands of slow-path ops on the audio thread.
+Worse, a one-pole smoother approaching a **zero** target (bright switch off,
+chorus depth 0) never *leaves* the subnormal range — it asymptotes and sticks
+there, a **permanent** denormal generator. Every amp and pedal shares these
+primitives (`Biquad`, `OnePoleSmoother`), which is exactly why the lag was
+independent of the loaded gear.
+
+Measured on the dev container (x86-64, which honors subnormals the same way a
+browser's WASM JIT must): an **unguarded** TDF2 biquad running a silent tail is
+**24.6× slower** in the default FP environment than with hardware FTZ forced on
+(`scripts/denormal_bench.cpp` pattern; 40×10 s tails). That is the cliff the web
+app was falling off.
+
+**Fix.** `core/include/clipper/dsp/Denormal.h` — a branchless
+`flushDenormal(v)` (float + double overloads): any recursive state whose
+magnitude falls below **1e-30 (−600 dB)** is snapped to exactly 0. The floor is
+~8 orders of magnitude above the largest subnormal and ~10 below the reverb
+loop's long-standing `1e-20` anti-denormal offset (zero interaction), and −456 dB
+below the 24-bit noise floor — bit-irrelevant to audio. Applied after **every**
+decaying recursive update in the core (audited module by module):
+
+- `Biquad` z1/z2 (every tone stack / shelf / peak in every amp),
+- `OnePoleSmoother` (snaps to the target once the residual is sub-floor — kills
+  the stuck-at-zero-target generator),
+- `PhaserModel` allpass memory (double), `RatModel` shape/LP one-poles,
+  `OverdriveEngine` mid/tone one-poles (SD-1 + Screamer), `MuffToneStack` legs,
+  `LM308Stage` closed-loop LP, `OptoTremolo` depth smoother (double).
+
+Not guarded, by analysis: `ReverbModel` (its 1e-20 loop offset already prevents
+subnormals), chorus delay lines / halfband FIRs / convolver overlap-add (input
+history, no feedback — state dies with the input), tube-stage companion caps
+(doubles parked at nonzero DC operating points), `OutputLimiter` gain (double
+near 1.0).
+
+**Proof.** `clipper_denormal_tests` (ctest #13): the flush invariant; silent-tail
+runs over the exact AmpModel voicing filters asserting **no output sample is ever
+subnormal and the tail reaches exactly 0**; smoother snap/converge cases; and
+**bit-transparency** — the guarded `Biquad`/`OnePoleSmoother` are compared
+sample-for-sample against verbatim *unguarded* recurrences over 2 s of
+program-level audio and must match **bit-for-bit** (the guard only acts below
+−600 dB). With the guard in place `denormal_bench` shows the default FP
+environment reaching the hardware-FTZ ceiling (ratio 1.0–1.1×) — the cliff is
+gone *in code*, which is the only fix available under WASM.
+
+### 25.2 The tube-solver pass (same equations, same roots, fewer evaluations)
+
+The valve amps dominate CPU: per-sample Newton solves at 4× oversampling. The
+pass speeds them up **without touching the circuit equations or the converged
+solutions** — no lookup tables, no waveshaper stand-ins:
+
+- **Pentode plate-load Newton** (EL34 / 6L6 / EL84): the Koren law factors as
+  `Ip = base·atan(Vp/kvb)` with `base = (2/kg1)·E1^ex` depending only on the
+  grids — which are **fixed** during the plate solve. `base` (the softplus+pow)
+  is hoisted out of the loop and `dIp/dVp = base/(kvb·(1+(Vp/kvb)²))` is exact,
+  so each iteration costs **one `atan`** where it used to cost **three full
+  pentode evaluations** (the central-difference derivative is gone). Same
+  residual, same exit tolerance, same root.
+- **Screen currents reuse the hoisted base**: `Ig2 = base·(kg1/kg2)` — one more
+  softplus+pow gone per output-tube leg per oversampled sample.
+- **Grid-node solves warm-start** from the previous sample's solution (they used
+  to restart from the idle bias every sample).
+- **Triode/LTP Koren evals**: `dIp/dE1 = ex·Ip/E1` — algebraically identical to
+  the second `pow`, computed from the first.
+- **Sparse 3×3 solves**: the TriodeStage and LTP Jacobians have fixed zero
+  entries (the grid row doesn't see the plate; each PI plate row couples only
+  its own plate + the shared tail), so both systems solve by direct elimination
+  instead of general Cramer with column copies.
+- **BjtStage (Muff) line search**: trial evaluations now fill the Jacobian too —
+  nearly free once the Ebers-Moll/diode exponentials are computed — removing the
+  separate refresh evaluation per damped-Newton iteration. The Newton path
+  (every iterate, every accepted step) is **bit-identical** to before.
+
+**The accuracy gate is permanent.** `TubeSolverMode.h` exposes a test-only
+tolerance scale; `clipper_tube_solver_tests` (ctest #14) renders a riff (plucked
+fundamentals + harmonics, attacks, clipping, decaying tails) through each valve
+voice at production tolerances and at **1000×-tighter reference tolerances** and
+asserts the two renders agree below **−120 dBFS**. Measured residuals: jcm800
+**−258.9 dBFS**, twin **−258.9 dBFS**, ac30 **−162.6 dBFS**. A 3 s sweep render
+per amp before/after the whole pass agrees to −252.9 / −186.6 / −258.5 dBFS
+(jcm/twin/ac30) — inaudible by ~10 orders of magnitude, honestly *not* bit-exact
+(the roots are approached along different iterates), which is why the JUCE
+identical-core test still passes: plugin and raw engine share the same updated
+core, so both sides moved identically.
+
+**Measured speedup** (native `clipper-bench`, 8 s riff, 48 kHz / 128-frame
+blocks, one Linux x86-64 container — treat as relative):
+
+| valve unit | before | after | speedup |
+|---|---|---|---|
+| jcm800 | 1.45× RT (68.8 % CPU) | 1.96× RT (51.1 %) | **1.35×** |
+| twin   | 2.04× RT (49.0 %)     | 2.90× RT (34.5 %) | **1.42×** |
+| ac30   | 2.25× RT (44.4 %)     | 3.80× RT (26.3 %) | **1.69×** |
+| muff   | 3.41× RT (29.4 %)     | 4.10× RT (24.4 %) | **1.20×** |
+
+WASM runs the same source ~1.4–2× slower than native, so the pre-pass WASM
+margin of ~1.1–1.4× realtime on the valve amps is what made every scheduling
+hiccup audible; the pass converts that into real headroom.
+
+### 25.3 Per-gear CPU cost (the honest table)
+
+`core/tools/bench/main.cpp` (`clipper-bench`, native-only target): every unit
+processes the same deterministic riff at 48 kHz in 128-frame blocks after a
+warm-up pass; the table reports audio-seconds-per-wall-second (× realtime) and
+the share of one realtime stream. Native numbers are a **proxy** for WASM (same
+core source); the *ranking* is the point. Post-pass numbers:
+
+| unit | × realtime | % of one 48 k stream |
+|---|---|---|
+| jcm800 (valve amp) | 1.96× | 51.1 % |
+| twin (valve amp) | 2.90× | 34.5 % |
+| ac30 (valve amp) | 3.80× | 26.3 % |
+| muff (BJT fuzz) | 4.10× | 24.4 % |
+| rat (dist pedal) | 35.2× | 2.8 % |
+| sd1 / screamer (overdrive) | ~43× | 2.3 % |
+| clean amp + chorus + reverb (stereo) | 89.4× | 1.1 % |
+| spring reverb alone (mix 0.5) | 114.6× | 0.9 % |
+| ninety (phaser) | 298.7× | 0.3 % |
+| cab convolver (either IR) | ~460× | 0.2 % |
+| clean amp alone (JC-120, mono) | 1403.6× | 0.07 % |
+| output limiter | 1677.3× | 0.06 % |
+
+Reading it: the **valve amps are the budget** — a valve head plus a dirt pedal,
+cab, and reverb is dominated by the head alone; everything linear is noise. The
+denormal guard is invisible here by design (it costs a compare+select per state
+update) — its payoff is the *absence* of the tail-triggered spikes that no
+steady-state benchmark shows.
+
+### 25.4 The web DSP load meter (ground truth on the user's machine)
+
+The web app now reports the audio thread's real headroom instead of guessing:
+`audio.ts` wires **`AudioContext.renderCapacity`** (Chromium 116+) and forwards
+its ~1 Hz `update` events — `averageLoad` / `peakLoad` / `underrunRatio`, the
+fraction of each render quantum's deadline actually spent — to a new **Engine
+load** row in the status panel (`DSP 23% · peak 41%`). States: normal ink;
+**warn** (amber) above 80 % average — headroom running out, the pre-glitch
+signal; **underrun** (red LED glow) when `underrunRatio > 0` — a real dropout,
+the objective face of "crackle/lag", also logged loudly to the console so field
+reports can paste it back. Feature-detected: browsers without the API get an
+honest `n/a (needs Chromium)` rather than a fake 0 %; the meter stops with the
+engine and never adds render churn (1 Hz state updates only). The readout lives
+in the existing neumorphic status card (`.status` dl), styled through the stock
+`--led*` tokens — no new visual language.
+
+- Verification for the milestone: core ctest **14/14** (12 prior + denormal +
+  tube-solver regression); the JUCE **identical-core** test green across all
+  four amp voices; `web` tsc + vite build green; WASM rebuilt via
+  `scripts/build-wasm.sh` with the single consolidated `EXPORTED_FUNCTIONS`
+  list intact.
+
+## 26. M11 — Player Expectations Suite (test the player's expectations, not just the circuit)
+
+**Why this milestone exists.** Four field bugs shipped while every circuit metric
+was green — each caught only by a player's ears:
+
+1. **RAT "no balls"** — harmonic ratios, alias floors, bit-exactness all passed,
+   but input-level calibration + an over-aggressive low shelf left the pedal
+   gutless at the levels a real player feeds it (fixed in M6.1).
+2. **Cab fizz** — "correct" convolution of a wrong-sounding IR (a −22.9 dB noise
+   tail + 2 dB response steps), plus an IN-PLACE aliasing hazard: the web worklet
+   calls the convolver with `out == in`, and the null test used separate buffers.
+3. **Muff Pi hum blowout** — the input stage rail-clipped even a −40 dBFS
+   single-coil hum and min sustain didn't help; no THD/spectrum test ever probed
+   MIN-knob settings or a realistic noise floor (§24 postmortem).
+4. **AC30 "muddy"** — the CUT knob's control-law default opened the amp 3 dB
+   dark. Circuit right, knob taper wrong (§23 re-taper + character guard).
+
+The pattern: **we tested the circuit, not the player's expectations.** M11 is the
+missing layer — a permanent suite that drives every piece of gear the way a
+player does (default knobs, min knobs, realistic levels, realistic noise, the
+worklet's exact calling conventions) and pins what they must hear.
+Files: `core/tests/test_player_expectations.cpp` (`clipper_player_expectations_tests`,
+ctest #15 — links `clipper_c_api` because it drives the worklet's exact C ABI),
+goldens under `core/tests/goldens/`, `scripts/update-goldens.sh`, and
+`web/tests/expectations.spec.ts` (Playwright). All core measurements run at
+**48 kHz** — the AudioWorklet's fixed rate, where every one of the four bugs was
+heard (per-rate circuit behavior stays pinned by the per-gear suites).
+
+### Block A — universal gear invariants (one harness, EVERY gear)
+
+One parameterized harness over every dirt pedal (`rat`/`sd1`/`ts`/`muff`) and
+every amp voice (`clean120`/`jcm800`/`twin`/`ac30`), at the app's exact opening
+knobs (`rig.ts` defaults), with smoothers settled 0.25 s before measuring.
+Standard signal: a 220 Hz pluck peaking at −20 dBFS (RMS −33.5 dBFS).
+
+- **A1 Min-knob usability** (the Muff bug generalized): at defaults AND with any
+  single knob at minimum, output must be finite, bounded (pedals < 2 V peak —
+  the muff legitimately peaks 1.69 V dark; amps < 1.05 normalized) and, unless
+  the knob is an output-level pot, audible (RMS > **−70 dBFS**). Level pots must
+  genuinely attenuate (≥ 6 dB below default; every one measured a clean kill,
+  −240 dBFS). Quietest legit min-knob case: **ac30 bass=0 at −64.1 dBFS** — the
+  passive Vox top-boost stack guts a low-heavy pluck with BASS at zero
+  (authentic; the floor separates "authentically quiet" from "silenced").
+- **A2 Hum torture standard** (the Pi's field signal, now a floor for ALL future
+  gear): 220 Hz note at −10 dBFS + 60 Hz hum at −40 dBFS through every dirt
+  pedal at min AND default gain — the 60 Hz component must stay **≥ 28 dB below
+  the note**. Measured: rat −36.0/−41.6, sd1 −33.1/−39.3, ts −33.1/−38.2,
+  muff −51.1/−55.8 dB (min/default). The input hum sits 30 dB below the note and
+  a perfectly linear pedal preserves that, so ~−33 dB at min drive is the
+  physical ceiling — the 28 dB bar leaves 5.1 dB margin on today's tightest gear
+  while catching a Pi-class blowout (pre-fix: hum at ~−1 dB) outright.
+- **A3 Knob monotonicity spot-checks**: gain/drive/sustain at lo/mid/hi must
+  yield non-decreasing THD (rat 0→22→37 %, sd1 0→12→37 %, ts 0→6→32 %, muff
+  36→38→147 % at 0/0.6/1.0 — §24's coarse-trend contract, jcm800 gain
+  0→11→47 %); level pots non-decreasing RMS; tone knobs at extremes must move
+  the spectrum the documented direction — pedals via high-band harmonic energy
+  (≥ 6 dB; a plain spectral centroid is fundamental-dominated and barely moves),
+  amps via the 3 kHz band (≥ 4 dB), including the two INVERTED knobs (RAT
+  FILTER: clockwise darkens; AC30 CUT: clockwise darkens).
+- **A4 Level sanity** (the "no balls" / "blows the mix apart" guard): output RMS
+  delta at defaults must sit inside a documented per-gear window (measured
+  ± ~10 dB). Measured: rat +18.6, sd1 +15.6, ts +13.1, muff **+29.4** (the
+  sustain wall lifts a DECAYING pluck's RMS by design — a fuzz that didn't would
+  be the bug), clean120 −6.0, jcm800 +1.7, twin −13.8, ac30 −11.7 dB. One
+  symmetric global bound can't hold that honest spread, so the windows are per
+  gear — tight enough that a ±10 dB voicing drift fails loudly.
+
+### Block B — live-convention testing (the test that would have caught the convolver bug)
+
+Every processing entry point is rendered TWICE through fresh instances: once the
+way tests find convenient (separate in/out buffers, one big call), once the way
+the WORKLET actually calls it (**in-place, `out == in`, 128-frame blocks,
+48 kHz**), and the two must agree within float tolerance (2e-5). Covered: the
+five pedal C ABIs (`rat_`/`sd_`/`ts_`/`muff_`/`phaser_`), the AmpChain C ABI for
+all four voices (cab ON + reverb 0.25 so the spring runs in-place too), the
+stereo amp path with chorus ON (128-frame vs big-block; `in` may not alias the
+outputs, per the documented contract), and the bare `CabConvolver` +
+`ReverbModel`. Measured today: **bit-identical** (max |Δ| = 0) on every path —
+the suite pins that so an in-place aliasing bug can never ship silently again.
+
+### Block C — golden "first five minutes" renders
+
+The rigs a new player actually tries first, at DEFAULT knobs, rendered through
+the same C-ABI chain the worklet drives, committed as 16-bit mono 48 kHz WAVs
+(2 s pluck each, 944 KB total, `core/tests/goldens/`):
+
+| golden | rig | peak / RMS |
+|---|---|---|
+| `rat_jcm800.wav` | RAT → JCM800 + brit412 cab | 0.237 / −23.8 dBFS |
+| `sd1_twin_reverb.wav` | SD-1 → Twin + clean212 + reverb 0.25 | 0.144 / −35.7 dBFS |
+| `muff_twin.wav` | Muff → CLEAN Twin + clean212 (the Gilmour move) | 0.178 / −26.4 dBFS |
+| `ts_ac30.wav` | Screamer → AC30 + clean212 | 0.063 / −39.3 dBFS |
+| `clean120_chorus.wav` | clean 120 + chorus ON + clean212 (stereo → mono mix) | 0.038 / −47.1 dBFS |
+
+Gate: **per-third-octave-band RMS difference ≤ 1.5 dB** (bands within 55 dB of
+the golden's loudest band; 7–13 live bands per rig) plus broadband RMS ± 1 dB —
+perceptual-ish, so lossless refactors (solver iteration changes, chunking) pass
+but voicing drift (a re-tapered knob, a re-voiced shelf, a changed IR) fails.
+The gate's own floor (16-bit quantization + windowing) measures 0.11 dB worst.
+Regenerating goldens is a DELIBERATE act only:
+`./build/clipper_player_expectations_tests --update-goldens` (or
+`scripts/update-goldens.sh`), then commit the diff with a justification.
+
+### Block D — web "first five minutes" sim (`web/tests/expectations.spec.ts`)
+
+What a new player does, in the real browser engine: add each dirt pedal at its
+opening defaults onto the default rig, stomp it on, play a −20 dBFS note; cycle
+all four amp voices at defaults. Asserts per render: (1) audible non-silent
+output, (2) no NaN, (3) RMS inside the documented window (dirt pedals
+−32..−4 dBFS through the default clean rig; amp voices −42..−6 dBFS), (4)
+stomping on/off mid-note does not click (max sample delta bounded by ~2× the
+steady-state slew).
+
+**Latent bug found and fixed by (4): the worklet's STOMP was the one topology
+change NOT declick-bracketed.** `bypass` messages flipped `node.engaged` (and
+amp power) instantly between quanta, stepping the output mid-waveform — a clean
+−20 dBFS tone and a driven pedal output differ by hundreds of millivolts at the
+flip sample, i.e. an audible pop on every stomp. Chain edits, cab swaps, and
+amp-model swaps were all already staged at the raised-cosine declick's fade-out
+zero; M11 routes stomps (pedal bypass + amp power) through the SAME bracket
+(`_pendingBypass` / `_pendingAmpBypass` in `clipper-processor.js`, applied in
+`_commitPending`). Pre-ready stomps still apply immediately (no audio running —
+nothing can click), and the synchronous `latency` echo (the tests' delivery
+barrier) is preserved.
+
+### Findings ledger (what the new invariants surfaced)
+
+- **Worklet stomp click** — real, fixed (above).
+- **AC30 BASS at min is very quiet** (−64.1 dBFS for the standard pluck, ~17 dB
+  under its defaults) — authentic passive-stack behavior, documented as the
+  audible-floor anchor, not a bug.
+- **In-place/live-convention rendering is currently bit-exact everywhere** —
+  the convolver-class hazard exists only if code changes; now pinned.
+- **Everything else passed on first measurement** — the four shipped field
+  fixes (M6.1, M6.5/M6.6, §24, §23) hold with margin under their generalized
+  invariants.
+
+- Verification for the milestone: core ctest **15/15** (14 prior + player
+  expectations); `web` tsc green; Playwright suite green with the repo config
+  (including the four new expectations tests); no DSP source touched (the WASM
+  module is unchanged — only the authored worklet JS changed, re-copied to
+  `web/public/generated/` exactly as `build-wasm.sh` does).
+
+## 27. v1.1 item 6 — Klon Centaur "Myth": the parallel clean/dirt blend (germanium WDF)
+
+ROADMAP v1.1's famous omission, made real: the gold-boxed "transparent"
+overdrive whose whole reputation comes from an architecture no other pedal in
+this app has — it does **not** run your signal through a clipper. It **splits**
+it: a full-bandwidth CLEAN path and a germanium-clipped one, cross-faded by a
+**dual-ganged GAIN pot**. That is why it measures transparent at low gain and
+still sounds articulate when pushed, and it is why this is a bespoke model
+instead of another `OverdriveEngine` config (the TS-family engine expresses a
+feedback clipper with a clean *pedestal*, not a *crossfade*). Files:
+`core/include/clipper/dsp/GoldModel.h` + `core/src/dsp/GoldModel.cpp`; tests
+`core/tests/test_gold_model.cpp` (`clipper_gold_tests`); C ABI `gold_*` in
+`clipper_c_api.cpp`; `--pedal gold` (+ `--gold-silicon` / `--gold-no-clean`) in
+the render CLI; a `gold` bench unit; worklet `gold` dispatch; `rig.ts` / Pedal /
+gear-tray / assistant wiring; M11 harness entry (blocks A + B) and the web sim.
+Trademark-safe throughout: wordmark **"Myth"**, model line **`DRIVE Nº6 · GOLD`**,
+and **no** Klon / Centaur / KTR text and **no centaur-and-rider figure** anywhere
+on a user surface — that figure is the actual mark; the colour is not.
+
+### Sources — and an honest gap
+
+The intended reference is Jatin Chowdhury, *"A Comparison of Virtual Analog
+Modelling Techniques for Desktop and Embedded Implementations"* (arXiv:2009.02833),
+which models this exact pedal section-by-section with nodal analysis and Wave
+Digital Filters — the same author whose `chowdsp_wdf` we vendor. **The PDF was not
+reachable from this environment**: the egress proxy refuses `arxiv.org` and
+`ccrma.stanford.edu` (403 on CONNECT), as it did every mirror tried. So this model
+follows the paper's **method** (a section per circuit block; WDF for the diode
+root; analytic/nodal transfer functions for the linear blocks) while its
+**component values** come from the widely published reverse-engineered schematic
+and are each flagged as an approximation in `GoldModel.cpp`. The topology is the
+claim; the digits are correctable. When the paper becomes reachable, diff its
+values against the constants block at the top of that file — nothing else moves.
+
+### The circuit → the model
+
+- **Section 1 — the always-on input buffer.** This pedal buffers even when it is
+  switched out, which is why it is famous as a line driver. Modelled as the unity
+  op-amp follower it is, carrying only the input network's DC-blocking corner:
+  `f_in = 1/(2π·1 MΩ·0.022 µF) ≈ 7.2 Hz`. *Documented omission:* the follower's own
+  ~3 MHz corner is far above audio and is not modelled.
+- **Section 2 — the ganged GAIN pot (the soul).** One knob, three mapped
+  quantities, summed as
+  `out = 2·( cleanBlend(g)·x + clipBlend(g)·clip(A(g)·HP₁₀₆(x)) )`:
+  - **the crossfade** — `cleanBlend(g) = 1 − 0.55·g` (1.00 → **0.45**: the clean core
+    never leaves) against `clipBlend(g) = g` (a linear wiper on the clipped
+    signal). At GAIN 0 the clipped half is **switched out**, so the box is a clean
+    buffer/boost — not "quiet dirt", *no* dirt. *Approximation:* the real network's
+    second wiper law is more interactive than a straight line.
+  - **the drive amp** — the other gang in the feedback leg: `A = 1 + g·P/R_g` with
+    `P = 100 kΩ` (dual-ganged) and `R_g = 1.5 kΩ`, so `A(0) = 1.00` … `A(1) = 67.67×`
+    (**+36.6 dB**). Unlike the TS family, minimum gain is *exactly* unity.
+  - **the lows skip the clipper** — the drive path is high-passed *before* the
+    diodes at `1/(2π·15 kΩ·0.1 µF) ≈ 106 Hz`, so the bottom end reaches the summing
+    node only through the clean half. This is the "it never gets mushy" trait, and
+    it is also why the pedal's hum figure *improves* as you turn up.
+  - **the op-amp** — TL07x-class (3 MHz GBW, 13 V/µs), via the house op-amp model
+    (`LM308Stage.h`, generic despite its name). Closed-loop corner at max gain
+    `3e6/67.67 ≈ 44 kHz` — above the band, so unlike the RAT's LM308 (which collapses
+    to ~500 Hz) it colours nothing; it is here for honesty and antialiasing.
+  - **the germanium pair (WDF)** — antiparallel 1N34A-class diodes, driven through
+    the stage's output resistance and shunted by its small cap, built exactly as the
+    RAT's silicon clipper is: `R_s = 2.2 kΩ`, `C_p = 4.7 nF` (HF corner ≈ 15.4 kHz),
+    root `chowdsp::wdft::DiodePairT`. Device: `Is = 200 nA`, ideality `n = 1.3`
+    (carried through the library's `nDiodes` multiplier, i.e. `Vt_eff = n·Vt =
+    33.6 mV`), knee ≈ **0.29 V** at 1 mA — about half silicon's, and far more
+    importantly a **much softer** knee. `DIODE_SILICON` (1N914-class, `Is = 2.52 nA`,
+    `n = 1.0`) exists as a MEASUREMENT-ONLY counterfactual.
+  - **the charge pump** — the real box generates a negative rail so its op-amps run
+    on ±9 V. Here that is a **headroom statement**: the summing node and the tone
+    stage carry a ±8.6 V clamp that, at any playing level, never engages. The
+    germanium pair is the only thing in the box that clips — and the suite asserts
+    it (1 V in, wide open, peaks 1.60 V).
+- **Section 3 — TREBLE.** A shelving tilt about a ~1 kHz pivot, ±12 dB, exactly flat
+  at noon, **normal sense: clockwise BRIGHTENS** (contrast the RAT's FILTER and the
+  AC30's CUT, both inverted). *Approximation:* the hardware's active tone network
+  interacts slightly with the output pot; this is a first-order stand-in with the
+  same pivot and range.
+- **Section 4 — output stage.** Output buffer + OUTPUT pot (identity linear map,
+  the house convention) + the coupling cap's 8 Hz DC block. **OUTPUT at noon is
+  exactly unity** (the summing amp's ×2 against a 0.5 pot) — the pedal's calibration
+  point, and the reason "GAIN 0 / OUTPUT 50" is a true bypass-alike.
+
+Parameter mapping (normalized knobs, one-pole smoothed ~5 ms as everywhere):
+
+| Param (id) | Knob 0 | Knob 1 | Mapping | Notes |
+|---|---|---|---|---|
+| `PARAM_GAIN` (0) | clean only (A = 1.00, clip weight 0) | A = 67.67× (+36.6 dB), clip weight 1 | the DUAL-GANGED pot: `A = 1 + g·100k/1.5k`, `clean = 1 − 0.55g`, `clip = g` | one knob, a crossfade — not an amount |
+| `PARAM_TREBLE` (1) | −12 dB HF | +12 dB HF | tilt about a 1 kHz pivot | flat at 0.5; clockwise BRIGHTENS (normal sense) |
+| `PARAM_OUTPUT` (2) | 0.0 | 1.0 | identity linear gain | **0.5 == unity** (the ×2 summing amp) |
+
+### Validation (ctest `clipper_gold_tests`, 44.1 k + 48 k + 96 k, assert-backed)
+
+- **Transparency at GAIN 0 (the whole reputation, as a number):** response flat
+  within **0.138 dB** across 60 Hz–10 kHz (worst at 60 Hz — the coupling corners),
+  THD **0.0000 %** on a hot 0.3 V note, and **0.000 dB** (unity) at OUTPUT noon. A
+  1 V input at GAIN 0 still measures **0.0001 %** THD: the charge-pump headroom,
+  audible as "it doesn't do anything to my sound".
+- **The ganged crossfade:** THD **0.00 → 11.66 → 20.60 → 26.31 → 31.73 %** across GAIN
+  0/0.25/0.5/0.75/1.0 (44.1 k), with the **clipped share** of the output RMS (measured
+  against the clean-half-off counterfactual) rising **0.00 → 0.37 → 0.61 → 0.76 → 0.85**
+  — a genuine progressive blend, with the clean core still 0.45 at max.
+- **Germanium soft knee, distinguished from silicon:** identical circuit, identical
+  drive, only the diode parameters change. Over a 20 dB input sweep at a low gain
+  (A = 7.7) the germanium goes **0.22 % → 5.16 % (×23)** while the silicon
+  counterfactual goes **0.01 % → 6.15 % (×736)**: germanium bends **~26× earlier** and
+  **~30× more gently**. That ratio *is* the "bloom" players describe, and it is the
+  test that catches someone quietly swapping in a silicon knee.
+- **TREBLE (normal sense):** 6 kHz **−9.42 dB** (dark) → **+11.43 dB** (bright) with the
+  low end unmoved (**+0.71 dB** at 120 Hz); on the harmonics the pedal itself makes,
+  high-band energy **−17.9 → −5.7 dB** (M11's metric; bar ≥ +6 dB).
+- **Aliasing (M2 bar):** shipped **4× worst-alias −93.3 dB** (44.1 k) / **−123.6 dB**
+  (96 k) at max GAIN with the brightest treble, far under the −60 dB bar; 1× is
+  −20.2 dB and 8× buys −112.1 dB, i.e. nothing audible over 4× — **4× ships**.
+- **Headroom + OUTPUT:** 1 V in, wide open → peak **1.60 V** against 8.6 V rails (the
+  clamps never engage); OUTPUT linear to **2.000×** per doubling.
+- **Hygiene:** ±10 V slam finite and bounded (peak 9.07 V — the rails, as designed),
+  silence → silence, deterministic, finite across the knob grid, all three rates.
+
+### M11 conformance (docs §26, additive to the pedal tables only)
+
+- **A1 min-knob:** defaults **−22.0 dBFS** RMS / peak 0.273; `gain=0` **−32.3 dBFS**
+  (audible — a clean pedal, not a silenced one), `treble=0` −22.3, `output=0` a
+  clean kill (−240).
+- **A2 hum torture:** 60 Hz sits **−30.1 dB** below the note at min gain and
+  **−32.9 dB** at default (bar −28). This is the **tightest margin of any gear in the
+  suite, and necessarily so**: at GAIN 0 this pedal is *linear*, so it can only
+  preserve the input's own −30 dB hum-to-note ratio — −30.1 dB *is* the physical
+  ceiling for a transparent pedal. The 2.8 dB improvement at default gain comes from
+  the 106 Hz pre-clip high-pass keeping hum out of the clipper.
+- **A3 monotonicity:** GAIN THD **0.0 → 23.4 → 30.6 %**; OUTPUT −240 → −17.1 → −11.0 dBFS;
+  TREBLE HF harmonics −17.9 → −5.7 dB in the documented (clockwise-brightens) direction.
+- **A4 level sanity:** **+13.2 dB** RMS delta at defaults (window +3…+23) — between the
+  Screamer (+13.1) and the SD-1 (+15.6), which is exactly where a mostly-clean blend
+  with a ×2 summing amp belongs.
+- **Block B:** `gold_ ABI` renders **bit-identically** (max |Δ| 0.000e+00) in-place at
+  128 frames vs separate buffers in one block.
+- **Block D (web sim):** **−22.8 dBFS** at defaults through the default clean rig, peak
+  0.106 — the quietest of the five dirt boxes, 9 dB inside the −32…−4 window.
+
+### A/B render commands (the two counterfactuals are the point)
+
+```
+# The two settings the pedal is actually used at:
+clipper-render --gen pluck:110:2.0 klon_transparent.wav --pedal gold --distortion 0.15 --filter 0.50 --level 0.85 --sr 48000
+clipper-render --gen pluck:110:2.0 klon_pushed.wav      --pedal gold --distortion 0.85 --filter 0.55 --level 0.70 --sr 48000
+#   -> transparent peak 0.805 / rms 0.125 (a clean, tightened boost — the always-on sound);
+#      pushed      peak 0.863 / rms 0.256 (rms doubles while the peak barely moves: the
+#      clipped half does the work, the clean half holds the transient shape).
+# What the pedal would be WITHOUT its defining trait (clean half removed):
+clipper-render --gen pluck:110:2.0 klon_pushed_noclean.wav --pedal gold --distortion 0.85 --filter 0.55 --level 0.70 --sr 48000 --gold-no-clean
+#   -> peak 0.574 / rms 0.225: the same dirt with the attack flattened — the transient
+#      collapses from 0.86 to 0.57 while the body stays. The clean blend IS the pick attack.
+# Germanium vs silicon, same drive:
+clipper-render --gen pluck:110:2.0 klon_pushed_silicon.wav --pedal gold --distortion 0.85 --filter 0.55 --level 0.70 --sr 48000 --gold-silicon
+#   -> peak 0.917 / rms 0.295: silicon clips later and harder — louder and stiffer, the
+#      softer germanium bloom replaced with a firmer edge.
+```
+
+### Integration notes
+
+- **One param shape, additive registries.** `PedalParams {distortion, filter, level}`
+  reading as **Gain / Treble / Output**; each registry gains exactly one entry
+  (`rig.ts` `PedalType` + `AVAILABLE_PEDAL_TYPES` + `GOLD_KNOB_DEFAULTS` gain 0.35 /
+  treble 0.5 / output 0.7 + the normalizer; worklet `_gold` prefix; the single
+  `EXPORTED_FUNCTIONS` list; gear tray; `add_pedal` enum; `Pedal.tsx` FACES;
+  `tokens.css` `--accent-gold` in all four theme blocks). Old rigs load unchanged.
+- **Visual identity (doctrine §17).** Dark chassis in both themes, **GOLD accent**
+  (arcs / readouts / LED). Its own **`plate` face**: knob row over a milled, recessed
+  **NAMEPLATE** band with hairline gold rules and *engraved* (cut-in, not embossed)
+  lettering, round stomp below. The original is remembered for an *engraved*
+  enclosure, so we take the engraving idea and put **type only** on the plate — the
+  figure it is famous for is the trademark and is deliberately absent. Wordmark
+  **"Myth"** (the pedal that became a legend, hoarded and flipped), model line
+  **`DRIVE Nº6 · GOLD`**. Gold is deliberately warmer/browner than the SD-1's lemon
+  `--accent-sd` and the amp's brass `--accent-jcm`, and the `plate` silhouette
+  separates it from every other face in grayscale.
+- **Assistant.** `add_pedal` gains `'gold'`; the coach knows this is the transparent
+  one, that its GAIN knob is a **blend** and not an amount, and the three classic
+  moves: always-on at low gain with output up; shoving an already-breaking-up amp
+  over the edge (the amp distorts, the pedal supplies the push and the tightness);
+  and stacking either side of another dirt box.
+- Core suites all green (**ctest 16/16**, +`clipper_gold_tests`); `web` tsc + vite
+  build green; Playwright +2 (`gold worklet: transparent at min gain…` and
+  `assistant: add_pedal adds the GOLD transparent overdrive…`) plus the M11 web sim
+  extended to five dirt pedals (4/4 green).
