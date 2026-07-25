@@ -348,7 +348,7 @@ what the PLAYER hears, permanently:
 - **Live-convention testing**: every C-ABI entry point rendered in-place at
   128-frame blocks (the worklet's exact convention) vs separate-buffer
   big-block — bit-identical today, pinned forever (the in-place convolver-bug
-  catcher). *Amended 2026-07-25 (docs §29): the tolerance was `2e-5` where the
+  catcher). *Amended 2026-07-25 (docs §30): the tolerance was `2e-5` where the
   real answer is `0`, and 128 is the units' own internal chunk size, so the
   comparison could not fail. Now bit-identical at 128 AND run at a **ragged 100
   frames** — the only segmentation that can catch a block-size bug, and the one
@@ -362,7 +362,7 @@ what the PLAYER hears, permanently:
   bypass / amp power) was the one topology change not declick-bracketed — it
   popped audibly; stomps now ride the shared raised-cosine declick.
 
-### M12 — Tests that assert real properties ✅ *(shipped 2026-07-25 — docs §29)*
+### M12 — Tests that assert real properties ✅ *(shipped 2026-07-25 — docs §30)*
 
 The 2026-07-24 audit's **systemic** finding, and the gate on everything after it:
 "a recurring class of test asserts an identity, a tautology, or the
@@ -393,7 +393,7 @@ canon. Tests + CMake + docs only; zero DSP change; goldens untouched.
   **mid-render**; three perf-smoke tautologies now assert real audio; a finiteness
   guard over every render in `audio.spec.ts`.
 - **Every rewritten test was perturbed and confirmed red**, then reverted — the
-  table is in docs §29.
+  table is in docs §30.
 
 Leaves **11 XFAILs** covering findings 7, 8, 16 and two Medium/DSP items, each
 naming the slice that owns the fix. Still open by choice: the tone-stack class

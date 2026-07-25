@@ -5720,6 +5720,352 @@ for a flaky one. The assertion is therefore over the **best of the three pairs**
 one pair rendered genuinely different audio" still fails hard if the swap never works, which
 is the property worth having.
 
+## 30. Audit finding 2 — the cab swap gets off the render path
+
+**Session:** 2026-07-25 · `fix/cab-swap-rt-safety` (stacked on `fix/nan-parameter-guard`) · plan `docs/work/2026-07-25-cab-swap-rt-safety.md`
+**Fixes:** the second of the three shipping-blockers in `docs/audits/2026-07-24-project-audit.md`.
+**ADR:** `docs/decisions/003-cab-double-buffer-at-the-abi.md`
+
+### The bug
+
+A cab change ran **one** C ABI call that synthesised an impulse response, heap-copied
+it, peak-normalized it and ran `CabConvolver::prepare` twice (FFT plan plus one
+spectrum per partition per side) — and `web/worklet/clipper-processor.js` made that
+call **from inside its per-sample loop**, at the declick fade-out zero. Measured
+against the 2.667 ms deadline at 48 kHz / 128:
+
+| call | wall time | vs deadline |
+|---|---|---|
+| `amp_process_stereo(128)` | 0.0235 ms | 0.9 % |
+| `amp_set_cab_builtin` (1024-tap) | **10.97 ms** | **411 %** |
+| `amp_load_custom_ir` (4096-tap) | **42.66 ms** | **1600 %** |
+
+(Native Release figures from `clipper_cab_swap_tests` on the dev machine; they
+reproduce the audit's WASM measurements of 11.4 / 45.7 ms closely.)
+
+So every cab change and every IR upload dropped a run of consecutive render quanta —
+an audible **dropout**, not a click. The design comment defended it as inaudible
+"because it runs at the output-zero of the declick", which conflates two unrelated
+things. Output-zero prevents a **step discontinuity**. It does nothing whatever about
+**missing the render deadline**. CLAUDE.md now states that explicitly.
+
+Instrumenting `process()` in the shipped worklet, the worst single render block
+spanning a 4096-tap IR load measured **104.9 ms — 3935 % of the deadline, 39
+consecutively missed quanta.**
+
+### The fix: double-buffer at the C ABI, not in the convolver
+
+`CabConvolver` is deliberately **untouched** — `fix/cab-block-size` is rewriting that
+file for finding 3 in parallel, and a three-way conflict there would be worse than the
+bug. Instead `AmpChain` in `core/src/clipper_c_api.cpp` now holds **two** per-side
+convolver pairs (`CabPair cabs[2]`) and an active index, which is exactly the pattern
+`amp_set_model` already used for the four amp voices. The one call splits in two:
+
+- `amp_prepare_cab_builtin(h, which)` / `amp_prepare_cab_custom(h, ir, len)` — build
+  the new cab in the **inactive** pair. Still heavy, still allocating, returns 1 on
+  success and **0 on a rejected argument**. Must not be called from a render callback.
+- `amp_commit_cab(h)` — `activeCab ^= 1`. One integer write.
+
+`amp_set_cab_builtin` / `amp_load_custom_ir` remain as prepare+commit wrappers, so the
+ABI stayed purely additive and the tools, tests and any FFI kept working.
+
+`amp_create` prepares **both** pairs with the default 2×12, so `amp_commit_cab` can
+never activate an unprepared convolver. `amp_reset` clears both pairs, for the same
+reason it resets the three inactive amp voices: an inactive pair that has ever been
+live still holds FDL history, and a poisoned one would spray NaN the moment a cab
+change activated it.
+
+**The load-bearing invariant:** every activation is preceded by a `prepare()` of the
+pair being activated. Do **not** optimise the prepare away when the requested IR
+equals what is already sitting in the inactive pair — that pair's FDL still holds
+history from when it was last live, and activating it without a prepare would splice a
+stale convolution tail into the output.
+
+### Measured
+
+`clipper_cab_swap_tests` (new, 18th ctest target). Allocations are counted with a
+**replaced global `operator new`**, so "allocation-free" is asserted directly rather
+than inferred from a clock:
+
+```
+[cab swap] render deadline (48k/128)   : 2.6667 ms
+[cab swap] amp_process_stereo(128)     : 0.023476 ms/call, 0 allocations
+[cab swap] COMMIT (audio-thread step)  : 0.000001 ms/call, 0 allocations
+[cab swap] PREPARE builtin (off-path)  : 10.967303 ms/call
+[cab swap] PREPARE custom 4096 (off-p) : 42.659175 ms/call, 13 allocations
+[cab swap] prepare/commit time ratio   : 9321816x
+[cab swap] commit vs one render block  : 0.000050x
+[cab swap] commit vs the deadline      : 0.0000 %
+```
+
+End to end in the worklet, worst single render block spanning a 4096-tap IR load:
+**104.92 ms (3935 % of deadline, 39 quanta missed) → 0.42 ms (15.7 %, none missed).**
+
+**Fidelity is bit-identical, not "within tolerance".** The activated pair is prepared
+by the same `CabConvolver::prepare` over the same IR samples with the same 128
+partition, and `prepare()` zeroes the FDL — precisely the side effect the old in-place
+prepare had. The test drives a scripted session (play → brit412 → play → 4096-tap
+custom IR → play → back to clean212 → play → brit412 → play) through the new ABI and
+through the **pre-fix construction written out longhand**, and requires
+`max|new − old| == 0.0` over 128 000 samples per side. The swap-*back* leg is included
+because it is the case double-buffering could plausibly have broken.
+
+### What the worklet does now, and what "off the audio thread" honestly means
+
+The `cab` message handler does all the heavy work immediately and stages only
+`{ ready: true }`; `_commitPending()` calls `_amp_commit_cab` and nothing else.
+
+**Be precise about the win.** `AudioWorkletProcessor.port.onmessage` runs on the audio
+**rendering thread**. Moving the prep out of `process()` does **not** make it
+off-thread — it makes it happen *between* render quanta instead of mid-block. That
+converts a guaranteed multi-quantum stall into at worst one late quantum at the moment
+of a deliberate user action, and it makes `process()` itself allocation-free. That is a
+large, real improvement. It is **not** "now real-time safe". The fully correct fix
+computes the partitioned spectra on the **main** thread and copies the finished spectra
+in; that needs an ABI exposing the partition layout (or a main-thread WASM instance
+used purely as an IR compiler) and is a bigger change — ledgered, not done.
+
+### Two adjacent defects in the same code path, both fixed
+
+**(a) Stale `HEAPF32` across the commit.** `heap` was captured before the output loop
+and read after `_commitPending()`, which could `malloc` and detach the view. Every
+other site in the file re-fetches — the comment above the input loop explains exactly
+why — and this was the one place a `malloc` actually happened. Now re-fetched
+immediately after the commit. With the IR prep hoisted out, nothing in the commit path
+grows the heap any more, so this is the belt to that braces.
+
+**(b) A second edit inside one fade window committed at non-zero gain.** All four
+staging paths began with `if (this._hasPendingEdit()) this._commitPending();`, so a
+second edit arriving before the fade reached zero force-committed the first one
+wherever the ramp happened to be. Worst case is not "mid-ramp" but **full gain**: when
+both messages land in the same message drain no render has advanced the ramp, so
+`_declickGain` is still 1.0. Instrumented on the pre-fix worklet, two chain edits
+committed from *inside the message handler* at gain 1.0, and the resulting step
+measured **0.222 — 7.8× steady-state slew.** Reachable by a drag-reorder, a rapid
+add/remove, or the assistant issuing two tool calls in one turn.
+
+Edits now **merge** and ride the fade that is already running (`_stageEdit`). That
+required two supporting changes in `_prepareChain`: diff against the **pending** node
+list when one exists, and **union** the previous edit's `removed` list. Without the
+union, staging "remove pedal X" and then any second chain edit before the fade zero
+leaked X's WASM handle forever, because X is already absent from the base the second
+edit diffs against. **That leak existed on `main` too**, masked by the eager commit.
+
+Post-fix the same four-edit batch measures **1.00× steady-state slew** — i.e. the edit
+window contains no step at all beyond ordinary signal slew.
+
+### A pre-existing artifact this work exposed: the cab's dead partition
+
+Fixing (b) made a latent bug visible. `CabConvolver::prepare()` zeroes the FDL and the
+overlap buffer, so a freshly swapped-in cab emits **exact silence** until its FDL
+refills — and because a swap lands at an arbitrary offset within the convolver's
+128-sample partition grid, that silence can start up to one partition late and then
+last a full partition (~2 partitions of dead output after the commit, worst case).
+
+The 6 ms (288-sample) fade-in is *longer* than that gap, so the gap landed in the
+**middle of the ramp**: measured stepping from ~59 % gain straight to exact zero and
+back, a 128-sample hole in the audio. This is in the shipped v1.1 worklet too; the old
+cab-swap test could never see it because it applied the swap before rendering started.
+
+Fixed here, without touching the convolver, by holding the output **parked at zero for
+two partitions** (`CAB_SWAP_DEAD_SAMPLES = 256`) after a cab commit, before starting
+the fade-in — a new `'hold'` phase in the declick state machine. The whole dead region
+now sits inside silence the declick already provides, so the fade-in only ever ramps
+real audio. Costs ~5.3 ms on a deliberate cab change and nothing otherwise. Across five
+different multi-edit scenarios the edit-window step went to exactly **1.00× the
+steady-state slew baseline**.
+
+### Tests
+
+- **`core/tests/test_cab_swap.cpp`** (new target `clipper_cab_swap_tests`). Block A:
+  allocation counts (commit 0, `process` 0, prepare > 0) plus wall clock. Block B:
+  bit-identity against the pre-fix construction. Block B2: degenerate sequences — a
+  rejected IR returns 0, a bare commit with nothing prepared still renders finite
+  audible audio. `-DCLIPPER_CAB_TEST_LEGACY_ABI=1` routes the commit through the old
+  monolithic call: block A then **fails** (`commit 10.75 ms/call, 403 % of deadline,
+  459× a render block, 5 allocations`) while block B still **passes** — which is the
+  intended split, since B is the guard that the speed-up cost no fidelity.
+- **`web/tests/cab.spec.ts` test 3 rewritten.** The audit called the old version doubly
+  vacuous and it was, measurably. It posted the `cab` message *before*
+  `startRendering()`, and its "swap" selected the *darker* `brit412` (which a sibling
+  test asserts is darker), so lower slew was guaranteed. Verified empirically: the old
+  body **passes even with the declick entirely removed** (`0.0018` against a limit of
+  `0.0128`). The rewrite lands the swap **mid-note** via `ctx.suspend()`/`resume()` and
+  swaps toward the *brighter* cab. It measures 1.00× baseline on the fixed worklet and
+  **33.4× (FAIL)** against a declick-stripped worklet.
+- **`web/tests/cab.spec.ts` test 3b (new)**, for defect (b): four edits in one message
+  drain (two chain removals, an amp-power stomp, a cab swap). **Pre-fix 7.79× → FAIL;
+  fixed 1.00× → PASS.**
+
+Note on why the pedal edits in test 3b are *removals* rather than disengages:
+`_prepareChain` sets `existing.engaged` on the **live** node object, so an engaged-flag
+change arriving in a `chain` message takes effect at the next render quantum rather
+than at the fade zero. M11 fixed that for `bypass` (stomp) messages via
+`_pendingBypass`, but the `chain` path still has the hole. Out of scope here; ledgered.
+
+### Parity note
+
+`native/src/ClipperEngine` has **no** built-in cab selection and no custom-IR path at
+all — it loads the default 2×12 once in `prepare()` — so there is no native counterpart
+to this change to keep in step. Audit finding 13 (native declicks neither cab nor amp
+power nor amp voice) remains its own slice.
+
+### Suites
+
+Core **ctest 18/18**, `web` `tsc --noEmit` + `vite build` green, `test:server` 11/11,
+`test:history` 10/10, `electron` 16/16. Goldens untouched and still passing, which is
+the independent check on fidelity-neutrality. **Playwright was not run in this session
+— no browser binary was installable in the environment.** The two new/rewritten browser
+tests were instead verified by driving the real worklet under Node with a stubbed
+`AudioWorkletGlobalScope`, against both the pre-fix and fixed worklets sharing one
+rebuilt WASM artifact; all the before/after numbers quoted above come from that.
+
+## 31. Audit "Test & process integrity" — the artifact staleness stamp, the golden blessing ritual, and a reproducible artifact
+
+Two process holes from the 2026-07-24 audit, both of which had already cost something
+real by the time they were fixed — plus the reproducibility defect found while fixing them.
+
+### 31.1 `check-artifact.mjs` could not detect a stale artifact
+
+`web/public/generated/clipper.js` is committed build output. The contract is stated in
+CLAUDE.md — change `core/` or `web/worklet/`, run `bash scripts/build-wasm.sh`, commit
+the artifact in the same commit — and the only thing standing behind it was a script
+that called `existsSync` on two paths. It passed for an arbitrarily old artifact, and
+it is the sole guard: `prebuild`, `npm test`, and the CI web job all run it.
+
+**What it cost.** On 2026-07-24 two PRs each changed `core/` and each rebuilt
+`clipper.js`. The merge conflicted on the binary. Taking either side would have
+produced a `main` whose committed engine held **one** of the two fixes while the
+committed source held **both** — a rig where a knob you can see in the source does
+nothing in the browser — and nothing in the repo could have detected it. The correct
+artifact, rebuilt from the merged source, is 173337 bytes; the two conflicting inputs
+were 165971 and 172290.
+
+**The fix.** `scripts/build-wasm.sh` now writes `web/public/generated/.build-stamp.json`
+(committed, like the artifact) holding a SHA-256 over the *contents* of everything that
+affects the artifact, plus a per-input hash map so a failure can name the culprit.
+`check-artifact.mjs` recomputes it and fails on a mismatch. See ADR 004 for the four
+design decisions inside that; the one worth repeating here is that the **emcc flags are
+hashed out of `build-wasm.sh`'s marked region, not recorded into the stamp** — a
+self-reported flag list cannot detect its own staleness.
+
+**What is in the hash, measured rather than assumed.** `g++ -std=c++17 -MM` over the
+exact 26 translation units `build-wasm.sh` hands to `emcc`, with the same
+`-I core/include`, gives the artifact's real file closure:
+
+| | count |
+| --- | --- |
+| files under `core/src/` compiled into the artifact | **26 of 26** (the emcc list is exactly `find core/src -type f`) |
+| headers under `core/include/` in the closure | **36 of 37** (only `OutputLimiter.h` is outside it) |
+| files from `core/tests/` or `core/tools/` in the closure | **0** |
+
+So the hash covers `core/src` + `core/include` + the worklet + the flag region — 65
+inputs — and deliberately excludes `core/tools/`, `core/tests/`, and `core/CMakeLists.txt`.
+Excluding the test and tool trees is what keeps the guard from firing on every test
+edit, which is how a guard gets deleted.
+
+The check needs **no toolchain**: recomputing a content hash is pure Node, which is the
+whole point, because the CI job that catches this has no emsdk. The recorded emcc
+version is compared only when `emcc` happens to be on `PATH`, and a mismatch warns
+rather than fails.
+
+`EMSDK_VERSION` is also pinned, `latest` → **6.0.4**. Under `latest`, two machines with
+identical source could not agree on the artifact bytes.
+
+**A reproducibility finding that fell out of the bootstrap.** Rebuilding at the pinned
+6.0.4 to generate the first stamp produced a file of exactly the same size (173337 B)
+differing in exactly **64 bytes** — four 16-character runs, all inside *absolute build
+paths embedded in the WASM*. They are `__FILE__` strings from live `assert()`s: the
+emcc link uses `-O3` but never defines `NDEBUG`, so the asserts in `Oversampler.h`,
+`RatModel.cpp`, `GoldModel.cpp` and `OverdriveEngine.cpp` are compiled into the shipped
+engine together with the build directory of whoever produced it. Consequences: the
+"6.0.4 reproduces the artifact byte-for-byte" claim holds only when building from an
+identically-named directory; a future rebuild-and-`cmp` CI job needs
+`-ffile-prefix-map` first; and there is an open question, not settled here, about
+whether `assert()` belongs in a shipped real-time audio engine at all. The committed
+artifact was therefore left untouched by this slice — only the stamp was added, and the
+stamp attests *source content*, which is path-independent.
+
+### 29.2 `update-goldens.sh` blessed any regression in one command, and measured the wrong thing
+
+The goldens (`core/tests/goldens/`, docs §26 block C) are the only defence against
+voicing drift and are `.wav` files a reviewer cannot read in a diff. Re-blessing one is
+the easiest way in the whole repo to turn a regression into canon. The old script was
+`cmake && ./tests --update-goldens`: no clean-tree check, no summary, no confirmation,
+no justification.
+
+Worse, the `--update-goldens` path in `core/tests/test_player_expectations.cpp` was
+
+```cpp
+if (update) writeGolden(r);
+compareGolden(r);   // ← compares against the file it just wrote
+```
+
+so the ±1.5 dB third-octave gate could only ever see 16-bit storage quantisation
+(≤0.11 dB). It was a guaranteed pass that silently rewrote the references. And because
+`compareGolden` also asserts the frame count, a change that altered the render *length*
+sailed through too.
+
+**The fix, in the test:** measurement is now separated from the gate.
+`measureAgainstGolden()` returns the deltas and asserts nothing; `compareGolden()`
+applies the gate; and three modes exist —
+
+- default: the gate, unchanged in behaviour;
+- `--golden-report`: measure against the committed goldens and print one
+  `GOLDEN-DELTA <name> <status> <rmsDb> <worstBandDb> <worstHz> <bands>` line per rig,
+  writing nothing;
+- `--update-goldens`: measure against the **previous** golden, print the same lines,
+  *then* write. The post-write round-trip check is kept but is now labelled for what it
+  is — a check of the wav write path, bounded by quantisation by construction, not a
+  voicing gate.
+
+`UNCHANGED` means within 0.15 dB, the measured storage + windowing floor. On the
+current source all five rigs report 0.00–0.11 dB against their committed goldens, which
+is both a null result for this slice and the calibration for that threshold.
+
+The before/after was measured directly, by planting a wrong golden (`rat_jcm800.wav`
+replaced with `muff_twin.wav` — same format and length, different audio) on a throwaway
+commit. The pre-fix `--update-goldens` reported **worst band Δ 0.00 dB**, printed "within
+the ±1.5 dB voicing gate", and rewrote the file. The post-fix `--golden-report` reports
+**17.35 dB @ 800 Hz** (RMS +2.59 dB), flags it `CHANGED`, and writes nothing. A 17 dB
+voicing error reported as 0.00 dB is what "compare against the file you just wrote" was
+worth.
+
+**The fix, in the script:** `scripts/update-goldens.sh` now requires (1) a clean working
+tree, so the golden diff is reviewable on its own; (2) a printed per-golden before/after
+table in dB, from `--golden-report`, *before* anything is written; (3) a confirmation
+typed at a terminal — read from `/dev/tty`, which a pipe cannot answer (`yes | …` fails)
+and CI cannot answer either (no controlling terminal), requiring the exact phrase
+`bless N goldens` where N comes from the table; (4) a justification of ≥ 20 characters,
+appended to the new `core/tests/goldens/GOLDENS.md` changelog and `git add`ed together
+with the goldens. If nothing differs by more than the storage floor the script exits
+early rather than churning five files for nothing.
+
+Both confirmation defences were exercised against that planted wrong golden. With no
+controlling terminal (the CI case) `yes | bash scripts/update-goldens.sh` prints the
+table and aborts on the missing `/dev/tty`. Under a **real pty**
+(`yes | script -qec 'bash scripts/update-goldens.sh' /dev/null`), where the `y` genuinely
+arrives at the prompt, it aborts on the phrase instead — which is the load-bearing half:
+the requirement is not "a tty exists" but "someone typed a sentence derived from the
+table". Zero goldens written either way.
+
+CI gains a PR-only `goldens` job as the backstop: a changed `.wav` under
+`core/tests/goldens/` with no `GOLDENS.md` change fails the PR.
+
+### Suites
+
+Core **ctest 17/17**, `web` `tsc --noEmit` + `vite build` green, **Playwright 70/70**.
+Node suites 45 → **57** (`test:server` 15, `test:history` 10, `electron` 20, and twelve
+new cases in `test:scripts`): the new file is `web/scripts/check-artifact.test.mjs`, whose
+cases build synthetic repo trees in a temp dir and run the real CLI against them via
+`--repo-root`. Pointed at the pre-fix `check-artifact.mjs`, **8 of the 12 fail** —
+including all three of the cases that matter (a `core/src` edit undetected, a diverged
+worklet copy undetected, a missing stamp undetected). The four that pass are the two
+asserting the check does *not* fire (a healthy tree; an edit under `core/tests/` or
+`core/tools/`), which pass vacuously when there is no staleness check at all, and the two
+that pin the toolchain sub-check as advisory, which call the exported `checkArtifact()`
+directly rather than the CLI.
+
 ## 32. Audit perf item 2 — the halfband resampler's per-tap integer division
 
 **The finding** (`docs/audits/2026-07-24-project-audit.md:309`, "Fidelity-neutral
