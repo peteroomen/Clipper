@@ -8,7 +8,7 @@
 // stay sample-aligned at the oversampled rate):
 //
 //   x → ×inputDrive → [Q1 CLEAN boost] → ×sustainDrive → [Q2 diodes] → [Q3 diodes] →
-//     → toneStack → [Q4] → ×(outputTrim·volume) → downsample → out
+//     → toneStack → [Q4] → dcBlock → ×(outputTrim·volume) → downsample → out
 //
 // SUSTAIN is a full-range audio-taper attenuator BETWEEN the clean input boost (Q1) and
 // the clip stages: it sets how hard the high-gain Q2→Q3 cascade is slammed = how much
@@ -18,6 +18,11 @@
 // down leaves the cascade near-linear: dynamics return and a quiet signal (single-coil
 // hum) is NOT compressed up. See the docs §24 field-fix postmortem. VOLUME is a plain
 // output gain (a Muff makes far more than unity).
+//
+// The `dcBlock` in that path landed 2026-07-25 (audit finding 16, DC half — docs §37,
+// ADR 009); see kOutCouplingHz below. The series base resistors that fix the same
+// finding's BASS half are a separate slice — the Muff is still bass-shy here, measured
+// and named by the XFAIL kXfMuffBass.
 // ---------------------------------------------------------------------------
 
 #include "clipper/dsp/MuffModel.h"
@@ -68,9 +73,29 @@ constexpr double kClipDriveMax = 6.0;
 // a real pot leaks), knob 1 → kClipDriveMax. The pre-fix taper was LINEAR with a
 // hot 0.06 (−24 dB) floor, so min sustain still slammed the clippers.
 constexpr double kSustainFloorDb = -54.0;
-// Output trim: the recovery stage (Q4) collector AC is a few volts; scale so the
-// default (SUSTAIN 0.6 / VOLUME 0.6) peaks ~1.2 V, then VOLUME (0..1) rides on top.
+// Output trim: the recovery stage (Q4) collector AC is a few volts; scale so the default
+// (SUSTAIN 0.6 / VOLUME 0.6) peaks ~1.0 V, then VOLUME (0..1) rides on top.
+//
 constexpr double kOutputTrim = 0.40;
+
+// --- The output coupling cap (audit finding 16, DC half — docs §37, ADR 009) ---------
+// This slice adds ONE of the two components finding 16 named. The other — a series base
+// resistor on the clip stages, which is what restores the missing BASS — is deliberately
+// held back to its own slice, because choosing its value means departing from the
+// schematic to compensate for a base-node impedance this model gets wrong (measured
+// ~1.8 k against the real stage's ~4 k). See the XFAIL kXfMuffBass in
+// core/tests/test_muff_model.cpp: the bass defect is still measured and still named.
+//
+// The OUTPUT coupling cap, which the model simply did not have. Q4's collector feeds
+// 0.1 uF into the 100 k VOLUME pot: f = 1/(2*pi*100k*0.1u) = 15.92 Hz. The siblings all
+// carry dcBlockHz = 12.0 for the same reason (SdModel.cpp: "the asymmetric clip produces
+// DC"); this one is derived from the Muff's own two components rather than copied.
+// Placed after Q4 and BEFORE the VOLUME multiply, because in the pedal the cap precedes
+// the pot, and inside the oversampled domain so it also blocks the DC the four
+// asymmetric stages rectify before that DC reaches the decimator.
+constexpr double kOutCouplingF = 100.0e-9;
+constexpr double kVolumePotOhms = 100.0e3;
+constexpr double kOutCouplingHz = 1.0 / (kTwoPi * kVolumePotOhms * kOutCouplingF);
 
 // The SUSTAIN audio taper: knob (0..1) -> drive multiplier into Q2 (floor..max).
 double sustainDrive(float knob01) {
@@ -126,14 +151,25 @@ struct MuffModel::Impl {
     OnePoleSmoother sustain;  // level into the clip stages
     OnePoleSmoother volume;   // output level
 
+    // Output coupling cap (0.1 uF into the 100 k VOLUME pot, kOutCouplingHz). One-pole
+    // DC blocker at the OVERSAMPLED rate, matching the siblings' OverdriveEngine form:
+    //   y = x - x1 + R*y1,  R = exp(-2*pi*f/rate).
+    // dcY1_ is recursive, so it carries the Denormal.h guard (WASM has no flush-to-zero).
+    double dcR = 0.0;
+    float dcX1 = 0.0f, dcY1 = 0.0f;
+
     void configureStages() {
         BjtStage::Config base;  // Q1/Q4: no diodes (boost / recovery)
-        q1.configure(base);
-        q4.configure(base);
+        BjtStage::Config c1 = base;
+        BjtStage::Config c4 = base;
+        q1.configure(c1);
+        q4.configure(c4);
         BjtStage::Config clip = base;
         clip.diodes.present = true;  // Q2/Q3: the two clipping stages
-        q2.configure(clip);
-        q3.configure(clip);
+        BjtStage::Config c2 = clip;
+        BjtStage::Config c3 = clip;
+        q2.configure(c2);
+        q3.configure(c3);
     }
 
     void repreparePerRate() {
@@ -144,6 +180,9 @@ struct MuffModel::Impl {
         q3.prepare(osRate);
         q4.prepare(osRate);
         tone.prepare(osRate);
+        dcR = std::exp(-kTwoPi * kOutCouplingHz / osRate);
+        dcX1 = 0.0f;
+        dcY1 = 0.0f;
     }
 
     void prepare(double sr, int mbs) {
@@ -177,7 +216,13 @@ struct MuffModel::Impl {
             x = q3.processSample(x);       // clip stage 2 (diodes)
             x = tone.processSample(x);     // mid-scoop tone stack
             x = q4.processSample(x);       // recovery stage
-            w[i] = x * outGain;            // VOLUME
+            // Output coupling cap (0.1 uF into the 100 k VOLUME pot). Before the VOLUME
+            // multiply, as in the circuit, and before downsample so the DC the four
+            // asymmetric stages rectify never reaches the decimator.
+            const float y = x - dcX1 + static_cast<float>(dcR) * dcY1;
+            dcX1 = x;
+            dcY1 = flushDenormal(y);
+            w[i] = y * outGain;            // VOLUME
         }
         os.downsample(out, numFrames);
     }
@@ -199,6 +244,10 @@ void MuffModel::reset() {
     d.q3.reset();
     d.q4.reset();
     d.tone.reset();
+    // The output coupling cap's state is recursive: a poisoned dcY1 never recovers on its
+    // own (audit finding 1's rule — every recursive state belongs in reset()).
+    d.dcX1 = 0.0f;
+    d.dcY1 = 0.0f;
     d.os.reset();
 }
 
@@ -220,6 +269,10 @@ void MuffModel::setClipMode(int mode) {
     impl_->q3.prepare(osRate);
     impl_->q4.prepare(osRate);
     impl_->tone.prepare(osRate);
+    // The output coupling cap's coefficient is rate-dependent too (docs §37).
+    impl_->dcR = std::exp(-kTwoPi * kOutCouplingHz / osRate);
+    impl_->dcX1 = 0.0f;
+    impl_->dcY1 = 0.0f;
 }
 int MuffModel::clipMode() const { return impl_->clipMode; }
 

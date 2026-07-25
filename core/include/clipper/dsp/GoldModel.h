@@ -55,8 +55,11 @@ public:
     };
 
     // Diode flavour. GERMANIUM is the pedal (1N34A-class, soft knee ~0.3 V);
-    // SILICON is a MEASUREMENT-ONLY counterfactual (1N914-class, ~0.6 V hard-ish
-    // knee) used by the tests to show what the germanium pair actually buys.
+    // SILICON is a MEASUREMENT-ONLY counterfactual (1N914/1N4148-class: the SPICE
+    // card's Is = 2.52 nA WITH its ideality n = 1.752, measured settled ceiling
+    // 0.52-0.70 V in this network, i.e. ~6 dB above the germanium pair) used by the
+    // tests to show what the germanium pair actually buys. Before 2026-07-25 the
+    // ideality was dropped to 1.0 and the contrast measured ~1 dB (audit finding 15).
     enum DiodeType : int {
         DIODE_GERMANIUM = 0,
         DIODE_SILICON = 1,

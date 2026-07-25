@@ -41,6 +41,7 @@
 #include <array>
 #include <vector>
 
+#include "clipper/dsp/OnePoleSmoother.h"
 #include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/TriodeStage.h"
 
@@ -65,6 +66,19 @@ namespace clipper::dsp {
 //
 // Cap values: the spec's "0.47" treble cap is 0.47 nF = 470 pF (a 0.47 uF treble
 // cap would put the treble corner at ~1 Hz — unphysical); bass/mid = 0.022 uF.
+//
+// KNOB SMOOTHING (2026-07-25, audit finding 6 — docs §35). setKnobs() used to swap
+// the whole 5x5 conductance matrix and its inverse at a block boundary, with the
+// trapezoidal cap states carried across unchanged: a one-step topology change
+// mid-note. Now the three pot fractions are one-pole smoothed (~8 ms) per sample and
+// the matrix is re-derived from them at a 32-sample control rate — the same shape
+// AmpModel uses for its four biquads. Carrying the cap states IS correct here, and is
+// exactly why this works: they are physical node voltages/currents and a real pot
+// wiper perturbs the network under them too. What was wrong was the SIZE of the
+// perturbation, and smoothing makes each one ~8 % of a knob step instead of all of it.
+// Interpolating between two matrix INVERSES was rejected: the inverse of a
+// conductance matrix is not affine in the pot fraction, so a blend of two inverses is
+// not the inverse of any network.
 // ---------------------------------------------------------------------------
 class MarshallToneStack {
 public:
@@ -83,6 +97,10 @@ public:
     void setKnobs(double bass, double mid, double treble);  // each in [0,1]
     void process(const float* in, float* out, int numFrames);
 
+    // Snap the knob smoothers onto their targets and re-derive the matrix from them,
+    // with no ramp. Called from the owning preamp's deferred prime (the first
+    // process() after prepare()) and from reset().
+    void snapKnobs();
     // Anti-denormal diagnostic (Denormal.h, docs §33) — not used by the audio path.
     // All six cap companions rest at zero, so after a silent tail this must be EXACTLY
     // 0.0. Measured 68.2x slower than hardware FTZ before the flush: the worst denormal
@@ -95,10 +113,20 @@ private:
     void rebuild();  // recompute the 5x5 conductance matrix + its inverse
 
     static constexpr int N = 5;  // nodes: IN=0, N2=1, N3=2, N4=3, OUT=4
+    static constexpr double kKnobSmoothSeconds = 0.008;  // ~8 ms, as AmpModel
+    static constexpr int kCtrlBlock = 32;  // matrix re-derivation interval, in samples
+
     double sampleRate_ = 44100.0;
     double T_ = 1.0 / 44100.0;
     double rs_ = 371.0;
+    // Smoothed knob targets, and the values the CURRENT matrix inverse was built from.
+    OnePoleSmootherD bassSm_, midSm_, trebleSm_;
     double bass_ = 0.5, mid_ = 0.5, treble_ = 0.5;
+    // False whenever all three smoothers sit exactly on their targets, which is the
+    // case for every sample of a static render — so the per-sample smoother work and
+    // the control-tick comparison cost literally nothing when nobody is turning a knob.
+    bool knobsMoving_ = false;
+    int ctrlCounter_ = 0;
     double geqT_ = 0.0, geqB_ = 0.0, geqM_ = 0.0;  // cap companion conductances
     std::array<std::array<double, N>, N> Ginv_{};  // inverse of the node matrix
     // Trapezoidal cap states (v = across-cap voltage, i = cap current), prev step.
@@ -168,7 +196,9 @@ public:
     double followerGridBias() const { return followerGridBias_; }
     double followerSourceImpedance() const { return followerRout_; }
 
-    // Interstage scalars for the CURRENT knob settings (analytic-gain tests).
+    // Interstage scalars for the CURRENT knob settings (analytic-gain tests). These
+    // report the smoothers' TARGETS — i.e. the steady-state scale the knobs ask for,
+    // which is what an analytic small-signal prediction has to be compared against.
     double gainInterstageScale() const;   // V1A out -> V1B grid drive (GAIN net)
     static constexpr double kGainDivider = 0.68;  // 1M / (1M + 470k) series loss
     double masterScale() const;           // tone-stack out -> output (MASTER)
@@ -186,6 +216,14 @@ public:
 
 private:
     void configureStages();
+    // Deferred prime: snap GAIN/MASTER/tone-stack smoothers onto their targets. The
+    // house convention is "push targets, then prepare" (ClipperEngine::prepare,
+    // identical_core_test), but the C ABI prepares inside amp_create and the knobs
+    // arrive afterwards — so the snap has to happen at the first process() instead,
+    // or every ABI render (and every golden) would ramp 8 ms up from the defaults.
+    void primeSmoothers();
+
+    static constexpr double kSmoothSeconds = 0.008;  // ~8 ms, as AmpModel
 
     double sampleRate_ = 44100.0;
     int maxBlockSize_ = 128;
@@ -196,6 +234,11 @@ private:
     MarshallToneStack tone_;
 
     double gain_ = 0.5, master_ = 0.5;
+    // The GAIN network scale and the MASTER wiper, smoothed and applied PER SAMPLE.
+    // These carry the POST-taper linear scale (not the knob), so the audio taper's
+    // exp() stays out of the sample loop — same trade AmpModel makes for its volume.
+    OnePoleSmootherD gainSm_, masterSm_;
+    bool primed_ = false;
     double bass_ = 0.5, mid_ = 0.5, treble_ = 0.5;
     double followerGridBias_ = 0.0;
     double followerRout_ = 371.0;

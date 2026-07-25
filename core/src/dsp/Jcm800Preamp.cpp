@@ -31,13 +31,29 @@ void MarshallToneStack::prepare(double sampleRate) {
     geqT_ = 2.0 * kCt / T_;
     geqB_ = 2.0 * kCb / T_;
     geqM_ = 2.0 * kCm / T_;
-    reset();
-    dirty_ = true;
-    rebuild();
+    // Smoothers first: prepare() snaps each one onto whatever target it already holds,
+    // so a knob pushed BEFORE prepare is honoured with no ramp (the house convention).
+    bassSm_.prepare(kKnobSmoothSeconds, sampleRate_);
+    midSm_.prepare(kKnobSmoothSeconds, sampleRate_);
+    trebleSm_.prepare(kKnobSmoothSeconds, sampleRate_);
+    reset();  // clears the cap states, snaps the knobs and rebuilds the matrix
 }
 
 void MarshallToneStack::reset() {
     vT_ = iT_ = vB_ = iB_ = vM_ = iM_ = 0.0;
+    snapKnobs();
+}
+
+void MarshallToneStack::snapKnobs() {
+    bassSm_.reset();
+    midSm_.reset();
+    trebleSm_.reset();
+    bass_ = bassSm_.value();
+    mid_ = midSm_.value();
+    treble_ = trebleSm_.value();
+    knobsMoving_ = false;
+    ctrlCounter_ = 0;
+    rebuild();
 }
 
 void MarshallToneStack::setSourceImpedance(double rs) {
@@ -48,10 +64,13 @@ void MarshallToneStack::setSourceImpedance(double rs) {
 void MarshallToneStack::setKnobs(double bass, double mid, double treble) {
     // NaN-rejecting (std::clamp is transparent to NaN — audit finding 1).
     auto cl = [](double v) { return clampParam(v, 1.0e-3, 1.0 - 1.0e-3); };
-    bass_ = cl(bass);
-    mid_ = cl(mid);
-    treble_ = cl(treble);
-    dirty_ = true;
+    bassSm_.setTarget(cl(bass));
+    midSm_.setTarget(cl(mid));
+    trebleSm_.setTarget(cl(treble));
+    // Re-derive at the very next sample rather than up to 31 samples later, so the
+    // first perturbation is as small as the smoother can make it.
+    ctrlCounter_ = 0;
+    if (!(bassSm_.settled() && midSm_.settled() && trebleSm_.settled())) knobsMoving_ = true;
 }
 
 // Build the 5x5 node conductance matrix and invert it (Gauss-Jordan). The matrix
@@ -111,6 +130,27 @@ void MarshallToneStack::process(const float* in, float* out, int numFrames) {
     enum { IN = 0, N2 = 1, N3 = 2, N4 = 3, OUT = 4 };
     const double gs = 1.0 / rs_;
     for (int n = 0; n < numFrames; ++n) {
+        // Knob smoothing (audit finding 6): advance per sample, re-derive the matrix
+        // every kCtrlBlock samples while it is actually moving. Skipped entirely once
+        // settled, which keeps a static render bit-identical AND free.
+        if (knobsMoving_) {
+            const double b = bassSm_.next();
+            const double m = midSm_.next();
+            const double t = trebleSm_.next();
+            if (ctrlCounter_ == 0) {
+                if (b != bass_ || m != mid_ || t != treble_) {
+                    bass_ = b;
+                    mid_ = m;
+                    treble_ = t;
+                    rebuild();
+                }
+                // Cleared only at a control tick, i.e. only once the matrix above has
+                // been synced to the (now settled) targets.
+                if (bassSm_.settled() && midSm_.settled() && trebleSm_.settled())
+                    knobsMoving_ = false;
+            }
+            if (++ctrlCounter_ >= kCtrlBlock) ctrlCounter_ = 0;
+        }
         const double Vs = static_cast<double>(in[n]);
         // Trapezoidal cap history current sources: Ieq = Geq*v_prev + i_prev.
         const double IeqT = geqT_ * vT_ + iT_;
@@ -225,11 +265,28 @@ void Jcm800Preamp::prepare(double sampleRate, int maxBlockSize) {
     tone_.prepare(sampleRate_);
     tone_.setSourceImpedance(followerRout_);
     tone_.setKnobs(bass_, mid_, treble_);
+
+    // GAIN / MASTER smoothers (audit finding 6). prepare() snaps them onto the current
+    // knob targets; primed_ = false defers a second snap to the first process(), which
+    // is what covers knobs pushed AFTER prepare (the C ABI's order — see the header).
+    gainSm_.prepare(kSmoothSeconds, sampleRate_);
+    masterSm_.prepare(kSmoothSeconds, sampleRate_);
+    gainSm_.setTarget(gainInterstageScale());
+    masterSm_.setTarget(masterScale());
+    primed_ = false;
+}
+
+void Jcm800Preamp::primeSmoothers() {
+    gainSm_.reset();
+    masterSm_.reset();
+    tone_.snapKnobs();
 }
 
 void Jcm800Preamp::reset() {
     for (auto& s : stage_) s.reset();
     tone_.reset();
+    gainSm_.reset();
+    masterSm_.reset();
     lastV1bGridPeak_ = 0.0;
     lastOutPeak_ = 0.0;
 }
@@ -244,8 +301,11 @@ void Jcm800Preamp::setParameter(int paramId, float value) {
     // the tone-stack MNA inverse permanently (audit finding 1). See ParamGuard.h.
     const double v = clampParam01(static_cast<double>(value));
     switch (paramId) {
-        case PARAM_GAIN: gain_ = v; break;
-        case PARAM_MASTER: master_ = v; break;
+        // GAIN/MASTER set the SMOOTHER TARGET, not the applied scale (finding 6). The
+        // knob itself is kept so gainInterstageScale()/masterScale() still report the
+        // steady-state scale the knob asks for.
+        case PARAM_GAIN: gain_ = v; gainSm_.setTarget(gainInterstageScale()); break;
+        case PARAM_MASTER: master_ = v; masterSm_.setTarget(masterScale()); break;
         case PARAM_BASS: bass_ = v; tone_.setKnobs(bass_, mid_, treble_); break;
         case PARAM_MID: mid_ = v; tone_.setKnobs(bass_, mid_, treble_); break;
         case PARAM_TREBLE: treble_ = v; tone_.setKnobs(bass_, mid_, treble_); break;
@@ -259,8 +319,10 @@ double Jcm800Preamp::gainInterstageScale() const {
 double Jcm800Preamp::masterScale() const { return audioTaper(master_); }
 
 void Jcm800Preamp::process(const float* in, float* out, int numFrames) {
-    const double gA = gainInterstageScale();
-    const double mScale = masterScale();
+    if (!primed_) {
+        primeSmoothers();
+        primed_ = true;
+    }
     lastV1bGridPeak_ = 0.0;
     lastOutPeak_ = 0.0;
     int off = 0;
@@ -269,9 +331,10 @@ void Jcm800Preamp::process(const float* in, float* out, int numFrames) {
         float* w = buf_.data();
         // V1A
         stage_[V1A].process(in + off, w, n);
-        // GAIN network: V1A plate AC * (series divider * audio-taper wiper).
+        // GAIN network: V1A plate AC * (series divider * audio-taper wiper), the wiper
+        // scale advanced PER SAMPLE (finding 6 — it used to be one constant per block).
         for (int i = 0; i < n; ++i) {
-            w[i] = static_cast<float>(w[i] * gA);
+            w[i] = static_cast<float>(w[i] * gainSm_.next());
             lastV1bGridPeak_ = std::max(lastV1bGridPeak_,
                                         std::fabs(static_cast<double>(w[i])));
         }
@@ -283,9 +346,9 @@ void Jcm800Preamp::process(const float* in, float* out, int numFrames) {
         stage_[V2B].process(w, w, n);
         // Passive TMB tone stack (base rate).
         tone_.process(w, w, n);
-        // MASTER volume.
+        // MASTER volume, likewise advanced per sample.
         for (int i = 0; i < n; ++i) {
-            const float o = static_cast<float>(w[i] * mScale);
+            const float o = static_cast<float>(w[i] * masterSm_.next());
             out[off + i] = o;
             lastOutPeak_ = std::max(lastOutPeak_, std::fabs(static_cast<double>(o)));
         }
