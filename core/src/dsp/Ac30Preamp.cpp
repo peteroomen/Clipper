@@ -30,12 +30,27 @@ void TopBoostToneStack::prepare(double sampleRate) {
     geqC_ = 2.0 * kCc / T_;
     geqT_ = 2.0 * kCt / T_;
     geqB_ = 2.0 * kCb / T_;
-    reset();
-    dirty_ = true;
-    rebuild();
+    // Smoothers first: prepare() snaps each onto whatever target it already holds, so a
+    // knob pushed BEFORE prepare is honoured with no ramp (the house convention).
+    bassSm_.prepare(kKnobSmoothSeconds, sampleRate_);
+    trebleSm_.prepare(kKnobSmoothSeconds, sampleRate_);
+    reset();  // clears the cap states, snaps the knobs and rebuilds the matrix
 }
 
-void TopBoostToneStack::reset() { vC_ = iC_ = vT_ = iT_ = vB_ = iB_ = 0.0; }
+void TopBoostToneStack::reset() {
+    vC_ = iC_ = vT_ = iT_ = vB_ = iB_ = 0.0;
+    snapKnobs();
+}
+
+void TopBoostToneStack::snapKnobs() {
+    bassSm_.reset();
+    trebleSm_.reset();
+    bass_ = bassSm_.value();
+    treble_ = trebleSm_.value();
+    knobsMoving_ = false;
+    ctrlCounter_ = 0;
+    rebuild();
+}
 
 void TopBoostToneStack::setSourceImpedance(double rs) {
     rs_ = clampR(rs);
@@ -43,11 +58,13 @@ void TopBoostToneStack::setSourceImpedance(double rs) {
 }
 
 void TopBoostToneStack::setKnobs(double bass, double treble) {
-    // NaN-rejecting (std::clamp is transparent to NaN — audit finding 1).
+    // NaN-rejecting (std::clamp is transparent to NaN — audit finding 1). Sets the
+    // SMOOTHER TARGETS; the matrix follows at the control rate (audit finding 6).
     auto cl = [](double v) { return clampParam(v, 1.0e-3, 1.0 - 1.0e-3); };
-    bass_ = cl(bass);
-    treble_ = cl(treble);
-    dirty_ = true;
+    bassSm_.setTarget(cl(bass));
+    trebleSm_.setTarget(cl(treble));
+    ctrlCounter_ = 0;
+    if (!(bassSm_.settled() && trebleSm_.settled())) knobsMoving_ = true;
 }
 
 void TopBoostToneStack::rebuild() {
@@ -102,6 +119,20 @@ void TopBoostToneStack::process(const float* in, float* out, int numFrames) {
     enum { SRC = 0, IN = 1, N2 = 2, OUT = 3, N4 = 4 };
     const double gs = 1.0 / rs_;
     for (int n = 0; n < numFrames; ++n) {
+        // Knob smoothing (audit finding 6) — see MarshallToneStack::process.
+        if (knobsMoving_) {
+            const double b = bassSm_.next();
+            const double t = trebleSm_.next();
+            if (ctrlCounter_ == 0) {
+                if (b != bass_ || t != treble_) {
+                    bass_ = b;
+                    treble_ = t;
+                    rebuild();
+                }
+                if (bassSm_.settled() && trebleSm_.settled()) knobsMoving_ = false;
+            }
+            if (++ctrlCounter_ >= kCtrlBlock) ctrlCounter_ = 0;
+        }
         const double Vs = static_cast<double>(in[n]);
         const double IeqC = geqC_ * vC_ + iC_;
         const double IeqT = geqT_ * vT_ + iT_;
@@ -187,11 +218,23 @@ void Ac30Preamp::prepare(double sampleRate, int maxBlockSize) {
     tone_.prepare(sampleRate_);
     tone_.setSourceImpedance(toneRs_);
     tone_.setKnobs(bass_, treble_);
+
+    // VOLUME smoother (audit finding 6). primed_ = false defers a second snap to the
+    // first process(), covering knobs pushed AFTER prepare (the C ABI's order).
+    volSm_.prepare(kSmoothSeconds, sampleRate_);
+    volSm_.setTarget(volumeScale());
+    primed_ = false;
+}
+
+void Ac30Preamp::primeSmoothers() {
+    volSm_.reset();
+    tone_.snapKnobs();
 }
 
 void Ac30Preamp::reset() {
     for (auto& s : stage_) s.reset();
     tone_.reset();
+    volSm_.reset();
     lastOutPeak_ = 0.0;
 }
 
@@ -204,7 +247,8 @@ void Ac30Preamp::setParameter(int paramId, float value) {
     // NaN-rejecting (ParamGuard.h) — audit finding 1.
     const double v = clampParam01(static_cast<double>(value));
     switch (paramId) {
-        case PARAM_VOLUME: volume_ = v; break;
+        // VOLUME sets the SMOOTHER TARGET, not the applied scale (finding 6).
+        case PARAM_VOLUME: volume_ = v; volSm_.setTarget(volumeScale()); break;
         case PARAM_BASS: bass_ = v; tone_.setKnobs(bass_, treble_); break;
         case PARAM_TREBLE: treble_ = v; tone_.setKnobs(bass_, treble_); break;
         default: break;
@@ -214,7 +258,10 @@ void Ac30Preamp::setParameter(int paramId, float value) {
 double Ac30Preamp::volumeScale() const { return audioTaper(volume_); }
 
 void Ac30Preamp::process(const float* in, float* out, int numFrames) {
-    const double vScale = volumeScale();
+    if (!primed_) {
+        primeSmoothers();
+        primed_ = true;
+    }
     lastOutPeak_ = 0.0;
     int off = 0;
     while (off < numFrames) {
@@ -225,9 +272,10 @@ void Ac30Preamp::process(const float* in, float* out, int numFrames) {
         for (int i = 0; i < n; ++i) w[i] = static_cast<float>(w[i] * kV1ToStack);
         // Top-boost tone stack (interactive treble/bass, base rate).
         tone_.process(w, w, n);
-        // VOLUME.
+        // VOLUME, advanced PER SAMPLE (audit finding 6 — it used to be one constant
+        // per process() call, on the amp's primary overdrive control).
         for (int i = 0; i < n; ++i) {
-            const float o = static_cast<float>(static_cast<double>(w[i]) * vScale);
+            const float o = static_cast<float>(static_cast<double>(w[i]) * volSm_.next());
             out[off + i] = o;
             lastOutPeak_ = std::max(lastOutPeak_, std::fabs(static_cast<double>(o)));
         }
