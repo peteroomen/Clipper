@@ -139,8 +139,15 @@ public:
         return n;
     }
 
-    // Normalized parameter in [0,1], clamped.
+    // Normalized parameter in [0,1], clamped (NaN-rejecting — see ParamGuard.h).
     void setParameter(int paramId, float value);
+
+    // Recovery seam (audit finding 1). Re-park all four triode stages and the TMB
+    // cap states at the already-solved DC point. Does NOT re-solve: the follower
+    // bias, the per-stage operating points and the tone-stack matrix inverse all
+    // stay as prepared, so this costs ~microseconds where prepare() costs ~tens of
+    // milliseconds. Knob values are preserved (only recursive state is cleared).
+    void reset();
 
     // Process mono audio, in -> out (may alias). Input = guitar grid drive in V.
     void process(const float* in, float* out, int numFrames);

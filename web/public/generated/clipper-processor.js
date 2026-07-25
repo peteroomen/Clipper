@@ -475,12 +475,22 @@ class ClipperProcessor extends AudioWorkletProcessor {
   _apply(data) {
     const mod = this._module;
     if (data.type === 'param') {
+      // Reject a non-finite value BEFORE it reaches the engine (2026-07-24 audit,
+      // finding 1). `+data.value` turns "max", null and {} into NaN, and one NaN
+      // latches permanently in the smoother / biquad / Newton state — every sample
+      // after it is non-finite and writing a good value never clears it. Dropping
+      // the message is the right answer: NaN has no in-range meaning, so the knob
+      // keeps its previous value. Same guard shape as the `input` handler above,
+      // which had it all along. (The core rejects it too — see clipper_c_api.cpp —
+      // but this keeps a bad message from ever crossing the WASM boundary.)
+      const v = +data.value;
+      if (!Number.isFinite(v)) return;
       if (data.unit === 'amp') {
-        mod._amp_set_param(this._amp, data.id | 0, +data.value);
+        mod._amp_set_param(this._amp, data.id | 0, v);
         if ((data.id | 0) === AMP_PARAM_CAB) this._postLatency();
       } else {
         const node = this._pedalById(data.pedalId);
-        if (node) this._pedalSetParam(node, data.id | 0, +data.value);
+        if (node) this._pedalSetParam(node, data.id | 0, v);
       }
     } else if (data.type === 'oversampling') {
       this._oversampling = data.factor | 0;

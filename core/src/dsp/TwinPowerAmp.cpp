@@ -7,6 +7,7 @@
 
 #include "clipper/dsp/TwinPowerAmp.h"
 
+#include "clipper/dsp/ParamGuard.h"
 #include "clipper/dsp/TubeSolverMode.h"
 
 #include <algorithm>
@@ -73,7 +74,12 @@ void TwinPowerAmp::setOversampling(int factor) {
 
     ltp_.prepare();
     solveOperatingPoint();
+    parkState();
+}
 
+// Park all dynamic state at the operating point. Called after the DC solve at
+// prepare/OS change, and by reset() WITHOUT a re-solve.
+void TwinPowerAmp::parkState() {
     vRail_ = vRailIdle_;
     vScreen_ = vScreenIdle_;
     vCcUp_ = ltp_.quiescentPlate1() - kVbias;
@@ -82,6 +88,12 @@ void TwinPowerAmp::setOversampling(int factor) {
     otHpS_ = 0.0; otLpS_ = 0.0;
     fbDelay_ = 0.0;
     lastOutPeak_ = 0.0;
+}
+
+void TwinPowerAmp::reset() {
+    ltp_.reset();
+    parkState();
+    os_.reset();
 }
 
 // Self-consistent idle. Four tubes (2 per side): total plate/screen draw = 4×tube.
@@ -107,7 +119,8 @@ void TwinPowerAmp::solveOperatingPoint() {
 }
 
 void TwinPowerAmp::setParameter(int paramId, float value) {
-    const double v = std::clamp(static_cast<double>(value), 0.0, 1.0);
+    // NaN-rejecting (ParamGuard.h) — audit finding 1.
+    const double v = clampParam01(static_cast<double>(value));
     switch (paramId) {
         case PARAM_DRIVE: drive_ = 2.0 * v; break;
         default: break;

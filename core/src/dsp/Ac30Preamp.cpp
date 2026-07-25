@@ -5,6 +5,8 @@
 
 #include "clipper/dsp/Ac30Preamp.h"
 
+#include "clipper/dsp/ParamGuard.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -17,7 +19,8 @@ namespace clipper::dsp {
 // treble pot between N2 and N4, and RB || Cb form the bass network at N4.
 // ===========================================================================
 namespace {
-inline double clampR(double r) { return r < 1.0 ? 1.0 : r; }
+// NaN-safe resistance floor (the ParamGuard.h inversion; identical for finite r).
+inline double clampR(double r) { return r > 1.0 ? r : 1.0; }
 }  // namespace
 
 void TopBoostToneStack::prepare(double sampleRate) {
@@ -39,7 +42,8 @@ void TopBoostToneStack::setSourceImpedance(double rs) {
 }
 
 void TopBoostToneStack::setKnobs(double bass, double treble) {
-    auto cl = [](double v) { return std::clamp(v, 1.0e-3, 1.0 - 1.0e-3); };
+    // NaN-rejecting (std::clamp is transparent to NaN — audit finding 1).
+    auto cl = [](double v) { return clampParam(v, 1.0e-3, 1.0 - 1.0e-3); };
     bass_ = cl(bass);
     treble_ = cl(treble);
     dirty_ = true;
@@ -131,7 +135,7 @@ void TopBoostToneStack::process(const float* in, float* out, int numFrames) {
 // ===========================================================================
 
 double Ac30Preamp::audioTaper(double x) {
-    x = std::clamp(x, 0.0, 1.0);
+    x = clampParam01(x);  // NaN-rejecting (ParamGuard.h)
     constexpr double k = 4.0;  // ~12% at noon (a musical audio/log taper)
     return (std::exp(k * x) - 1.0) / (std::exp(k) - 1.0);
 }
@@ -175,13 +179,20 @@ void Ac30Preamp::prepare(double sampleRate, int maxBlockSize) {
     tone_.setKnobs(bass_, treble_);
 }
 
+void Ac30Preamp::reset() {
+    for (auto& s : stage_) s.reset();
+    tone_.reset();
+    lastOutPeak_ = 0.0;
+}
+
 void Ac30Preamp::setOversampling(int factor) {
     oversampling_ = factor;
     for (auto& s : stage_) s.setOversampling(factor);
 }
 
 void Ac30Preamp::setParameter(int paramId, float value) {
-    const double v = std::clamp(static_cast<double>(value), 0.0, 1.0);
+    // NaN-rejecting (ParamGuard.h) — audit finding 1.
+    const double v = clampParam01(static_cast<double>(value));
     switch (paramId) {
         case PARAM_VOLUME: volume_ = v; break;
         case PARAM_BASS: bass_ = v; tone_.setKnobs(bass_, treble_); break;

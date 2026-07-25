@@ -1039,6 +1039,30 @@ Model / env config (all read by `server/index.mjs`):
   the client bundle (the browser only ever talks to same-origin `/api`).
 - The tool surface is small and typed; the assistant never sends freeform
   parameter values — only the three tools above, all clamped/validated.
+- **The proxy binds loopback only (`127.0.0.1`).** This process is an
+  **unauthenticated** relay to your Anthropic key: anything that can reach the
+  port can spend it. Until 2026-07-25 it called `server.listen(PORT, cb)` with no
+  host, which binds `0.0.0.0`/`::` — the 2026-07-24 audit (finding 17) verified
+  both `/api/health` and `/api/chat` answering from a non-loopback address, while
+  the startup banner claimed `http://localhost:8787`. Now:
+  - `HOST` (default `127.0.0.1`) selects the bind address. `HOST=0.0.0.0` opts
+    into LAN exposure deliberately and the banner prints a warning saying what
+    that means. A `HOST` that cannot be resolved **fails the bind loudly** with a
+    non-zero exit — it never falls back to every interface.
+  - The banner reports the address **actually bound**, read back from
+    `server.address()`, never a hardcoded `localhost`.
+  - `PORT=0` now means "ephemeral port" instead of silently becoming 8787
+    (`Number('0') || 8787` was truthy-testing a valid port).
+  - There is still **no auth and no rate limit** — that is a separate slice, and
+    it is why `HOST=0.0.0.0` is only ever safe on a network you fully trust.
+- **A body over the 5 MB limit destroys the request.** `readJsonBody` used to
+  throw and let the handler reply 400 while the client kept uploading into a
+  socket nobody drained, holding the connection and its buffers open for as long
+  as the sender liked. It now calls `req.destroy()` at the throw site.
+- `server/index.mjs` exports `resolveHost` / `resolvePort` / `createProxyServer` /
+  `startProxy` / `startupBanner` and only self-`listen`s when it is the process
+  entry point, so `server/index.test.mjs` can bind it on an ephemeral port without
+  a stray listener appearing. `npm run server` is unchanged.
 
 ### Vercel-deploy note (handler is liftable)
 
@@ -2497,15 +2521,21 @@ build — no second engine to reason about.
   the window loads `http://localhost:<port>/` and the app's relative `/api/*`
   fetches "just work". Behaviorally identical to `npm run server` fronted by a
   static host — no `file://` hacks. (`server/index.mjs` isn't imported because it
-  self-`listen`s on a fixed port and serves no statics; the ~40 lines of http
-  glue that `serve.mjs` and it share are the only duplication.)
+  serves no statics and takes its config from `process.env` rather than by
+  injection; the ~40 lines of http glue that `serve.mjs` and it share are the only
+  duplication. It no longer self-`listen`s on import — that is gated on being the
+  process entry point — but the static serving is still the reason for the split.)
 - **API key resolution** (`electron/config.mjs`), first hit wins: (1)
   `ANTHROPIC_API_KEY` env, (2) `config.json` in the app's `userData` dir, (3)
   neither → a minimal in-app prompt to paste a key, saved to that `config.json`.
   **`MOCK=1` runs keyless** (canned `[mock]` responses, no key, no spend).
 - **Key storage — v1 tradeoff:** the key is saved as **plain text** in
   `~/Library/Application Support/Clipper/config.json` (mode `0600`), **not** the
-  macOS Keychain. Documented here as a known v1 limitation.
+  macOS Keychain. Documented here as a known v1 limitation. The `0600` is applied
+  with an explicit `chmodSync` **after** the write, because `writeFileSync(…,
+  { mode })` only honours the mode when it *creates* the file — an already
+  existing `0644` config would otherwise have the key rewritten into it
+  world-readable (2026-07-24 audit).
 - **Mic permission:** on startup the app calls
   `systemPreferences.askForMediaAccess('microphone')`; the built app declares
   `NSMicrophoneUsageDescription` (guitar input) in its Info.plist.
@@ -2513,6 +2543,62 @@ build — no second engine to reason about.
   to the repo; when packaged, electron-builder copies them into the `.app`'s
   `Resources/` (`web-dist/` and `server/`) and `main.mjs` resolves them via
   `process.resourcesPath`.
+
+### Shell hardening (CSP, navigation, permissions)
+
+The main window renders **model-influenced text**, so it is treated as a hostile
+rendering surface. `key-prompt.html` already carried a CSP; the main window did
+not, and Electron's navigation defaults are permissive (2026-07-24 audit,
+Security & app layer). What is in place now:
+
+- **CSP as a response header on `.html` only** (`electron/serve.mjs`, exported as
+  `CSP` so the test asserts the string actually served). A header rather than a
+  `<meta>` in `web/index.html`, because a meta tag would also apply under `vite
+  dev` where it fights HMR; the CSP for a browser-hosted deploy belongs to
+  whatever host serves it. The policy:
+
+  ```
+  default-src 'self'; script-src 'self' 'wasm-unsafe-eval';
+  style-src 'self' 'unsafe-inline'; connect-src 'self';
+  img-src 'self' data:; font-src 'self' data:;
+  object-src 'none'; base-uri 'none'; frame-ancestors 'none'
+  ```
+
+  Two relaxations beyond the audit's suggested policy, both **measured** against
+  the real `vite build` output in Chromium rather than assumed:
+
+  | Directive | Why it is required | What happens without it (measured) |
+  | --- | --- | --- |
+  | `script-src 'wasm-unsafe-eval'` | the engine is `WebAssembly.instantiate()` over a binary embedded in `web/public/generated/clipper.js` (Emscripten SINGLE_FILE) | `CompileError: … Refused to compile or instantiate WebAssembly module because 'unsafe-eval' is not an allowed source of script` — **every sound the app makes is dead** |
+  | `font-src data:` | the single `@font-face` in `web/src/styles/tokens.css` ships its woff2 as a base64 `data:` URI | `Refused to load the font 'data:font/woff2;base64,…'`, app renders in a fallback face |
+
+  Note what is *not* relaxed: `script-src` has no `'unsafe-inline'`, no
+  `'unsafe-eval'`, and no remote origin, so assistant-authored `<script>` cannot
+  run. `style-src 'unsafe-inline'` is required for React `style={{…}}` props;
+  `img-src data:` for the inline data-URI favicon.
+- **`will-navigate`** denies any navigation whose origin is not the served origin.
+  SPA history routing fires `did-navigate-in-page`, not `will-navigate`, so this
+  costs the app nothing.
+- **`setWindowOpenHandler` returns `{action:'deny'}`.** The Electron default is
+  *allow*, so `window.open` was spawning real `BrowserWindow`s with no policy of
+  their own. `https:`/`http:`/`mailto:` targets are handed to
+  `shell.openExternal` instead; everything else is dropped and logged.
+  `will-attach-webview` is refused outright (no `<webview>` exists in this app).
+- **`setPermissionRequestHandler` + `setPermissionCheckHandler`** grant exactly
+  one permission — `media`, and only to the served origin. Without a handler, any
+  origin the window ended up on inherited the microphone grant the user gave for
+  guitar input. `media` is the only permission anything in `web/src` asks for
+  (`audio.ts` → `getUserMedia`); nothing uses clipboard, notifications,
+  geolocation or fullscreen.
+- **`sandbox: true`** is pinned explicitly on the main window alongside the
+  already-correct `contextIsolation: true` / `nodeIntegration: false`. It is the
+  Electron 20+ default; pinning it stops the default drifting silently.
+- **Static path containment** (`isContainedIn`) compares against `distDir +
+  path.sep` instead of a bare `startsWith(distDir)`, which accepted any sibling
+  directory sharing the prefix (`/app/dist-evil` "inside" `/app/dist`). Not
+  reachable over HTTP — `path.posix.normalize` absorbs every `..` before the join
+  — but the predicate was wrong regardless, so the test pins the predicate rather
+  than dressing it up as an exploit that does not exist.
 
 ### Dev loop (any OS with Electron)
 
@@ -2525,7 +2611,9 @@ MOCK=1 npm run dev             # keyless demo window (or set ANTHROPIC_API_KEY)
 `npm test` (in `electron/`) runs the main-process unit suites with plain Node —
 no Electron needed: `serve.test.mjs` (ephemeral port, statics, SPA fallback,
 `/api` wired to the real handler, keyless-mock + no-key-500, path-traversal
-guard — 10 tests) and `config.test.mjs` (key resolution order — 6 tests).
+guard, the CSP header, the containment predicate — 12 tests) and
+`config.test.mjs` (key resolution order + the `0600` mode on both a fresh and a
+pre-existing `0644` file — 8 tests).
 
 ### Build a `.dmg` (on your Mac)
 
@@ -2556,7 +2644,7 @@ above.
 
 ### What is verified vs. deferred to a Mac
 
-- **Verified in CI/container:** both Node unit suites (16 tests) pass, and
+- **Verified in CI/container:** both Node unit suites (20 tests) pass, and
   `electron-builder --dir` parses the `build` config and reaches the packaging
   step (it only stops when it cannot download the Electron binary from GitHub —
   an egress-policy restriction, not a config problem).
@@ -5100,3 +5188,192 @@ clipper-render --gen pluck:110:2.0 klon_pushed_silicon.wav --pedal gold --distor
   build green; Playwright +2 (`gold worklet: transparent at min gain…` and
   `assistant: add_pedal adds the GOLD transparent overdrive…`) plus the M11 web sim
   extended to five dirt pedals (4/4 green).
+
+---
+
+## 28. Audit finding 1 — the non-finite parameter guard and the engine reset path
+
+**Session:** 2026-07-25 · `fix/nan-parameter-guard` · plan `docs/work/2026-07-25-nan-parameter-guard.md`
+**Fixes:** the first of the three shipping-blockers in `docs/audits/2026-07-24-project-audit.md`.
+
+### The bug
+
+One NaN parameter permanently destroyed all audio, and the in-app assistant could
+send one.
+
+The root cause was a single idiom repeated ~14 times across the tree:
+
+```cpp
+float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+```
+
+Both comparisons are **false for NaN**, so the NaN fell straight through into the
+model. `std::clamp(v, 0.0, 1.0)` has the identical hole, and so does JavaScript's
+`Math.min(1, Math.max(0, v))`. Once a NaN reached a recursive state — a
+`OnePoleSmoother` value, a `Biquad` delay, a WDF cap voltage, a tube Newton warm
+start — it **latched**: every subsequent sample was non-finite, and no later write
+ever cleared it. `Inf` was handled correctly all along (it clamps to the rail);
+NaN was not.
+
+**Measured before the fix** (48 kHz, 1 s window of the house pluck, one NaN written
+to parameter 0, then a good value written back and 1 s of silence to settle):
+
+| unit | clean | after ONE NaN parameter | after writing a GOOD value back |
+|---|---|---|---|
+| `RatModel`    | 0/48000 | 47999/48000 | **48000/48000** |
+| `SdModel`     | 0/48000 | 48000/48000 | **48000/48000** |
+| `TsModel`     | 0/48000 | 48000/48000 | **48000/48000** |
+| `MuffModel`   | 0/48000 | 48000/48000 | **48000/48000** |
+| `GoldModel`   | 0/48000 | 48000/48000 | **48000/48000** |
+| `PhaserModel` | 0/48000 | 47999/48000 | **48000/48000** |
+| `AmpModel`    | 0/48000 | 48000/48000 | **48000/48000** |
+| `Jcm800Amp`   | 0/48000 | 47996/48000 | **48000/48000** |
+| `TwinAmp`     | 0/48000 | 47999/48000 | **48000/48000** |
+| `Ac30Amp`     | 0/48000 | 47999/48000 | **48000/48000** |
+
+Every unit, not just the three the audit sampled. The third column is the important
+one: writing a good value back made it **worse**, never better. There was no `reset`
+anywhere in the valve-amp tree or the C ABI, so the only recovery was destroy +
+recreate the whole engine.
+
+**After the fix: 0/48000 in every cell.**
+
+### The reachable path
+
+`web/src/assistant/tools.ts` declares `minimum: 0, maximum: 1` in the tool JSON
+schema, but a JSON schema is a hint to the model, not a runtime check — so any
+non-numeric emission (`"max"`, `null`, `{}`) became NaN via `Number(...)`, survived
+the TS clamp, and reached `_amp_set_param` as `+data.value`. The worklet's
+input-trim handler five lines away *did* guard with `Number.isFinite`; the `param`
+handler did not.
+
+### The fix — three layers plus two front-end boundaries
+
+1. **One shared clamp.** `core/include/clipper/dsp/ParamGuard.h` is now the single
+   parameter clamp for the whole core. It uses the **inverted comparison order**:
+
+   ```cpp
+   inline float clampParam01(float v) { return v > 1.0f ? 1.0f : (v > 0.0f ? v : 0.0f); }
+   ```
+
+   For every finite `v` this is **bit-identical** to the old clamp — same branches,
+   same result — so replacing all ~14 copies is fidelity-neutral *by construction*,
+   not by measurement. For NaN both comparisons are false and it lands on the safe
+   low end. No `isnan()` call, no extra branch. `clampParam(v, lo, hi)` generalises
+   it; `paramToInt(v, fallback)` covers mode selectors, because `std::lround(NaN)`
+   is unspecified and must never reach a switch.
+
+   Every parameter entry point in `core/` now routes through it: the six pedals, the
+   four amp voices, all three tone-stack `setKnobs` pot-fraction clamps (a NaN pot
+   fraction stamps a NaN conductance into the MNA matrix, and its **inverse** — so
+   every sample forever after — is NaN), the three `audioTaper` laws, the three
+   `clampR` resistance floors, `OptoTremolo`, and `Processor::setParameter`.
+
+2. **A hard gate at the C ABI.** Every `*_set_param` export in
+   `core/src/clipper_c_api.cpp` now begins `if (!std::isfinite(value)) return;`. This
+   is a **rejection, not a clamp**: NaN has no in-range meaning, so the knob keeps
+   its previous value. Note this changes `Inf` behaviour too — it used to clamp to
+   the rail, and is now ignored. That is deliberate (and what the audit asked for):
+   a caller sending `Inf` is malfunctioning, and silently jumping a knob to its
+   extreme is worse than dropping the message.
+
+   The two layers are complementary, not redundant: the ABI gate is the chokepoint
+   guaranteed to be on the *web* path, and the in-model clamps cover the **JUCE
+   plugin**, which calls `setParameter()` directly and never touches the C ABI.
+
+3. **A recovery path.** `reset()` now exists down the whole tree — `Oversampler`,
+   `OnePoleSmoother`, `TriodeStage`, `BjtStage`, `LtpInverter`, the three preamps,
+   the three power amps, the four amp voices, all six pedals, `Processor` — exported
+   as `clipper_reset` / `rat_reset` / `sd_reset` / `ts_reset` / `phaser_reset` /
+   `muff_reset` / `gold_reset` / `amp_reset`.
+
+   **`reset()` re-parks at the already-solved DC operating point and never
+   re-solves.** This is the load-bearing design point. `TriodeStage::prepare()` runs
+   a 2-D Newton *and then settles ~12 grid-leak RCs of silent samples* (≈50 k samples
+   per stage at 4×/48 k); `Jcm800Amp::prepare()` measures **87.6 ms**. A recovery
+   path may not cost that. So `TriodeStage` and `BjtStage` now snapshot their settled
+   fixed point in `cachePark()` at the end of `settleDC()`, and the power amps factor
+   their idle-parking block into `parkState()` shared by `setOversampling()` and
+   `reset()` (so the two can never drift apart). Measured:
+   **`Jcm800Amp::reset()` = 0.0003 ms, i.e. ~302 000× cheaper than `prepare()`.**
+   `amp_reset` resets **all four voices**, not just the active one — `amp_set_param`
+   deliberately keeps every voice current so a model swap lands on the right tone, so
+   a poisoned inactive voice would otherwise stay poisoned until switched to — plus
+   both per-side cab convolvers (the FDL holds a whole IR of history).
+
+   What `reset()` does NOT touch: knob positions, the oversampling factor, the loaded
+   IR, the active model, the cab flag, the sample rate. It un-bricks audio; it does
+   not reset the rig.
+
+4. **The worklet boundary.** `web/worklet/clipper-processor.js`'s `param` path now
+   rejects non-finite before the value crosses into WASM, mirroring the `_inputGain`
+   guard that was already there.
+
+5. **The TypeScript clamps.** `assistant/tools.ts`, `App.tsx`, `components/Knob.tsx`
+   and `params.ts` (`trimKnobToDb`) are all finite-safe now. (`rig.ts`'s persisted-rig
+   `clamp01` already was.)
+
+### The test — `core/tests/test_nan_guard.cpp` (`clipper_nan_guard_tests`)
+
+Injects `{NaN, +Inf, -Inf}` into **every parameter of every unit** — six pedals and
+four amp voices — over **both** the C ABI (the worklet's path) and the direct C++
+`setParameter` (the plugin's path), at 48 kHz in 128-frame in-place blocks. 210 ABI
+combinations + 51 direct-C++ parameters × 3 poisons.
+
+- **A.** Through the C ABI, a non-finite write is rejected so completely that the
+  render afterwards is **bit-identical** (max deviation `0.0e+00`, all ten units) to
+  a run that never received it. The player-observable property is *"a malformed
+  assistant message must not change my tone"*, and bit-identity checks it with no
+  tolerance to argue about.
+- **B.** Through direct C++, the render stays finite, the level comes back, and the
+  poisoned write is **bit-identical to writing the in-range value it documents itself
+  as clamping to** (NaN → 0, +Inf → 1, mode ids → 0). That equivalence claim is the
+  sample-exact half, and unlike a comparison against a never-touched reference it is
+  not confounded by knob hysteresis (see below).
+- **C.** Poison through a channel *no parameter guard can cover* — a NaN **audio
+  sample** — first asserting the poisoning actually latches (100 % non-finite, so the
+  test is not vacuous), then `reset()`, then requiring the render to be
+  **bit-identical** to a clean instance that was also reset. Plus: `reset()` on a
+  healthy unit moves its level by ≤ 0.15 dB, and is ≥ 50× cheaper than `prepare()`.
+
+**Verified to fail against unmodified `core/`**: with `core/src` and `core/include`
+restored from `main` (and `-DCLIPPER_NAN_TEST_NO_RESET`, which compiles blocks A and
+B only so the suite links without the new `reset()` API), block A aborts on its first
+combination — `rat_* param 0 <- NaN : 14399/14400 non-finite samples` — and with
+block A disabled, block B aborts equivalently on `RatModel param 0 <- NaN`. Both
+exit 134.
+
+### Two measurement notes worth keeping
+
+Both came out of building the test and are easy to mistake for bugs.
+
+- **Knob hysteresis is real and is not a guard defect.** Driving the JCM's MASTER to
+  1.0 and back charges the triode blocking caps (τ = Rgl·Cc = 22 ms) and pulls the B+
+  rail (τ = Rsupply·Creservoir = 7.5 ms), so the next render differs from a
+  never-touched reference: max sample deviation 3.2e-2 / level 0.07 dB at a 0.4 s
+  settle, falling to 3.5e-6 / 0.000 dB at 3 s. An ordinary in-range 0.5 → 1.0 → 0.5
+  sweep leaves **exactly** the same residue (the two renders are bit-identical to each
+  other). Any test that compares "after a knob excursion" against "never touched"
+  will trip over this.
+- **A settled `OnePoleSmoother` stalls one float ULP short of its target, forever.**
+  `value_ += coeff*(target_ - value_)` underflows to `value_ += 0` long before the
+  residual reaches the 1e-30 denormal snap in `next()`. `reset()` snaps `value_` onto
+  the target exactly, so a reset unit's knob is one ULP *different from* (marginally
+  more accurate than) a naturally settled one — on the RAT, one ULP of pre-gain
+  (~6e-8 of 0.6) emerges at −96.7 dB below peak. This is why block C compares
+  reset-against-reset, where it can legitimately demand bit-exactness.
+
+### Suites
+
+Core **ctest 17/17** (16 existing + `clipper_nan_guard_tests`; the new target runs in
+~236 s, comparable to `clipper_phaser_tests`), `web` `tsc --noEmit` + `vite build`
+green, **Playwright 70/70**, `test:server` 11/11, `test:history` 10/10, `electron`
+16/16. The goldens are untouched and still pass, which is the independent check that
+the clamp rewrite really is fidelity-neutral.
+
+**Still open from this finding's neighbourhood:** nothing in the UI *calls* the new
+reset exports yet — this slice ships the mechanism, not the policy (a watchdog that
+notices non-finite output and resets, or an explicit "reset engine" affordance, is a
+separate slice). `native/src/ClipperEngine` inherits the clamp fix but has no reset
+seam. And the signal path is still NaN-transparent in places — `OutputLimiter::clamp1`
+has the same `v > 1 ? 1 : (v < -1 ? -1 : v)` shape.

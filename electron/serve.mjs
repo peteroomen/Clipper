@@ -42,6 +42,48 @@ const MIME = {
   '.ttf': 'font/ttf',
 };
 
+// Content-Security-Policy for the app document. The main window renders
+// model-influenced text, so it gets the same treatment key-prompt.html already
+// had. Served as a HEADER (not a <meta> in web/index.html) so it applies to the
+// desktop shell without also applying under `vite dev`, where it would fight HMR.
+//
+// Each relaxation is here because the built app measurably needs it:
+//   'wasm-unsafe-eval' — the engine is `WebAssembly.instantiate()` over a binary
+//        embedded in web/public/generated/clipper.js (Emscripten SINGLE_FILE).
+//        Chromium refuses ALL Wasm compilation once a script-src directive exists
+//        unless this (or the far broader 'unsafe-eval') is present, so without it
+//        the CSP silently kills every sound the app makes.
+//   style-src 'unsafe-inline' — React `style={{…}}` props are inline styles.
+//   img-src data: — the inline data-URI favicon in web/index.html.
+//   font-src data: — the single @font-face in web/src/styles/tokens.css ships its
+//        woff2 as a base64 data: URI, which `default-src 'self'` rejects.
+// Deliberately absent: any remote origin, and any inline/eval'd SCRIPT. base-uri
+// has no default-src fallback, so it is pinned explicitly.
+export const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  "connect-src 'self'",
+  "img-src 'self' data:",
+  "font-src 'self' data:",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+/**
+ * Is `filePath` inside `dir` (or `dir` itself)?
+ *
+ * A bare `filePath.startsWith(dir)` is true for any SIBLING whose name merely
+ * begins with `dir` — `/app/dist-evil/secret` "passes" a `/app/dist` check. Not
+ * reachable over HTTP today (path.posix.normalize absorbs every `..` before the
+ * join), but the predicate was wrong regardless of reachability.
+ */
+export function isContainedIn(dir, filePath) {
+  if (filePath === dir) return true;
+  return filePath.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
+}
+
 function sendJson(res, status, obj) {
   const bytes = Buffer.from(JSON.stringify(obj));
   res.writeHead(status, {
@@ -69,7 +111,7 @@ async function resolveStatic(distDir, pathname) {
   const decoded = decodeURIComponent(pathname);
   const normalized = path.posix.normalize(decoded).replace(/^(\.\.(\/|\\|$))+/, '');
   let filePath = path.join(distDir, normalized);
-  if (!filePath.startsWith(distDir)) filePath = path.join(distDir, 'index.html');
+  if (!isContainedIn(distDir, filePath)) filePath = path.join(distDir, 'index.html');
   try {
     const s = await stat(filePath);
     if (s.isDirectory()) filePath = path.join(filePath, 'index.html');
@@ -83,8 +125,13 @@ async function resolveStatic(distDir, pathname) {
 }
 
 function serveStatic(res, filePath) {
-  const type = MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
-  res.writeHead(200, { 'content-type': type, 'cache-control': 'no-cache' });
+  const ext = path.extname(filePath).toLowerCase();
+  const type = MIME[ext] || 'application/octet-stream';
+  const headers = { 'content-type': type, 'cache-control': 'no-cache' };
+  // Only the document carries the policy — it already governs every subresource
+  // the document pulls in, and a CSP header on a .js or .wasm body does nothing.
+  if (ext === '.html') headers['content-security-policy'] = CSP;
+  res.writeHead(200, headers);
   const stream = createReadStream(filePath);
   stream.on('error', () => {
     if (!res.headersSent) res.writeHead(404);

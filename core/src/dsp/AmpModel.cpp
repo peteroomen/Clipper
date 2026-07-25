@@ -42,6 +42,7 @@
 #include "clipper/dsp/Biquad.h"
 #include "clipper/dsp/ChorusModel.h"
 #include "clipper/dsp/OnePoleSmoother.h"
+#include "clipper/dsp/ParamGuard.h"
 #include "clipper/dsp/ReverbModel.h"
 
 #include <algorithm>
@@ -50,7 +51,9 @@
 namespace clipper::dsp {
 
 namespace {
-float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+// Knob clamping is clampParam01 from ParamGuard.h (this file's old private
+// clamp01 let NaN through, and one NaN latched permanently in the biquad /
+// smoother state — audit finding 1).
 
 // --- Tone-stack fixed design points ---
 constexpr double kBassHz = 100.0;
@@ -197,15 +200,37 @@ void AmpModel::prepare(double sampleRate, int /*maxBlockSize*/) {
     d.chorus.setMode(ChorusModel::MODE_OFF);
 }
 
+void AmpModel::reset() {
+    Impl& d = *impl_;
+    // Snap the smoothers onto their targets first (a poisoned smoother value can
+    // never recover on its own: value += coeff*(target - value) stays NaN), then
+    // recompute the coefficients from the now-clean dB values before clearing the
+    // biquad histories, so the filters restart consistent with the knobs.
+    d.bassDb.reset();
+    d.midDb.reset();
+    d.trebleDb.reset();
+    d.brightDb.reset();
+    d.volume.reset();
+    d.recomputeCoeffs();
+    d.bass.reset();
+    d.mid.reset();
+    d.treble.reset();
+    d.bright.reset();
+    d.ctrlCounter = 0;
+    d.reverb.reset();
+    d.chorus.reset();
+}
+
 void AmpModel::setParameter(int paramId, float value) {
     Impl& d = *impl_;
     // Chorus MODE carries an integer 0/1/2, so it must NOT be clamped to 0..1
-    // like the knobs; handle it before the clamp.
+    // like the knobs; handle it before the clamp. std::lround(NaN) is unspecified,
+    // so it goes through paramToInt (non-finite -> MODE_OFF).
     if (paramId == PARAM_CHORUS_MODE) {
-        d.chorus.setMode(static_cast<int>(std::lround(value)));
+        d.chorus.setMode(paramToInt(value, ChorusModel::MODE_OFF));
         return;
     }
-    const float knob = clamp01(value);
+    const float knob = clampParam01(value);
     switch (paramId) {
         case PARAM_VOLUME:
             d.volume.setTarget(knobToVolumeGain(knob));

@@ -117,6 +117,11 @@ public:
     void setParameter(int paramId, float value);
     void process(const float* in, float* out, int numFrames);
 
+    // Recovery seam (audit finding 1). Re-park the triode stage and the top-boost
+    // stack cap states at the already-solved DC point, without re-solving anything.
+    // Knob values are preserved.
+    void reset();
+
     // --- Introspection (measurement / tests) --------------------------------
     double stageQuiescentPlate(int stage) const;
     double stageQuiescentCathode(int stage) const;

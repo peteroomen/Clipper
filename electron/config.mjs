@@ -12,7 +12,7 @@
 // This is documented in docs/DEVELOPMENT.md as a known v1 limitation; the file
 // lives in the user's own account-scoped userData dir (mode 0600 on write).
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 
 /**
@@ -56,4 +56,14 @@ export function saveApiKey(opts) {
   if (!key) throw new Error('saveApiKey: apiKey is empty');
   mkdirSync(path.dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify({ apiKey: key }, null, 2), { mode: 0o600 });
+  // `{ mode }` above is honoured on CREATION only. An existing config.json keeps
+  // whatever permissions it already had, so a rewrite would publish the key into
+  // a 0644 file (2026-07-24 audit). Set the mode explicitly, every time.
+  try {
+    chmodSync(configPath, 0o600);
+  } catch (err) {
+    // A filesystem without POSIX modes must not turn a successful save into a
+    // thrown error — the key IS written at this point.
+    console.warn(`[clipper] could not restrict ${configPath} to 0600: ${err?.message || err}`);
+  }
 }
