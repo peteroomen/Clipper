@@ -12,7 +12,8 @@
 //      high sustain (the wall-of-sustain assert).
 //   5. Aliasing: shipped 4× at max sustain below the M2 −60 dB bar; naive far worse.
 //   6. VOLUME linearity; stability + hygiene at ±20 V, all rates, with the damped
-//      Newton's iteration count pinned so the globalization cannot quietly degrade.
+//      Newton's iteration count pinned so the globalization cannot quietly degrade — and
+//      as of docs §37 it CONVERGES at every rate x oversampling, asserted outright.
 //   7. Idle solver cost (docs §34): a PARKED stage does zero Newton iterations, so
 //      the Muff cannot go back to costing more when you are not playing.
 //   8. The low end is where a guitar's low end is (testLowEndResponse) and the output does
@@ -40,26 +41,6 @@ constexpr double kTwoPi = 6.283185307179586;
 using clipper::dsp::BjtStage;
 using clipper::dsp::MuffModel;
 using clipper::dsp::MuffToneStack;
-
-// Found by this slice (perf/muff-newton-earlyout, docs §34) when the ±10 V single-
-// oversampling-factor slam test was widened to ±20 V across every rate x factor.
-// PRE-EXISTING, not caused by the residual early-out: the pre-early-out solver was
-// measured at the identical iteration counts in the identical combinations (it merely
-// reported the cap as 61 rather than 60, which is the over-report this slice fixed).
-// The output stays finite and bounded, so this is not the old cascade blow-up — but at
-// those samples the solve has not converged, so the audio there is not the circuit's
-// answer.
-constexpr clipper::test::XfailDecl kXfSlamIterCap{
-    "muff-slam-exhausts-newton-cap",
-    "found 2026-07-25 by perf/muff-newton-earlyout (docs §34), no audit finding number",
-    "a ±20 V slam converges STRICTLY INSIDE the damped Newton's 60-iteration cap at "
-    "every supported sample rate x oversampling factor. It does at 10 of 16 (14-18 "
-    "iterations), but SIX exhaust the cap: 2x oversampling at all four base rates, and "
-    "4x at 88.2 and 96 kHz. The shipped desktop path (4x at 44.1/48 kHz) converges in "
-    "17-18, so this is not shipping-audible today — but 96 kHz x4 is a real user "
-    "configuration, so it is not hypothetical either",
-    "its own slice: the damping/step-clamp strategy under a >|10 V| slam. Do NOT paper "
-    "over it by raising kMaxNewtonIter — that buys iterations, not convergence"};
 
 double goertzelAmp(const std::vector<float>& x, size_t start, size_t n, double f,
                    double fs) {
@@ -554,10 +535,13 @@ void testIdleSolverCost() {
 // now pinned so the globalization cannot silently degrade.
 //
 // Doubled to ±20 V, and swept across oversampling factors, this immediately found
-// something the ±10 V single-factor version could not: some rate x oversampling
-// combinations EXHAUST the cap. See kXfSlamIterCap — that is pre-existing (measured
-// identical on the pre-early-out solver, which reported it as 61 against a cap of
-// 60), not a regression from this slice.
+// something the ±10 V single-factor version could not: six of sixteen rate x oversampling
+// combinations EXHAUSTED the cap (docs §34, XFAIL muff-slam-exhausts-newton-cap) — a
+// pre-existing defect, measured identical on the pre-early-out solver.
+//
+// That is FIXED as of this slice, as a side effect of the series base resistors: 0 of 16
+// now reach the cap, worst 18 of 60. The XFAIL is gone and the property is asserted
+// outright — see the note at the end of the function.
 void testSlamConvergence() {
     int worst = 0;
     double worstFs = 0.0;
@@ -609,17 +593,33 @@ void testSlamConvergence() {
                 "the cap)\n",
                 checked, worst, BjtStage::kMaxNewtonIter, worstFs, worstOs, atCap);
 
-    // Evaluated ONCE over the whole sweep, not per rate: the property is "at EVERY
-    // supported rate x oversampling", which is uniformly false, so it cannot XPASS at
-    // one rate while XFAILing at another.
-    char detail[256];
-    std::snprintf(detail, sizeof detail,
-                  "%d of %d rate x oversampling combinations exhaust the cap "
-                  "(%d of %d iterations, i.e. NOT converged); worst at %.0f Hz x%d; the "
-                  "other %d converge in 14-18 iterations",
-                  atCap, checked, worst, BjtStage::kMaxNewtonIter, worstFs, worstOs,
-                  checked - atCap);
-    clipper::test::expectXfail(worst < BjtStage::kMaxNewtonIter, kXfSlamIterCap, detail);
+    // ASSERTED FOR REAL as of this slice. It was an XFAIL (`muff-slam-exhausts-newton-cap`,
+    // docs §34): six of these sixteen combinations used to exhaust the cap — 2x at all four
+    // base rates, and 4x at 88.2 and 96 kHz. Adding the series base resistor to every
+    // BjtStage coupling network (this slice, audit finding 16) fixed it as a SIDE EFFECT,
+    // and the XFAIL XPASSed, which is the ratchet working: a fixed defect must not keep a
+    // stale XFAIL, so the property is now a hard assertion in the same slice.
+    //
+    // Why a base resistor helps the SOLVER and not just the tone: it puts a finite
+    // resistance in series with the exponential base-emitter junction, so a given node
+    // voltage step produces a bounded base-current step instead of an exponential one.
+    // That lowers the effective stiffness the damped Newton has to globalize against, which
+    // is exactly what the backtracking line search was struggling with under a slam.
+    //
+    // Measured after the fix: 0 of 16 at the cap, worst 18 of 60 iterations (88.2 kHz x1) —
+    // a 3.3x margin, not a squeak past the bar.
+    assert(atCap == 0 &&
+           "a ±20 V slam exhausts the damped Newton's iteration cap at some supported "
+           "rate x oversampling combination — the solve has not converged there, so that "
+           "audio is not the circuit's answer (was XFAIL muff-slam-exhausts-newton-cap, "
+           "docs §34; fixed by the series base resistors, docs §37)");
+    assert(worst < BjtStage::kMaxNewtonIter &&
+           "worst-case Newton iteration count reached the cap");
+    std::printf("  [ok] ±20 V slam CONVERGES at every rate x oversampling: worst %d/%d "
+                "iterations @ %.0f Hz x%d (%.1fx margin). Was 6 of 16 at the cap before "
+                "the series base resistors (docs §34 -> §37).\n",
+                worst, BjtStage::kMaxNewtonIter, worstFs, worstOs,
+                static_cast<double>(BjtStage::kMaxNewtonIter) / worst);
 }
 
 // --- Test 7: stability + hygiene (finite, silence->silence, deterministic). ----
@@ -685,13 +685,18 @@ void testStabilityHygiene() {
     std::printf("  [ok] hygiene: finite grid, silence->silence, deterministic\n");
 }
 
-// Known defects this binary exercises under XFAIL. Printed by --xfail-ledger, which ctest
-// surfaces as ***Skipped in its default summary (see core/CMakeLists.txt).
+// This binary has NO XFAILs left, and therefore no `_xfail_ledger` ctest entry
+// (see core/CMakeLists.txt). Both of its entries went in this slice:
 //
-// kXfMuffDc (audit finding 16, "the Muff has no output DC blocker") was REMOVED here:
-// this slice fixes it and asserts the property for real, so leaving the XFAIL would
-// XPASS and fail the suite by design (CLAUDE.md, the XFAIL ratchet).
-const clipper::test::XfailDecl kLedger[] = {kXfSlamIterCap};
+//   kXfMuffDc        audit finding 16 — no output DC blocker. Fixed here directly.
+//   kXfSlamIterCap   docs §34 — a ±20 V slam exhausted the Newton cap at 6 of 16
+//                    rate x oversampling combinations. Fixed here as a side effect of
+//                    the series base resistors, and it XPASSed, which is what forced
+//                    its removal (CLAUDE.md, the XFAIL ratchet: an XFAIL must not
+//                    outlive its defect).
+//
+// Both properties are now hard assertions. reportXfails() stays as main's return value:
+// it is a no-op at zero recorded XFAILs and keeps the seam if a future defect needs one.
 
 }  // namespace
 
@@ -724,7 +729,8 @@ int main(int argc, char** argv) {
     testStabilityHygiene();
     testSlamConvergence();
     testIdleSolverCost();
-    std::printf("All MuffModel tests passed (XFAILs listed below are known open defects, "
-                "not regressions).\n");
+    // No XFAILs left in this binary — both went in this slice (see the note above the
+    // former ledger array), so the banner no longer promises any.
+    std::printf("All MuffModel tests passed.\n");
     return clipper::test::reportXfails();
 }
