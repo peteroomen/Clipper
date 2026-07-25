@@ -351,6 +351,22 @@ if(NOT EMSCRIPTEN)
     endif()
     add_test(NAME clipper_cab_swap_tests COMMAND clipper_cab_swap_tests)
 
+    # --- Audit finding 6: valve-amp parameter smoothing (docs §35) -------------
+    # The three valve amps assigned knob values straight to state and applied the
+    # resulting scale ONCE PER BLOCK, behind up to 76 dB of gain — a measured 68.9x to
+    # 121.9x the signal's own steady slew on their gain-like controls, against 1.37x for
+    # the already-smoothed clean amp. This target measures the step/steady-slew ratio for
+    # EVERY knob on all three voices with the knob moved MID-RENDER (worst of eight step
+    # positions, because a step at an output zero crossing produces none), drives the
+    # clean amp through the identical harness as the control case, proves the bar can
+    # FAIL with an unsmoothed hard splice, and pins the bit-identity of a static render.
+    # The metric itself lives in tests/support/StepSlew.h, shared with the definition
+    # native/tests/chain_edit_test.cpp uses.
+    add_executable(clipper_param_smoothing_tests tests/test_param_smoothing.cpp)
+    target_link_libraries(clipper_param_smoothing_tests PRIVATE clipper_dsp)
+    clipper_add_test_flags(clipper_param_smoothing_tests)
+    add_test(NAME clipper_param_smoothing_tests COMMAND clipper_param_smoothing_tests)
+
     # --- perf/halfband-no-modulo: halfband resampler tests (docs §32) ---------
     # The doubled-ring rewrite of HalfbandFilter.h deleted an integer division per
     # tap from the hottest loop in the project (audit perf item 2). A perf change to
