@@ -2,12 +2,18 @@
 // Jcm800PowerAmp) and the composed full amp (clipper::dsp::Jcm800Amp). No
 // framework: int main + <cassert>. Every assert compares a MEASURED number
 // against an ANALYTIC target derived IN THE TEST — the EL34 bias fixed point from
-// the Koren pentode law, the matched-pair even-harmonic cancellation from that
-// same law, the negative-feedback reduction 1/(1+β·A_real) with A_real measured
-// open-loop, the presence HF shelf from the one-pole feedback shaping, and the
-// B+ sag depth / RC — so the suite pins the physics, not itself. Same measurement
-// discipline as the M1/M2/M9.1/M9.2 suites. Spectra via a hand-rolled Goertzel
-// (audio, windowed) or an exact rectangular DFT (periodic device-law references).
+// the Koren pentode law, the negative-feedback reduction 1/(1+β·A_real) with
+// A_real measured open-loop, the presence HF shelf from the one-pole feedback
+// shaping, and the B+ sag depth / RC — so the suite pins the physics, not itself.
+// Same measurement discipline as the M1/M2/M9.1/M9.2 suites. Spectra via a
+// hand-rolled Goertzel (audio, windowed) or an exact rectangular DFT (periodic
+// device-law references).
+//
+// 2026-07-25 (test/assert-real-properties): the even-harmonic-cancellation test no
+// longer asserts the algebraic identity "f(Vb+v) − f(Vb−v) is odd" — see Test 2 —
+// and a new Test 2b pins the PHASE INVERTER's plate fraction, standing current and
+// leg balance, which nothing in the suite checked. Both carry XFAILs for audit
+// findings 7 and 8; run with `--xfail-ledger` to list them.
 //
 // The NFB test is the explicit INVERSION CATCHER (docs §18): it asserts BOTH
 // gain(closed) < gain(open) AND response(presence=1) > response(presence=0) at
@@ -17,7 +23,11 @@
 #include "clipper/dsp/Jcm800PowerAmp.h"
 
 #include "measure/AliasMetric.h"
+#include "support/AssertsLive.h"
+#include "support/LtpProbe.h"
+#include "support/Xfail.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -123,32 +133,48 @@ void testQuiescent(double fs) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 2 — push-pull EVEN-harmonic suppression vs a single-ended reference, plus
-// a measurable class-AB crossover at low drive. The matched-pair difference is an
-// ODD function of the drive, so even harmonics cancel — proven analytically from
-// the Koren law (rectangular DFT: PP even harmonic is a machine zero vs the single
-// tube's strong 2nd), and confirmed on the real amp (its 2nd is far below a single
-// tube's, the LTP's slight imbalance leaving a small residual).
+// Test 2 — push-pull EVEN-harmonic suppression, measured ON THE REAL AMP against a
+// SINGLE-ENDED reference, plus a measurable class-AB crossover at low drive.
+//
+// 2026-07-25 (test/assert-real-properties): part (a) used to build
+// `pp[i] = f(Vbias+v) − f(Vbias−v)` straight from the device law and assert its 2nd
+// harmonic was 40 dB under a single-ended reference. That is the algebraic identity
+// "f(v) − f(−v) is odd", true BY CONSTRUCTION for any f whatsoever — it tested
+// nothing about `Jcm800PowerAmp`, and audit finding 8 (the Ra2 = 82 kΩ imbalance)
+// sailed straight past it. Deleted. The single-ended reference SURVIVES, because it
+// is genuinely independent: one EL34 driven by the Koren law is the "no cancellation
+// at all" baseline a push-pull pair is supposed to beat, and it does not depend on
+// the amp's topology, its plate loads, or its phase inverter.
+//
+// What is asserted now, on the real `Jcm800PowerAmp`:
+//   (a) the SE baseline is a plausible reference at all (its 2nd is strong);
+//   (b) the real amp's 2nd harmonic is MEANINGFULLY below it — the bar is 20 dB,
+//       which is what a matched, EVENLY DRIVEN pair buys (the Twin measures 30 dB
+//       under SE on the same probe). XFAILed: audit finding 8.
+//   (c) the class-AB crossover is present and monotonic at low drive.
 // ---------------------------------------------------------------------------
+constexpr clipper::test::XfailDecl kXfPushPull{
+    "finding8-jcm-even-harmonic-cancel",
+    "2026-07-24 audit finding 8",
+    "the JCM800's push-pull 2nd harmonic sits >=20 dB under a single-ended EL34's "
+    "(the even-harmonic cancellation Jcm800PowerAmp.h:30-37 claims)",
+    "the fix for finding 8 (Ra2 82k -> ~120k) + finding 7 (LTP tail reference)"};
+
 void testPushPull(double fs) {
-    // (a) device-law reference: SE = one tube, PP = matched difference.
+    // (a) SINGLE-ENDED reference from the device law — one tube, no cancellation.
+    // Independent of the amp's topology: it is the baseline a pair must beat.
     const El34Params p{};
     const double Vbias = -43.0, Vp = 467.0, Vg2 = 460.0, A = 6.0;
     const int N = 4096;
-    std::vector<double> se(N), pp(N);
+    std::vector<double> se(N);
     for (int i = 0; i < N; ++i) {
         const double vac = A * std::sin(kTwoPi * i / N);
         se[static_cast<size_t>(i)] = clipper::dsp::el34PlateCurrent(Vp, Vbias + vac, Vg2, p);
-        pp[static_cast<size_t>(i)] =
-            clipper::dsp::el34PlateCurrent(Vp, Vbias + vac, Vg2, p) -
-            clipper::dsp::el34PlateCurrent(Vp, Vbias - vac, Vg2, p);
     }
     const double seH2 = toDb(dftHarm(se, 2) / dftHarm(se, 1));
-    const double ppH2 = toDb(dftHarm(pp, 2) / dftHarm(pp, 1));
     assert(seH2 > -25.0 && "single-ended 2nd harmonic implausibly small (bad reference)");
-    assert(ppH2 < seH2 - 40.0 && "matched push-pull did not cancel even harmonics vs SE");
 
-    // (b) real amp: its 2nd harmonic is well below a single tube's at the same drive.
+    // (b) real amp: how much even-harmonic cancellation does the shipped pair buy?
     Jcm800PowerAmp pa;
     pa.prepare(fs, 128);
     pa.setOversampling(4);
@@ -161,8 +187,18 @@ void testPushPull(double fs) {
     const double h1 = goertzelAmp(out, start, win, f0, fs);
     const double h2 = goertzelAmp(out, start, win, 2 * f0, fs);
     const double realH2 = toDb(h2 / h1);
-    assert(realH2 < seH2 - 6.0 &&
-           "real push-pull 2nd harmonic not suppressed vs a single-ended stage");
+    // A pair whose two legs are driven EVENLY cancels the even orders hard. 6 dB (the
+    // old bar) is not cancellation, it is a rounding error; 20 dB is.
+    {
+        char detail[224];
+        std::snprintf(detail, sizeof detail,
+                      "@ %.0f Hz: SE 2nd = %.1f dBc, real amp 2nd = %.1f dBc -> only %.1f dB "
+                      "of cancellation (need >=20; the balanced Twin gets ~30)",
+                      fs, seH2, realH2, seH2 - realH2);
+        clipper::test::expectXfail(realH2 < seH2 - 20.0, kXfPushPull, detail);
+    }
+    // Whatever the imbalance, the pair must not be WORSE than a single tube.
+    assert(realH2 < seH2 && "push-pull 2nd harmonic no better than a single-ended stage");
 
     // (c) crossover: THD present and monotonic at LOW drive (class-AB turn-on).
     auto thdAt = [&](float amp) {
@@ -185,9 +221,48 @@ void testPushPull(double fs) {
     assert(t1 > 0.001 && "no measurable crossover distortion at low drive");
     assert(t3 < 0.05 && "low-drive distortion implausibly large (not crossover)");
     assert(t2 > t1 && t3 > t2 && "crossover THD not monotonic with low drive");
-    std::printf("  [ok] push-pull @ %.0f Hz: SE 2nd=%.1f dB, PP(device)=%.1f dB "
-                "(cancel), real amp 2nd=%.1f dB (<SE); crossover THD %.2f/%.2f/%.2f%%\n",
-                fs, seH2, ppH2, realH2, t1 * 100, t2 * 100, t3 * 100);
+    std::printf("  [ok] push-pull @ %.0f Hz: SE 2nd=%.1f dB, real amp 2nd=%.1f dB "
+                "(%.1f dB of cancellation); crossover THD %.2f/%.2f/%.2f%%\n",
+                fs, seH2, realH2, seH2 - realH2, t1 * 100, t2 * 100, t3 * 100);
+}
+
+// ---------------------------------------------------------------------------
+// Test 2b — the PHASE INVERTER's DC operating point and LEG BALANCE (new
+// 2026-07-25, test/assert-real-properties). Nothing in the suite asserted the PI
+// leg ratio anywhere — audit finding 8's own words — and the plate voltage was
+// only ever checked against a window wide enough to admit a starved inverter.
+//
+// The three properties (plate as a FRACTION of B+, standing current per triode from
+// Ohm's law, and the two legs' gain ratio) are defined once in
+// core/tests/support/LtpProbe.h and shared by all three amps, so the JCM, Twin and
+// AC30 tests cannot drift apart on what "a healthy phase inverter" means.
+// ---------------------------------------------------------------------------
+constexpr clipper::test::XfailDecl kXfPiPlate{
+    "finding7-jcm-pi-plate-fraction",
+    "2026-07-24 audit finding 7",
+    "the JCM800 PI plates idle at 70-85 % of B+ (a real long tail), not parked near cutoff",
+    "the LtpInverter tailRef fix (finding 7) — fixes all three amps at once"};
+constexpr clipper::test::XfailDecl kXfPiCurrent{
+    "finding7-jcm-pi-standing-current",
+    "2026-07-24 audit finding 7",
+    "each JCM800 PI triode idles at 0.5-0.9 mA (docs/DEVELOPMENT.md target)",
+    "the LtpInverter tailRef fix (finding 7)"};
+constexpr clipper::test::XfailDecl kXfPiBalance{
+    "finding8-jcm-pi-leg-balance",
+    "2026-07-24 audit finding 8",
+    "the JCM800 PI's two anti-phase legs are gain-balanced within 10 % (the mechanism "
+    "Jcm800PowerAmp.h:30-37 credits for even-harmonic cancellation)",
+    "Ra2 82k -> ~120k (finding 8) on top of the tailRef fix (finding 7)"};
+
+void testPhaseInverter(double fs) {
+    Jcm800PowerAmp pa;
+    pa.prepare(fs, 128);
+    pa.setOversampling(4);
+    const auto m = clipper::test::measureLtp(pa.inverter(), fs);
+    clipper::test::assertLtpSane(m, "JCM800");
+    // All three targets XFAIL on the JCM800 (findings 7 and 8).
+    clipper::test::assertLtpTargets(m, fs, "JCM800", &kXfPiPlate, &kXfPiCurrent, &kXfPiBalance);
+    clipper::test::printLtp(m, "JCM800", fs);
 }
 
 // ---------------------------------------------------------------------------
@@ -478,13 +553,25 @@ void testComposedFullScale(double fs) {
                 fs, pk);
 }
 
+// Known defects this binary exercises under XFAIL. Printed by --xfail-ledger, which
+// ctest surfaces as ***Skipped in its default summary (see core/CMakeLists.txt).
+const clipper::test::XfailDecl kLedger[] = {kXfPushPull, kXfPiPlate, kXfPiCurrent,
+                                            kXfPiBalance};
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    clipper::test::requireAssertsLive();
+    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
+                                                 sizeof kLedger / sizeof kLedger[0],
+                                                 "clipper_jcm800_power_tests");
+    if (ledger >= 0) return ledger;
+
     std::printf("Running clipper::dsp::Jcm800PowerAmp / Jcm800Amp (M9.3) tests...\n");
     for (double fs : {44100.0, 48000.0, 96000.0}) {
         testQuiescent(fs);
         testPushPull(fs);
+        testPhaseInverter(fs);
         testFeedbackAndPresence(fs);
         testSag(fs);
         testCompressionStability(fs, 4);
@@ -494,6 +581,7 @@ int main() {
     testAliasing(44100.0);
     testAliasing(48000.0);
     testAliasing(96000.0);
-    std::printf("All Jcm800PowerAmp / Jcm800Amp tests passed.\n");
-    return 0;
+    std::printf("All Jcm800PowerAmp / Jcm800Amp tests passed (XFAILs listed below are known "
+                "open defects, not regressions).\n");
+    return clipper::test::reportXfails();
 }

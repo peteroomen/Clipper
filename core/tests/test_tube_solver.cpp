@@ -20,6 +20,8 @@
 #include "clipper/dsp/TubeSolverMode.h"
 #include "clipper/dsp/TwinAmp.h"
 
+#include "support/AssertsLive.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -95,6 +97,7 @@ void checkAmp(const char* name, const std::vector<float>& riff, MakeAmp&& makeAm
 }  // namespace
 
 int main() {
+    clipper::test::requireAssertsLive();
     std::printf("Running tube-solver early-exit regression (production vs 1000x-tight)...\n");
     const std::vector<float> riff = makeRiff();
 

@@ -13,6 +13,8 @@
 
 #include "measure/AliasMetric.h"
 
+#include "support/AssertsLive.h"
+
 #include <cassert>
 #include <cmath>
 #include <complex>
@@ -424,6 +426,7 @@ void testHygiene() {
 }  // namespace
 
 int main() {
+    clipper::test::requireAssertsLive();
     std::printf("Running clipper::dsp::TriodeStage (M9.1) tests...\n");
     testOperatingPoint(44100.0);
     testOperatingPoint(96000.0);

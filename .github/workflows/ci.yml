@@ -11,9 +11,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The DSP core: 16 plain-assert ctest targets. This is the load-bearing suite —
-  # every circuit model is offline-testable precisely so that audio bugs are
-  # attributable to a model rather than to a shell.
+  # The DSP core: 18 plain-assert ctest targets, plus 6 `_xfail_ledger` entries that ctest
+  # reports as Skipped and which name the KNOWN-BAD properties still open against the
+  # 2026-07-24 audit (docs §29). This is the load-bearing suite — every circuit model is
+  # offline-testable precisely so that audio bugs are attributable to a model rather than
+  # to a shell.
+  #
+  # A `***Skipped` ledger line is expected and is not a problem. An `[XPASS]` in the log IS:
+  # it means a defect got fixed and its XFAIL was not deleted, and the run fails on purpose.
+  # See core/tests/support/Xfail.h.
   core:
     name: Core DSP (ctest)
     runs-on: ubuntu-latest

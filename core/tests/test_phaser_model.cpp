@@ -24,6 +24,8 @@
 
 #include "clipper/dsp/PhaserModel.h"
 
+#include "support/AssertsLive.h"
+
 #include <cassert>
 #include <cmath>
 #include <complex>
@@ -258,6 +260,7 @@ void testLevelSanity(double fs) {
 }  // namespace
 
 int main() {
+    clipper::test::requireAssertsLive();
     std::printf("PhaserModel tests\n");
     for (double fs : {44100.0, 48000.0, 96000.0}) {
         std::printf("--- fs = %.0f Hz ---\n", fs);

@@ -11,6 +11,8 @@
 
 #include "measure/AliasMetric.h"
 
+#include "support/AssertsLive.h"
+
 #include <cassert>
 #include <cmath>
 #include <complex>
@@ -447,6 +449,7 @@ void testAliasing(double fs, bool strict) {
 }  // namespace
 
 int main() {
+    clipper::test::requireAssertsLive();
     std::printf("Running clipper::dsp::Jcm800Preamp (M9.2) tests...\n");
     testOperatingPoints(44100.0);
     testOperatingPoints(96000.0);

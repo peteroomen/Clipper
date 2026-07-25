@@ -9,6 +9,9 @@
 #include "clipper/dsp/LM308Stage.h"
 #include "measure/AliasMetric.h"
 
+#include "support/AssertsLive.h"
+#include "support/DcOffset.h"
+
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -363,7 +366,7 @@ void testHygiene() {
                 for (float v : o) assert(std::isfinite(v) && "non-finite output");
             }
 
-    // Silence in -> silence out (no DC pumping).
+    // Silence in -> silence out (the model does not self-oscillate).
     {
         std::vector<float> zeros(static_cast<size_t>(fs * 0.3), 0.0f);
         auto o = render(zeros, {0.9f, 0.5f, 1.0f}, fs);
@@ -372,6 +375,40 @@ void testHygiene() {
         dc /= o.size();
         assert(pk < 1e-6 && "silence produced output");
         assert(std::fabs(dc) < 1e-3 && "DC offset on silence");
+    }
+
+    // DC offset ON SIGNAL — the property that actually matters (audit finding 16).
+    //
+    // 2026-07-25 (test/assert-real-properties): the silence check above used to be the
+    // ONLY DC assertion here, and it is trivially true. The RAT clips ASYMMETRICALLY
+    // (LM308 + a silicon pair around the feedback path), so its DC comes from SIGNAL, and
+    // a lost output blocker would sail past a silent-input test. `OverdriveEngine` carries
+    // `dcBlockHz = 12.0` precisely for this; that constant is what this now pins.
+    //
+    // Player-observable: DC eats the headroom of the amp, cab and limiter downstream and
+    // thumps when the note stops.
+    //
+    // TWO stimuli. The clean tone catches a clipper that RECTIFIES; the +0.1 V input offset
+    // is what makes the coupling cap itself load-bearing — with a clean input, deleting the
+    // cap changes the measured DC by nothing (verified). See core/tests/support/DcOffset.h.
+    {
+        const auto tone = sine(220.0, 0.2f, 1.0, fs);
+        for (float dist : {0.5f, 1.0f}) {
+            for (float dcIn : {0.0f, clipper::test::kInputDcOffset}) {
+                auto stim = tone;
+                for (float& s : stim) s += dcIn;
+                const auto o = render(stim, {dist, 0.5f, 1.0f}, fs);
+                const auto d = clipper::test::measureDcOnSignal(o);
+                std::printf("  [ok] DC on SIGNAL (dist %.2f, input DC %+.2f V): mean %+.6f V, "
+                            "peak %.4f V -> %.4f %% of peak (bar %.1f %%)\n",
+                            dist, dcIn, d.mean, d.peak, 100.0 * d.fraction,
+                            100.0 * clipper::test::kDcFractionBar);
+                assert(d.peak > 0.01 && "no signal to measure DC against");
+                assert(d.fraction < clipper::test::kDcFractionBar &&
+                       "DC offset ON SIGNAL exceeds 1 % of peak — the output coupling cap is "
+                       "missing or mistuned, or the clipper is rectifying");
+            }
+        }
     }
 
     // Determinism: two runs bit-identical.
@@ -598,6 +635,7 @@ void testPerfSanity() {
 }  // namespace
 
 int main() {
+    clipper::test::requireAssertsLive();
     std::printf("Running clipper::dsp::RatModel tests...\n");
     testHarmonics(44100.0);
     testHarmonics(96000.0);   // Test 6: SR robustness for test 1
