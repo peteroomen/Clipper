@@ -80,8 +80,12 @@
 //                     earlier, which is the germanium "bloom").
 //       The ideality factor is carried through the library's nDiodes multiplier,
 //       which scales Vt (Vt_eff = n*Vt = 33.6 mV) — the same arithmetic.
-//     DIODE_SILICON (1N914-class, Is = 2.52 nA, n = 1.0) is a MEASUREMENT-ONLY
-//     counterfactual so the tests can show the knee difference, never a user knob.
+//     DIODE_SILICON (1N914/1N4148-class, Is = 2.52 nA, n = 1.752 — the SPICE model
+//     card's own pair of numbers) is a MEASUREMENT-ONLY counterfactual so the tests
+//     can show the knee difference, never a user knob. Measured contrast in this
+//     network: silicon clips ~5.5-6.3 dB above germanium. It shipped at n = 1.0
+//     until 2026-07-25, where the contrast measured ~0.6-1.7 dB and the A/B was
+//     therefore worthless (audit finding 15; docs §36, ADR 008).
 //   * The charge pump. The real pedal generates a negative rail so its op-amps run
 //     on ~+/-9 V instead of a single 9 V supply. Here that is a HEADROOM statement:
 //     the summing node carries an explicit +/-kRailVolts clamp which, at guitar
@@ -155,7 +159,16 @@ constexpr double kCp = 4.7e-9;  // shunt cap (HF corner ~15.4 kHz)
 constexpr double kGeIs = 200.0e-9;
 constexpr double kGeIdeality = 1.3;
 constexpr double kSiIs = 2.52e-9;
-constexpr double kSiIdeality = 1.0;
+// 1N4148/1N914 SPICE: `IS=2.52n N=1.752`. Was 1.0 until 2026-07-25 — the same
+// dropped-ideality error as RatModel (audit finding 15, docs §36, ADR 008). With
+// n = 1.0 the silicon "counterfactual" clipped only 0.60-1.70 dB above the
+// germanium pair in this same network, so the A/B that exists to show what the
+// germanium buys was showing almost nothing; a real 1N34A-vs-1N4148 comparison is
+// ~6 dB. MEASURED, settled, in this tree (Rs = 2.2 k, Cp = 4.7 nF), Si over Ge:
+// +6.33 dB at 1 V of drive, +5.99 dB at 10 V, +5.47 dB at 100 V.
+// The GERMANIUM side was and is correct (n = 1.3, knee 0.286 V at 1 mA) — only the
+// silicon reference was wrong, so the pedal's own voice is unchanged by this fix.
+constexpr double kSiIdeality = 1.752;
 constexpr double kVt = 25.85e-3;
 
 // --- Section 3: treble ---

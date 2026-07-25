@@ -34,11 +34,27 @@
 //                      choice — the RAT's clipping node sees the op-amp output
 //                      through a 1 k resistor)
 //     kCp = 10 nF     (shunt cap; from the library's clipper example)
-//     Diode: Is = 2.52e-9 A, Vt = 25.85 mV, 1 diode per side -> silicon knee
-//            ~ +/-0.6 V (1N914/1N4148 datasheet-ish values).
+//     Diode: the 1N4148 SPICE model, Is = 2.52 nA with ideality n = 1.752
+//            (IS=2.52n N=1.752), Vt = 25.85 mV, 1 diode per side. MEASURED
+//            settled clipping-node ceiling: 0.548 V at 1 V drive, 0.622 V at 3 V,
+//            0.678 V at 10 V, 0.738 V at 100 V — i.e. the +/-0.6..0.7 V silicon
+//            knee this file has always claimed.
 //   The diode pair is the Werner et al. improved model shipped by the library
 //   (DiodeQuality::Best). Output is the voltage across the shunt cap = the
 //   clipping-node voltage.
+//
+//   AUDIT FINDING 15 (fixed 2026-07-25 — docs §36, ADR 008). This stage shipped
+//   from M1 to v1.1 with the 1N4148's saturation current but its ideality factor
+//   DROPPED: `DiodePairT { P1, kDiodeIs, kDiodeVt, 1.0 }`. The library uses its
+//   fourth argument as `Vt_eff = nDiodes * Vt`, which is exactly where an ideality
+//   factor belongs, so n = 1.0 shrank the junction's thermal voltage by 1.752x and
+//   the pair only reached 0.6 V at ~30 A. Measured ceiling was 0.322 / 0.376 /
+//   0.421 / 0.434 V at 1 / 10 / 100 / 600 V of drive — 5-6 dB BELOW the +/-0.6 V
+//   documented here and in docs §6, with a harder knee than a real silicon pair.
+//   This is a deliberate TONE change: at a given DISTORTION setting the pedal is
+//   now ~5 dB louder and correspondingly cleaner, because the clamp it runs into
+//   sits where a 1N4148 pair's clamp actually sits. No compensating pre-gain was
+//   added (see docs §36 for the measured level/THD consequence and why).
 //
 // STAGE 3 — tone / output (RAT "Filter" + "Volume").
 //   * FILTER knob -> one-pole passive low-pass cutoff, LOG-swept. RAT convention:
@@ -142,8 +158,15 @@ constexpr double kOpAmpSlewVoltsPerSec = 0.3e6;
 // --- Stage 2 constants ---
 constexpr double kRs = 1.0e3;    // series/source resistance (Ohm)
 constexpr double kCp = 10.0e-9;  // shunt capacitance (F)
-constexpr double kDiodeIs = 2.52e-9;   // reverse saturation current (A)
+constexpr double kDiodeIs = 2.52e-9;   // reverse saturation current (A)  [SPICE IS]
 constexpr double kDiodeVt = 25.85e-3;  // thermal voltage (V)
+// Emission / ideality factor. The 1N4148 SPICE model is `IS=2.52n N=1.752`; both
+// numbers come from the same model card and taking one without the other is not a
+// simplification, it is a different diode (audit finding 15). chowdsp_wdf carries it
+// through DiodePairT's fourth argument as Vt_eff = n*Vt = 45.29 mV — the same
+// arithmetic GoldModel already uses for its germanium pair (kGeIdeality = 1.3).
+// BjtStage.h has always had this right (nVt = 0.0453, n ~ 1.75).
+constexpr double kDiodeIdeality = 1.752;
 
 // --- Stage 3 constants ---
 constexpr double kFilterMinHz = 500.0;    // knob = 1 (dark)
@@ -202,7 +225,8 @@ struct RatModel::Impl {
     chowdsp::wdft::ResistiveVoltageSourceT<double> Vs { kRs };
     chowdsp::wdft::CapacitorT<double> Cp { kCp, 48000.0 };
     chowdsp::wdft::WDFParallelT<double, decltype(Vs), decltype(Cp)> P1 { Vs, Cp };
-    chowdsp::wdft::DiodePairT<double, decltype(P1)> diodes { P1, kDiodeIs, kDiodeVt, 1.0 };
+    chowdsp::wdft::DiodePairT<double, decltype(P1)> diodes {
+        P1, kDiodeIs, kDiodeVt, kDiodeIdeality };
 
     // Re-prepare the stage-2 nonlinearity for the current oversampled rate and
     // reset its state. Called on prepare() and on any oversampling change.
