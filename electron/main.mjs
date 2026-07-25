@@ -14,7 +14,7 @@
 // repo; when packaged, electron-builder copies them into the .app bundle's
 // Resources dir (see the `build` config in package.json).
 
-import { app, BrowserWindow, systemPreferences, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, systemPreferences, ipcMain, dialog, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { existsSync } from 'node:fs';
@@ -76,7 +76,76 @@ function promptForApiKey() {
   });
 }
 
+// ── Navigation / permission hardening ────────────────────────────────────────
+// The window renders assistant output, so it must not be steerable off its own
+// origin. Electron's DEFAULTS are permissive here: `window.open` spawns a real
+// BrowserWindow, a navigation to any URL is allowed, and content inherits the
+// permissions the app already holds — including the microphone the user granted
+// for guitar input. (2026-07-24 audit, Security & app layer.)
+
+/** The origin of a URL, or null if it does not parse. */
+function originOf(target) {
+  try {
+    return new URL(target).origin;
+  } catch {
+    return null;
+  }
+}
+
+/** Only these open in the user's real browser. Never file:, never anything else. */
+function isSafeExternal(target) {
+  try {
+    return ['https:', 'http:', 'mailto:'].includes(new URL(target).protocol);
+  } catch {
+    return false;
+  }
+}
+
+function hardenWebContents(contents, appOrigin) {
+  // In-app navigation stays inside the served origin. SPA history routing does
+  // not fire will-navigate, so this costs the app nothing.
+  contents.on('will-navigate', (event, target) => {
+    if (originOf(target) !== appOrigin) {
+      event.preventDefault();
+      console.warn(`[clipper] blocked navigation to ${target}`);
+    }
+  });
+
+  // The default is ALLOW, i.e. window.open() gets a fresh BrowserWindow with no
+  // policy of its own. Deny every one; hand legitimate links to the OS browser.
+  contents.setWindowOpenHandler(({ url: target }) => {
+    if (isSafeExternal(target)) shell.openExternal(target);
+    else console.warn(`[clipper] blocked window.open for ${target}`);
+    return { action: 'deny' };
+  });
+
+  // No <webview> is used anywhere in this app; refuse to grow one.
+  contents.on('will-attach-webview', (event) => {
+    event.preventDefault();
+    console.warn('[clipper] blocked webview attach');
+  });
+}
+
+// The microphone grant belongs to the app origin only. `media` is the only
+// permission the app needs — nothing else in web/src asks for one.
+function hardenSession(sess, appOrigin) {
+  sess.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const requesting = originOf(details?.requestingUrl || contents?.getURL() || '');
+    const granted = permission === 'media' && requesting === appOrigin;
+    if (!granted) console.warn(`[clipper] denied "${permission}" permission to ${requesting}`);
+    callback(granted);
+  });
+  sess.setPermissionCheckHandler((_contents, permission, requestingOrigin) => {
+    // Electron has passed this both as a bare origin and as an origin with a
+    // trailing slash depending on version/call site. Normalise before comparing —
+    // a false negative here would silently kill microphone input, which is the
+    // product.
+    return permission === 'media' && originOf(requestingOrigin) === appOrigin;
+  });
+}
+
 function createMainWindow(url) {
+  const appOrigin = originOf(url);
   const win = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -87,8 +156,13 @@ function createMainWindow(url) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      // Default in Electron 20+, pinned explicitly so it cannot drift.
+      sandbox: true,
     },
   });
+
+  hardenWebContents(win.webContents, appOrigin);
+  hardenSession(win.webContents.session, appOrigin);
 
   win.webContents.on('did-finish-load', () => {
     // Asserted on by the headless launch probe. Do not remove.
