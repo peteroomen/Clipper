@@ -152,7 +152,7 @@ const DECLICK_SECONDS = 0.006;
 // ramps real audio. Costs ~5.3 ms on a deliberate cab change and nothing otherwise.
 //
 // This is a PRE-EXISTING artifact (it is in the shipped v1.1 worklet too) that the
-// old before-rendering-starts cab test could never see; see docs §29.
+// old before-rendering-starts cab test could never see; see docs §30.
 const CAB_SWAP_DEAD_SAMPLES = 256;
 
 class ClipperProcessor extends AudioWorkletProcessor {
