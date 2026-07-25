@@ -46,6 +46,60 @@
   --arc-track: rgba(255, 255, 255, 0.07);
   --cap: linear-gradient(145deg, #2e3238, #212429);
   --cap-edge: linear-gradient(145deg, #1e2126, #2c3036);
+
+  /* ---- …AND SO MUST EVERYTHING PAINTED ON IT (2026-07-24 audit, UI/UX
+     contrast · docs §38) ----
+     The block above pins the chassis SURFACE dark on every theme. Until this
+     slice it stopped there: `--chassis-tint` and every `--accent-*` still came
+     from the page theme, so on the light bench the accents chosen to be readable
+     on light porcelain were painting on dark charcoal. Six of seven pedal value
+     readouts (`.k-val`, 11 px ⇒ 4.5:1 for AA) failed: Pi fuzz 2.15:1, GOLD
+     2.78:1, phaser 3.32:1, RAT 3.51:1, Screamer 3.99:1, SD-1 4.28:1.
+
+     The native tree found this first and fixed it for ONE pedal, with the
+     reasoning at `native/src/ClipperLookAndFeel.h:86-93`: GOLD takes the web's
+     DARK token because its accent only ever paints on the pinned-dark chassis.
+     Generalised here — the on-dark palette lives in tokens.css and this is the
+     one place the chassis adopts it.
+
+     `--chassis-tint` is pinned too, and that mattered: the light tint is
+     rgba(46,52,64,.16) vs dark's rgba(6,8,12,.36), so the "dark island" actually
+     composited SIX RGB STEPS LIGHTER on the light bench (#2A2D34 vs #1C1F24)
+     than in dark theme — the chassis this file's own comment calls identical was
+     not. With the accents pinned but the tint left alone the RAT still measured
+     4.11:1, under the bar; pinning both takes it to 4.93:1. Measured per pedal,
+     per theme, in `web/tests/a11y.spec.ts`.
+
+     This is a no-op in dark theme by construction (the pinned values ARE the
+     dark-theme values, referenced from the same declaration), and the board /
+     amp panel / chat keep the page tokens and stay light. */
+  --chassis-tint: var(--chassis-tint-on-dark);
+  --ai: var(--ai-on-dark); /* focus rings inside the chassis — 2.83:1 → 6.35:1 */
+  --led: var(--led-on-dark);
+  --led-glow: var(--led-glow-on-dark);
+  --accent-rat: var(--led);
+  --accent-rat-glow: var(--led-glow);
+  --accent-sd: var(--accent-sd-on-dark);
+  --accent-sd-glow: var(--accent-sd-glow-on-dark);
+  --accent-ts: var(--accent-ts-on-dark);
+  --accent-ts-glow: var(--accent-ts-glow-on-dark);
+  --accent-muff: var(--accent-muff-on-dark);
+  --accent-muff-glow: var(--accent-muff-glow-on-dark);
+  --accent-phaser: var(--accent-phaser-on-dark);
+  --accent-phaser-glow: var(--accent-phaser-glow-on-dark);
+  --accent-gold: var(--accent-gold-on-dark);
+  --accent-gold-glow: var(--accent-gold-glow-on-dark);
+  --accent-tuner: var(--seg-green);
+  --accent-tuner-glow: var(--seg-green-glow);
+  /* The tuner's meter LEDs and 7-seg screen live entirely inside the chassis. */
+  --seg-red: var(--seg-red-on-dark);
+  --seg-red-glow: var(--seg-red-glow-on-dark);
+  --seg-green: var(--seg-green-on-dark);
+  --seg-green-glow: var(--seg-green-glow-on-dark);
+  --seg-face: var(--seg-face-on-dark);
+  --seg-lit: var(--seg-lit-on-dark);
+  --seg-lit-glow: var(--seg-lit-glow-on-dark);
+  --seg-dim: var(--seg-dim-on-dark);
 }
 
 /* The interior SCULPTING shadows must also go dark so the knobs/wells read as
@@ -110,6 +164,13 @@
 .knob { display: flex; flex-direction: column; align-items: center; gap: 9px; user-select: none;
   touch-action: none; cursor: grab; }
 .knob:active { cursor: grabbing; }
+/* The knob is `role="slider"` and `tabIndex=0`, so it is the most numerous tab
+   stop in the app — and until this slice it was the ONLY control in the tree with
+   no focus ring at all (2026-07-24 audit, UI/UX · docs §38). Same 2 px --ai ring
+   as .fsw / .toggle / .power. The border-radius is load-bearing: .knob is an
+   unrounded flex column and the board packs knobs 8 px apart, so a square ring
+   cuts through the neighbouring knobs' value arcs. */
+.knob:focus-visible { outline: 2px solid var(--ai); outline-offset: 3px; border-radius: 14px; }
 .k-stack { position: relative; width: var(--kd, 74px); height: var(--kd, 74px); }
 .k-arc { position: absolute; inset: -9px; border-radius: 50%;
   background: conic-gradient(from 225deg,

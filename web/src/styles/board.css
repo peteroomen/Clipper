@@ -338,6 +338,23 @@
   transform: none;
 }
 
+/* The user-IR file input. Clipped rather than `display: none` so the element is
+   still laid out (a zero-box element is reliably `.click()`-able and reliably
+   drivable by a test harness), but it is out of the tab order (`tabIndex=-1`) and
+   out of the accessibility tree (`aria-hidden`) because the real, named control is
+   the "Upload IR…" menu button that forwards to it. Docs §38. */
+.vh-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  border: 0;
+  pointer-events: none;
+}
+
 @media (max-width: 760px) {
   .board-track {
     gap: 40px 24px;

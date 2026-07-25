@@ -68,9 +68,24 @@ export function Tuner({ reading, engaged, onToggleEngaged }: TunerProps) {
 
   // One rAF loop eases the meter bar and drives the lock (both need continuous
   // time, independent of how often readings arrive).
+  //
+  // It only runs WHILE ENGAGED (2026-07-24 audit, UI/UX: "Tuner burns a rAF loop
+  // whether engaged or not"). A disengaged tuner has no reading by construction —
+  // the first line of the loop discards it — so every one of those ~60 frames per
+  // second was easing a zero toward zero and rewriting eleven `data-on="false"`
+  // attributes with the values they already had, for as long as a tuner sat on the
+  // board. Detection itself is already gated on `engaged` upstream (audio.ts).
+  //
+  // On disengage the effect re-runs and the cleanup cancels the frame, so the loop
+  // is torn down mid-sweep — hence the settle pass below, which parks the meter
+  // dark instead of freezing it wherever the bar happened to be.
   useEffect(() => {
     let raf = 0;
-    const tick = (t: number) => {
+
+    // Paint ONE frame of the meter from the current state. No scheduling — the
+    // loop below drives it while engaged, and the cleanup calls it once more to
+    // park the meter dark on disengage.
+    const paint = (t: number) => {
       const r = engagedRef.current ? readingRef.current : null;
       const target = r ? Math.max(-MAX_CENTS, Math.min(MAX_CENTS, r.cents)) : 0;
       centsEasedRef.current += (target - centsEasedRef.current) * 0.28; // ease
@@ -117,11 +132,27 @@ export function Tuner({ reading, engaged, onToggleEngaged }: TunerProps) {
         }
         if (el.dataset.on !== String(on)) el.dataset.on = String(on);
       }
-      raf = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(tick);
+
+    const loop = (t: number) => {
+      paint(t);
+      raf = requestAnimationFrame(loop);
+    };
+
+    if (!engaged) {
+      // Not engaged: snap the ease to rest and park everything dark in ONE pass,
+      // then schedule nothing. `centsEasedRef` is set directly rather than eased so
+      // the parked state is reached immediately instead of over ~10 frames of a
+      // loop we are about to not run.
+      centsEasedRef.current = 0;
+      inTuneSinceRef.current = null;
+      paint(performance.now());
+      return;
+    }
+
+    raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, []);
+  }, [engaged]);
 
   const showReading = engaged && reading != null;
   const letter = showReading ? reading!.note[0] : '-';

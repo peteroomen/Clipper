@@ -7,6 +7,68 @@
 }
 
 /* ---------- tokens ---------- */
+/* ---- THE ON-DARK PALETTE (2026-07-24 audit, UI/UX contrast · docs §38) ----
+   These values are THEME-INVARIANT on purpose. They are the accents, LED and
+   tuner-segment colours as they paint on a surface that is pinned DARK on every
+   theme — which is exactly what the pedal chassis is (`pedal.css`: "the bench is
+   light, the hardware is dark", the dark-island rule, docs §17).
+
+   Why they have to exist. `.pedal` pins its interior token context (panel
+   surface, wells, knob caps, ink) to the dark-theme values on every theme, but it
+   did NOT pin `--accent-*` or `--chassis-tint`. So in LIGHT theme the light
+   accents — chosen to be readable on light porcelain — painted on a dark charcoal
+   chassis, and six of seven pedal value readouts fell under WCAG AA: the Pi fuzz
+   at 2.15:1, GOLD at 2.78:1, the phaser at 3.32:1, the RAT at 3.51:1, the
+   Screamer at 3.99:1, the SD-1 at 4.28:1 (4.5:1 is the bar for 11 px text).
+
+   The native tree already found and fixed exactly this, for ONE pedal, with the
+   reasoning written out at `native/src/ClipperLookAndFeel.h:86-93`: GOLD takes
+   the web's DARK-theme token because its accent only ever paints on the pinned-
+   dark chassis. This block generalises that to every accent that lands on the
+   chassis, and `pedal.css` pins them in one place.
+
+   The dark-theme blocks below REFERENCE these, so each colour has exactly one
+   literal in the tree and light/dark can never drift apart. Anything painted on
+   the light bench (the amp panel, the board, the chat) keeps the page tokens and
+   must NOT read these. */
+:root {
+  --led-on-dark: #FF4A34;
+  --led-glow-on-dark: rgba(255, 74, 52, 0.6);
+  --led-sd-on-dark: #FFB627;
+  --led-sd-glow-on-dark: rgba(255, 182, 39, 0.55);
+  --accent-sd-on-dark: #FFC94D; /* bright warm yellow, glows on the dark chassis */
+  --accent-sd-glow-on-dark: rgba(255, 201, 77, 0.55);
+  --accent-ts-on-dark: #2FD07A; /* bright emerald green */
+  --accent-ts-glow-on-dark: rgba(60, 220, 135, 0.6);
+  --accent-muff-on-dark: #B98CEE; /* bright violet */
+  --accent-muff-glow-on-dark: rgba(176, 123, 232, 0.6);
+  --accent-phaser-on-dark: #FF8C3A; /* bright orange */
+  --accent-phaser-glow-on-dark: rgba(255, 140, 58, 0.55);
+  --accent-gold-on-dark: #D9B36B; /* antique champagne gold */
+  --accent-gold-glow-on-dark: rgba(217, 179, 107, 0.55);
+  --accent-jcm-on-dark: #E8B84B; /* brighter brass gold */
+  --accent-jcm-glow-on-dark: rgba(232, 184, 75, 0.55);
+  --accent-twin-on-dark: #7FB4E8; /* brighter cool silver-blue */
+  --accent-twin-glow-on-dark: rgba(127, 180, 232, 0.55);
+  --accent-ac30-on-dark: #E08A4A; /* brighter warm copper */
+  --accent-ac30-glow-on-dark: rgba(224, 138, 74, 0.55);
+  --chassis-tint-on-dark: rgba(6, 8, 12, 0.36); /* the one charcoal wash */
+  /* The focus ring is a UI component, so WCAG wants 3:1 against what it sits on.
+     The light-theme --ai (#3E6FD6) is chosen for the porcelain bench and only
+     reaches 2.83:1 on the pinned-dark chassis; the dark-theme blue reaches
+     6.35:1. Pedal-interior focus rings therefore take the on-dark blue. */
+  --ai-on-dark: #7CA5F2;
+  /* Tuner segments + 7-seg screen: entirely inside the pedal chassis. */
+  --seg-red-on-dark: #FF4A34;
+  --seg-red-glow-on-dark: rgba(255, 74, 52, 0.6);
+  --seg-green-on-dark: #34E070;
+  --seg-green-glow-on-dark: rgba(52, 224, 112, 0.65);
+  --seg-face-on-dark: #101216;
+  --seg-lit-on-dark: #DDF6E5;
+  --seg-lit-glow-on-dark: rgba(90, 240, 150, 0.55);
+  --seg-dim-on-dark: rgba(150, 175, 160, 0.1);
+}
+
 :root {
   /* Porcelain (light) — warm-neutral molded surface */
   --ground: #E5E3DE;
@@ -109,16 +171,18 @@
     --ink: #E8E9EB;
     --ink-dim: #969BA3;
     --ink-faint: #6A6F77;
-    --led: #FF4A34;
-    --led-glow: rgba(255, 74, 52, 0.6);
-    --led-sd: #FFB627;
-    --led-sd-glow: rgba(255, 182, 39, 0.55);
+    /* The dark theme IS the on-dark palette — reference it so each colour has one
+       literal in the tree and the two can never drift (docs §38). */
+    --led: var(--led-on-dark);
+    --led-glow: var(--led-glow-on-dark);
+    --led-sd: var(--led-sd-on-dark);
+    --led-sd-glow: var(--led-sd-glow-on-dark);
     --arc-track: rgba(255, 255, 255, 0.07);
     --glass-bg: rgba(38, 42, 50, 0.38);
     --glass-edge: rgba(255, 255, 255, 0.16);
     --glass-ink: #ECEEF1;
     --glass-tint: rgba(112, 156, 255, 0.08);
-    --ai: #7CA5F2;
+    --ai: var(--ai-on-dark);
     --blob-a: rgba(255, 92, 54, 0.20);
     --blob-b: rgba(92, 132, 255, 0.16);
     --cap: linear-gradient(145deg, #2E3238, #212429);
@@ -129,42 +193,42 @@
     --cable-hi: rgba(255, 255, 255, 0.11);
     --cable-plug: #474C54;
     /* M6.8.1 pedal identity — one deep charcoal chassis for all; accent per pedal */
-    --chassis-tint: rgba(6, 8, 12, 0.36); /* the one charcoal wash, all pedals */
+    --chassis-tint: var(--chassis-tint-on-dark); /* the one charcoal wash, all pedals */
     --rat-tint: transparent;
     --sd1-tint: transparent;
     --tuner-tint: transparent;
     --accent-rat: var(--led);
     --accent-rat-glow: var(--led-glow);
-    --accent-sd: #FFC94D; /* bright warm yellow, glows on the dark board */
-    --accent-sd-glow: rgba(255, 201, 77, 0.55);
-    --accent-ts: #2FD07A; /* bright emerald green, glows on the dark board */
-    --accent-ts-glow: rgba(60, 220, 135, 0.6);
-    --accent-muff: #B98CEE; /* bright violet, glows on the dark board */
-    --accent-muff-glow: rgba(176, 123, 232, 0.6);
-    --accent-phaser: #FF8C3A; /* bright orange, glows on the dark board */
-    --accent-phaser-glow: rgba(255, 140, 58, 0.55);
-    --accent-gold: #D9B36B; /* antique champagne gold, glows on the dark board */
-    --accent-gold-glow: rgba(217, 179, 107, 0.55);
+    --accent-sd: var(--accent-sd-on-dark);
+    --accent-sd-glow: var(--accent-sd-glow-on-dark);
+    --accent-ts: var(--accent-ts-on-dark);
+    --accent-ts-glow: var(--accent-ts-glow-on-dark);
+    --accent-muff: var(--accent-muff-on-dark);
+    --accent-muff-glow: var(--accent-muff-glow-on-dark);
+    --accent-phaser: var(--accent-phaser-on-dark);
+    --accent-phaser-glow: var(--accent-phaser-glow-on-dark);
+    --accent-gold: var(--accent-gold-on-dark);
+    --accent-gold-glow: var(--accent-gold-glow-on-dark);
     --accent-tuner: var(--seg-green);
     --accent-tuner-glow: var(--seg-green-glow);
     /* M9.4 JCM800 — brighter brass gold, glows on the dark board */
-    --accent-jcm: #E8B84B;
-    --accent-jcm-glow: rgba(232, 184, 75, 0.55);
+    --accent-jcm: var(--accent-jcm-on-dark);
+    --accent-jcm-glow: var(--accent-jcm-glow-on-dark);
     /* M10.1 Twin — brighter cool silver-blue, glows on the dark board */
-    --accent-twin: #7FB4E8;
-    --accent-twin-glow: rgba(127, 180, 232, 0.55);
+    --accent-twin: var(--accent-twin-on-dark);
+    --accent-twin-glow: var(--accent-twin-glow-on-dark);
     /* v1.1 AC30 — brighter warm copper, glows on the dark board */
-    --accent-ac30: #E08A4A;
-    --accent-ac30-glow: rgba(224, 138, 74, 0.55);
+    --accent-ac30: var(--accent-ac30-on-dark);
+    --accent-ac30-glow: var(--accent-ac30-glow-on-dark);
     /* M6.8 tuner segments (glow on dark) */
-    --seg-red: #FF4A34;
-    --seg-red-glow: rgba(255, 74, 52, 0.6);
-    --seg-green: #34E070;
-    --seg-green-glow: rgba(52, 224, 112, 0.65);
-    --seg-face: #101216;
-    --seg-lit: #DDF6E5;
-    --seg-lit-glow: rgba(90, 240, 150, 0.55);
-    --seg-dim: rgba(150, 175, 160, 0.1);
+    --seg-red: var(--seg-red-on-dark);
+    --seg-red-glow: var(--seg-red-glow-on-dark);
+    --seg-green: var(--seg-green-on-dark);
+    --seg-green-glow: var(--seg-green-glow-on-dark);
+    --seg-face: var(--seg-face-on-dark);
+    --seg-lit: var(--seg-lit-on-dark);
+    --seg-lit-glow: var(--seg-lit-glow-on-dark);
+    --seg-dim: var(--seg-dim-on-dark);
   }
 }
 :root[data-theme="light"] {
@@ -198,26 +262,26 @@
   --ground: #26292E; --ground-deep: #202329;
   --sh-dark: rgba(9,11,14,.85); --sh-darker: rgba(5,6,8,.6); --sh-light: rgba(255,255,255,.055);
   --well: #1D2025; --ink: #E8E9EB; --ink-dim: #969BA3; --ink-faint: #6A6F77;
-  --led: #FF4A34; --led-glow: rgba(255,74,52,.6);
-  --led-sd: #FFB627; --led-sd-glow: rgba(255,182,39,.55); --arc-track: rgba(255,255,255,.07);
+  --led: var(--led-on-dark); --led-glow: var(--led-glow-on-dark);
+  --led-sd: var(--led-sd-on-dark); --led-sd-glow: var(--led-sd-glow-on-dark); --arc-track: rgba(255,255,255,.07);
   --glass-bg: rgba(38,42,50,.38); --glass-edge: rgba(255,255,255,.16); --glass-ink: #ECEEF1;
-  --glass-tint: rgba(112,156,255,.08); --ai: #7CA5F2;
+  --glass-tint: rgba(112,156,255,.08); --ai: var(--ai-on-dark);
   --blob-a: rgba(255,92,54,.20); --blob-b: rgba(92,132,255,.16);
   --cap: linear-gradient(145deg,#2E3238,#212429); --cap-edge: linear-gradient(145deg,#1E2126,#2C3036);
   --panel-grad: linear-gradient(160deg,#292C32,#222529);
   --cable: #14161A; --cable-hi: rgba(255,255,255,.11); --cable-plug: #474C54;
-  --chassis-tint: rgba(6,8,12,.36); --rat-tint: transparent; --sd1-tint: transparent; --tuner-tint: transparent;
+  --chassis-tint: var(--chassis-tint-on-dark); --rat-tint: transparent; --sd1-tint: transparent; --tuner-tint: transparent;
   --accent-rat: var(--led); --accent-rat-glow: var(--led-glow);
-  --accent-sd: #FFC94D; --accent-sd-glow: rgba(255,201,77,.55);
-  --accent-ts: #2FD07A; --accent-ts-glow: rgba(60,220,135,.6);
-  --accent-muff: #B98CEE; --accent-muff-glow: rgba(176,123,232,.6);
-  --accent-phaser: #FF8C3A; --accent-phaser-glow: rgba(255,140,58,.55);
-  --accent-gold: #D9B36B; --accent-gold-glow: rgba(217,179,107,.55);
-  --accent-jcm: #E8B84B; --accent-jcm-glow: rgba(232,184,75,.55);
-  --accent-twin: #7FB4E8; --accent-twin-glow: rgba(127,180,232,.55);
-  --accent-ac30: #E08A4A; --accent-ac30-glow: rgba(224,138,74,.55);
+  --accent-sd: var(--accent-sd-on-dark); --accent-sd-glow: var(--accent-sd-glow-on-dark);
+  --accent-ts: var(--accent-ts-on-dark); --accent-ts-glow: var(--accent-ts-glow-on-dark);
+  --accent-muff: var(--accent-muff-on-dark); --accent-muff-glow: var(--accent-muff-glow-on-dark);
+  --accent-phaser: var(--accent-phaser-on-dark); --accent-phaser-glow: var(--accent-phaser-glow-on-dark);
+  --accent-gold: var(--accent-gold-on-dark); --accent-gold-glow: var(--accent-gold-glow-on-dark);
+  --accent-jcm: var(--accent-jcm-on-dark); --accent-jcm-glow: var(--accent-jcm-glow-on-dark);
+  --accent-twin: var(--accent-twin-on-dark); --accent-twin-glow: var(--accent-twin-glow-on-dark);
+  --accent-ac30: var(--accent-ac30-on-dark); --accent-ac30-glow: var(--accent-ac30-glow-on-dark);
   --accent-tuner: var(--seg-green); --accent-tuner-glow: var(--seg-green-glow);
-  --seg-red: #FF4A34; --seg-red-glow: rgba(255,74,52,.6);
-  --seg-green: #34E070; --seg-green-glow: rgba(52,224,112,.65);
-  --seg-face: #101216; --seg-lit: #DDF6E5; --seg-lit-glow: rgba(90,240,150,.55); --seg-dim: rgba(150,175,160,.1);
+  --seg-red: var(--seg-red-on-dark); --seg-red-glow: var(--seg-red-glow-on-dark);
+  --seg-green: var(--seg-green-on-dark); --seg-green-glow: var(--seg-green-glow-on-dark);
+  --seg-face: var(--seg-face-on-dark); --seg-lit: var(--seg-lit-on-dark); --seg-lit-glow: var(--seg-lit-glow-on-dark); --seg-dim: var(--seg-dim-on-dark);
 }

@@ -3,22 +3,38 @@
 //
 // Interactions ported from the design artifact:
 //   - drag vertically with pointer capture (up = increase)
-//   - mouse wheel
+//   - HOLD SHIFT for a fine drag (5× the travel per unit)
+//   - mouse wheel (Shift = fine)
 //   - double-click resets to a per-knob default
-//   - ArrowUp/Right / ArrowDown/Left when focused
+//   - ArrowUp/Right / ArrowDown/Left when focused (Shift = fine), PageUp/PageDown
+//     for a coarse jump, Home/End for the ends of the range
 //   - a very quiet tick as the value crosses a detent
 //
 // The value arc + pointer read `--deg` (0..270°, from 225°) which inherits from
 // the .k-stack element. It is a controlled component: `value` comes from props
 // and every change is reported through `onChange` so it can flow to the worklet.
+//
+// 2026-07-25 (audit UI/UX, docs §38) — this control was the audit's headline
+// accessibility gap: "the most numerous tab stop and the only control with no
+// focus ring, no fine-adjust (1.6 px/unit), and no Home/End/PageUp". The ring is
+// in pedal.css (`.knob:focus-visible`); the rest is below.
 
 import { useCallback, useEffect, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent, CSSProperties } from 'react';
 import { tick } from '../ui-sound';
 
 const RANGE_PX = 160; // vertical pixels for a full 0..1 sweep
+// FINE drag: 5× the travel, i.e. 800 px for a full sweep (8.0 px per 1 %, against
+// 1.6 px per 1 % coarse). At the coarse rate a single screen pixel is 0.6 % and a
+// hand tremor is a tone change; at the fine rate the same 40 px gesture resolves
+// 5 % instead of 25 %.
+const FINE_RANGE_PX = 800;
 const WHEEL_STEP = 0.03;
-const KEY_STEP = 0.05;
+const FINE_WHEEL_STEP = 0.006;
+const KEY_STEP = 0.05; // Arrow — the everyday nudge
+const FINE_KEY_STEP = 0.01; // Shift+Arrow
+const PAGE_STEP = 0.2; // PageUp/PageDown — the ARIA slider convention is a step
+//                        materially larger than the arrows'
 const TICK_DETENT = 0.04;
 
 export interface KnobProps {
@@ -46,10 +62,17 @@ export function Knob({ value, defaultValue, name, ariaLabel, onChange, testId }:
   onChangeRef.current = onChange;
   const lastTick = useRef(value);
 
-  const drag = useRef<{ active: boolean; startY: number; startV: number }>({
+  // The drag is INCREMENTAL, not anchored to the press point. An anchored drag
+  // (`startV + (startY - clientY) / range`) cannot express a mid-drag sensitivity
+  // change: the instant Shift goes down the same pointer offset means a different
+  // value and the knob jumps. Accumulating `dy / range` per move makes Shift a
+  // live sensitivity control with no discontinuity. The cost is that overshoot at
+  // an end is not remembered — dragging past 100 % and back comes straight off
+  // the stop, which is how a real detent-less pot behaves anyway.
+  const drag = useRef<{ active: boolean; lastY: number; acc: number }>({
     active: false,
-    startY: 0,
-    startV: value,
+    lastY: 0,
+    acc: value,
   });
 
   const apply = useCallback((next: number) => {
@@ -68,20 +91,24 @@ export function Knob({ value, defaultValue, name, ariaLabel, onChange, testId }:
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      apply(valueRef.current - Math.sign(e.deltaY) * WHEEL_STEP);
+      apply(valueRef.current - Math.sign(e.deltaY) * (e.shiftKey ? FINE_WHEEL_STEP : WHEEL_STEP));
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, [apply]);
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    drag.current = { active: true, startY: e.clientY, startV: valueRef.current };
+    drag.current = { active: true, lastY: e.clientY, acc: clamp01(valueRef.current) };
     e.currentTarget.setPointerCapture(e.pointerId);
     e.preventDefault();
   };
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!drag.current.active) return;
-    apply(drag.current.startV + (drag.current.startY - e.clientY) / RANGE_PX);
+    const d = drag.current;
+    if (!d.active) return;
+    const range = e.shiftKey ? FINE_RANGE_PX : RANGE_PX;
+    d.acc = clamp01(d.acc + (d.lastY - e.clientY) / range);
+    d.lastY = e.clientY;
+    apply(d.acc);
   };
   const endDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
     drag.current.active = false;
@@ -91,14 +118,39 @@ export function Knob({ value, defaultValue, name, ariaLabel, onChange, testId }:
       /* capture may already be gone */
     }
   };
+  // Full ARIA slider keyboard contract. `Home`/`End` slam to the ends of the
+  // range and `PageUp`/`PageDown` take a coarse step; before this slice a keyboard
+  // player needed 20 arrow presses to cross the sweep and had no way to reach an
+  // end exactly (0.05 steps from an arbitrary persisted value never land on 0).
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (e.key === 'ArrowUp' || e.key === 'ArrowRight') {
-      apply(valueRef.current + KEY_STEP);
-      e.preventDefault();
-    } else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') {
-      apply(valueRef.current - KEY_STEP);
-      e.preventDefault();
+    const step = e.shiftKey ? FINE_KEY_STEP : KEY_STEP;
+    let next: number | null = null;
+    switch (e.key) {
+      case 'ArrowUp':
+      case 'ArrowRight':
+        next = valueRef.current + step;
+        break;
+      case 'ArrowDown':
+      case 'ArrowLeft':
+        next = valueRef.current - step;
+        break;
+      case 'PageUp':
+        next = valueRef.current + PAGE_STEP;
+        break;
+      case 'PageDown':
+        next = valueRef.current - PAGE_STEP;
+        break;
+      case 'Home':
+        next = 0;
+        break;
+      case 'End':
+        next = 1;
+        break;
+      default:
+        return;
     }
+    apply(next);
+    e.preventDefault();
   };
 
   const readout = Math.round(value * 100);
@@ -111,6 +163,7 @@ export function Knob({ value, defaultValue, name, ariaLabel, onChange, testId }:
       role="slider"
       tabIndex={0}
       aria-label={ariaLabel}
+      aria-orientation="vertical"
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={readout}

@@ -6656,3 +6656,237 @@ it stays open. The valve solvers (`TriodeStage`, the three power amps) use a pla
 exit with **no** backtracking line search, so finding 12 does not apply to them.
 
 **The WASM artifact must be rebuilt** (`bash scripts/build-wasm.sh`) — `core/` changed.
+
+---
+
+## 38. Audit UI/UX — the web input & accessibility cluster
+
+**Slice:** `fix/web-input-and-a11y` (2026-07-25). **No `core/`, no `web/worklet/`, no `native/`, no
+`web/public/generated/` — zero DSP change and no WASM rebuild.** Files: `web/src/components/{Knob,
+Menu,Board,Chat,Tuner}.tsx`, `web/src/styles/{tokens,pedal,board}.css`, `web/tests/a11y.spec.ts`.
+
+Seven findings from the audit's **UI/UX** section, all on the web side. The through-line is that none
+of them were *unknown*: the knob focus ring is a documented convention in `CLAUDE.md`, the
+dark-chassis accent rule is written out in `native/src/ClipperLookAndFeel.h`, and "never update React
+state at pointer-move rate" is a stated invariant. They were unenforced. So every one of them now has
+a Playwright test that asserts the **player-observable** property, and the two quantitative claims
+(contrast, wasted frames) are measured from the shipped page rather than asserted.
+
+### 38.1 Contrast — the accents were painting light-theme colours on a dark chassis
+
+`pedal.css` pins the pedal's interior token context to the **dark-theme values on every theme** — the
+"dark island" rule from §17 ("the bench is light, the hardware is dark"). It pinned the panel surface,
+the wells, the knob caps and the ink. It did **not** pin `--accent-*`. So on the light bench, accents
+chosen to be readable on light porcelain were painting on dark charcoal.
+
+The native tree had already found this — for **one** pedal, with the reasoning written out at
+`native/src/ClipperLookAndFeel.h:86-93`: GOLD takes the web's *dark*-theme token because its accent
+only ever paints on the pinned-dark chassis. That reasoning generalises to every accent on the
+chassis, and the web never got it.
+
+**Measured, from the shipped stylesheet in a real page.** `.k-val` is 11 px at weight 600, so the WCAG
+AA bar is the full **4.5:1** — it is not "large text". The chassis is two paint layers, a flat
+`--chassis-tint` wash over the `--panel-grad` gradient, so the honest figure is the worse of the two
+gradient stops:
+
+| pedal | what the accent paints | bar | before | accents pinned only | after |
+|---|---|---|---|---|---|
+| RAT | value readout | 4.5:1 | **3.51:1** | 4.11:1 ✗ | **4.93:1** |
+| SD-1 | value readout | 4.5:1 | **4.28:1** | 8.98:1 | **10.77:1** |
+| Screamer | value readout | 4.5:1 | **3.99:1** | 6.83:1 | **8.19:1** |
+| Pi fuzz | value readout | 4.5:1 | **2.15:1** | 5.27:1 | **6.32:1** |
+| GOLD | value readout | 4.5:1 | **2.78:1** | 6.95:1 | **8.34:1** |
+| Phaser | value readout | 4.5:1 | **3.32:1** | 5.93:1 | **7.12:1** |
+| Tuner | lock LED + meter centre | 3.0:1 | 5.88:1 | 7.88:1 | **9.46:1** |
+
+Six of the seven accents were under their bar in light theme; the worst, the Pi fuzz, was at
+**2.15:1** — less than half.
+
+**A second unpinned token, not in the audit, and the fix does not work without it.** Pinning
+`--accent-*` alone leaves the RAT at **4.11:1**, still failing. `--chassis-tint` is
+`rgba(46,52,64,.16)` in light theme and `rgba(6,8,12,.36)` in dark, so the "dark island" actually
+composited to `#2A2D34 → #24272D` on the light bench against `#1C1F24 → #181B1F` in dark theme —
+**six RGB steps lighter**. The chassis this file's own comment calls identical was not. Pinning the
+tint as well makes it identical, and takes the RAT to 4.93:1.
+
+**Third, the focus ring.** `--ai` (the focus colour) was also unpinned: the light-theme `#3E6FD6`
+reaches only **2.83:1** on the pinned-dark chassis, under the 3:1 non-text bar. Pinned to the
+dark-theme blue it measures **6.69:1**.
+
+**How it is implemented, without hardcoding a colour** (CLAUDE.md, UI conventions). `tokens.css` grows
+one theme-invariant `*-on-dark` block — the accents, `--led*`, `--ai`, `--chassis-tint` and the whole
+tuner `--seg-*` set as they paint on a pinned-dark surface. **Both dark-theme blocks now reference
+that block** rather than repeating literals, so every colour has exactly one literal in the tree and
+light/dark cannot drift. `pedal.css` pins the chassis to it in one place. It is a **no-op in dark
+theme by construction** — verified: every dark-theme ratio above is unchanged to the digit.
+
+One thing worth knowing if you extend this: custom-property `var()` substitution happens at
+computed-value time **on the element that declares the property**. `--pedal-accent: var(--accent-sd)`
+is declared on `.pedal[data-pedal-type="sd1"]`, which is the *same element* as `.pedal`, so pinning
+`--accent-sd` on `.pedal` does reach it. It would **not** have reached a `--pedal-accent` declared on
+an ancestor, and stylesheet order is irrelevant either way.
+
+### 38.2 The knob — the most numerous tab stop, and the least operable control
+
+| gesture | before | after |
+|---|---|---|
+| focus ring | **none at all** — the only control in the tree without one | 2 px `--ai` ring, `border-radius: 14px`, 6.69:1 |
+| drag | 1.6 px per 1 % | 1.6 px per 1 % (unchanged) |
+| drag + **Shift** | *no fine mode existed* | **8.0 px per 1 %** (5×) |
+| arrow key | 5 % | 5 % |
+| **Shift** + arrow | 5 % | **1 %** |
+| PageUp / PageDown | *no handler* | **±20 %** |
+| Home / End | *no handler* | **0 % / 100 %** |
+
+A 40 px drag now resolves 25 % coarse or **5 %** fine — measured 5.00×, the ratio the constants
+predict. Before this, a keyboard player needed 20 presses to cross the sweep and could not reach an
+end *exactly*, because 0.05 steps from an arbitrary persisted value never land on 0 or 1.
+
+**The drag had to become incremental to make the modifier work.** The anchored form,
+`startV + (startY - clientY) / range`, cannot express a mid-drag sensitivity change: the instant Shift
+goes down the same pointer offset means a different value and the knob jumps — by 0.10 for a 20 px
+offset, which on a distortion knob is audible. Accumulating `dy / range` per move makes Shift a live
+sensitivity control with no discontinuity. The cost is that overshoot at an end is not remembered
+(drag past 100 % and back and it comes straight off the stop), which is how a detent-less pot behaves
+anyway. There is a test for the no-jump property specifically, and it carries a teeth-check assertion
+so it cannot pass by the drag doing nothing.
+
+The `border-radius` on the ring is load-bearing, not cosmetic: `.knob` is an unrounded flex column and
+the board packs knobs 8 px apart, so a square outline slices through the neighbouring knobs' arcs.
+
+`role="slider"` and live `aria-valuenow`/`aria-valuetext` were already correct — verified rather than
+assumed, and `aria-orientation="vertical"` added, since the gesture is a vertical drag and the role's
+default is horizontal.
+
+### 38.3 The popovers — `web/src/components/Menu.tsx`
+
+The three popovers (pedal swap, gear tray, amp/cab) were each hand-rolled as
+`{open && <div role="menu">}` with **no Escape, no click-outside and no focus trap**. That is a
+keyboard dead end: the role announces a menu, Tab then walks focus out of it and *behind* it, and
+there was no way to dismiss one at all without picking an item.
+
+One shared component now owns four behaviours so a fourth popover cannot ship without them:
+
+1. **Escape** closes and returns focus to the trigger. The listener is on the *document*, because
+   focus may legitimately be on the trigger rather than inside the panel.
+2. **Pointer-down outside** closes — with the trigger explicitly excluded from "outside". Without that
+   exclusion the sequence `pointerdown` (close) → `click` (toggle) reopens the panel, which reads to
+   the player as a menu that refuses to close.
+3. **Focus moves into the panel** on open, and **Tab/Shift+Tab cycle inside it**, computed live from
+   the panel's focusable children so the trap cannot go stale as items are added (a custom cab entry,
+   a new pedal type).
+4. `aria-haspopup` / `aria-expanded` driven by the same prop that renders the panel, so they cannot
+   fall out of step.
+
+**Deliberately not done:** arrow-key roving focus with a single tab stop, which is what `role="menu"`
+canonically wants. Tab-cycling is correct and escapable, which is what the audit asked for; roving
+focus is a follow-up.
+
+### 38.4 "Upload IR…" was mouse-only and invisible to assistive tech
+
+It was a `<label>` wrapping a `display: none` input: no role, no accessible name, no tab stop. It is
+now a real `<button role="menuitem">` that forwards to the input, so it is named, in the accessibility
+tree, tab-reachable and Enter/Space operable. The test does not stop at "it has a name" — it presses
+**Enter** and asserts the click actually reaches the file input, because a named button that forwards
+nowhere is dead UI that satisfies every other check.
+
+**Found while fixing it:** the input was a *child of the popover*. Any state change that closed the
+menu while the OS file dialog was open would unmount the input mid-dialog and silently drop the
+selection. It now lives outside the conditional, in `.amp-slot-head`.
+
+### 38.5 Chat — the transcript yanked itself, and announced nothing
+
+Auto-scroll was unconditional, so scrolling up to re-read what the coach said about your gain staging
+was undone by the next streamed token. It now scrolls **only when the view is already pinned to the
+bottom** (within 48 px). Pinned-ness is tracked in a **ref** updated from `onScroll`, never React
+state — scroll fires at frame rate and the invariant is that nothing at pointer/scroll rate
+re-renders. It has to come from the ref rather than being measured in the effect: by the time the
+effect runs the new content is already in the DOM, so measuring there would report "not at the bottom"
+for a player who was.
+
+Measured: reading back at `scrollTop 0` with a bottom of 1732, a new turn now leaves `scrollTop` at
+**0**; before the fix the same sequence jumped it to **1732**.
+
+The transcript is also now a live region (`role="log"`, `aria-live="polite"`,
+`aria-relevant="additions text"`). `aria-busy` is bound to the streaming flag so a screen reader
+announces the finished reply once instead of re-announcing the bubble on every token delta.
+
+### 38.6 Tuner — a rAF loop that ran whether engaged or not
+
+The loop's own first line discards the reading when disengaged, so every frame was easing a zero
+toward zero and rewriting eleven `data-on="false"` attributes with the values they already had, for as
+long as a tuner sat on the board.
+
+**Measured** (every `requestAnimationFrame` counted in-page over a 1000 ms window):
+
+| tuner state | before | after |
+|---|---|---|
+| **disengaged** | **61 frames/s** | **0 frames/s** |
+| engaged | 59 frames/s | 57 frames/s |
+
+The effect now depends on `engaged`, so disengaging tears the loop down mid-sweep — hence a single
+settle pass on the disengaged branch that snaps the ease to rest and parks the meter dark rather than
+freezing it wherever the bar happened to be. The test asserts both directions *and* that zero segments
+are lit after disengaging, so "fixing" this by breaking the tuner fails.
+
+### 38.7 `Board.tsx` — a cable from a jack that has no position
+
+`center()` null-checked the element but not the rect. A jack inside a `display: none` ancestor is
+still in the DOM and still returns a `DOMRect` — an all-zero one — so the returned point was
+`{-brect.left, -brect.top}`: the viewport origin expressed in board coordinates, perfectly truthy.
+Below 760 px, where `board.css` hides `.board-source`, that drew a cable from off the board.
+
+`center()` now returns `null` for a rect with zero width **and** zero height, and the caller already
+skips a segment with a missing endpoint. Measured: at 1280 px both cables are drawn (the control —
+without it "no stray cable" would be satisfied by drawing none); at 700 px exactly one cable remains
+and its start point is inside the board's bounds.
+
+**One correction to the audit text:** it says the stray cable renders "from off-screen **below**
+760 px". The defect reproduces exactly, but 760 px is the *breakpoint*, and the stray cable renders
+from *above and left* of the board (the viewport origin), not from below it.
+
+### 38.8 The tests, and their teeth
+
+`web/tests/a11y.spec.ts`, 15 tests. The contrast tests do not compare a colour against a hardcoded
+expectation — that would only restate the stylesheet. They read the colours the **browser** resolved,
+composite the chassis exactly as it is painted, and compute the WCAG 2.x ratio; a future token change
+that quietly makes a readout unreadable fails here with the real number, whatever the change was. They
+also **assert the background is exactly two 2-stop gradients**, so a restructure of `.pedal.raised`
+fails loudly instead of silently measuring the wrong surface.
+
+Two details worth copying:
+
+- A *used* value (`getComputedStyle(el).color`) is always serialised `rgb()`, but a **custom property**
+  comes back as its literal token text — `--accent-rat: var(--led)` returns `#F03B24`. The parser must
+  handle both, or a before/after comparison silently covers only half the palette. This bit once
+  during development.
+- "Reachable by keyboard" is asserted by **Tab-ing from the body** until the control is focused, never
+  by `.focus()`. A control can be programmatically focusable and still be off the tab order — which is
+  exactly what was wrong with "Upload IR…". The same helper also caught that a knob's bounding box
+  sits below the fold at the default viewport, so a synthetic drag silently missed it and measured a
+  delta of zero — a `scrollIntoViewIfNeeded` is required before any `page.mouse` gesture on the board.
+
+**Teeth, measured rather than claimed:** the whole spec was run against the pre-fix source (`git stash`
+of `web/src`, spec retained). **14 of 15 failed.** The one that passed is the dark-theme contrast test
+— correct, and the point: the contrast defect was light-theme only, and a test that also failed in
+dark theme would have been measuring the wrong thing.
+
+### 38.9 Still open after this slice
+
+- **Undo for Remove / Swap.** Both are instantly destructive and the autosave has already committed by
+  the time the player notices. Everything in *this* slice is reversible; those are not.
+- **`runAssistant` takes no `AbortSignal`** — a turn cannot be cancelled, and `disabled` on the input
+  drops focus to `<body>` mid-turn.
+- **Arrow-key roving focus** in the popovers (38.3).
+- **The native half of every finding here.** `Footswitch`/`ChipButton`/`LeverToggle`/`PowerControl`/
+  `ModeSwitch` derive from bare `juce::Component` — mouse-only, no role, name or state — and
+  `NeuKnob::setName` shadows the non-virtual `Component::setName`, leaving all 17+ native knobs
+  anonymous to assistive tech.
+- **`.tuner-cents.flat` / `.sharp` hardcode `#d8863a` / `#3e8fd6`** (`tuner.css:175-180`) — not in the
+  audit, and a straight violation of the no-hardcoded-colour rule. They are theme-independent and land
+  on the pinned-dark chassis, so they are not *broken*; they are just not tokens. Left alone because
+  inventing two token names is a palette decision, not a defect fix.
+- **`.k-name` (`--ink-dim`) and `.pedal-model` / `.fsw-label` (`--ink-faint`) have never been
+  measured.** They are theme-stable — `.pedal` already pins both — but `--ink-faint` (#6a6f77) on the
+  chassis is around 3:1, and it is label text, not decoration. Worth a deliberate look rather than a
+  silent pass.

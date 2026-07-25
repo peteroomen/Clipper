@@ -21,6 +21,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Pedal } from './Pedal';
 import { Tuner } from './Tuner';
 import { Amp } from './Amp';
+import { Menu } from './Menu';
 import type { TunerReading } from '../tuner';
 import {
   AVAILABLE_PEDAL_TYPES,
@@ -113,6 +114,8 @@ export function Board({
   const [swapOpenId, setSwapOpenId] = useState<string | null>(null);
 
   const dragRef = useRef<{ id: string; pointerId: number } | null>(null);
+  // The user-IR file input, kept out of the popover (see the render site).
+  const irInputRef = useRef<HTMLInputElement>(null);
 
   // Build one catenary path between two jack centers (screen coords relative to
   // the board). Control points pull DOWN (gravity droop); sag grows with span.
@@ -135,6 +138,17 @@ export function Board({
     const center = (el: Element | null): { x: number; y: number } | null => {
       if (!el) return null;
       const r = el.getBoundingClientRect();
+      // A jack that is present in the DOM but NOT LAID OUT (an ancestor with
+      // `display: none`) reports an all-zero DOMRect, and the null check above
+      // happily accepts it: the returned point is {-brect.left, -brect.top}, i.e.
+      // the viewport origin expressed in board coordinates. That is a perfectly
+      // truthy point, so a cable was drawn from off the board to the first pedal
+      // (2026-07-24 audit, UI/UX). It is live below 760 px, where board.css hides
+      // `.board-source` — the audit says the stray cable comes from "below", but
+      // the viewport origin is above and left of the board, which is where it
+      // actually renders. Either way: an unlaid-out jack has no position, so say
+      // so and let the caller skip the segment.
+      if (r.width === 0 && r.height === 0) return null;
       return { x: r.left + r.width / 2 - brect.left, y: r.top + r.height / 2 - brect.top };
     };
     const q = (sel: string) => center(board.querySelector(sel));
@@ -294,38 +308,37 @@ export function Board({
                 ▶
               </button>
               <div className="rack-swap">
-                <button
-                  type="button"
-                  className="rack-btn"
-                  aria-label={`Swap ${p.type} pedal`}
-                  aria-expanded={swapOpenId === p.id}
-                  data-testid={`pedal-swap-${i}`}
-                  onClick={() => setSwapOpenId((cur) => (cur === p.id ? null : p.id))}
+                <Menu
+                  open={swapOpenId === p.id}
+                  onToggle={() => setSwapOpenId((cur) => (cur === p.id ? null : p.id))}
+                  onClose={() => setSwapOpenId(null)}
+                  triggerClassName="rack-btn"
+                  triggerAriaLabel={`Swap ${p.type} pedal`}
+                  triggerTestId={`pedal-swap-${i}`}
+                  triggerContent="⇄"
+                  menuClassName="unit-menu"
+                  menuTestId={`pedal-swap-menu-${i}`}
                 >
-                  ⇄
-                </button>
-                {swapOpenId === p.id && (
-                  <div className="unit-menu" role="menu" data-testid={`pedal-swap-menu-${i}`}>
-                    <div className="unit-menu-head">Swap for</div>
-                    {AVAILABLE_PEDAL_TYPES.map((t) => (
-                      <button
-                        key={t}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={t === p.type}
-                        className={`unit-menu-item${t === p.type ? ' current' : ''}`}
-                        onClick={() => {
-                          if (t !== p.type) onSwapPedal(p.id, t);
-                          setSwapOpenId(null);
-                        }}
-                      >
-                        {PEDAL_TYPE_LABEL[t]}
-                        {t === p.type ? ' ✓' : ''}
-                      </button>
-                    ))}
-                    <div className="unit-menu-note">More pedals coming (BD-2, DD-3…)</div>
-                  </div>
-                )}
+                  <div className="unit-menu-head">Swap for</div>
+                  {AVAILABLE_PEDAL_TYPES.map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={t === p.type}
+                      className={`unit-menu-item${t === p.type ? ' current' : ''}`}
+                      data-testid={`pedal-swap-${i}-${t}`}
+                      onClick={() => {
+                        if (t !== p.type) onSwapPedal(p.id, t);
+                        setSwapOpenId(null);
+                      }}
+                    >
+                      {PEDAL_TYPE_LABEL[t]}
+                      {t === p.type ? ' ✓' : ''}
+                    </button>
+                  ))}
+                  <div className="unit-menu-note">More pedals coming (BD-2, DD-3…)</div>
+                </Menu>
               </div>
               <button
                 type="button"
@@ -356,40 +369,43 @@ export function Board({
 
         {/* Gear tray — add a pedal before the amp. */}
         <div className="board-tray" data-testid="gear-tray">
-          <button
-            type="button"
-            className="tray-add"
-            aria-label="Add a pedal"
-            aria-expanded={trayOpen}
-            data-testid="add-pedal"
-            onClick={() => setTrayOpen((v) => !v)}
+          <Menu
+            open={trayOpen}
+            onToggle={() => setTrayOpen((v) => !v)}
+            onClose={() => setTrayOpen(false)}
+            triggerClassName="tray-add"
+            triggerAriaLabel="Add a pedal"
+            triggerTestId="add-pedal"
+            triggerContent={
+              <>
+                <span className="tray-plus" aria-hidden="true">
+                  +
+                </span>
+                <span className="tray-text">Add pedal</span>
+              </>
+            }
+            menuClassName="unit-menu tray-menu"
+            menuTestId="add-pedal-menu"
+            menuAriaLabel="Available pedals"
           >
-            <span className="tray-plus" aria-hidden="true">
-              +
-            </span>
-            <span className="tray-text">Add pedal</span>
-          </button>
-          {trayOpen && (
-            <div className="unit-menu tray-menu" role="menu" data-testid="add-pedal-menu">
-              <div className="unit-menu-head">Available pedals</div>
-              {AVAILABLE_PEDAL_TYPES.map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  role="menuitem"
-                  className="unit-menu-item"
-                  data-testid={`add-pedal-${t}`}
-                  onClick={() => {
-                    onAddPedal(t);
-                    setTrayOpen(false);
-                  }}
-                >
-                  {PEDAL_TYPE_LABEL[t]}
-                </button>
-              ))}
-              <div className="unit-menu-note">More coming: BD-2, DD-3…</div>
-            </div>
-          )}
+            <div className="unit-menu-head">Available pedals</div>
+            {AVAILABLE_PEDAL_TYPES.map((t) => (
+              <button
+                key={t}
+                type="button"
+                role="menuitem"
+                className="unit-menu-item"
+                data-testid={`add-pedal-${t}`}
+                onClick={() => {
+                  onAddPedal(t);
+                  setTrayOpen(false);
+                }}
+              >
+                {PEDAL_TYPE_LABEL[t]}
+              </button>
+            ))}
+            <div className="unit-menu-note">More coming: BD-2, DD-3…</div>
+          </Menu>
           {pedals.length === 0 && (
             <span className="tray-empty mono" data-testid="empty-chain-note">
               Empty chain — guitar straight into the amp
@@ -401,18 +417,45 @@ export function Board({
         <div className="board-unit board-amp" data-unit-id="amp" data-testid="board-amp">
           <span className="jack jack-in" aria-hidden="true" />
           <div className="amp-slot-head">
-            <button
-              type="button"
-              className="amp-slot-select"
-              aria-label="Change amp"
-              aria-expanded={ampMenuOpen}
-              data-testid="amp-select"
-              onClick={() => setAmpMenuOpen((v) => !v)}
+            {/* The file input lives OUTSIDE the popover on purpose. It used to be a
+                child of the menu, so any state change that closed the menu while
+                the OS file dialog was still open would unmount the input mid-
+                dialog and silently drop the selection. Out here it also survives
+                the menu closing the instant the button is pressed. */}
+            <input
+              ref={irInputRef}
+              type="file"
+              accept=".wav,audio/wav,audio/x-wav,audio/*"
+              className="vh-input"
+              tabIndex={-1}
+              aria-hidden="true"
+              data-testid="cab-upload-input"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = ''; // allow re-uploading the same file
+                if (f) {
+                  onUploadIr(f);
+                  setAmpMenuOpen(false);
+                }
+              }}
+            />
+            <Menu
+              open={ampMenuOpen}
+              onToggle={() => setAmpMenuOpen((v) => !v)}
+              onClose={() => setAmpMenuOpen(false)}
+              triggerClassName="amp-slot-select"
+              triggerAriaLabel="Change amp"
+              triggerTestId="amp-select"
+              triggerContent={
+                <>
+                  {AMP_TYPE_LABEL[amp.type]} <span aria-hidden="true">▾</span>
+                </>
+              }
+              menuClassName="unit-menu"
+              menuTestId="amp-menu"
+              menuAriaLabel="Amp and cabinet"
             >
-              {AMP_TYPE_LABEL[amp.type]} <span aria-hidden="true">▾</span>
-            </button>
-            {ampMenuOpen && (
-              <div className="unit-menu" role="menu" data-testid="amp-menu">
+              <>
                 <div className="unit-menu-head">Amp</div>
                 {AVAILABLE_AMP_TYPES.map((t) => (
                   <button
@@ -467,25 +510,23 @@ export function Board({
                     {amp.cabModel === 'custom' ? ' ✓' : ''}
                   </button>
                 )}
-                <label className="unit-menu-item" data-testid="cab-upload">
+                {/* Was a <label> wrapping a `display: none` input — so it had no
+                    role, no accessible name and no tab stop: mouse-only, and
+                    absent from the accessibility tree entirely (2026-07-24 audit,
+                    UI/UX). A real button forwards to the hoisted input above, so
+                    the control is now reachable, named, and Enter/Space operable
+                    like every other item in the menu. */}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="unit-menu-item"
+                  data-testid="cab-upload"
+                  onClick={() => irInputRef.current?.click()}
+                >
                   Upload IR…
-                  <input
-                    type="file"
-                    accept=".wav,audio/wav,audio/x-wav,audio/*"
-                    style={{ display: 'none' }}
-                    data-testid="cab-upload-input"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      e.target.value = ''; // allow re-uploading the same file
-                      if (f) {
-                        onUploadIr(f);
-                        setAmpMenuOpen(false);
-                      }
-                    }}
-                  />
-                </label>
-              </div>
-            )}
+                </button>
+              </>
+            </Menu>
           </div>
           <Amp
             amp={amp}

@@ -71,10 +71,29 @@ export function Chat({ controller, guitar, onGuitarChange }: ChatProps) {
     }
   }
 
-  // Auto-scroll to the newest message.
+  // Is the transcript parked at the bottom? Tracked in a REF, updated from the
+  // scroll handler — never React state, because scroll fires at frame rate and the
+  // rule is that nothing at pointer/scroll rate re-renders (CLAUDE.md, UI
+  // conventions).
+  const pinnedRef = useRef(true);
+  const PIN_SLACK_PX = 48; // "close enough to the bottom" — a partly-visible line
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= PIN_SLACK_PX;
+  };
+
+  // Auto-scroll to the newest message — but ONLY if the player was already at the
+  // bottom. It used to scroll unconditionally (2026-07-24 audit, UI/UX), so
+  // scrolling up to re-read what the coach said about your gain staging got yanked
+  // away by the next streamed token. Pinned-ness has to come from the ref rather
+  // than being measured here: by the time this effect runs the new content is
+  // already in the DOM, so measuring now would report "not at the bottom" for a
+  // player who was.
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
   }, [items, busy]);
 
   function appendTextDelta(delta: string) {
@@ -201,7 +220,24 @@ export function Chat({ controller, guitar, onGuitarChange }: ChatProps) {
         </div>
       )}
 
-      <div className="chat-scroll" ref={scrollRef} data-testid="chat-scroll">
+      {/* The transcript is a LIVE REGION (2026-07-24 audit, UI/UX): it had none, so
+          a screen-reader user got no notification that the coach had replied or
+          that a tool had been applied to their rig — the reply simply appeared in a
+          div nobody was told about. `role="log"` is the right role for an
+          append-only transcript, and `aria-busy` while streaming holds the
+          announcement until the turn finishes instead of re-announcing the bubble
+          on every token delta. */}
+      <div
+        className="chat-scroll"
+        ref={scrollRef}
+        data-testid="chat-scroll"
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions text"
+        aria-busy={busy}
+        aria-label="Conversation"
+        onScroll={onScroll}
+      >
         {items.map((it) => {
           if (it.kind === 'user')
             return (
