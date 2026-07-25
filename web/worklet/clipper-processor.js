@@ -136,6 +136,25 @@ class LookaheadLimiter {
 // inaudible as a transient, short enough that a reorder feels instant.
 const DECLICK_SECONDS = 0.006;
 
+// Extra samples to HOLD the output at zero after a cab swap, before the fade-in
+// starts (2026-07-25).
+//
+// CabConvolver::prepare() zeroes the frequency-domain delay line and the overlap
+// buffer, so a freshly swapped-in cab emits SILENCE until its FDL refills — and
+// because the swap lands at an arbitrary offset within the convolver's 128-sample
+// partition grid, that silence can begin up to one partition late and then last a
+// full partition. Worst case: ~2 partitions of dead output after the commit.
+//
+// The 6 ms (288-sample) fade-in is longer than that, so without a hold the gap
+// landed in the MIDDLE of the ramp — measured stepping from 59 % gain straight to
+// exact zero and back. Holding at zero for two partitions first puts the whole dead
+// region inside the silence the declick already provides, so the fade-in only ever
+// ramps real audio. Costs ~5.3 ms on a deliberate cab change and nothing otherwise.
+//
+// This is a PRE-EXISTING artifact (it is in the shipped v1.1 worklet too) that the
+// old before-rendering-starts cab test could never see; see docs §29.
+const CAB_SWAP_DEAD_SAMPLES = 256;
+
 class ClipperProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
@@ -176,7 +195,10 @@ class ClipperProcessor extends AudioWorkletProcessor {
 
     // Declick state machine (M6.4).
     this._declickGain = 1.0; // current applied output gain
-    this._declickPhase = 'idle'; // 'idle' | 'out' | 'in'
+    this._declickPhase = 'idle'; // 'idle' | 'out' | 'hold' | 'in'
+    // Samples still to spend parked at zero before the fade-in (see
+    // CAB_SWAP_DEAD_SAMPLES). Set by _commitPending when a cab swap lands.
+    this._declickHold = 0;
     this._declickStep = 0; // per-sample gain delta (set in prepare)
     this._pending = null; // { nodes, removed } waiting for the fade-out zero
     // Cab expansion: a pending cab swap (built-in select or custom-IR load) that
@@ -365,15 +387,14 @@ class ClipperProcessor extends AudioWorkletProcessor {
         }
         return;
       }
-      // If an earlier edit is still fading, commit it first (same discipline as
-      // chain/cab/ampModel), then stage this stomp on a fresh fade.
-      if (this._hasPendingEdit()) this._commitPending();
+      // An earlier edit still fading is NOT force-committed (see _stageEdit): this
+      // stomp joins it and they land together at the one fade zero.
       if (data.unit === 'amp') {
         this._pendingAmpBypass = !!data.on;
       } else {
         this._pendingBypass.push({ pedalId: data.pedalId, on: !!data.on });
       }
-      this._declickPhase = 'out';
+      this._stageEdit();
       // The latency echo stays SYNCHRONOUS — it is the tests' delivery barrier
       // (and _commitPending republishes it once the flip lands).
       this._postLatency();
@@ -395,8 +416,21 @@ class ClipperProcessor extends AudioWorkletProcessor {
   // params}]), REUSING existing handles for ids that persist (so a reorder keeps
   // each pedal's smoothing/oversampler state) and creating handles for new ids.
   // Handles for removed ids are destroyed only AFTER the fade reaches zero.
+  //
+  // The diff BASE is the chain that will be live once the current fade commits —
+  // i.e. the already-staged pending nodes if there are any, else the committed
+  // chain. Before 2026-07-25 a second edit inside one fade window force-committed
+  // the first one so the base was always `this._chain`; that committed a topology
+  // swap at a NON-ZERO declick gain (see _stageEdit). Diffing against the pending
+  // nodes instead lets both edits ride the one fade to its zero.
   _prepareChain(spec) {
-    const oldById = new Map(this._chain.map((n) => [n.id, n]));
+    const base = this._pending ? this._pending.nodes : this._chain;
+    // Carry the earlier edit's removals forward. Without this union, staging
+    // "remove pedal X" and then any second chain edit before the fade zero leaks
+    // X's WASM handle forever: X is already absent from `base`, so it can never
+    // appear in this edit's `removed` list.
+    const carried = this._pending ? this._pending.removed : [];
+    const oldById = new Map(base.map((n) => [n.id, n]));
     const nodes = [];
     const keep = new Set();
     for (const p of spec) {
@@ -416,21 +450,46 @@ class ClipperProcessor extends AudioWorkletProcessor {
         nodes.push(this._createPedal(p.id, p.type || 'rat', p.params, p.engaged));
       }
     }
-    const removed = this._chain.filter((n) => !keep.has(n.id));
+    const removed = carried.concat(base.filter((n) => !keep.has(n.id)));
     return { nodes, removed };
   }
 
-  // Immediately install a prepared chain edit and/or cab swap (destroy removed
-  // handles, swap in the new node array, regenerate/reload the cab IR). Called at
-  // the fade-out zero, or up front if a new edit arrives while one is still
-  // fading. Runs during the output-zero of the declick, so the (non-RT-safe) cab
-  // regeneration/free here is inaudible.
+  // Arm the declick fade for a freshly staged topology edit.
+  //
+  // 2026-07-25 (audit finding 2, adjacent defect b): every staging path used to run
+  // `if (this._hasPendingEdit()) this._commitPending();` first. If a SECOND edit
+  // arrived before the fade reached zero — a drag-reorder, a rapid add/remove, or
+  // the assistant issuing two tool calls in one turn — the FIRST edit's topology
+  // swap was committed at whatever gain the ramp happened to be at, which is
+  // precisely the step discontinuity the declick exists to prevent. Worst case is
+  // not "mid-ramp" but FULL gain: when both messages land in the same audio-thread
+  // message drain, no render has advanced the ramp yet, so _declickGain is still 1.0
+  // and the first edit steps the waveform at full amplitude.
+  //
+  // Now edits MERGE and ride the fade that is already running: _pendingBypass
+  // accumulates, _pendingCab / _pendingAmpModel take the newest value, and
+  // _prepareChain diffs against the pending nodes. Re-asserting 'out' is a no-op
+  // when the fade is already heading down, and correctly reverses an 'in' ramp.
+  _stageEdit() {
+    this._declickPhase = 'out'; // ramp to zero, swap at the bottom, ramp back
+  }
+
   // Any topology edit staged for the next declick fade-out zero?
   _hasPendingEdit() {
     return !!this._pending || !!this._pendingCab || this._pendingAmpModel != null ||
            this._pendingBypass.length > 0 || this._pendingAmpBypass != null;
   }
 
+  // Install every staged topology edit. Called from process() at the declick
+  // fade-out zero — i.e. THIS RUNS ON THE AUDIO THREAD, INSIDE THE RENDER
+  // CALLBACK — so everything here must be O(1)-ish and allocation-free. The heavy
+  // half of a cab change (IR synthesis, peak normalize, FFT partitioning: 11-46 ms
+  // measured, against a 2.667 ms deadline) was moved out to the `cab` message
+  // handler on 2026-07-25; what is left is an integer flip in the C ABI. See the
+  // banner above amp_prepare_cab_builtin in core/src/clipper_c_api.cpp and ADR 003.
+  //
+  // Still not strictly RT-clean: _destroyPedal() frees a WASM handle (bounded,
+  // microseconds) and _postLatency() posts a message. Both are ledgered follow-ups.
   _commitPending() {
     if (!this._hasPendingEdit()) return;
     if (this._pending) {
@@ -440,14 +499,14 @@ class ClipperProcessor extends AudioWorkletProcessor {
       this._refreshMute(); // the new topology may add/remove an engaged tuner
     }
     if (this._pendingCab) {
-      const pc = this._pendingCab;
-      if (pc.builtin != null) {
-        this._module._amp_set_cab_builtin(this._amp, pc.builtin | 0);
-      } else if (pc.irPtr) {
-        this._module._amp_load_custom_ir(this._amp, pc.irPtr, pc.irLen | 0);
-        this._module._free(pc.irPtr); // the core copied the samples in
-      }
+      // The new IR was already synthesised, normalized and FFT-partitioned into the
+      // C ABI's INACTIVE convolver pair back in the message handler. All that is
+      // left on the audio thread is making that pair the live one: one int write.
+      this._module._amp_commit_cab(this._amp);
       this._pendingCab = null;
+      // The swapped-in convolver's FDL is empty, so it emits silence for up to two
+      // partitions. Stay parked at zero across that gap instead of ramping into it.
+      this._declickHold = CAB_SWAP_DEAD_SAMPLES;
     }
     if (this._pendingAmpModel != null) {
       // M9.4: flip the amp voice at the fade zero. Both voices are pre-created in
@@ -497,32 +556,54 @@ class ClipperProcessor extends AudioWorkletProcessor {
       for (const node of this._chain) this._pedalSetOversampling(node, this._oversampling);
       this._postLatency();
     } else if (data.type === 'chain') {
-      // A new topology. If an edit is still fading, commit it first so the diff
-      // is against the current committed chain, then prepare + start a new fade.
-      if (this._hasPendingEdit()) this._commitPending();
+      // A new topology. _prepareChain diffs against the pending nodes when an edit
+      // is still fading (see there), so both edits ride the one fade to its zero.
       this._pending = this._prepareChain(data.pedals || []);
-      this._declickPhase = 'out'; // ramp to zero, swap at the bottom, ramp back
+      this._stageEdit();
     } else if (data.type === 'cab') {
-      // Cab expansion: swap the cab IR click-free. Stage it here (the malloc +
-      // heap copy of a custom IR is fine in the message handler) and apply it at
-      // the declick fade-out zero (in _commitPending), exactly like a chain edit.
-      if (this._hasPendingEdit()) this._commitPending();
+      // Cab change, click-free AND dropout-free (2026-07-24 audit finding 2).
+      //
+      // ALL the expensive work happens RIGHT HERE: synthesising or copying the IR,
+      // peak-normalizing it, and running CabConvolver::prepare on both sides of the
+      // C ABI's spare convolver pair (FFT plan + one spectrum per partition). That
+      // was measured at 11.4 ms for a built-in and 45.7 ms for a 4096-tap upload —
+      // 427 % and 1714 % of the 2.667 ms render deadline. It used to run from inside
+      // process()'s per-sample loop, dropping up to 17 consecutive render quanta.
+      //
+      // BE PRECISE ABOUT WHAT THIS BUYS. AudioWorkletProcessor.port.onmessage runs
+      // on the audio RENDERING thread, so this is NOT "off the audio thread". What
+      // it does is move the work BETWEEN render quanta instead of mid-block: a
+      // guaranteed multi-quantum stall becomes at worst one late quantum, at the
+      // instant of a deliberate user action, with process() itself now allocation-
+      // free. Getting the partitioned spectra computed on the MAIN thread and copied
+      // in is the fully correct fix and is a bigger change — ledgered, not done.
+      //
+      // Only the O(1) index flip is deferred to the fade zero, in _commitPending.
+      let prepared = 0;
       if (data.custom && data.custom.length) {
         const arr = data.custom; // transferred Float32Array (mono, engine-rate)
         const len = arr.length | 0;
         const irPtr = mod._malloc(len * 4);
+        // Re-fetch HEAPF32: the _malloc above can have grown (and detached) it.
         mod.HEAPF32.set(arr, irPtr >> 2);
-        this._pendingCab = { irPtr, irLen: len };
+        prepared = mod._amp_prepare_cab_custom(this._amp, irPtr, len);
+        mod._free(irPtr); // the core copied the samples in
       } else {
-        this._pendingCab = { builtin: (data.builtin | 0) || 0 };
+        prepared = mod._amp_prepare_cab_builtin(this._amp, (data.builtin | 0) || 0);
       }
-      this._declickPhase = 'out';
+      // Never stage a commit the prepare did not back: flipping to an unprepared
+      // pair would splice in the previous IR plus its stale convolution tail.
+      if (prepared) {
+        this._pendingCab = { ready: true };
+        this._stageEdit();
+      } else {
+        this._postLatency(); // keep the tests' delivery barrier honest
+      }
     } else if (data.type === 'ampModel') {
       // M9.4/M10.1: swap the amp voice (0 = Clean 120, 1 = JCM800, 2 = Twin) click-
       // free — staged here and applied at the declick fade-out zero, like a cab swap.
-      if (this._hasPendingEdit()) this._commitPending();
       this._pendingAmpModel = (data.model | 0) || 0;
-      this._declickPhase = 'out';
+      this._stageEdit();
     }
   }
 
@@ -649,8 +730,22 @@ class ClipperProcessor extends AudioWorkletProcessor {
         if (dg <= 0) {
           dg = 0;
           this._commitPending(); // topology swap happens exactly at zero
-          this._declickPhase = 'in';
+          // Re-fetch HEAPF32 (2026-07-24 audit finding 2, adjacent defect a). `heap`
+          // was captured before this loop; _commitPending() can still free a removed
+          // pedal handle, and ALLOW_MEMORY_GROWTH detaches every old view the moment
+          // the heap grows — after which `heap[...]` reads NaN/undefined for the rest
+          // of the block. Every other site in this file re-fetches for exactly this
+          // reason; this was the one that didn't, and the one place a malloc actually
+          // used to happen (the IR load, now hoisted into the message handler).
+          heap = mod.HEAPF32;
+          // A cab swap leaves the new convolver silent for up to two partitions;
+          // stay at zero across that dead region before ramping back in.
+          this._declickPhase = this._declickHold > 0 ? 'hold' : 'in';
         }
+      } else if (this._declickPhase === 'hold') {
+        // Parked at zero (dg stays 0, so env is 0) while the swapped-in cab's
+        // frequency-domain delay line refills.
+        if (--this._declickHold <= 0) this._declickPhase = 'in';
       } else if (this._declickPhase === 'in') {
         dg += step;
         if (dg >= 1) {
