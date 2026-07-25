@@ -18,6 +18,9 @@
 #include "clipper/dsp/SdModel.h"
 #include "measure/AliasMetric.h"
 
+#include "support/AssertsLive.h"
+#include "support/DcOffset.h"
+
 #include <cassert>
 #include <cmath>
 #include <complex>
@@ -294,7 +297,7 @@ void testHygiene() {
                 auto o = render(in, {dr, tn, lv}, fs);
                 for (float v : o) assert(std::isfinite(v) && "non-finite output");
             }
-    {  // silence -> silence, no DC pumping
+    {  // silence -> silence (the model does not self-oscillate)
         std::vector<float> zeros(static_cast<size_t>(fs * 0.3), 0.0f);
         auto o = render(zeros, {0.9f, 0.5f, 1.0f}, fs);
         double dc = 0.0, pk = 0.0;
@@ -302,6 +305,32 @@ void testHygiene() {
         dc /= o.size();
         assert(pk < 1e-6 && "silence produced output");
         assert(std::fabs(dc) < 1e-3 && "DC offset on silence");
+    }
+    {  // DC offset ON SIGNAL — the property that matters (audit finding 16).
+        //
+        // 2026-07-25 (test/assert-real-properties): the silence check above was the only DC
+        // assertion here and it is trivially true. The TS clips SYMMETRICALLY, so it does
+        // not rectify — which means a CLEAN-input DC test on this pedal cannot fail even if
+        // the output coupling cap is deleted outright (verified by doing exactly that). So
+        // the second stimulus, a +0.1 V DC offset ON THE INPUT, is the one that makes
+        // `dcBlockHz = 12.0` load-bearing here. See core/tests/support/DcOffset.h.
+        const auto tone = sine(220.0, 0.2f, 1.0, fs);
+        for (float drive : {0.5f, 1.0f}) {
+            for (float dcIn : {0.0f, clipper::test::kInputDcOffset}) {
+                auto stim = tone;
+                for (float& s : stim) s += dcIn;
+                const auto o = render(stim, {drive, 0.5f, 1.0f}, fs);
+                const auto d = clipper::test::measureDcOnSignal(o);
+                std::printf("  [ok] DC on SIGNAL (drive %.2f, input DC %+.2f V): mean %+.6f V, "
+                            "peak %.4f V -> %.4f %% of peak (bar %.1f %%)\n",
+                            drive, dcIn, d.mean, d.peak, 100.0 * d.fraction,
+                            100.0 * clipper::test::kDcFractionBar);
+                assert(d.peak > 0.01 && "no signal to measure DC against");
+                assert(d.fraction < clipper::test::kDcFractionBar &&
+                       "DC offset ON SIGNAL exceeds 1 % of peak — the output coupling cap is "
+                       "missing or mistuned, or the clipper is rectifying");
+            }
+        }
     }
     {  // determinism
         auto a = render(in, {0.6f, 0.4f, 0.8f}, fs);
@@ -316,6 +345,7 @@ void testHygiene() {
 }  // namespace
 
 int main() {
+    clipper::test::requireAssertsLive();
     std::printf("Running clipper::dsp::TsModel tests (v1.1 — TS808 Screamer)...\n");
     testMidHumpCorner(44100.0);
     testMidHumpCorner(96000.0);

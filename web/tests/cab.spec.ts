@@ -144,7 +144,16 @@ test('cab upload: output is convolved by the uploaded comb IR', async ({ page })
 
   // Real signal came through and the comb is unmistakable: the 400 Hz peak is many
   // times louder than the 500 Hz notch — the output was convolved by our IR.
-  expect(result.irLen).toBeGreaterThan(128); // a >1-partition custom IR
+  //
+  // 2026-07-25 (test/assert-real-properties): `irLen > 128` asserted a property of the
+  // committed FIXTURE, not of the code under test — comb-ir.wav either is longer than
+  // one partition or it is not, and nothing this test does can change that. What is
+  // worth pinning is the exact decoded length, because that is what proves the app's
+  // decode + mono-ise path did not truncate or resample the upload: comb-ir.wav is
+  // mono 16-bit 48 kHz, 512 frames, and the render context is also 48 kHz, so a
+  // correct decode yields exactly 512 samples. A wrong number here means the IR that
+  // reached the convolver is not the IR on disk.
+  expect(result.irLen).toBe(512);
   expect(result.peak400).toBeGreaterThan(0.02);
   // The comb is unmistakable: the 400 Hz peak is many times the 500 Hz notch —
   // the output was genuinely convolved by our uploaded IR (in-place, deep notch).
@@ -403,7 +412,12 @@ test('cab upload UI: uploading a WAV selects the custom cab and persists', async
   await expect(page.getByTestId('cab-note')).toContainText('Loaded');
   const cab = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().amp);
   expect(cab.cabModel).toBe('custom');
-  expect(typeof cab.customCabLabel).toBe('string');
+  // 2026-07-25 (test/assert-real-properties): `typeof cab.customCabLabel === 'string'`
+  // passes for `''`, for `'undefined'`, and for any wrong label — it asserted the TYPE
+  // of a field whose VALUE is the whole point. The label is what the player reads back
+  // in the cab menu, and cab.ts:103 derives it from the uploaded filename with the
+  // extension stripped, so for ./fixtures/comb-ir.wav it must be exactly 'comb-ir'.
+  expect(cab.customCabLabel).toBe('comb-ir');
 
   // Persisted: reload restores cabModel:'custom' and the custom entry in the menu.
   await page.reload();

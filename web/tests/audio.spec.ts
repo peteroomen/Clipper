@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 
+import { installNonFiniteOutputGuard } from './support/finite-output';
+
 // M4 browser verification.
 //
 // Test ordering is deliberate: the offline-render audio proofs run FIRST, before
@@ -18,6 +20,16 @@ import { test, expect } from '@playwright/test';
 // and survives a reload via localStorage.
 
 const RENDER_SECONDS = 0.5;
+
+// 2026-07-25 (test/assert-real-properties). This file had ZERO finiteness checks: every
+// assertion in it is a Goertzel bin, an RMS or a max-delta over a WINDOW, so a NaN outside
+// that window — or in the right channel of a stereo render — failed nothing. One line here
+// covers every render in the file, present and future, in every channel, over every sample.
+// See tests/support/finite-output.ts for why it is a prototype patch and not a helper called
+// at each of the ~15 render sites.
+test.beforeEach(async ({ page }) => {
+  await installNonFiniteOutputGuard(page);
+});
 
 test('RAT worklet: high distortion yields odd harmonics; LEVEL scales RMS', async ({ page }) => {
   await page.goto('/');
@@ -1003,6 +1015,17 @@ test('phaser: engaged phaser sweeps a moving notch through a steady tone', async
   // amplitude (the notch has moved between them).
   const rel = Math.abs(result.early - result.late) / Math.max(result.early, result.late, 1e-9);
   expect(rel).toBeGreaterThan(0.08);
+  // 2026-07-25 (test/assert-real-properties): `overall` was computed and then never
+  // asserted. It is the one number that pins the phaser as a MODULATOR rather than a
+  // gate: the whole-render RMS must sit between the deepest and loudest windows, i.e.
+  // the notch sweeps THROUGH the tone instead of holding it down. Without this, a
+  // phaser stuck at its deepest notch (permanent 400 Hz cut) satisfies every
+  // assertion above — a strong min/max ratio and a difference between two windows.
+  expect(result.overall).toBeGreaterThan(result.minW);
+  expect(result.overall).toBeLessThan(result.maxW);
+  // And it is genuinely modulating, not sitting near one extreme: the whole-render RMS
+  // is at least a quarter of the loudest window (a gate would leave it near minW).
+  expect(result.overall).toBeGreaterThan(result.maxW * 0.25);
 });
 
 // M6.4: the pedal CHAIN is dynamic and ordered. Reordering two RATs with
@@ -1353,6 +1376,21 @@ test('TS worklet: Screamer clips SYMMETRICALLY — strong 3rd, ~no 2nd vs the SD
   // The SD-1 on the identical stimulus makes a MUCH larger even harmonic — the
   // spectral difference is measurable in the render (the family contrast).
   expect(sdEvenRatio).toBeGreaterThan(tsEvenRatio * 10);
+
+  // 2026-07-25 (test/assert-real-properties): `result.sd1.h3` was computed and never
+  // asserted, which left the SD-1 half of this comparison resting entirely on its 2nd
+  // harmonic. An SD-1 that had stopped clipping altogether — outputting a level-shifted
+  // but otherwise clean tone, all 2nd and no 3rd — would still beat the TS on
+  // `sdEvenRatio` and pass. The SD-1 is an ASYMMETRIC clipper: it must make a strong
+  // even harmonic AND a real odd one, because it is still clipping both half-cycles,
+  // just unequally.
+  expect(result.sd1.f1).toBeGreaterThan(0.05);          // real signal came through
+  expect(result.sd1.h3).toBeGreaterThan(result.sd1.f1 * 0.02);  // it is genuinely clipping
+  // And its asymmetry shows up as a 2nd harmonic COMPARABLE to its 3rd, where the
+  // symmetric TS buries the 2nd far below its own 3rd. This is the family contrast
+  // stated as a property of each pedal's own spectrum, not just a ratio between them.
+  expect(result.sd1.h2).toBeGreaterThan(result.sd1.h3 * 0.1);
+  expect(result.ts.h2).toBeLessThan(result.ts.h3 * 0.1);
 });
 
 test('UI exposes M4 controls: pedal, three knobs, footswitch, source, oversampling', async ({
@@ -1681,6 +1719,11 @@ test('board: move buttons reorder the pedal chain', async ({ page }) => {
     (window as any).__CLIPPER_TEST__.getRig().pedals.map((p: any) => Math.round(p.params.distortion * 100))
   );
   expect(before).toEqual([20, 70]);
+  // Capture the ids the WORKLET currently holds, so the order can be asserted
+  // literally after the move rather than just counted.
+  const idsBefore = await page.evaluate(() => (window as any).__CLIPPER_TEST__.lastChain);
+  expect(idsBefore).toHaveLength(2);
+  expect(idsBefore[0]).not.toBe(idsBefore[1]);
 
   // Move the first pedal later (index 0 -> 1).
   await page.getByTestId('pedal-move-right-0').click();
@@ -1689,10 +1732,18 @@ test('board: move buttons reorder the pedal chain', async ({ page }) => {
     (window as any).__CLIPPER_TEST__.getRig().pedals.map((p: any) => Math.round(p.params.distortion * 100))
   );
   expect(after).toEqual([70, 20]);
-  // The worklet received the reordered chain (ids swapped order).
-  const chainIds = await page.evaluate(() => (window as any).__CLIPPER_TEST__.lastChain);
-  expect(Array.isArray(chainIds)).toBe(true);
-  expect(chainIds.length).toBe(2);
+
+  // 2026-07-25 (test/assert-real-properties): this used to assert only
+  // `Array.isArray(chainIds)` and `chainIds.length === 2` under a comment reading
+  // "ids swapped order" — so the ONE thing the test is named for, the order the
+  // WORKLET was told about, went unchecked. A move button that updated the React rig
+  // and posted the chain in its original order passed.
+  //
+  // `__CLIPPER_TEST__.lastChain` is the id list of the last `chain` message posted to
+  // the worklet (App.tsx:220), which is the audio thread's actual view of the rig. So
+  // assert it literally, against the ids captured BEFORE the move.
+  const idsAfter = await page.evaluate(() => (window as any).__CLIPPER_TEST__.lastChain);
+  expect(idsAfter).toEqual([idsBefore[1], idsBefore[0]]);
 });
 
 // M6.4: an OLD single-`pedal` saved rig (M4..M6.3 shape) migrates into a

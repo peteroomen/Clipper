@@ -13,6 +13,8 @@
 #include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/OnePoleSmoother.h"
 
+#include "support/AssertsLive.h"
+
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -164,6 +166,7 @@ void testSmootherBitTransparent() {
 }  // namespace
 
 int main() {
+    clipper::test::requireAssertsLive();
     std::printf("Running anti-denormal guard tests...\n");
 
     testFlushInvariant();

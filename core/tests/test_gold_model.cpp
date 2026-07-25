@@ -23,6 +23,9 @@
 
 #include "measure/AliasMetric.h"
 
+#include "support/AssertsLive.h"
+#include "support/DcOffset.h"
+
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -341,7 +344,7 @@ void testStabilityHygiene() {
                 const auto o = render(in, {g, t, v}, fs);
                 for (float s : o) assert(std::isfinite(s) && "non-finite output on the grid");
             }
-    {  // silence -> silence (no DC pumping / turn-on thump)
+    {  // silence -> silence (the model does not self-oscillate)
         std::vector<float> zeros(static_cast<size_t>(fs * 0.3), 0.0f);
         const auto o = render(zeros, {1.0f, 1.0f, 1.0f}, fs);
         double dc = 0.0, pk = 0.0;
@@ -349,6 +352,35 @@ void testStabilityHygiene() {
         dc /= static_cast<double>(o.size());
         assert(pk < 1e-4 && "silence produced output");
         assert(std::fabs(dc) < 1e-3 && "DC offset on silence");
+    }
+    {  // DC offset ON SIGNAL — the property that matters (audit finding 16).
+        //
+        // 2026-07-25 (test/assert-real-properties): the silence check above was the only
+        // DC assertion here and it is trivially true. GOLD is the most exposed of the four:
+        // its germanium branch is DELIBERATELY asymmetric (that asymmetry IS the voice),
+        // and it sums a clipped path with a clean path — so a DC step in the dirt leg would
+        // ride straight through the blend. `kOutHpHz` (~8 Hz) is what stops it.
+        //
+        // TWO stimuli: the clean tone catches a rectifying clipper, and the +0.1 V input
+        // offset makes the coupling cap itself load-bearing (with a clean input, deleting
+        // the cap changes nothing — verified). See core/tests/support/DcOffset.h.
+        const auto tone = sine(220.0, 0.2f, 1.0, fs);
+        for (float gain : {0.5f, 1.0f}) {
+            for (float dcIn : {0.0f, clipper::test::kInputDcOffset}) {
+                auto stim = tone;
+                for (float& s : stim) s += dcIn;
+                const auto o = render(stim, {gain, 1.0f, 1.0f}, fs);
+                const auto d = clipper::test::measureDcOnSignal(o);
+                std::printf("  [ok] DC on SIGNAL (gain %.2f, input DC %+.2f V): mean %+.6f V, "
+                            "peak %.4f V -> %.4f %% of peak (bar %.1f %%)\n",
+                            gain, dcIn, d.mean, d.peak, 100.0 * d.fraction,
+                            100.0 * clipper::test::kDcFractionBar);
+                assert(d.peak > 0.01 && "no signal to measure DC against");
+                assert(d.fraction < clipper::test::kDcFractionBar &&
+                       "DC offset ON SIGNAL exceeds 1 % of peak — the output coupling cap is "
+                       "missing or mistuned, or the clipper is rectifying");
+            }
+        }
     }
     {  // determinism
         const auto a = render(in, {0.6f, 0.4f, 0.8f}, fs);
@@ -363,6 +395,7 @@ void testStabilityHygiene() {
 }  // namespace
 
 int main() {
+    clipper::test::requireAssertsLive();
     std::printf("Running clipper::dsp::GoldModel tests (v1.1 item 6 — the clean-blend "
                 "germanium overdrive)...\n");
     testTransparency(44100.0);

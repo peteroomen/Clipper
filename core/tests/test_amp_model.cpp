@@ -13,6 +13,8 @@
 #include "clipper/dsp/OutputLimiter.h"
 #include "clipper/dsp/ReverbModel.h"
 
+#include "support/AssertsLive.h"
+
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -1680,6 +1682,7 @@ void testReverbPerf(double fs) {
 }  // namespace
 
 int main() {
+    clipper::test::requireAssertsLive();
     std::printf("Running AmpModel + CabConvolver (M5 + cab expansion) tests...\n");
     // 48 kHz added alongside 44.1/96 k — the user's Mac runs at 48 k.
     for (double fs : {44100.0, 48000.0, 96000.0}) {

@@ -5380,7 +5380,336 @@ has the same `v > 1 ? 1 : (v < -1 ? -1 : v)` shape.
 
 ---
 
-## 29. Audit finding 2 — the cab swap gets off the render path
+## 29. The audit's systemic finding — tests that assert real properties
+
+**Slice:** `test/assert-real-properties` (2026-07-25). Tests, `core/CMakeLists.txt` and
+docs only — **no DSP change**. Sequenced deliberately *before* the circuit-fix phase, per
+the audit's own suggested order: "Stand up CI before the circuit work, and fix the vacuous
+tests named in each finding. The fidelity changes below need to be *measured*, not asserted,
+and the current suite would pass either way."
+
+The 2026-07-24 audit's systemic finding was not any one defect:
+
+> The test suite is large and passes, but a recurring class of test asserts an identity, a
+> tautology, or the implementation against a reference derived from the same code — so wrong
+> topologies and wrong constants pass. Several findings are things a test *named for that
+> property* did not catch.
+
+That is load-bearing for what comes next. The AC30 and shared-phase-inverter fixes (findings
+4, 5, 7) will be judged by this suite, and re-blessing a golden against an unverified change
+is how a regression becomes canon.
+
+### The XFAIL ratchet (the design decision worth recording)
+
+Correcting these tests exposes real, open defects. The two obvious ways to keep the suite
+green are both the disease: `#if 0` makes the property untested again, and loosening the bound
+makes the defect canon — which is *literally* how the starved AC30 phase inverter shipped
+(docs §23 second amendment: a 150 V window on a 300 V rail).
+
+So `core/tests/support/Xfail.h`. A known-bad property is **measured**, its real number is
+**printed**, and the finding plus the owning slice are **named**. The run continues. And:
+
+> **An XPASS is a hard failure.**
+
+The moment somebody fixes the defect, the suite goes red until they delete the XFAIL. An XFAIL
+cannot rot into a permanent excuse, and cannot be used to smuggle a genuinely failing property
+past review. Verified: shortening `OptoTremolo::kReleaseMs` from 55 ms to 5 ms makes both
+tremolo XFAILs XPASS and the binary exits 1.
+
+Visibility was the other half. `ctest --output-on-failure` prints nothing for a passing test,
+and a known defect nobody can see is how these findings survived a green suite. So each binary
+carrying XFAILs also registers `<target>_xfail_ledger`, which runs it with `--xfail-ledger` and
+exits **77** under `SKIP_RETURN_CODE 77`. A plain `ctest` now prints, in its default summary:
+
+```
+Test #10: clipper_jcm800_power_tests_xfail_ledger ........***Skipped
+Test #12: clipper_twin_tests_xfail_ledger ................***Skipped
+Test #14: clipper_opto_tremolo_tests_xfail_ledger .........***Skipped
+Test #16: clipper_muff_tests_xfail_ledger .................***Skipped
+Test #19: clipper_ac30_tests_xfail_ledger .................***Skipped
+Test #21: clipper_player_expectations_tests_xfail_ledger ..***Skipped
+```
+
+### Asserts are live on every platform now, and it is a build error if they are not
+
+`core/CMakeLists.txt` guarded `-UNDEBUG` behind `if(NOT MSVC)` in seventeen copies. These
+suites are plain `int main` + `<cassert>`, and `NDEBUG` — which CMake defines in every Release
+build, the documented build type — erases `assert()`. So on MSVC the entire 1129-line
+player-expectations suite compiled to a no-op `main` that printed "All M11 player-expectations
+tests passed" and exited 0, **including with zero golden WAVs present**. Not a weaker test: no
+test at all, reported green.
+
+MSVC accepts `/UNDEBUG` exactly as GCC/Clang accept `-UNDEBUG`, so the guard was never needed.
+The seventeen copies are now one `clipper_add_test_flags()`, and
+`core/tests/support/AssertsLive.h` — included by every test `.cpp` — makes it a **compile
+error** if `NDEBUG` ever survives again, plus a runtime `requireAssertsLive()` for belt and
+braces. Verified: dropping `-UNDEBUG` fails the build with that `#error`.
+
+### The phase inverter, measured properly for the first time
+
+`test_twin_amp.cpp` and `test_ac30_amp.cpp` were commented "PI: balanced anti-phase legs" and
+asserted only `quiescentPlate1() > 250 && < 410` — a 160 V window on a 410 V rail, which
+admits both a healthy ~330 V and the starved 386.8 V the amp ships with. Nothing anywhere
+asserted the **leg ratio**, the property push-pull even-harmonic cancellation actually depends
+on (audit finding 8's own words).
+
+`core/tests/support/LtpProbe.h` now defines the three properties **once**, shared by all three
+amps so they cannot drift on what "a healthy phase inverter" means:
+
+| property | how | why not the old form |
+|---|---|---|
+| plate as a **fraction of B+** | `Va/B+`, target 70–85 % | scale-free; an absolute window cannot tell "mid load line" from "parked at cutoff" |
+| **standing current per triode** | `(B+ − Va)/Ra` — **Ohm's law on the plate load**, target 0.5–0.9 mA | independent of the Koren law the solver used, so a self-consistent-but-wrong device fit cannot satisfy it |
+| **leg balance** | drive a fresh `LtpInverter` configured from the shipped `config()` with 20 mV and compare the two plate swings | this is the cancellation mechanism, and nothing measured it |
+
+Measured (unchanged code at `9923af7`, reproducing the audit exactly):
+
+| amp | Va1 (% B+) | Ip/triode | leg gains | ratio | verdict |
+|---|---|---|---|---|---|
+| JCM800 | 322.1 V (**94.7 %**) | **0.179 mA** | ×15.44 / ×9.37 | **0.607** | all three XFAIL (findings 7, 8) |
+| Twin | 386.8 V (**94.3 %**) | **0.232 mA** | ×7.43 / ×7.51 | 0.990 | plate + current XFAIL; **balance asserted** |
+| AC30 | 247.1 V (82.4 %) | 0.529 mA | ×31.76 / ×17.46 | **0.550** | **plate + current asserted**; balance XFAIL |
+
+Every amp carries at least one hard assertion, and no target is XFAILed on all three — the
+bars are demonstrably reachable by the shipped code. The AC30 pair is the important one: it
+meets the DC targets *only* because `Rtail` was cut to 2.2 kΩ, and that is exactly what wrecks
+its balance. Asserting both pins the trade-off, so a future "fix" that restores balance by
+re-starving the inverter cannot pass.
+
+`test_jcm800_power.cpp`'s push-pull test lost its part (a) entirely: it built
+`pp[i] = f(Vbias+v) − f(Vbias−v)` from the device law and asserted the result's 2nd harmonic
+was 40 dB down — the algebraic identity "f(v) − f(−v) is odd", true by construction for any
+`f` whatsoever. The **single-ended** reference survives, because one EL34 driven by the Koren
+law is genuinely independent: it is the "no cancellation at all" baseline a pair must beat. The
+bar moved from 6 dB (not cancellation — a rounding error) to 20 dB. The JCM measures 10.3 dB
+below SE where the balanced Twin gets ~30, so it XFAILs against finding 8.
+
+### DC offset, on signal — and why the clean-input case alone has no teeth
+
+All four dirt-pedal tests asserted `|mean(out)| < 1e-3` after 0.3 s of **zeros**. Trivially
+true, and not the property anyone cares about: these are asymmetric clippers and an asymmetric
+clipper produces DC *from signal*.
+
+Correcting it needed **two** stimuli, and the second is the load-bearing one. Measured: with a
+clean input, deleting the RAT's / TS's / GOLD's output coupling cap outright changes their
+measured DC by **nothing** — a symmetric or already-blocked clipper does not rectify, so a
+clean-input test cannot fail if the cap goes missing, which is precisely the regression worth
+catching. Feed **+0.1 V of DC on the input** (an ordinary bad interface, or a mis-biased
+upstream buffer) and the cap becomes load-bearing.
+
+| | clean input | +0.1 V input DC |
+|---|---|---|
+| RAT | 0.000 % of peak | 0.091 % |
+| TS | 0.000 % | 0.000 % |
+| GOLD | 0.000 % | 0.000 % |
+| **Muff** | **18.4 %** (+0.44 V on a 2.38 V peak) | **18.4 %** |
+
+The Muff XFAILs against finding 16 — it has no output high-pass anywhere; the real pedal's
+0.1 µF output cap is simply absent, while every sibling carries `dcBlockHz = 12.0` because
+(`SdModel.cpp:66`) "the asymmetric clip produces DC". Not fixed here: adding a high-pass to a
+fuzz is a **tone change** and needs its own A/B (it will lift the low end and change the
+bloom).
+
+### Block size: the property the 128-only comparison could not test
+
+`test_player_expectations.cpp` block B compared in-place 128-frame rendering against one big
+call at `tol = 2e-5`, with a comment about "float accumulation across ~60k samples of tube
+solves". Every unit measured **exactly 0.000e+00**. Not luck — every unit already chunks
+internally at exactly 128, so a 128-frame outer loop cannot produce a different internal call
+pattern. The tolerance was ~94 dB looser than the property needed. Structurally vacuous, the
+same way finding 3's `testConvolverChunking` was.
+
+Two changes. **Aligned sizes are now BIT-IDENTICAL (`tol` 0.0)** — which is what is actually
+true. And the signal is trimmed to 57563 samples (a multiple of neither block size, so every
+pass ends on a partial block) and each unit also runs at a **ragged 100 frames**, the only
+segmentation that can catch a block-size bug at all — finding 3's `CabConvolver` was exact at
+128 and produced an error *larger than the signal* at 100.
+
+That ragged pass found something. The five **dirt pedals** diverge at a ragged size, but only
+during the first ~25 ms, converging to ≤ 1.0e-3 relative afterwards: the audit's Medium/DSP
+item, *"control-rate parameter sampling defeats the 5 ms smoother at DAW block sizes"*, now
+measured end to end through the C ABI the worklet calls. Worst case Muff, **1.473 absolute at
+25 ms**. So the *settled* output is asserted for real (≤ 2e-3 relative) and the startup
+transient is XFAILed against that item. The phaser, all four amp voices, `CabConvolver` and
+`ReverbModel` are bit-identical at every block size from 1 to 256 and are asserted as such.
+
+Also in the same suite: `assert(lv[1] >= lv[0] …)` compared a real level against `lv[0]`, which
+is ~1e-12 (a closed pot is silence) — true for any `lv[1]` whatsoever, including a level knob
+wired to nothing. `assert(th[1] >= th[0] * 0.95 …)` permitted a **5 % THD decrease** under the
+banner "non-decreasing", which is enough slack to hide a small taper inversion. And
+`sine(220.0, g.isPedal ? 0.1f : 0.1f, …)` had two identical branches. All three are now
+literal, with the level knob additionally required to gain **≥ 2 dB from noon to fully open** —
+the audit measured JCM800 BASS at "+9.5 dB lower half / +0.2 dB upper half", and 2 dB cleanly
+separates a dead top half from the tightest real case (clean120, +2.9 dB).
+
+### OptoTremolo — the first test it has ever had
+
+The audit said `OptoTremolo` "has no test at all". Half true, and the half that was true is the
+half that mattered: `test_twin_amp.cpp` does drive the class (depth vs INTENSITY, the enable
+bypass, the rate map, the attack/release asymmetry), but every probe sits at a fixed
+`setSpeed(0.4f)` — so the one axis with a real defect on it was never swept. And no render in
+the Twin suite reaches the tremolo *through* `TwinAmp`: they all pass INTENSITY 0.
+
+`core/tests/test_opto_tremolo.cpp` pins **speed invariance** — turning the speed knob must
+change the *rate* of the throb and nothing else:
+
+| SPEED | rate | peak gain | mean level | depth |
+|---|---|---|---|---|
+| 0.00 | 1.00 Hz | 0.973 | −6.91 dB | −71.9 dB |
+| 0.50 | 3.16 Hz | 0.831 | −8.84 dB | −50.6 dB |
+| 1.00 | 10.0 Hz | **0.522** | **−12.03 dB** | −27.2 dB |
+
+A 55 ms release against a 100 ms LFO period means the LDR never discharges, so the cell sits
+permanently part-lit and the whole waveform slides down instead of the dips getting closer
+together. **A player hears the amp get quieter as they speed the tremolo up**, which no AB763
+does. Two XFAILs (mean level within 1.5 dB across the range; peak gain ≥ 0.90 at every speed);
+the depth floor and the measured rate map are asserted for real. Block B of the same file
+drives SPEED / INTENSITY / TREMOLO_ENABLE *through* `TwinAmp` and pins the envelope swing in
+both directions of the enable — the wiring nothing had exercised.
+
+### Playwright
+
+The "no pop / declick continuity" tests posted the topology change **before**
+`ctx.startRendering()`, so the swap landed at the opening zero crossing with empty filter state
+and *removing the declick entirely* would still pass. Their bounds also carried absolute floors
+(`+0.02`, `+0.05`) larger than the step a de-declicked swap actually produces.
+
+The three amp-swap tests now land the swap at 0.3 s into a sustained note via `ctx.suspend()` /
+`resume()` (the technique `expectations.spec.ts:255` already used), and the reference is the
+render's **own per-sample slew away from the swap, in the same render** — a pop is by
+definition a step larger than the signal's natural slew, so no absolute floor is needed.
+Measured, swap-window slew ÷ away-from-swap slew:
+
+| swap | shipped declick | declick **deleted** |
+|---|---|---|
+| clean120 → jcm800 | 2.04 | **7.15** |
+| clean120 → twin | 1.66 | **7.16** |
+| clean120 → ac30 | 1.19 | **5.12** |
+
+Bar 3.0: 1.5× margin on the pass side, 1.7× on the fail side. Each also asserts real signal on
+**both** sides of the swap and a level change across it, so the test cannot quietly revert to
+the old shape and still pass. (`cab.spec.ts`'s cab-swap equivalent is owned by
+`fix/cab-swap-rt-safety` and was left alone.)
+
+The three "perf smoke" tests asserted `expect(perf.clean).toBeGreaterThan(0)` on a
+`performance.now()` delta — positive by construction — and never read an output sample. They
+now return the rendered audio too, and assert that both paths made sound, that the two paths
+made **different** audio (otherwise the ratio is clean-vs-clean, ~1, and sails under the bound
+no matter how slow the valve amp becomes), and that the render is finite.
+
+`'board: move buttons reorder the pedal chain'` asserted only `Array.isArray(chainIds)` and
+`length === 2` under a comment reading "ids swapped order" — the one thing it is named for went
+unchecked. It now asserts the literal order the **worklet** was told about. `cab.spec.ts`
+asserted `irLen > 128` (a property of the committed fixture, not of the code) and
+`typeof label === 'string'` (passes for `''`); both now assert the real value. The unasserted
+`overall` and `sd1.h3` computations are asserted — `overall` is what distinguishes a phaser
+that *sweeps* from one stuck at its deepest notch, and `sd1.h3` is what stops an SD-1 that had
+stopped clipping from passing on its 2nd harmonic alone.
+
+Finally, `audio.spec.ts` — 1751 lines covering every pedal's DSP — contained **zero** finiteness
+checks. Every assertion in it is a Goertzel bin, an RMS or a max-delta over a *window*, so a NaN
+outside that window or in the right channel of a stereo render failed nothing, and NaN
+propagates silently into the measurements it does make. Rather than an `allFinite()` call at
+each of ~15 render sites (which only guards the sites somebody remembers),
+`tests/support/finite-output.ts` patches `OfflineAudioContext.prototype.startRendering` once
+per page: every render is scanned, in every channel, over every sample, and a new render site
+is covered automatically.
+
+### Teeth — every rewritten test, and the perturbation that proves it
+
+A rewritten test that still cannot fail has not been fixed. Each was perturbed in a scratch
+copy, confirmed red, and reverted:
+
+| test | perturbation | result |
+|---|---|---|
+| JCM800 PI leg balance | `Ra2` 82 k → 150 k (ratio 0.607 → 0.978) | **XPASS → exit 1** |
+| JCM800 PI plate / current | `Rtail` 10 k → 1.6 k | fails |
+| Twin PI leg balance (hard) | `Ra2` 142 k → the **100 k its own header documents** | fails |
+| AC30 PI plate + current (hard) | `Rtail` 2.2 k → the original 22 k (re-starving it) | fails |
+| TS DC on signal | bypass the output coupling cap | fails |
+| GOLD DC on signal | bypass the output coupling cap | fails |
+| block B `tol` 2e-5 → 0 | +1e-6 per call inside `ReverbModel` → **1.341e-07** on the JCM path | fails at 0.0, **would have passed at 2e-5** |
+| block B ragged pass | phaser LFO sampled once per call instead of per sample | fails |
+| LEVEL knob top half | RAT level saturates at 0.5 | fails |
+| OptoTremolo speed sag | `kReleaseMs` 55 → 5 ms | **XPASS → exit 1** |
+| `-UNDEBUG` / AssertsLive | drop `-UNDEBUG` | **build error** |
+| amp swap "no pop" ×3 | delete the declick bracket | ratio 5.1–7.2 vs bar 3.0 |
+| chain reorder | post the chain to the worklet in its original order | fails |
+| cab custom label | derive the label from a constant instead of the filename | fails |
+
+Two honest caveats. The **RAT**'s DC assertion holds with ~11× margin on input offset and its
+teeth overlap `testPreClipVoicing` — the shaping network's DC gain is already pinned there to
+±1.5 dB, so any perturbation large enough to break DC trips that test first. And **GOLD** is
+protected at both the input (`kInputHpHz` 7.2 Hz) and the output (`kOutHpHz` 8 Hz); the output
+cap alone is enough to fail, but a model with only one cap would be a weaker guard.
+
+### A false alarm worth recording
+
+Mid-slice, a measurement appeared to show the TS passing input DC straight to its output at
+unity — `cfg_.dcBlockHz` reading **0** in `prepare()` while `kTsConfig.dcBlockHz`
+static-asserts as 12.0. It was **not** a defect: the incremental `build/` directory held a
+stale `OverdriveEngine.cpp.o`, because the perturbation harness restored files with `cp`/`mv`,
+which preserves the *backup's* mtime — older than the existing object, so `make` skipped the
+rebuild. A fresh build directory gave `dcBlockHz = 12`, `dcR_ = 0.998430437`, and correct DC
+rejection. **Any perturbation harness must `touch` the file after both patch and restore**, or
+it measures stale code. This is also why one earlier "NO TEETH" reading was wrong.
+
+### Suites
+
+Core **ctest 24/24** — 18 real targets (17 existing + `clipper_opto_tremolo_tests`) plus 6
+`_xfail_ledger` entries reported as Skipped, carrying **11 XFAILs** between them. Web
+`tsc --noEmit` + `vite build` clean, **Playwright 66 passed**, `test:server` 11/11,
+`test:history` 10/10, `electron` 20/20. Exactly one compiler warning in the tree, the
+pre-existing unused `softLimit` in `tools/render/main.cpp` — no new ones, despite `-Wall
+-Wextra` now reaching `clipper_tests` too (it previously got only `-UNDEBUG`).
+
+**The goldens are untouched and still pass, which is the whole point of this slice's scope
+discipline:** it changes no DSP, so the golden gate is an independent confirmation that
+nothing about how the rig sounds moved while the tests around it were rewritten.
+
+### Left open (deliberately)
+
+Every XFAIL is a real defect this slice made visible and did not fix:
+
+| id | finding | owner |
+|---|---|---|
+| `finding7-jcm-pi-plate-fraction`, `finding7-jcm-pi-standing-current`, `finding7-twin-pi-plate-fraction`, `finding7-twin-pi-standing-current`, `finding7-ac30-pi-leg-balance` | 7 — the LTP tail returns to ground, so standing current is set entirely by `Rtail` | the `tailRef` fix; one change fixes all three amps |
+| `finding8-jcm-pi-leg-balance`, `finding8-jcm-even-harmonic-cancel` | 8 — `Ra2 = 82 kΩ` moves the imbalance the wrong way | `Ra2` → ~120 kΩ **on top of** the tailRef fix (150 k alone reaches 0.978 but is not the physical answer) |
+| `finding16-muff-no-output-dc-blocker` | 16 — no output high-pass at all | its own slice; it is a tone change |
+| `trem-mean-level-sags-with-speed`, `trem-peak-gain-collapses-with-speed` | Medium/DSP — 55 ms release against a 100 ms period | scale `kReleaseMs` with the LFO period (verified to work) |
+| `control-rate-param-sampling-block-size` | Medium/DSP — chunk-end parameter sampling | apply the smoothed value per sample; `RatModel`'s inner loop is the pattern |
+
+Not attempted here: the **tone-stack class** of test, which compares the discrete MNA against
+an analytic `H(jω)` derived from the same netlist. Real (findings 5 and the JCM flatness are
+exactly that), but fixing it needs published response curves per amp — a research slice.
+
+**`web/playwright.config.ts:34` sets `retries: 2`**, so any fault appearing in under a third of
+runs is retried away. Not changed unilaterally in a test-integrity slice, but it is the last
+remaining way for a real fault to disappear silently, and it belongs in the next process
+slice. Recommendation: `retries: 0` locally and on PRs, keeping retries (if any) only for a
+nightly job, so a flaky test is a bug report rather than a shrug.
+
+This slice ran straight into it. The suite is green (66 passed, exit 0), but **four
+pre-existing tests needed a retry** — `'RAT worklet: high distortion yields odd harmonics'`,
+`'amp: treble knob changes 5 kHz content'`, `'reverb: 0 == dry; up leaves a decaying tail'`,
+and the phaser notch test. All four are `OfflineAudioContext` renders, and `audio.spec.ts`'s
+own header names the cause: *"Creating many live AudioContexts in one browser process can
+starve later OfflineAudioContext renders (they go silent)."* With `retries: 2` they are
+invisible; with `retries: 0` they would be four red tests describing a real, reproducible
+resource limit.
+
+The same limit bit the rewritten **perf-smoke** tests, and it is worth recording how, because
+it is a trap for the next person. Each builds eight `OfflineAudioContext`s in sequence. Run
+inside the full suite, one twin pair came back with `voiceDiff` **exactly 0** and a ratio of
+**0.85×** — i.e. the amp-model swap silently did not happen and *both* renders were clean120.
+Measured in isolation the same settings give ratio 13× and diff 0.22. So the new audio
+assertion was correct and the render was degraded. The old test could not have noticed
+(0.85 < 150), and a naive fix — asserting the last pair — would have swapped a vacuous test
+for a flaky one. The assertion is therefore over the **best of the three pairs**: "at least
+one pair rendered genuinely different audio" still fails hard if the swap never works, which
+is the property worth having.
+
+## 30. Audit finding 2 — the cab swap gets off the render path
 
 **Session:** 2026-07-25 · `fix/cab-swap-rt-safety` (stacked on `fix/nan-parameter-guard`) · plan `docs/work/2026-07-25-cab-swap-rt-safety.md`
 **Fixes:** the second of the three shipping-blockers in `docs/audits/2026-07-24-project-audit.md`.
@@ -5579,3 +5908,4 @@ the independent check on fidelity-neutrality. **Playwright was not run in this s
 tests were instead verified by driving the real worklet under Node with a stubbed
 `AudioWorkletGlobalScope`, against both the pre-fix and fixed worklets sharing one
 rebuilt WASM artifact; all the before/after numbers quoted above come from that.
+

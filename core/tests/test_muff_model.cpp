@@ -17,7 +17,11 @@
 
 #include "clipper/dsp/BjtStage.h"
 #include "measure/AliasMetric.h"
+#include "support/AssertsLive.h"
+#include "support/DcOffset.h"
+#include "support/Xfail.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -30,6 +34,15 @@ constexpr double kTwoPi = 6.283185307179586;
 using clipper::dsp::BjtStage;
 using clipper::dsp::MuffModel;
 using clipper::dsp::MuffToneStack;
+
+// --- known-bad properties (2026-07-24 audit) --------------------------------------
+constexpr clipper::test::XfailDecl kXfMuffDc{
+    "finding16-muff-no-output-dc-blocker",
+    "2026-07-24 audit finding 16",
+    "the Muff's output DC offset ON SIGNAL stays under 1 % of peak (it has NO output "
+    "high-pass at all — the real pedal's 0.1 uF output cap is absent, while every sibling "
+    "carries dcBlockHz = 12.0 because 'the asymmetric clip produces DC')",
+    "its own slice: adding a high-pass to a fuzz is a TONE change and needs an A/B"};
 
 double goertzelAmp(const std::vector<float>& x, size_t start, size_t n, double f,
                    double fs) {
@@ -386,7 +399,7 @@ void testStabilityHygiene() {
                 auto o = render(in, {su, tn, vo}, fs);
                 for (float v : o) assert(std::isfinite(v) && "non-finite output on the grid");
             }
-    {  // silence -> silence (no DC pumping / turn-on thump)
+    {  // silence -> silence (the model does not self-oscillate)
         std::vector<float> zeros(static_cast<size_t>(fs * 0.3), 0.0f);
         auto o = render(zeros, {1.0f, 0.5f, 1.0f}, fs);
         double dc = 0.0, pk = 0.0;
@@ -394,6 +407,41 @@ void testStabilityHygiene() {
         dc /= o.size();
         assert(pk < 1e-4 && "silence produced output");
         assert(std::fabs(dc) < 1e-3 && "DC offset on silence");
+    }
+    {  // DC offset ON SIGNAL — XFAIL, audit finding 16.
+        //
+        // 2026-07-25 (test/assert-real-properties): the silence check above was the only DC
+        // assertion here, and the audit named this file first when it called the DC blind
+        // spot systemic. The Muff is FOUR cascaded asymmetric BJT clipping stages and it has
+        // NO output high-pass anywhere — the real pedal's 0.1 µF output cap is simply absent
+        // from the model, while every sibling carries `dcBlockHz = 12.0` because (SdModel.cpp:66)
+        // "the asymmetric clip produces DC".
+        //
+        // So the correct assertion FAILS, by a wide margin, and that is the point: it is
+        // recorded here at its real measured value instead of being written to pass. Not
+        // fixed in this slice — adding a high-pass to a fuzz is a tone change and needs its
+        // own A/B (it will lift the low end and change the bloom).
+        // Both stimuli fail, and for the same reason (there is no high-pass to reject
+        // either the rectified DC the four asymmetric stages generate, or an offset arriving
+        // on the input). See core/tests/support/DcOffset.h for why the offset case exists.
+        const auto tone = sine(220.0, 0.2f, 1.0, fs);
+        for (float sustain : {0.5f, 1.0f}) {
+            for (float dcIn : {0.0f, clipper::test::kInputDcOffset}) {
+                auto stim = tone;
+                for (float& s : stim) s += dcIn;
+                const auto o = render(stim, {sustain, 0.5f, 1.0f}, fs);
+                const auto d = clipper::test::measureDcOnSignal(o);
+                char detail[256];
+                std::snprintf(detail, sizeof detail,
+                              "sustain %.2f, input DC %+.2f V @ %.0f Hz: mean %+.4f V DC on a "
+                              "%.4f V peak = %.1f %% of peak (bar %.1f %%)",
+                              sustain, dcIn, fs, d.mean, d.peak, 100.0 * d.fraction,
+                              100.0 * clipper::test::kDcFractionBar);
+                assert(d.peak > 0.01 && "no signal to measure DC against");
+                clipper::test::expectXfail(d.fraction < clipper::test::kDcFractionBar, kXfMuffDc,
+                                           detail);
+            }
+        }
     }
     {  // determinism
         auto a = render(in, {0.6f, 0.4f, 0.8f}, fs);
@@ -405,9 +453,19 @@ void testStabilityHygiene() {
     std::printf("  [ok] hygiene: finite grid, silence->silence, deterministic\n");
 }
 
+// Known defects this binary exercises under XFAIL. Printed by --xfail-ledger, which ctest
+// surfaces as ***Skipped in its default summary (see core/CMakeLists.txt).
+const clipper::test::XfailDecl kLedger[] = {kXfMuffDc};
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
+                                                 sizeof kLedger / sizeof kLedger[0],
+                                                 "clipper_muff_tests");
+    if (ledger >= 0) return ledger;
+    clipper::test::requireAssertsLive();
+
     std::printf("Running clipper::dsp::MuffModel tests (v1.1 item 4 — the fuzz + BjtStage)...\n");
     testDcOperatingPoints(44100.0);
     testDcOperatingPoints(96000.0);
@@ -426,6 +484,7 @@ int main() {
     testAliasing(96000.0);
     testVolumeLinearity();
     testStabilityHygiene();
-    std::printf("All MuffModel tests passed.\n");
-    return 0;
+    std::printf("All MuffModel tests passed (XFAILs listed below are known open defects, "
+                "not regressions).\n");
+    return clipper::test::reportXfails();
 }

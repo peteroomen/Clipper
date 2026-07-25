@@ -18,6 +18,8 @@
 #include "clipper/dsp/RatModel.h"
 #include "measure/AliasMetric.h"
 
+#include "support/AssertsLive.h"
+
 #include <cassert>
 #include <cmath>
 #include <complex>
@@ -352,6 +354,7 @@ void testHygiene() {
 }  // namespace
 
 int main() {
+    clipper::test::requireAssertsLive();
     std::printf("Running clipper::dsp::SdModel tests (M8 — SD-1)...\n");
     testMidHumpCorner(44100.0);
     testMidHumpCorner(96000.0);

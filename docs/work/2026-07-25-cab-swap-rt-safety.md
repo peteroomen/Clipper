@@ -81,7 +81,7 @@ architectural change and is explicitly out of scope.
       reorder measured as non-discriminating.)
 - [x] **Not planned, added:** a `'hold'` declick phase covering the swapped-in
       convolver's dead partition (see "What actually happened", item 4).
-- [x] Docs: `docs/DEVELOPMENT.md` §29, ADR 003, CLAUDE.md Current State.
+- [x] Docs: `docs/DEVELOPMENT.md` §30, ADR 003, CLAUDE.md Current State.
 
 ## How this will be measured
 
@@ -260,7 +260,7 @@ committed.
 - `scripts/build-wasm.sh` — three new `EXPORTED_FUNCTIONS`.
 - `web/tests/cab.spec.ts` — test 3 rewritten (mid-render, toward the brighter cab);
   new test 3b (four edits in one fade window).
-- `docs/DEVELOPMENT.md` — new §29.
+- `docs/DEVELOPMENT.md` — new §30.
 - `docs/decisions/003-cab-double-buffer-at-the-abi.md` — new ADR.
 - `CLAUDE.md` — Current State.
 
