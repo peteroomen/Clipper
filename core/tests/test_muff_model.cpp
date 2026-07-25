@@ -12,6 +12,9 @@
 //      high sustain (the wall-of-sustain assert).
 //   5. Aliasing: shipped 4× at max sustain below the M2 −60 dB bar; naive far worse.
 //   6. VOLUME linearity; stability + hygiene at ±10 V, all rates.
+//   7. The low end is where a guitar's low end is (testLowEndResponse) and the output does
+//      not ride on DC when driven (the DC-on-signal block in testStabilityHygiene) — audit
+//      finding 16, fixed 2026-07-25, docs §37 / ADR 009.
 
 #include "clipper/dsp/MuffModel.h"
 
@@ -19,7 +22,6 @@
 #include "measure/AliasMetric.h"
 #include "support/AssertsLive.h"
 #include "support/DcOffset.h"
-#include "support/Xfail.h"
 
 #include <algorithm>
 #include <cassert>
@@ -34,15 +36,6 @@ constexpr double kTwoPi = 6.283185307179586;
 using clipper::dsp::BjtStage;
 using clipper::dsp::MuffModel;
 using clipper::dsp::MuffToneStack;
-
-// --- known-bad properties (2026-07-24 audit) --------------------------------------
-constexpr clipper::test::XfailDecl kXfMuffDc{
-    "finding16-muff-no-output-dc-blocker",
-    "2026-07-24 audit finding 16",
-    "the Muff's output DC offset ON SIGNAL stays under 1 % of peak (it has NO output "
-    "high-pass at all — the real pedal's 0.1 uF output cap is absent, while every sibling "
-    "carries dcBlockHz = 12.0 because 'the asymmetric clip produces DC')",
-    "its own slice: adding a high-pass to a fuzz is a TONE change and needs an A/B"};
 
 double goertzelAmp(const std::vector<float>& x, size_t start, size_t n, double f,
                    double fs) {
@@ -258,10 +251,18 @@ void testSustainRange(double fs) {
     // hump makes the FINE curve non-monotonic, so assert the endpoints/default).
     assert(tLo < tMid && "SUSTAIN=0 not less saturated than the 0.6 default");
     assert(tMid < tMax && "default not less saturated than max SUSTAIN");
-    // The wall at high sustain is still fuzz-huge (a fuzz, not an overdrive — RAT/SD-1/TS
-    // top out ~20–30%; the Muff wall is >80%). THD > 100% at max: the ~1 kHz tone scoop +
-    // double clip suppress the fundamental below the harmonic sum (canon fuzz behaviour).
-    assert(tMax > 0.8 && "max-SUSTAIN THD not fuzz-huge (>80%)");
+    // The wall at high sustain is fuzz-large. RE-BASELINED 2026-07-25 (docs §37): the bar
+    // was ">80 %, and >100 % at max", and that figure was INFLATED BY AUDIT FINDING 16.
+    // THD is harmonic-sum / fundamental, and the pre-fix coupling network pre-emphasised the
+    // harmonics over the fundamental by 11–20 dB — read it straight off the pre-fix response
+    // table at SUSTAIN 0.15 (48 kHz, TONE 0.5): 220 Hz sat 19.9 dB BELOW 1 kHz and 11.0 dB
+    // below 440 Hz, because the two clip stages' coupling caps cornered at 898 Hz. With the
+    // series base resistors in place 220 Hz sits 1.4 dB ABOVE 1 kHz and 0.1 dB above 440 Hz,
+    // the fundamental survives, and the same amount of clipping measures 39 % instead of
+    // 122 %. The pedal is not less saturated — testSustainWall below measures the
+    // compression directly and it got STRONGER (20 dB in -> -0.09 dB out at max). So the
+    // bar is re-derived rather than the old number chased.
+    assert(tMax > 0.30 && "max-SUSTAIN THD not fuzz-large (>30%)");
     // Min sustain is a GENUINE escape: clearly less saturated than the wall.
     assert(tLo < 0.6 && tLo < 0.5 * tMax && "SUSTAIN=0 did not shed the wall");
     std::printf(
@@ -314,11 +315,32 @@ void testSustainWall(double fs) {
 // level (a −40 dBFS hum came out near −10 dBFS, and min sustain didn't help). This is the
 // PERMANENT regression guard for the fix.
 //
-// Derived bar: at SUSTAIN=0 the pot attenuates to kClipDriveMax·10^(−54/20) ≈ 1.2% of max
-// drive, so a quiet hum stays in the near-linear region of the (clean) cascade and the
-// interstage coupling-cap HPFs (Cin=100 nF, ~−4.5 dB/stage at 60 Hz — canon, not a fantasy
-// filter) further tame it. So (a) with signal present the 60 Hz hum stays far below the
-// note, and (b) a hum-ALONE input is NOT amplified above its own level.
+// WHAT THIS TEST ACTUALLY MEASURES, after audit finding 16 (re-baselined 2026-07-25, §37).
+//
+// The audit's charge was that this test "passes largely BECAUSE of the defect — it validates
+// a bug as a feature": 60 Hz was being rejected by a bass rolloff that should not exist. The
+// comment here made that explicit and got the number wrong twice over. It claimed
+// "Cin=100 nF, ~−4.5 dB/stage at 60 Hz — canon, not a fantasy filter". CORRECTED CANON, all
+// figures measured per stage at the 4× rate, 60 Hz relative to 1 kHz:
+//
+//   * −4.5 dB/stage is RIGHT for the two PLAIN stages (Q1/Q4): base node ~19.6 k, coupling
+//     corner 81 Hz, −4.47 dB at 60 Hz. Cin = 100 nF, exactly as claimed.
+//   * It is badly WRONG for the two CLIP stages (Q2/Q3). Their idle-conducting diodes shunt
+//     the base node to ~1.8 k, cornering at 898 Hz: −20.95 dB/stage at 60 Hz.
+//   * Pre-fix total: −49.6 dB at 60 Hz relative to 1 kHz (measured −49.59). Averaged over
+//     four stages that is the audit's −13.9 dB/stage figure, ~3× the stated −4.5.
+//
+// With the series base resistors the clip corners move to 31.5 Hz (−1.05 dB/stage at 60 Hz)
+// and the total is −8.4 dB — so this test can no longer be passed by brute filtering, and
+// testLowEndResponse below asserts that the bass really is present. What remains, and what
+// this test now genuinely measures, is the SUSTAIN POT: at SUSTAIN 0 it attenuates to
+// kClipDriveMax·10^(−54/20) ≈ 1.2 % of max drive, so a quiet hum stays in the near-linear
+// region of the clean cascade instead of being compressed up to playing level. That is the
+// mechanism the §24 field fix installed, and it is the one under test.
+// So (a) with signal present the 60 Hz hum stays far below the note, and (b) a hum-ALONE
+// input is NOT amplified above its own level. Both bars are UNCHANGED by the finding-16 fix
+// (measured: hum/sig −51 dB → −43 dB, hum-alone −61 dBFS → −72 dBFS), which is the evidence
+// that the pot, not the rolloff, was carrying them.
 void testHumRejection(double fs) {
     const double fSig = 220.0, fHum = 60.0;
     const float aSig = 0.3162f;  // −10 dBFS guitar-level note
@@ -351,6 +373,56 @@ void testHumRejection(double fs) {
         "  [ok] hum rejection @ %.0f Hz: with note, hum/sig min=%.1f dB (bar -25) max=%.1f dB; "
         "hum-ALONE min=%.1f dBFS max=%.1f dBFS (delta %.1f dB — min sustain tames it)\n",
         fs, ratioMin, ratioMax, humLo, humHi, humHi - humLo);
+}
+
+// --- Test 4c: the pedal has BASS where a guitar has bass (audit finding 16). ---
+// The other half of finding 16, and the property that makes testHumRejection honest.
+//
+// MEASURED pre-fix (48 kHz, SUSTAIN 0.15 = near-linear, TONE 0.5, 0.002 V in — small enough
+// that the cascade is not compressing, so this is a transfer function and not a level test):
+//
+//   Hz     30      41.2     60      82.4     110     220     440    1000    4000
+//   dB   -70.95  -60.82  -49.59  -41.00  -33.96  -19.89  -8.84    0.00   +6.24   (re 1 kHz)
+//
+// The guitar's LOW E is 82.4 Hz. It sat 41 dB below 1 kHz, with a ~21 dB/octave slope below
+// 60 Hz — four cascaded coupling high-passes, two of them cornered at 898 Hz. No Big Muff is
+// that thin; its coupling caps see 10 k–100 k series resistors and a 100 k pot, putting the
+// corners at 15–50 Hz.
+//
+// Absolute reference, deliberately not derived from this netlist: the pitches of a guitar's
+// bottom two strings, against 1 kHz. The bar is player-stated — a fuzz must not be 6 dB down
+// on the open low E — and the subsonic assertion is the other half of it: the pedal must
+// still be a coupled circuit, not a DC-coupled one, so 30 Hz stays well down.
+void testLowEndResponse(double fs) {
+    const float amp = 0.002f;  // small-signal: the cascade is not compressing here
+    auto gainDb = [&](double f) {
+        const auto in = sine(f, amp, 1.2, fs);
+        const auto o = render(in, {0.15f, 0.5f, 0.6f}, fs);
+        const size_t n = o.size(), win = std::min(n, static_cast<size_t>(0.8 * fs));
+        return toDb(goertzelAmp(o, n - win, win, f, fs)) -
+               toDb(goertzelAmp(in, n - win, win, f, fs));
+    };
+    const double g1k = gainDb(1000.0);
+    const double gLowE = gainDb(82.4);   // open low E
+    const double gA = gainDb(110.0);     // open A
+    const double g60 = gainDb(60.0);     // below the lowest fretted note; also mains hum
+    const double g30 = gainDb(30.0);     // subsonic — must still be rejected
+
+    assert(gLowE - g1k > -6.0 &&
+           "open low E (82.4 Hz) more than 6 dB below 1 kHz — the coupling networks are "
+           "cornering too high (audit finding 16: no series base resistor)");
+    assert(gA - g1k > -4.0 && "open A (110 Hz) more than 4 dB below 1 kHz");
+    assert(g60 - g1k > -12.0 && "60 Hz more than 12 dB below 1 kHz — a rolloff this steep is "
+                                "what let testHumRejection pass on a defect");
+    // The other direction: this is still a capacitor-coupled circuit. If someone deletes the
+    // coupling caps (or DC-couples a stage) to chase the assertions above, 30 Hz comes up and
+    // this fails. A first-order-per-stage network cannot satisfy both bars by accident.
+    assert(g30 - g1k < -12.0 &&
+           "30 Hz is NOT rejected — the coupling network has gone (or been shorted): a fuzz "
+           "must not pass subsonics into the amp");
+    std::printf("  [ok] low end @ %.0f Hz: low E(82.4) %+.2f dB, A(110) %+.2f, 60 Hz %+.2f, "
+                "30 Hz %+.2f — all re 1 kHz (bars -6 / -4 / -12 / must be < -12)\n",
+                fs, gLowE - g1k, gA - g1k, g60 - g1k, g30 - g1k);
 }
 
 // --- Test 5: aliasing. Shipped 4× at max SUSTAIN below the M2 −60 dB bar. ------
@@ -408,38 +480,37 @@ void testStabilityHygiene() {
         assert(pk < 1e-4 && "silence produced output");
         assert(std::fabs(dc) < 1e-3 && "DC offset on silence");
     }
-    {  // DC offset ON SIGNAL — XFAIL, audit finding 16.
+    {  // DC offset ON SIGNAL — audit finding 16, FIXED 2026-07-25 (docs §37, ADR 009).
         //
-        // 2026-07-25 (test/assert-real-properties): the silence check above was the only DC
-        // assertion here, and the audit named this file first when it called the DC blind
-        // spot systemic. The Muff is FOUR cascaded asymmetric BJT clipping stages and it has
-        // NO output high-pass anywhere — the real pedal's 0.1 µF output cap is simply absent
-        // from the model, while every sibling carries `dcBlockHz = 12.0` because (SdModel.cpp:66)
-        // "the asymmetric clip produces DC".
+        // This block was an `expectXfail` from 2026-07-25's test/assert-real-properties slice
+        // until the output coupling cap landed: the Muff is FOUR cascaded asymmetric BJT
+        // stages and had NO high-pass anywhere, so it rode on up to +0.47 V of DC — 28.1 %
+        // of peak at max SUSTAIN. `MuffModel` now carries the real pedal's 0.1 µF output cap
+        // into the 100 k VOLUME pot (15.92 Hz), placed after Q4 and before the decimator, and
+        // the property is asserted for real. Fixing it made the XFAIL XPASS, which is a hard
+        // failure by design (support/Xfail.h) — so the XFAIL is gone, not loosened.
         //
-        // So the correct assertion FAILS, by a wide margin, and that is the point: it is
-        // recorded here at its real measured value instead of being written to pass. Not
-        // fixed in this slice — adding a high-pass to a fuzz is a tone change and needs its
-        // own A/B (it will lift the low end and change the bloom).
-        // Both stimuli fail, and for the same reason (there is no high-pass to reject
-        // either the rectified DC the four asymmetric stages generate, or an offset arriving
-        // on the input). See core/tests/support/DcOffset.h for why the offset case exists.
+        // MEASURED after the fix, both stimuli, all three sustains: 0.00002 % of peak.
+        //
+        // The second stimulus is the load-bearing one: an already-symmetric or already-
+        // blocked clipper does not rectify, so a clean-input test alone cannot fail if the
+        // cap goes missing. +0.1 V of input offset makes the cap load-bearing. See
+        // core/tests/support/DcOffset.h.
         const auto tone = sine(220.0, 0.2f, 1.0, fs);
-        for (float sustain : {0.5f, 1.0f}) {
+        for (float sustain : {0.3f, 0.5f, 1.0f}) {
             for (float dcIn : {0.0f, clipper::test::kInputDcOffset}) {
                 auto stim = tone;
                 for (float& s : stim) s += dcIn;
                 const auto o = render(stim, {sustain, 0.5f, 1.0f}, fs);
                 const auto d = clipper::test::measureDcOnSignal(o);
-                char detail[256];
-                std::snprintf(detail, sizeof detail,
-                              "sustain %.2f, input DC %+.2f V @ %.0f Hz: mean %+.4f V DC on a "
-                              "%.4f V peak = %.1f %% of peak (bar %.1f %%)",
-                              sustain, dcIn, fs, d.mean, d.peak, 100.0 * d.fraction,
-                              100.0 * clipper::test::kDcFractionBar);
                 assert(d.peak > 0.01 && "no signal to measure DC against");
-                clipper::test::expectXfail(d.fraction < clipper::test::kDcFractionBar, kXfMuffDc,
-                                           detail);
+                assert(d.fraction < clipper::test::kDcFractionBar &&
+                       "output DC on signal exceeds 1 % of peak — the output coupling cap "
+                       "(kOutCouplingHz) is missing or bypassed (audit finding 16)");
+                std::printf("  [ok] DC on signal @ %.0f Hz: sustain %.2f, input DC %+.2f V -> "
+                            "mean %+.3e V on a %.4f V peak = %.5f %% (bar %.1f %%)\n",
+                            fs, sustain, dcIn, d.mean, d.peak, 100.0 * d.fraction,
+                            100.0 * clipper::test::kDcFractionBar);
             }
         }
     }
@@ -453,17 +524,13 @@ void testStabilityHygiene() {
     std::printf("  [ok] hygiene: finite grid, silence->silence, deterministic\n");
 }
 
-// Known defects this binary exercises under XFAIL. Printed by --xfail-ledger, which ctest
-// surfaces as ***Skipped in its default summary (see core/CMakeLists.txt).
-const clipper::test::XfailDecl kLedger[] = {kXfMuffDc};
-
 }  // namespace
 
 int main(int argc, char** argv) {
-    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
-                                                 sizeof kLedger / sizeof kLedger[0],
-                                                 "clipper_muff_tests");
-    if (ledger >= 0) return ledger;
+    (void)argc;
+    (void)argv;
+    // No XFAIL ledger any more: this binary's only known-bad property was audit finding 16
+    // (no output DC blocker, no series base resistors), fixed 2026-07-25 — docs §37, ADR 009.
     clipper::test::requireAssertsLive();
 
     std::printf("Running clipper::dsp::MuffModel tests (v1.1 item 4 — the fuzz + BjtStage)...\n");
@@ -480,11 +547,12 @@ int main(int argc, char** argv) {
     testHumRejection(44100.0);
     testHumRejection(48000.0);
     testHumRejection(96000.0);
+    testLowEndResponse(44100.0);
+    testLowEndResponse(48000.0);
     testAliasing(44100.0);
     testAliasing(96000.0);
     testVolumeLinearity();
     testStabilityHygiene();
-    std::printf("All MuffModel tests passed (XFAILs listed below are known open defects, "
-                "not regressions).\n");
-    return clipper::test::reportXfails();
+    std::printf("All MuffModel tests passed.\n");
+    return 0;
 }

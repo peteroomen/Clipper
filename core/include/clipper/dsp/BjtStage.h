@@ -41,8 +41,26 @@
 //   Rf  = 470 k          COLLECTOR-FEEDBACK bias resistor (base ↔ collector)
 //   Re  = 390 Ω          emitter degeneration (unbypassed — local feedback)
 //   Cin = 100 nF         input coupling cap (DC-blocks the previous stage)
+//   Rb  = 0 Ω (default)  SERIES base resistor in front of Cin — see below
 //   Cf  = 470 pF         feedback cap across Rf (HF rolloff — the Muff's smoothness)
 //   D±  = 1N4148 pair    OPTIONAL antiparallel diodes base↔collector (clip stages)
+//
+// **Rb, and why it is load-bearing (audit finding 16, fixed 2026-07-25 — docs §37,
+// ADR 009).** Until that slice `Cin` was driven by an IDEAL voltage source landing
+// directly on the base node, so the coupling high-pass corner was set by the base-node
+// SHUNT impedance alone — rπ ∥ (Miller-reduced Rf) ∥ the diode conductance. On a clip
+// stage the diodes conduct at idle by design, which shunts base↔collector hard, and the
+// corner back-solved to ≈250 Hz PER STAGE. Cascade four of those and the guitar's low E
+// (82.4 Hz) lands 41 dB below 1 kHz: a fuzz with no fuzz-sized low end. Every coupling
+// cap in the real pedal sees a series resistance (the input series R, the SUSTAIN pot's
+// track, the interstage 10 k's), which is what puts the real corners at 15–50 Hz. Rb is
+// that resistance. Rb = 0 reproduces the pre-fix behaviour BIT FOR BIT (gIn == gCin), so
+// it stays the default and no other BjtStage consumer is disturbed.
+//
+// Note that Rb is also a DIVIDER against the base-node impedance — that is physics, not
+// a side effect, and it is why the Muff's drive constants were recalibrated in the same
+// slice (docs §37). A future Fuzz Face / RG100 Config should set Rb from its own netlist
+// rather than inherit 0.
 //
 // Collector feedback self-biases the collector: the base sits ≈0.6 V above the
 // emitter, and the collector sits a diode-drop-or-so above the base (Vc = Vb +
@@ -59,8 +77,8 @@
 // Each sample solves the nonlinear KCL system for the base (Vb), collector (Vc)
 // and emitter (Ve) nodes with an analytic 3×3 Jacobian (Cramer's rule, shared
 // solve3x3). Reactive elements (Cin input coupling, Cf feedback cap) are
-// backward-Euler companions folded into the residuals; the input coupling cap
-// collapses to a Thevenin from the driving node. Warm-start = the previous
+// backward-Euler companions folded into the residuals; the series base resistor Rb and
+// the input coupling cap collapse to ONE Thevenin from the driving node. Warm-start = the previous
 // sample's solution (RC constants are ms, the step is µs, so 2–4 iterations
 // converge). Iteration cap + per-iteration step clamps + a clamped exp guarantee
 // no NaN/divergence on a ±10 V slam (see the .cpp and the stability test).
@@ -105,6 +123,11 @@ public:
         double Rf = 470.0e3;   // collector-feedback bias resistor (Ω)
         double Re = 390.0;     // emitter degeneration resistor (Ω)
         double Cin = 100.0e-9; // input coupling cap (F)
+        // SERIES resistance between the driving node and Cin (Ω). Together with the
+        // base-node impedance it sets the coupling corner: f = 1/(2π·(Rb+Zbase)·Cin).
+        // 0 = the pre-2026-07-25 ideal-source behaviour, kept as the DEFAULT so every
+        // other consumer of BjtStage stays bit-identical (audit finding 16, docs §37).
+        double Rb = 0.0;
         double Cf = 470.0e-12; // feedback cap across Rf (F)
         EbersMoll bjt{};
         DiodePair diodes{};
@@ -162,6 +185,9 @@ private:
 
     // Reactive companions (backward Euler).
     double gCin_ = 0.0;  // Cin/T
+    // The series-Rb + Cin branch seen from the base node: gIn_ = gCin_/(1 + Rb·gCin_).
+    // Equals gCin_ exactly when Rb == 0, which is what makes that path bit-identical.
+    double gIn_ = 0.0;
     double gCf_ = 0.0;   // Cf/T
     double vCin_ = 0.0;  // input-cap voltage history (Vin − Vb)
     double vCf_ = 0.0;   // feedback-cap voltage history (Vc − Vb)

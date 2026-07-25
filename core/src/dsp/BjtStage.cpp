@@ -11,16 +11,29 @@
 //   Id = 2·Isd·sinh((Vc−Vb)/nVt)   (clip diode pair, base↔collector; 0 if absent)
 //
 // Reactive elements as backward-Euler companions at the (oversampled) rate:
-//   * Input coupling cap Cin between the driving node (vin) and the base:
-//       current into base = gCin·(vin − Vb) − gCin·vCin_prev,  vCin = vin − Vb.
+//   * Series base resistor Rb + input coupling cap Cin, between the driving node (vin)
+//     and the base. The cap's companion is a conductance gCin = Cin/T with a Norton
+//     source gCin·vCin; putting Rb in series with it and collapsing the pair back to a
+//     Norton at the base node gives ONE branch (audit finding 16, docs §37):
+//
+//         gIn = gCin / (1 + Rb·gCin)
+//         i   = gIn·(vin − vCin_prev − Vb)          current into the base
+//         vCin = (vin − Vb) − Rb·i                  branch voltage minus the Rb drop
+//
+//     With Rb = 0: gIn == gCin and Rb·i == 0, so both lines collapse to the pre-Rb
+//     expressions in floating point as well as algebraically. That is why Rb = 0 is
+//     bit-identical and can stay the default (proved by clipper_muff_tests).
 //   * Feedback cap Cf across Rf (base↔collector): current into base =
 //       gCf·(Vc − Vb) − gCf·vCf_prev,  vCf = Vc − Vb.
 //
 // Residuals (KCL, current INTO each node = 0):
-//   r1 (base)      = gCin·(vin−Vb) − gCin·vCin + (Vc−Vb)/Rf + gCf·(Vc−Vb) − gCf·vCf
+//   r1 (base)      = gIn·(vin−Vb) − gIn·vCin + (Vc−Vb)/Rf + gCf·(Vc−Vb) − gCf·vCf
 //                    + Id(Vc−Vb) − Ib
 //   r2 (collector) = (Vcc−Vc)/Rc + (Vb−Vc)/Rf + gCf·(Vb−Vc) + gCf·vCf − Ic − Id(Vc−Vb)
 //   r3 (emitter)   = Ie − Ve/Re
+//
+// (gIn is the series-Rb + Cin branch conductance; see above. It replaces the bare gCin
+// the base KCL used before Rb existed, and equals it when Rb = 0.)
 //
 // Jacobian columns (Vb, Vc, Ve): gf = dIf/dVbe, gr = dIr/dVbc, gd = dId/dv.
 // Newton: solve J·Δ = −r, damp Δ, iterate to |Δ|<tol or the cap. A clamped exp +
@@ -118,13 +131,13 @@ DiodeEval diodeEval(double v, const BjtStage::DiodePair& d) {
 struct Sys {
     const BjtStage::Config& cfg;
     double gRc, gRf, gRe;
-    double gCin, gCf;       // 0/0 for the DC solve (caps open)
+    double gIn, gCf;        // gIn = the series-Rb + Cin branch; 0/0 for the DC solve
     double vin, histCin, histCf;
 
     void eval(double Vb, double Vc, double Ve, double r[3], double J[3][3]) const {
         const EmEval e = emEval(Vb - Ve, Vb - Vc, cfg.bjt);
         const DiodeEval d = diodeEval(Vc - Vb, cfg.diodes);
-        r[0] = gCin * (vin - Vb) - histCin + (Vc - Vb) * gRf +
+        r[0] = gIn * (vin - Vb) - histCin + (Vc - Vb) * gRf +
                gCf * (Vc - Vb) - histCf + d.Id - e.Ib;                // base KCL
         r[1] = (cfg.Vcc - Vc) * gRc + (Vb - Vc) * gRf +
                gCf * (Vb - Vc) + histCf - e.Ic - d.Id;                // collector KCL
@@ -140,7 +153,7 @@ struct Sys {
         const double dIe_dVb = e.gf * (1.0 + rF) - e.gr;
         const double dIe_dVc = e.gr;
         const double dIe_dVe = -e.gf * (1.0 + rF);
-        J[0][0] = -gCin - gRf - gCf - d.gd - dIb_dVb;
+        J[0][0] = -gIn - gRf - gCf - d.gd - dIb_dVb;
         J[0][1] = gRf + gCf + d.gd - dIb_dVc;
         J[0][2] = -dIb_dVe;
         J[1][0] = gRf + gCf + d.gd - dIc_dVb;
@@ -221,6 +234,9 @@ void BjtStage::configure(const Config& cfg) { cfg_ = cfg; }
 void BjtStage::reprepareReactive() {
     const double T = 1.0 / sampleRate_;
     gCin_ = cfg_.Cin / T;
+    // Series Rb + the Cin companion, collapsed to one Norton branch at the base node.
+    // Rb == 0 -> the denominator is exactly 1.0, so gIn_ == gCin_ bit for bit.
+    gIn_ = gCin_ / (1.0 + cfg_.Rb * gCin_);
     gCf_ = cfg_.Cf / T;
 }
 
@@ -233,14 +249,17 @@ void BjtStage::prepare(double sampleRate) {
     vb_ = vbQ_;
     vc_ = vcQ_;
     ve_ = veQ_;
-    vCin_ = 0.0 - vbQ_;   // vin = 0 at DC; cap holds the base bias
+    // vin = 0 at DC and no DC current flows through the coupling branch, so there is no
+    // drop across Rb either: the cap holds the whole base bias regardless of Rb.
+    vCin_ = 0.0 - vbQ_;
     vCf_ = vcQ_ - vbQ_;   // feedback cap charged to the base-collector bias
     settleDC();
 }
 
 // DC operating point: caps OPEN (block DC). With vin = 0 the input coupling cap
-// carries no DC current, so the only base path is Rf (+ the diodes). Solve the
-// full 3-node system with gCin_ = gCf_ = 0 but the DIODES LIVE (a clip stage
+// carries no DC current, so the only base path is Rf (+ the diodes) — Rb is therefore
+// irrelevant at DC and the operating point is unchanged by it. Solve the
+// full 3-node system with gIn_ = gCf_ = 0 but the DIODES LIVE (a clip stage
 // self-biases with the diodes conducting — see BjtStage.h). Damped Newton from a
 // sensible guess; robust because it runs once at prepare.
 void BjtStage::solveOperatingPoint() {
@@ -294,14 +313,16 @@ float BjtStage::processSample(float vinF) {
     const double vin = static_cast<double>(vinF);
     // Companion history currents (constant across this sample's iterations).
     const Sys sys{cfg_, 1.0 / cfg_.Rc, 1.0 / cfg_.Rf, 1.0 / cfg_.Re,
-                  gCin_, gCf_, vin, gCin_ * vCin_, gCf_ * vCf_};
+                  gIn_, gCf_, vin, gIn_ * vCin_, gCf_ * vCf_};
 
     double Vb = vb_, Vc = vc_, Ve = ve_;  // warm start
     const int iters = dampedNewton(sys, Vb, Vc, Ve, kMaxNewtonIter);
     lastMaxIters_ = std::max(lastMaxIters_, iters);
 
     vb_ = Vb; vc_ = Vc; ve_ = Ve;      // warm start for the next sample
-    vCin_ = vin - Vb;                   // update companion histories
+    // Cin's new voltage = the whole branch voltage minus the drop across Rb. With
+    // Rb = 0 the second term is exactly 0.0 and this is the pre-Rb `vin - Vb`.
+    vCin_ = (vin - Vb) - cfg_.Rb * (gIn_ * (vin - vCin_ - Vb));
     vCf_ = Vc - Vb;
 
     return static_cast<float>(Vc - vcQ_);  // collector AC (inverting output)

@@ -244,8 +244,8 @@ if(NOT EMSCRIPTEN)
     target_include_directories(clipper_muff_tests PRIVATE tools)
     clipper_add_test_flags(clipper_muff_tests)
     add_test(NAME clipper_muff_tests COMMAND clipper_muff_tests)
-    # XFAILs: audit finding 16 (the Muff has no output DC blocker at all).
-    clipper_add_xfail_ledger(clipper_muff_tests)
+    # No XFAIL ledger: its only entry was audit finding 16 (no output DC blocker, no series
+    # base resistors), fixed 2026-07-25 — docs §37, ADR 009.
 
     # --- v1.1 item 6: GOLD overdrive (clean-blend + germanium WDF) tests -------
     add_executable(clipper_gold_tests tests/test_gold_model.cpp)
