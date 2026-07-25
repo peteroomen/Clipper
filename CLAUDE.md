@@ -47,14 +47,17 @@ This file is read by Claude Code at the start of every session. It captures conv
 - **Last shipped:** the scrolling native pedal board on a milled rail · the GOLD "Myth" overdrive (sixth pedal type, parallel clean/dirt blend + germanium WDF) · the AC30 gain-structure fix (starved phase inverter) · M11 Player Expectations Suite.
 - **Just landed (2026-07-25, in merge order):** CI at last (`.github/workflows/ci.yml` — core ctest, web tsc+vite+Playwright, node suites, a dependency-free Conventional Commits gate, JUCE identical-core advisory) · `fix/proxy-loopback` — the audit's Security & app layer cleared: the proxy binds `127.0.0.1` by default (`HOST` opts into wider exposure, loudly), the banner reports the address actually bound, the Electron window gets a CSP (with `'wasm-unsafe-eval'` — without it WASM never compiles and the app makes no sound), `will-navigate`/`setWindowOpenHandler` denial, a media-only permission handler, an explicit `chmod 0600` on a pre-existing `config.json`, a real path-containment check, and `req.destroy()` on body-limit overflow (node suites 27 → 35) · **audit finding 1 fixed** — the non-finite parameter guard + engine reset path (docs §28, ADR 002): one shared NaN-rejecting clamp (`core/include/clipper/dsp/ParamGuard.h`) replaces ~14 broken copies, every `*_set_param` C ABI export hard-rejects non-finite, and `reset()` exists down the whole tree (`clipper_reset` / `rat_reset` / `sd_reset` / `ts_reset` / `phaser_reset` / `muff_reset` / `gold_reset` / `amp_reset`). Measured 48000/48000 → **0/48000** non-finite samples after one NaN, on all ten units; `Jcm800Amp::reset()` is ~302 000× cheaper than `prepare()`. New ctest target `clipper_nan_guard_tests`.
 - **Still open from the audit:** `docs/audits/2026-07-24-project-audit.md` remains the source of truth and supersedes ad-hoc bug lists. **One shipping-blocker remains**: cab swap runs 11–46 ms of allocation inside `process()` (finding 2) — in flight as `fix/cab-swap-rt-safety`.
-- **Known gaps (from the audit, not yet actioned):** **the proxy still has no auth and no rate limit** (its own slice; loopback binding is the mitigation until then) · `check-artifact.mjs` only checks existence, not staleness · the valve amps have no parameter smoothing · per-triode oversampling costs 7.5 ms of latency on the JCM800 · the AC30 "sag" is a static saturator and its tone stack has a structural ~37 dB mid notch · a recurring class of test asserts identities or the implementation against a reference derived from the same code · the SIGNAL path is still NaN-transparent (`OutputLimiter::clamp1`) and `native/src/ClipperEngine` has no reset seam.
+- **Also just landed:** the audit's **"Test & process integrity"** artifact + goldens holes (docs §29, ADR 004). `web/public/generated/.build-stamp.json` is a new piece of committed build output: `build-wasm.sh` writes a SHA-256 over the *contents* of the 65 inputs that actually affect `clipper.js` (all of `core/src` + `core/include`, the worklet, and the emcc flag region of `build-wasm.sh` itself), and `check-artifact.mjs` recomputes it with **no toolchain** and fails naming the file that changed. This was not theoretical: two PRs each rebuilt `clipper.js`, the merge conflicted on the binary, and taking either side would have shipped an engine holding one of the two fixes while the source held both. `EMSDK_VERSION` is pinned `latest` → **6.0.4**. Separately, re-blessing a golden is now a ritual (clean tree, printed dB table vs the *previous* goldens, a confirmation `yes |` cannot answer even through a pty, a justification recorded in `core/tests/goldens/GOLDENS.md`), and the `--update-goldens` path no longer compares each render against the file it just wrote. Measured on a deliberately wrong golden: the old code reported **0.00 dB** and blessed it; the new report says **17.35 dB @ 800 Hz** and writes nothing.
+- **Do NOT hand-write `.build-stamp.json`.** A hand-made stamp is a lie about which sources built the artifact, and it is the only thing standing between a source change and a silently stale engine. If the check fails, rebuild.
+- **Known gaps (from the audit, not yet actioned):** **the proxy still has no auth and no rate limit** (its own slice; loopback binding is the mitigation until then) · the valve amps have no parameter smoothing · per-triode oversampling costs 7.5 ms of latency on the JCM800 · the AC30 "sag" is a static saturator and its tone stack has a structural ~37 dB mid notch · a recurring class of test asserts identities or the implementation against a reference derived from the same code · the SIGNAL path is still NaN-transparent (`OutputLimiter::clamp1`) and `native/src/ClipperEngine` has no reset seam.
 - **Reset exports exist but nothing calls them yet** — a worklet watchdog (detect non-finite in `process()`, schedule a declick-bracketed reset) is the follow-up, not a UI button.
 - **ADR numbers are assigned centrally.** Two parallel slices both reached for `001`; if you are working a slice, ask rather than guess.
 - **Also just landed:** **audit finding 3 fixed** — `CabConvolver` is exact for ANY host block size, not just multiples of 128. It zero-padded a partial block but advanced the FDL by a full partition and discarded the remainder, so the stream stayed misaligned forever; at 100-sample blocks the error EXCEEDED the signal (0.1636 vs a 0.1521 peak). Now feed → maybe-one-block → drain, with the deferral moved out of the FDL indexing and into an output FIFO, so it costs **no** extra latency and the 128-aligned path stays bit-identical (goldens untouched). Measured 0.0 error at every block size from 1 to 4096.
 - **Still open on the native side of finding 3:** the *convolver* now handles any block size, but `native/src/ClipperEngine::process` still only chunks when `numFrames > maxBlock_`, so the rest of the native chain still sees raw host block sizes. Its own slice.
 - **CI gap found on 2026-07-25:** the `native` job's `ctest` inherits the core's registered tests (the native CMakeLists pulls the core in), and they report Not Run because only the two native targets are built — it needs `-R 'clipper_identical_core|clipper_chain_edit'`. The job is `continue-on-error`, so this did not block anything, but it means **native has never actually been verified in CI**.
 - **Repo hygiene note:** project history lived on a long-running feature branch for a while and `main` held only a README. That is being corrected — `main` is now the trunk. Do not start new work from anything but `main`.
-- **Env note:** **Node 22+** for the web app and tests — `npm run test:server` / `test:history` pass a quoted glob to `node --test`, and native glob support landed in Node 22, so on Node 20 they fail with "Could not find …/*.test.mjs". (Documented as 18+ until CI proved otherwise.) CMake ≥ 3.16 and a C++17 compiler for the core; Emscripten only for the WASM rebuild (`scripts/setup-emsdk.sh`) — emsdk 6.0.4 reproduces the committed artifact byte-for-byte.
+- **Env note:** **Node 22+** for the web app and tests — `npm run test:server` / `test:history` / `test:scripts` pass a quoted glob to `node --test`, and native glob support landed in Node 22, so on Node 20 they fail with "Could not find …/*.test.mjs". (Documented as 18+ until CI proved otherwise.) CMake ≥ 3.16 and a C++17 compiler for the core; Emscripten only for the WASM rebuild (`scripts/setup-emsdk.sh`), now pinned to **emsdk 6.0.4**.
+- **The artifact is NOT byte-reproducible across directories, and the reason is worth knowing.** A 6.0.4 rebuild reproduces the committed `clipper.js` in size but differs in exactly 64 bytes, all inside absolute build paths embedded in the WASM — `__FILE__` strings from live `assert()`s, because the emcc link is `-O3` with no `-DNDEBUG`. So asserts ship in the audio engine along with the build path of whoever compiled it. Any future "rebuild and `cmp` in CI" needs `-ffile-prefix-map` first, and whether `assert()` belongs in a shipped real-time engine is an open question (docs §29.1). The stamp sidesteps all of it by attesting *source content*, which is path-independent.
 
 ---
 
@@ -174,7 +177,7 @@ Do not close the session without completing these steps:
 - [ ] **If `core/` or `web/worklet/` changed:** run `bash scripts/build-wasm.sh` and commit the regenerated artifacts (see **The Committed WASM Artifact**)
 - [ ] Run the core suite: `cmake -S core -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j && ctest --test-dir build --output-on-failure`
 - [ ] Run `cd web && npm run build` (this includes `tsc --noEmit`) and `npm test` (Playwright)
-- [ ] Run `npm run test:server && npm run test:history` at the root, and `cd electron && npm test`
+- [ ] Run `npm run test:server && npm run test:history && npm run test:scripts` at the root, and `cd electron && npm test`
 - [ ] Commit with a conventional commit message and push the branch
 - [ ] Open a PR — even for the smallest slice, always go through PR review
 
@@ -237,26 +240,30 @@ In **Settings → Branches → Add rule** for `main`:
 
 ## Automated Checks
 
-> **Status: not yet wired up.** The 2026-07-24 audit's top process finding is that this project has no CI — every suite listed below exists, is good, and passes, and nothing runs it automatically. Standing this up is a `chore/ci` slice. Until it exists, the Post-Session Checklist commands are the gate and you must actually run them.
+> **Status: wired up.** `.github/workflows/ci.yml` runs on every PR to `main` and every push to `main`. The Post-Session Checklist commands are still the local gate — run them before you push, don't use CI as your first test run.
 
-### Intended CI pipeline (GitHub Actions, on every PR to `main` and push to `main`)
+### The CI pipeline (GitHub Actions)
 
 1. **Core:** `cmake -S core -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j && ctest --test-dir build --output-on-failure`
-2. **Web:** `cd web && npm ci && npm run build` (includes `tsc --noEmit`) then `npx playwright test`
-3. **Node suites:** `npm run test:server`, `npm run test:history`, `cd electron && npm test`
-4. **Artifact staleness:** `node web/scripts/check-artifact.mjs` — currently existence-only; see below
-5. **Native (nice-to-have):** the JUCE `identical_core_test` and `chain_edit_test`
+2. **Web:** the artifact staleness gate, then `cd web && npm ci && npm run build` (includes `tsc --noEmit`) then `npx playwright test`
+3. **Node suites:** `npm run test:server`, `npm run test:history`, `npm run test:scripts`, `cd electron && npm test`
+4. **Artifact staleness:** `node web/scripts/check-artifact.mjs` — a real content-hash check against `web/public/generated/.build-stamp.json`, needing no emsdk. See **The committed WASM artifact**.
+5. **Goldens changelog:** a PR that changes a `.wav` under `core/tests/goldens/` must also change `core/tests/goldens/GOLDENS.md`.
+6. **Commit messages:** a dependency-free Conventional Commits regex over the PR's first-parent subjects.
+7. **Native (advisory):** the JUCE `identical_core_test` and `chain_edit_test`.
 
 ### Useful commands
 
 | Command                                        | Purpose                                                       |
 | ---------------------------------------------- | ------------------------------------------------------------- |
 | `ctest --test-dir build --output-on-failure`   | The core DSP suite (17 targets)                               |
+| `node web/scripts/check-artifact.mjs`          | Is the committed WASM artifact stale? (no emsdk needed)        |
+| `npm run test:scripts`                         | The staleness guard's own tests                               |
 | `build/clipper-bench`                          | Per-unit CPU cost table (× realtime, % of one 48 k stream)     |
 | `build/clipper-render --alias-report`           | Alias floor vs oversampling factor                            |
 | `build/clipper-render --gen sweep:20:20000:4 …` | Render any gear to a WAV for listening / spectrum             |
 | `bash scripts/build-wasm.sh`                    | Rebuild the committed WASM artifact + worklet copy            |
-| `bash scripts/update-goldens.sh`                | Re-bless the golden renders — **deliberate act only**         |
+| `bash scripts/update-goldens.sh -m "why"`       | Re-bless the golden renders — **deliberate act only**, and the script enforces it |
 | `npm run server`                                | The assistant proxy (needs `ANTHROPIC_API_KEY`)               |
 
 ---
@@ -319,7 +326,9 @@ The rig graph is implemented in `web/worklet/clipper-processor.js` (JS) and `nat
 
 ### The committed WASM artifact
 
-`web/public/generated/clipper.js` and `web/public/generated/clipper-processor.js` are **committed build output**, so a `git pull` updates the engine without an Emscripten toolchain. The contract: **if you change `core/` or `web/worklet/`, run `bash scripts/build-wasm.sh` and commit the regenerated artifacts in the same commit.** A stale artifact means new UI bound to an old engine — knobs that do nothing. `check-artifact.mjs` currently only checks the files *exist*, so this contract is unenforced and rests on you (audit finding: process hole).
+`web/public/generated/clipper.js`, `web/public/generated/clipper-processor.js` and `web/public/generated/.build-stamp.json` are **committed build output**, so a `git pull` updates the engine without an Emscripten toolchain. The contract: **if you change `core/` or `web/worklet/`, run `bash scripts/build-wasm.sh` and commit all three regenerated files in the same commit.** A stale artifact means new UI bound to an old engine — knobs that do nothing.
+
+This is now **enforced** (docs §29.1, ADR 004). `check-artifact.mjs` — wired into `prebuild`, `npm test` and CI — recomputes a SHA-256 over the contents of the 65 inputs that affect the artifact and fails naming the file that changed. What it covers: everything under `core/src/` and `core/include/`, `web/worklet/clipper-processor.js`, and the emcc flag region of `scripts/build-wasm.sh` (hashed *out of the script*, between its `STAMP:EMCC-ARGS` markers — don't move a flag outside them). What it deliberately doesn't: `core/tools/`, `core/tests/` (measured: zero files from either are in the artifact's compile closure) and the pinned `chowdsp_wdf` SHA in `core/CMakeLists.txt` (a known gap). The served worklet is additionally compared **byte-for-byte** with its source, because `build-wasm.sh` copies it with `cp`. It all runs without emsdk, by design.
 
 ### Measure, don't assert
 
@@ -336,7 +345,9 @@ This is the project's hardest-won convention, and the audit found it is the one 
 
 ### Goldens
 
-Blessed renders live in `core/tests/goldens/`. `scripts/update-goldens.sh` re-blesses them and is a **deliberate act only**: re-blessing is how a regression becomes canon, and a reviewer cannot see the drift in a `.wav` diff. If you re-bless, say in the PR body what changed audibly and why it is correct.
+Blessed renders live in `core/tests/goldens/`. `scripts/update-goldens.sh` re-blesses them and is a **deliberate act only**: re-blessing is how a regression becomes canon, and a reviewer cannot see the drift in a `.wav` diff. The script now enforces that rather than asking nicely — clean working tree, a printed per-golden dB table measured against the *previous* goldens, a confirmation typed at a terminal (`/dev/tty`, so `yes |` and CI cannot answer it), and a justification appended to `core/tests/goldens/GOLDENS.md` and staged with the goldens. CI fails a PR that changes a `.wav` there without a changelog entry. Say in the PR body what changed audibly and why it is correct, too.
+
+Do not reach for `clipper_player_expectations_tests --update-goldens` directly — it is what the script drives, and using it raw skips every one of those gates. `--golden-report` measures without writing, which is the safe way to see where you stand.
 
 ### UI conventions
 
@@ -392,7 +403,7 @@ Circuit-modelling decisions belong here too — especially a deliberate departur
 | `PORT`              | optional | Proxy port (default 8787; `0` = ephemeral)                              |
 | `HOST`              | optional | Proxy bind address (default `127.0.0.1`). The proxy is an unauthenticated relay to your key — only widen this on a network you trust |
 | `MOCK`              | optional | Serve canned assistant responses — no API key, no network               |
-| `EMSDK_VERSION`     | optional | Emscripten version for `scripts/setup-emsdk.sh` (defaults to `latest`)  |
+| `EMSDK_VERSION`     | optional | Emscripten version for `scripts/setup-emsdk.sh`. **Pinned: `6.0.4`.** `latest` made the committed artifact irreproducible; if you bump it, rebuild the artifact in the same slice |
 
 The Electron app stores the key in the OS user-config directory at mode `0600`, resolved by `electron/config.mjs`. It is never written into the repo and never reaches the renderer.
 
@@ -425,6 +436,7 @@ The Electron app stores the key in the OS user-config directory at mode `0600`, 
 - Don't change the chain in one front-end without changing the other
 - Don't write a test that asserts an identity, a tautology, or the implementation against a reference derived from the same code
 - Don't re-bless goldens to make a failing test pass — that is how a regression becomes canon
+- Don't hand-write or hand-patch `web/public/generated/.build-stamp.json`, and don't move an emcc flag outside `build-wasm.sh`'s `STAMP:EMCC-ARGS` markers — both turn the staleness guard into decoration
 - Don't calibrate a new constant to compensate for a suspected error elsewhere; find the error (this is how `kFullScaleSecV` ended up absorbing two separate factor-of-2 mistakes)
 - Don't claim a performance win is fidelity-neutral without a measurement showing it
 - Don't hardcode colours, and don't paint a light-theme accent on the dark pedal chassis

@@ -21,8 +21,10 @@
 //   C. Golden program renders — the "first five minutes" rigs a new player will
 //      actually try, compared against committed reference renders within a
 //      perceptual-ish per-third-octave-band gate (±1.5 dB), so lossless refactors
-//      pass but voicing drift fails. Regenerate ONLY via --update-goldens (or
-//      scripts/update-goldens.sh) — drift must be a conscious decision.
+//      pass but voicing drift fails. Regenerate ONLY via scripts/update-goldens.sh
+//      — drift must be a conscious decision, and that script is what makes it one
+//      (clean tree, printed dB summary, a human at a terminal, a written
+//      justification in core/tests/goldens/GOLDENS.md).
 //
 // All measurements run at 48 kHz — the web AudioWorklet's fixed rate, i.e. the
 // rate at which every one of the four field bugs was heard. (Per-rate circuit
@@ -939,9 +941,13 @@ void testLiveConvention() {
 // refactors (solver iteration-order changes, chunking changes) pass; voicing
 // drift (a re-tapered knob, a re-voiced shelf, a changed IR) fails.
 //
-// Regenerating goldens is DELIBERATE ONLY:
+// Regenerating goldens is DELIBERATE ONLY, and goes through
+//   bash scripts/update-goldens.sh
+// which requires a clean tree, prints the per-golden dB deltas, requires a
+// confirmation typed at a terminal, and records a justification in
+// core/tests/goldens/GOLDENS.md. The raw
 //   ./build/clipper_player_expectations_tests --update-goldens
-// (or scripts/update-goldens.sh), then commit the diff with a justification.
+// still exists (the script drives it) but bypasses all of that — don't.
 // ---------------------------------------------------------------------------
 
 struct RigRender {
@@ -1049,72 +1055,187 @@ void writeGolden(const RigRender& rig) {
                 path.c_str(), rig.audio.size(), peakOf(rig.audio), toDb(rmsOf(rig.audio)));
 }
 
-void compareGolden(const RigRender& rig) {
+// The 16-bit storage quantization + windowing floor of the gate itself: a render
+// written and read straight back measures this much and no more. Anything at or
+// below it means "the same audio", which is what makes it the right threshold for
+// deciding whether a golden is actually being CHANGED by a re-bless.
+constexpr double kQuantizationFloorDb = 0.15;
+
+enum class GoldenStatus { Ok, Missing, FormatDrift, LengthDrift };
+
+struct GoldenDelta {
+    GoldenStatus status = GoldenStatus::Ok;
+    double rmsDeltaDb = 0.0;
+    double worstBandDb = 0.0;
+    double worstHz = 0.0;
+    int bandsCompared = 0;
+    drwav_uint64 goldenFrames = 0;
+};
+
+// Measure a fresh render against the golden ON DISK. Pure measurement: it asserts
+// nothing about the gate, so it can be used both to enforce the gate (compareGolden)
+// and to report what a re-bless would change (--golden-report / --update-goldens).
+GoldenDelta measureAgainstGolden(const RigRender& rig) {
+    GoldenDelta d;
+    // A fresh render must not blow up before we even get to voicing. True in every
+    // mode, including update: never bless a NaN.
+    assert(allFinite(rig.audio) && "rig render produced NaN/inf");
+
     const std::string path = goldenPath(rig.name);
     unsigned int ch = 0, sr = 0;
     drwav_uint64 frames = 0;
     float* raw = drwav_open_file_and_read_pcm_frames_f32(path.c_str(), &ch, &sr, &frames,
                                                          nullptr);
     if (!raw) {
-        std::fprintf(stderr,
-                     "GOLDEN MISSING: %s — run with --update-goldens (deliberately) first\n",
-                     path.c_str());
-        assert(false && "golden render file missing");
-        return;
+        d.status = GoldenStatus::Missing;
+        return d;
     }
-    assert(ch == 1 && sr == static_cast<unsigned>(kFs) && "golden format drifted");
-    assert(frames == rig.audio.size() && "golden length drifted");
+    d.goldenFrames = frames;
+    if (ch != 1 || sr != static_cast<unsigned>(kFs)) {
+        drwav_free(raw, nullptr);
+        d.status = GoldenStatus::FormatDrift;
+        return d;
+    }
+    if (frames != rig.audio.size()) {
+        drwav_free(raw, nullptr);
+        d.status = GoldenStatus::LengthDrift;
+        return d;
+    }
     std::vector<float> gold(raw, raw + frames);
     drwav_free(raw, nullptr);
 
-    // Fresh render must not clip or blow up before we even get to voicing.
-    assert(allFinite(rig.audio) && "rig render produced NaN/inf");
+    d.rmsDeltaDb = toDb(rmsOf(rig.audio)) - toDb(rmsOf(gold));
 
-    // Broadband RMS: ±1.0 dB.
-    const double rmsDelta = toDb(rmsOf(rig.audio)) - toDb(rmsOf(gold));
-    assert(std::fabs(rmsDelta) < 1.0 && "GOLDEN: broadband RMS drifted > 1 dB");
-
-    // Per-third-octave-band gate: ±1.5 dB on every band within 45 dB of the
-    // golden's loudest band.
+    // Per-third-octave-band comparison on every band within 55 dB of the golden's
+    // loudest band (quieter bands are noise).
     const BandSpectrum a = thirdOctaveSpectrum(gold, kFs);
     const BandSpectrum b = thirdOctaveSpectrum(rig.audio, kFs);
     assert(a.centerHz.size() == b.centerHz.size());
     double loudest = -1e9;
-    for (double d : a.rmsDb) loudest = std::max(loudest, d);
-    double worst = 0.0;
-    double worstHz = 0.0;
-    int compared = 0;
+    for (double v : a.rmsDb) loudest = std::max(loudest, v);
     for (size_t i = 0; i < a.centerHz.size(); ++i) {
         if (a.rmsDb[i] < loudest - 55.0) continue;  // noise-floor band — skip
-        const double d = std::fabs(b.rmsDb[i] - a.rmsDb[i]);
-        if (d > worst) { worst = d; worstHz = a.centerHz[i]; }
-        ++compared;
+        const double delta = std::fabs(b.rmsDb[i] - a.rmsDb[i]);
+        if (delta > d.worstBandDb) { d.worstBandDb = delta; d.worstHz = a.centerHz[i]; }
+        ++d.bandsCompared;
     }
-    std::printf("  [C ] %-16s vs golden: rms Δ %+5.2f dB, worst band Δ %.2f dB @ %.0f Hz "
-                "(%d bands compared)\n", rig.name, rmsDelta, worst, worstHz, compared);
+    return d;
+}
+
+const char* statusWord(const GoldenDelta& d) {
+    switch (d.status) {
+        case GoldenStatus::Missing:     return "NEW";
+        case GoldenStatus::FormatDrift: return "FORMAT-DRIFT";
+        case GoldenStatus::LengthDrift: return "LENGTH-DRIFT";
+        case GoldenStatus::Ok: break;
+    }
+    return d.worstBandDb <= kQuantizationFloorDb ? "UNCHANGED" : "CHANGED";
+}
+
+// One machine-readable line per rig, parsed by scripts/update-goldens.sh to build
+// the reviewer's before/after table. Keep the field order stable:
+//   GOLDEN-DELTA <name> <status> <rmsDb> <worstBandDb> <worstHz> <bands>
+void printDeltaLine(const RigRender& rig, const GoldenDelta& d) {
+    std::printf("GOLDEN-DELTA %s %s %+.2f %.2f %.0f %d\n",
+                rig.name, statusWord(d), d.rmsDeltaDb, d.worstBandDb, d.worstHz,
+                d.bandsCompared);
     std::fflush(stdout);
-    assert(compared >= 6 && "golden comparison degenerated (too few live bands)");
-    assert(worst <= 1.5 &&
+}
+
+// The voicing gate.
+void compareGolden(const RigRender& rig) {
+    const GoldenDelta d = measureAgainstGolden(rig);
+    if (d.status == GoldenStatus::Missing) {
+        std::fprintf(stderr,
+                     "GOLDEN MISSING: %s — run with --update-goldens (deliberately) first\n",
+                     goldenPath(rig.name).c_str());
+        assert(false && "golden render file missing");
+        return;
+    }
+    assert(d.status != GoldenStatus::FormatDrift && "golden format drifted");
+    assert(d.status != GoldenStatus::LengthDrift && "golden length drifted");
+
+    std::printf("  [C ] %-16s vs golden: rms Δ %+5.2f dB, worst band Δ %.2f dB @ %.0f Hz "
+                "(%d bands compared)\n", rig.name, d.rmsDeltaDb, d.worstBandDb, d.worstHz,
+                d.bandsCompared);
+    std::fflush(stdout);
+    assert(std::fabs(d.rmsDeltaDb) < 1.0 && "GOLDEN: broadband RMS drifted > 1 dB");
+    assert(d.bandsCompared >= 6 && "golden comparison degenerated (too few live bands)");
+    assert(d.worstBandDb <= 1.5 &&
            "GOLDEN: a third-octave band drifted > 1.5 dB — the rig's VOICE changed. If "
-           "deliberate, regenerate via --update-goldens and commit with justification.");
+           "deliberate, regenerate via scripts/update-goldens.sh and commit with a "
+           "justification in core/tests/goldens/GOLDENS.md.");
+}
+
+// --- The three golden modes.
+//
+// Until 2026-07-25 there were two, and the update one was broken: it did
+//     if (update) writeGolden(r);
+//     compareGolden(r);
+// i.e. it compared the fresh render against THE FILE IT HAD JUST WRITTEN. That can
+// only ever measure 16-bit quantization (≤0.11 dB) against a 1.5 dB gate, so it was
+// a guaranteed pass that silently rewrote the references — and because
+// compareGolden also asserts the frame count, a change that altered the render
+// LENGTH sailed through too. The measurement now always happens against the
+// PREVIOUS golden, before anything is written.
+
+// Report-only: measure against the committed goldens and print, write nothing,
+// assert no gate. This is what scripts/update-goldens.sh runs BEFORE asking for
+// confirmation, so the reviewer sees the dB deltas of a re-bless in advance.
+void reportGoldenDeltas() {
+    const auto rigs = renderFirstFiveMinutesRigs();
+    for (const auto& r : rigs) printDeltaLine(r, measureAgainstGolden(r));
+    std::printf("  [--] golden report only: nothing written.\n");
 }
 
 void testGoldenRenders(bool update) {
     const auto rigs = renderFirstFiveMinutesRigs();
     for (const auto& r : rigs) {
-        if (update) writeGolden(r);
-        compareGolden(r);  // update mode still round-trips the fresh file
+        if (!update) {
+            compareGolden(r);
+            continue;
+        }
+        // Measure against the PREVIOUS golden first — that delta is the whole
+        // point of a re-bless — then overwrite.
+        printDeltaLine(r, measureAgainstGolden(r));
+        writeGolden(r);
+        // Now that the reference IS this render, a round-trip must land within the
+        // storage floor. This is a check of the WRITE PATH (wav format, bit depth,
+        // channel count), NOT the voicing gate: it is bounded by 16-bit
+        // quantization by construction and can never catch drift.
+        const GoldenDelta after = measureAgainstGolden(r);
+        assert(after.status == GoldenStatus::Ok && "golden write-back is unreadable");
+        assert(after.worstBandDb <= kQuantizationFloorDb &&
+               "golden write path is lossy beyond 16-bit quantization");
     }
-    std::printf("  [ok] C golden renders: %zu first-five-minutes rigs within the "
-                "per-third-octave ±1.5 dB voicing gate\n", rigs.size());
+    if (update) {
+        std::printf("  [C ] rewrote %zu goldens; deltas above are vs the PREVIOUS goldens\n",
+                    rigs.size());
+    } else {
+        std::printf("  [ok] C golden renders: %zu first-five-minutes rigs within the "
+                    "per-third-octave ±1.5 dB voicing gate\n", rigs.size());
+    }
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
     bool update = false;
-    for (int i = 1; i < argc; ++i)
+    bool report = false;
+    for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--update-goldens")) update = true;
+        // Measure the goldens and print the deltas without touching a file.
+        // scripts/update-goldens.sh runs this to show the reviewer what a
+        // re-bless would change, before asking for confirmation.
+        if (!std::strcmp(argv[i], "--golden-report")) report = true;
+    }
+    assert(!(update && report) && "--update-goldens and --golden-report are exclusive");
+
+    if (report) {
+        std::printf("Measuring golden deltas (report only — nothing will be written)...\n");
+        reportGoldenDeltas();
+        return 0;
+    }
 
     std::printf("Running clipper M11 player-expectations tests (48 kHz — the worklet rate)...\n");
     const auto gear = allGear();
@@ -1123,6 +1244,8 @@ int main(int argc, char** argv) {
     testKnobMonotonicity(gear);
     testLevelSanity(gear);
     testLiveConvention();
+    // In update mode the blocks above still run: never bless a render that fails
+    // min-knob usability or the hum torture.
     testGoldenRenders(update);
     std::printf("All M11 player-expectations tests passed.\n");
     return 0;
