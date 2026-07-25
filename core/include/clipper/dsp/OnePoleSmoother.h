@@ -40,6 +40,17 @@ public:
     // Set the target the smoother ramps toward.
     void setTarget(float v) { target_ = v; }
 
+    // Recovery seam (audit finding 1). Snap the current value onto the target,
+    // discarding whatever is in the recursive state — and sanitize the target
+    // itself if a non-finite one ever got past the guards, because
+    // `value_ += coeff*(target_ - value_)` can never climb back out of NaN. Keeps
+    // the coefficient (i.e. the prepared rate) so this is NOT a re-prepare.
+    // Allocation-free and O(1): safe to call from a control message.
+    void reset() {
+        if (!std::isfinite(target_)) target_ = 0.0f;
+        value_ = target_;
+    }
+
     // Advance one sample and return the new smoothed value. Anti-denormal: once the
     // residual (target - value) has decayed below the denormal floor, snap exactly
     // to the target. This kills BOTH denormal traps in an exponential approach — a

@@ -30,7 +30,10 @@ export interface KnobProps {
   testId?: string;
 }
 
-const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+// NaN-rejecting (2026-07-24 audit, finding 1): Math.min/Math.max pass NaN through,
+// so a non-finite value (a bad persisted rig, a programmatic setter) would reach
+// the engine AND leave the knob's rotation transform unrenderable.
+const clamp01 = (v: number) => Math.min(1, Math.max(0, Number.isFinite(v) ? v : 0));
 
 export function Knob({ value, defaultValue, name, ariaLabel, onChange, testId }: KnobProps) {
   const rootRef = useRef<HTMLDivElement>(null);

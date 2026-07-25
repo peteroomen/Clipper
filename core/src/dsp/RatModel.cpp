@@ -73,6 +73,7 @@
 #include "clipper/dsp/DiodeClipperADAA.h"
 #include "clipper/dsp/LM308Stage.h"
 #include "clipper/dsp/Oversampler.h"
+#include "clipper/dsp/ParamGuard.h"
 
 #include <chowdsp_wdf/chowdsp_wdf.h>
 
@@ -151,7 +152,10 @@ constexpr double kFilterMaxHz = 20000.0;  // knob = 0 (bright)
 // --- Smoothing ---
 constexpr double kSmoothSeconds = 0.005;  // ~5 ms, same as M0 gain smoothing
 
-float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+// NaN-rejecting knob clamp (ParamGuard.h). The former in-line
+// `v < 0 ? 0 : (v > 1 ? 1 : v)` was transparent to NaN, and one NaN latched
+// permanently in the smoothers / WDF cap state — audit finding 1.
+float clamp01(float v) { return clampParam01(v); }
 
 // One-pole low-pass smoothing coefficient for a given cutoff.
 float onePoleCoeff(double cutoffHz, double sampleRate) {
@@ -258,6 +262,24 @@ void RatModel::prepare(double sampleRate, int maxBlockSize) {
 void RatModel::setOversampling(int factor) {
     Impl& d = *impl_;
     d.osFactor = factor;
+    d.reprepareStage2();
+}
+
+void RatModel::reset() {
+    Impl& d = *impl_;
+    // Smoothers first: `value += coeff*(target - value)` can never climb out of a
+    // poisoned value, so the recovery path has to overwrite it.
+    d.preGain.reset();
+    d.filterCoef.reset();
+    d.level.reset();
+    d.shape1State = 0.0f;
+    d.shape2State = 0.0f;
+    d.loPassState = 0.0f;
+    d.os.reset();
+    // reprepareStage2() re-derives the stage-2 coefficients at the CURRENT rate and
+    // factor and resets the WDF cap / ADAA / LM308 state. It re-runs the same
+    // coefficient math prepare() does but allocates nothing (os.setFactor and
+    // LM308Stage::prepare are both allocation-free) — no DC solve, no settling.
     d.reprepareStage2();
 }
 

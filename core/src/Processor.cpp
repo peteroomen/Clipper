@@ -1,5 +1,7 @@
 #include "clipper/Processor.h"
 
+#include "clipper/dsp/ParamGuard.h"
+
 #include <cmath>
 
 namespace clipper {
@@ -24,13 +26,22 @@ void Processor::prepare(double sampleRate, int /*maxBlockSize*/) {
     gain_ = gainTarget_;
 }
 
+void Processor::reset() {
+    // Sanitize the target too: if a non-finite one ever got past the guards, the
+    // one-pole in process() could never climb back out of it.
+    if (!dsp::paramIsFinite(gainTarget_)) gainTarget_ = 1.0f;
+    gain_ = gainTarget_;
+}
+
 void Processor::setParameter(int paramId, float value) {
     switch (paramId) {
         case PARAM_GAIN:
-            // Clamp to the documented linear range [0, 2].
-            if (value < 0.0f) value = 0.0f;
-            if (value > 2.0f) value = 2.0f;
-            gainTarget_ = value;
+            // Clamp to the documented linear range [0, 2]. NaN-REJECTING: the old
+            // `if (value < 0) value = 0; if (value > 2) value = 2;` pair left NaN
+            // untouched (both comparisons are false), and a NaN gain latches in the
+            // smoother forever — audit finding 1. clampParam is bit-identical here
+            // for every finite value.
+            gainTarget_ = dsp::clampParam(value, 0.0f, 2.0f);
             break;
         default:
             break;

@@ -90,9 +90,11 @@ export const INPUT_TRIM_MAX_DB = 24;
 export const INPUT_TRIM_UNITY_KNOB =
   (0 - INPUT_TRIM_MIN_DB) / (INPUT_TRIM_MAX_DB - INPUT_TRIM_MIN_DB); // = 1/3
 
-// 0..1 knob position -> dB trim.
+// 0..1 knob position -> dB trim. NaN-rejecting (2026-07-24 audit, finding 1):
+// Math.min/Math.max pass NaN through, and this feeds trimKnobToGain, i.e. the
+// worklet's input multiply and the trim readout.
 export function trimKnobToDb(knob: number): number {
-  const k = Math.min(1, Math.max(0, knob));
+  const k = Math.min(1, Math.max(0, Number.isFinite(knob) ? knob : 0));
   return INPUT_TRIM_MIN_DB + (INPUT_TRIM_MAX_DB - INPUT_TRIM_MIN_DB) * k;
 }
 

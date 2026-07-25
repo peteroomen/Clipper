@@ -68,6 +68,11 @@ public:
     // Output normalized (1.0 == full scale).
     void process(const float* in, float* out, int numFrames);
 
+    // Recovery seam (audit finding 1): clear every recursive state (preamp, spring
+    // tank, opto tremolo, power section) and re-park at the already-solved DC point.
+    // NOT prepare() — see Jcm800Amp::reset(). Knob positions survive.
+    void reset();
+
     // Total oversampling-filter group delay in base-rate samples: the preamp's two
     // serial triode stages + the power section's own OS round trip. Reverb/tremolo
     // add no counted latency (base-rate, phase-linear at DC).

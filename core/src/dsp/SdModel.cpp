@@ -114,6 +114,7 @@ void SdModel::prepare(double sampleRate, int maxBlockSize) {
     impl_->engine.prepare(sampleRate, maxBlockSize);
 }
 
+void SdModel::reset() { impl_->engine.reset(); }
 void SdModel::setOversampling(int factor) { impl_->engine.setOversampling(factor); }
 int SdModel::oversampling() const { return impl_->engine.oversampling(); }
 int SdModel::latencySamples() const { return impl_->engine.latencySamples(); }

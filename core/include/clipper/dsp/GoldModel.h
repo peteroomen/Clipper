@@ -92,6 +92,13 @@ public:
     // Process numFrames of mono audio, in -> out (may alias). 1.0f == 1.0 V.
     void process(const float* in, float* out, int numFrames);
 
+    // Recovery seam (audit finding 1). Clear every recursive state — the five knob
+    // smoothers (snapped onto their targets), the input/drive high-passes, the tone
+    // pivot low-pass, the output DC block, the op-amp model, the germanium WDF cap
+    // and the oversampler histories. Keeps rate / factor / diode type / knobs: a
+    // state flush, not a re-prepare. Allocates nothing.
+    void reset();
+
     // Analytic helpers the tests measure against (pure functions of the knob).
     // Drive-amp voltage gain at a GAIN knob position: 1 + knob*P_gain/R_g.
     static double driveGainAt(double knob);

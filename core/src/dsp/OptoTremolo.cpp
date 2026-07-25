@@ -5,6 +5,7 @@
 #include "clipper/dsp/OptoTremolo.h"
 
 #include "clipper/dsp/Denormal.h"
+#include "clipper/dsp/ParamGuard.h"
 
 #include <algorithm>
 #include <cmath>
@@ -35,8 +36,8 @@ void OptoTremolo::prepare(double sampleRate) {
     // and the passthrough is bit-exact (a one-pole would only approach 0 asymptotically).
     enableStep_ = 1.0 / std::max(1.0, 0.010 * sampleRate_);
     // Snap smoothers to their current knob targets.
-    rateSmoothed_ = kMinHz * std::pow(kMaxHz / kMinHz, std::clamp(speed_, 0.0, 1.0));
-    depthSmoothed_ = std::clamp(intensity_, 0.0, 1.0);
+    rateSmoothed_ = kMinHz * std::pow(kMaxHz / kMinHz, clampParam01(speed_));
+    depthSmoothed_ = clampParam01(intensity_);
     reset();
 }
 
@@ -45,14 +46,21 @@ void OptoTremolo::reset() {
     cell_ = 0.0;
     lastGain_ = 1.0;
     enableRamp_ = enabled_ ? 1.0 : 0.0;  // snap to the current enable state (no toggle ramp)
+    // Snap the two control smoothers onto their knob targets as well. They are
+    // recursive (`x += a*(target - x)`), so a poisoned value would never recover on
+    // its own — the recovery path has to overwrite it (audit finding 1).
+    rateSmoothed_ = kMinHz * std::pow(kMaxHz / kMinHz, clampParam01(speed_));
+    depthSmoothed_ = clampParam01(intensity_);
 }
 
+// Both knobs clamp NaN-rejectingly (ParamGuard.h): a NaN depth multiplies the
+// opto cell's recursive envelope and latches — audit finding 1.
 void OptoTremolo::setSpeed(float knob01) {
-    speed_ = std::clamp(static_cast<double>(knob01), 0.0, 1.0);
+    speed_ = clampParam01(static_cast<double>(knob01));
 }
 
 void OptoTremolo::setIntensity(float knob01) {
-    intensity_ = std::clamp(static_cast<double>(knob01), 0.0, 1.0);
+    intensity_ = clampParam01(static_cast<double>(knob01));
 }
 
 double OptoTremolo::tick() {

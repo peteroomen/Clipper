@@ -62,6 +62,14 @@ public:
     // Output normalized (1.0 == full scale).
     void process(const float* in, float* out, int numFrames);
 
+    // Recovery seam (audit finding 1): clear every recursive state in the voice and
+    // re-park at the already-solved DC operating point. Preamp stages, power section,
+    // and the spring tank. Deliberately NOT prepare(): prepare() re-solves every
+    // tube DC point and settles ~50 k silent samples per stage (measured ~69 ms for
+    // this voice), which is not something a recovery path may cost. Knob positions
+    // survive; only state is cleared. Allocation-free.
+    void reset();
+
     // Total oversampling-filter group delay in base-rate samples (0 at 1x): the
     // preamp cascade's four serial triode stages + the power section's own OS
     // round trip. The interstage scale is a memoryless gain (no delay). Reported

@@ -347,7 +347,16 @@ const PARAM_LABEL: Record<string, string> = {
   trim: 'Trim',
 };
 
-const clamp01 = (n: number) => Math.min(1, Math.max(0, typeof n === 'number' ? n : 0));
+// NaN-REJECTING clamp (2026-07-24 audit, finding 1). `typeof NaN === 'number'` is
+// true and `Math.min(1, Math.max(0, NaN))` is NaN, so the old form let a NaN
+// straight through to the engine, where it latched permanently in recursive state.
+// This file declares `minimum: 0, maximum: 1` in the tool JSON schema but the
+// schema is not enforced at runtime, so any non-numeric model emission ("max",
+// null, {}) arrives here as NaN — this is the boundary that has to catch it.
+const clamp01 = (n: number) => {
+  const v = typeof n === 'number' && Number.isFinite(n) ? n : 0;
+  return Math.min(1, Math.max(0, v));
+};
 const to100 = (n: number) => Math.round(clamp01(n) * 100);
 
 // Resolve a tool's optional `pedal` (0-based instance index) to a valid chain

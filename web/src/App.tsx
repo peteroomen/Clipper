@@ -398,7 +398,10 @@ export default function App() {
       // Latest tuner reading snapshot (M7), so the coach can see pitch/cents.
       getTunerReading: () => tunerReadingRef.current,
       setParam: (unit, param, value, pedalIndex) => {
-        const v = Math.min(1, Math.max(0, value));
+        // NaN-rejecting (2026-07-24 audit, finding 1): Math.min/Math.max are
+        // transparent to NaN, so the old clamp let a non-finite assistant value
+        // reach the engine, where it latched permanently in recursive state.
+        const v = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
         if (unit === 'input') setInputTrim(v);
         else if (unit === 'pedal') {
           const id = pedalIdAt(pedalIndex ?? 0);

@@ -8,6 +8,7 @@
 
 #include "clipper/dsp/Ac30PowerAmp.h"
 
+#include "clipper/dsp/ParamGuard.h"
 #include "clipper/dsp/TubeSolverMode.h"
 
 #include <algorithm>
@@ -97,7 +98,13 @@ void Ac30PowerAmp::setOversampling(int factor) {
 
     ltp_.prepare();
     solveOperatingPoint();
+    parkState();
+}
 
+// Park all dynamic state at the operating point. Called after the DC solve at
+// prepare/OS change, and by reset() WITHOUT a re-solve (the shared-cathode
+// bisection in solveOperatingPoint() is the expensive part and stays as prepared).
+void Ac30PowerAmp::parkState() {
     vRail_ = vRailIdle_;
     vScreen_ = vScreenIdle_;
     vk_ = vkIdle_;
@@ -109,6 +116,12 @@ void Ac30PowerAmp::setOversampling(int factor) {
     otHpS_ = 0.0; otLpS_ = 0.0;
     topCutS1_ = 0.0; topCutS2_ = 0.0;
     lastOutPeak_ = 0.0;
+}
+
+void Ac30PowerAmp::reset() {
+    ltp_.reset();
+    parkState();
+    os_.reset();
 }
 
 // Self-consistent idle: co-solve the SHARED cathode voltage vk (bias = -vk), the
@@ -154,7 +167,10 @@ void Ac30PowerAmp::solveOperatingPoint() {
 }
 
 void Ac30PowerAmp::setParameter(int paramId, float value) {
-    const double v = std::clamp(static_cast<double>(value), 0.0, 1.0);
+    // NaN-rejecting (ParamGuard.h) — audit finding 1. Load-bearing on this voice:
+    // topCutA_ is a filter coefficient, so a NaN CUT knob would latch NaN into
+    // both TOP CUT one-pole states on the very next sample.
+    const double v = clampParam01(static_cast<double>(value));
     switch (paramId) {
         case PARAM_DRIVE: drive_ = 2.0 * v; break;
         case PARAM_TOPCUT: {

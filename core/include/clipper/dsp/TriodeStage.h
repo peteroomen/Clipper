@@ -150,6 +150,17 @@ public:
     // drive in volts; output is the plate AC voltage in volts (DC removed).
     void process(const float* in, float* out, int numFrames);
 
+    // Recovery seam (audit finding 1). Re-park every node voltage, reactive
+    // companion and oversampler delay line at the DC operating point WITHOUT
+    // re-solving it: prepare() runs a 2-D Newton and then settles ~12 grid-leak RCs
+    // of silent samples (≈50 k samples per stage at 4x/48 k — the reason a whole
+    // Jcm800Amp::prepare() measures ~69 ms), so prepare() is NOT an acceptable
+    // recovery path for a poisoned engine. The settled state is cached at the end of
+    // settleDC(), so this is a handful of assignments plus a memset of the halfband
+    // histories: allocation-free, O(filter length), safe to call from a control
+    // message. State afterwards is bit-identical to a freshly prepared stage.
+    void reset();
+
     // --- Introspection (measurement / tests) --------------------------------
     double quiescentPlateVoltage() const { return vaQuiescent_; }     // Va_q (V)
     double quiescentCathodeVoltage() const { return vkQuiescent_; }   // Vk_q (V)
@@ -167,6 +178,7 @@ private:
     void reprepareReactive();  // companions at the current oversampled rate
     void solveOperatingPoint();  // DC bias -> vaQuiescent_/vkQuiescent_/iqQuiescent_
     void settleDC();  // run silent samples to the exact discrete fixed point
+    void cachePark();  // snapshot the settled state so reset() can restore it
     // One oversampled-rate sample: nodal Newton, updates node + companion state,
     // returns plate AC voltage (Va - Vq).
     inline float processSampleOS(float x);
@@ -201,6 +213,12 @@ private:
     double vCc_ = 0.0;    // input coupling-cap voltage (blocking distortion state)
     double vCk_ = 0.0;    // cathode-cap voltage (== Vk history)
     double vCo_ = 0.0;    // output coupling-cap voltage (plate side - out side)
+
+    // The SETTLED zero-input fixed point, snapshotted by cachePark() at the end of
+    // prepare()/setOversampling(). reset() restores from here, which is what makes
+    // recovery cheap (no Newton solve, no 50 k settling samples). See reset().
+    double vaPark_ = 0.0, vgPark_ = 0.0, vkPark_ = 0.0;
+    double vCcPark_ = 0.0, vCkPark_ = 0.0, vCoPark_ = 0.0;
 
     int lastMaxIters_ = 0;
 };

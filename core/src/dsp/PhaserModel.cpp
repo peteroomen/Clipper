@@ -55,6 +55,7 @@
 
 #include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/OnePoleSmoother.h"
+#include "clipper/dsp/ParamGuard.h"
 
 #include <algorithm>
 #include <cmath>
@@ -76,8 +77,10 @@ constexpr double kSmoothSeconds = 0.008;
 // Symmetric-ish spread averaging ~1.0; deterministic (no RNG) so renders repeat.
 constexpr double kDetune[kNumStages] = {0.985, 0.995, 1.005, 1.015};
 
-double clamp01d(double v) { return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v); }
-float clamp01f(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+// NaN-rejecting knob clamps (ParamGuard.h) — audit finding 1. A NaN corner
+// coefficient latches in the six allpass memories permanently.
+double clamp01d(double v) { return clampParam01(v); }
+float clamp01f(float v) { return clampParam01(v); }
 
 // Rounded-triangle LFO in [-1, 1] as a function of cycle phase in [0, 1).
 // Triangle troughs (-1) at phase 0, peaks (+1) at phase 0.5. The aligned cosine
@@ -136,6 +139,9 @@ void PhaserModel::prepare(double sampleRate) {
 
 void PhaserModel::reset() {
     Impl& d = *impl_;
+    // Snap the rate smoother onto its target — a poisoned smoother value never
+    // recovers on its own (audit finding 1).
+    d.rateHz.reset();
     d.lfoPhase = 0.0;
     d.curCornerHz = lfoToCornerHz(roundedTriangle(0.0));
     for (int s = 0; s < kNumStages; ++s) {

@@ -5,6 +5,8 @@
 
 #include "clipper/dsp/TwinPreamp.h"
 
+#include "clipper/dsp/ParamGuard.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -16,7 +18,8 @@ namespace clipper::dsp {
 // and the high-Z plate source differ.
 // ===========================================================================
 namespace {
-inline double clampR(double r) { return r < 1.0 ? 1.0 : r; }
+// NaN-safe resistance floor (the ParamGuard.h inversion; identical for finite r).
+inline double clampR(double r) { return r > 1.0 ? r : 1.0; }
 }  // namespace
 
 void FenderToneStack::prepare(double sampleRate) {
@@ -38,7 +41,8 @@ void FenderToneStack::setSourceImpedance(double rs) {
 }
 
 void FenderToneStack::setKnobs(double bass, double mid, double treble) {
-    auto cl = [](double v) { return std::clamp(v, 1.0e-3, 1.0 - 1.0e-3); };
+    // NaN-rejecting (std::clamp is transparent to NaN — audit finding 1).
+    auto cl = [](double v) { return clampParam(v, 1.0e-3, 1.0 - 1.0e-3); };
     bass_ = cl(bass);
     mid_ = cl(mid);
     treble_ = cl(treble);
@@ -132,7 +136,7 @@ void FenderToneStack::process(const float* in, float* out, int numFrames) {
 // ===========================================================================
 
 double TwinPreamp::audioTaper(double x) {
-    x = std::clamp(x, 0.0, 1.0);
+    x = clampParam01(x);  // NaN-rejecting (ParamGuard.h)
     constexpr double k = 4.0;  // ~12% at noon (a musical audio/log taper)
     return (std::exp(k * x) - 1.0) / (std::exp(k) - 1.0);
 }
@@ -189,13 +193,21 @@ void TwinPreamp::prepare(double sampleRate, int maxBlockSize) {
     brightS_ = 0.0;
 }
 
+void TwinPreamp::reset() {
+    for (auto& s : stage_) s.reset();
+    tone_.reset();
+    brightS_ = 0.0;
+    lastOutPeak_ = 0.0;
+}
+
 void TwinPreamp::setOversampling(int factor) {
     oversampling_ = factor;
     for (auto& s : stage_) s.setOversampling(factor);
 }
 
 void TwinPreamp::setParameter(int paramId, float value) {
-    const double v = std::clamp(static_cast<double>(value), 0.0, 1.0);
+    // NaN-rejecting (ParamGuard.h) — audit finding 1.
+    const double v = clampParam01(static_cast<double>(value));
     switch (paramId) {
         case PARAM_VOLUME: volume_ = v; break;
         case PARAM_BASS: bass_ = v; tone_.setKnobs(bass_, mid_, treble_); break;

@@ -89,6 +89,10 @@ public:
     // Process numFrames of mono audio, in -> out (may alias). 1.0f == 1.0 V.
     void process(const float* in, float* out, int numFrames);
 
+    // Recovery seam (audit finding 1) — see OverdriveEngine::reset(). Clears every
+    // recursive state without re-preparing; knobs and rate survive.
+    void reset();
+
 private:
     void processChunk(const float* in, float* out, int numFrames);
 

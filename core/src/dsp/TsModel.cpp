@@ -78,6 +78,7 @@ void TsModel::prepare(double sampleRate, int maxBlockSize) {
     impl_->engine.prepare(sampleRate, maxBlockSize);
 }
 
+void TsModel::reset() { impl_->engine.reset(); }
 void TsModel::setOversampling(int factor) { impl_->engine.setOversampling(factor); }
 int TsModel::oversampling() const { return impl_->engine.oversampling(); }
 int TsModel::latencySamples() const { return impl_->engine.latencySamples(); }

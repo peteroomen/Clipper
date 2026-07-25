@@ -26,6 +26,7 @@
 #include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/OnePoleSmoother.h"
 #include "clipper/dsp/Oversampler.h"
+#include "clipper/dsp/ParamGuard.h"
 
 #include <algorithm>
 #include <cmath>
@@ -37,7 +38,8 @@ namespace {
 constexpr double kTwoPi = 6.283185307179586;
 constexpr double kSmoothSeconds = 0.005;  // 5 ms glide (shared family value)
 
-float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+// NaN-rejecting knob clamp (ParamGuard.h) — audit finding 1.
+float clamp01(float v) { return clampParam01(v); }
 
 float onePoleCoeff(double cutoffHz, double sampleRate) {
     const double a = 1.0 - std::exp(-kTwoPi * cutoffHz / sampleRate);
@@ -72,7 +74,7 @@ constexpr double kOutputTrim = 0.40;
 
 // The SUSTAIN audio taper: knob (0..1) -> drive multiplier into Q2 (floor..max).
 double sustainDrive(float knob01) {
-    const double k = knob01 < 0.0f ? 0.0 : (knob01 > 1.0f ? 1.0 : knob01);
+    const double k = static_cast<double>(clampParam01(knob01));
     return kClipDriveMax * std::pow(10.0, (kSustainFloorDb / 20.0) * (1.0 - k));
 }
 }  // namespace
@@ -186,6 +188,18 @@ MuffModel::~MuffModel() = default;
 
 void MuffModel::prepare(double sampleRate, int maxBlockSize) {
     impl_->prepare(sampleRate, maxBlockSize);
+}
+
+void MuffModel::reset() {
+    Impl& d = *impl_;
+    d.sustain.reset();  // a poisoned smoother value never recovers on its own
+    d.volume.reset();
+    d.q1.reset();
+    d.q2.reset();
+    d.q3.reset();
+    d.q4.reset();
+    d.tone.reset();
+    d.os.reset();
 }
 
 void MuffModel::setOversampling(int factor) {

@@ -89,6 +89,7 @@
 
 #include "clipper/dsp/Biquad.h"
 #include "clipper/dsp/OnePoleSmoother.h"
+#include "clipper/dsp/ParamGuard.h"
 
 #include <algorithm>
 #include <cmath>
@@ -127,7 +128,9 @@ constexpr float kWetGain = 3.0f;
 // Anti-denormal offset injected at each spring's loop input (see header note).
 constexpr float kAntiDenormal = 1e-20f;
 
-float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+// NaN-rejecting knob clamp (ParamGuard.h) — audit finding 1. Load-bearing here:
+// a NaN MIX would circulate through the spring delay lines forever.
+float clamp01(float v) { return clampParam01(v); }
 
 // Scale a 44.1k-referenced delay length to the engine rate, min 1 sample.
 int scaleLen(int len44k, double fs) {
@@ -268,6 +271,10 @@ void ReverbModel::prepare(double sampleRate) {
 
 void ReverbModel::reset() {
     Impl& d = *impl_;
+    // Snap the MIX smoother onto its target: a poisoned smoother value can never
+    // climb back out on its own (audit finding 1), and the idle fast path below
+    // keys off mix == 0 exactly.
+    d.mix.reset();
     d.inHp.reset();
     d.inLp.reset();
     d.outHp.reset();

@@ -82,6 +82,19 @@ public:
 
     int factor() const { return factor_; }
 
+    // Clear every halfband stage's delay line without touching the factor or
+    // re-designing the filters (setFactor() also resets, but re-derives the stage
+    // count). Recovery seam (audit finding 1): the polyphase FIRs hold up to 129
+    // taps of history, so a single NaN sample keeps reappearing at the output for
+    // the whole filter length even after the nonlinearity itself is clean.
+    // Allocation-free.
+    void reset() {
+        for (int s = 0; s < kMaxStages; ++s) {
+            ups_[s].reset();
+            downs_[s].reset();
+        }
+    }
+
     // Group delay of the up+down round trip, in base-rate samples (0 at 1x).
     // Measured empirically at prepare-time filter lengths; see docs.
     int latencySamples() const {
