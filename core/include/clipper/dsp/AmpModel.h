@@ -64,8 +64,15 @@ public:
     // smoothers to their current targets.
     void prepare(double sampleRate, int maxBlockSize);
 
-    // Set a normalized parameter (id in ParamId, value in [0, 1]). Clamped.
+    // Set a normalized parameter (id in ParamId, value in [0, 1]). Clamped,
+    // NaN-rejecting (see ParamGuard.h).
     void setParameter(int paramId, float value);
+
+    // Recovery seam (audit finding 1): clear the four biquads' delay states, snap
+    // the smoothers onto their targets, and clear the reverb tank + chorus delay
+    // line. Keeps the prepared rate, the coefficients and the knob positions, so it
+    // is NOT a re-prepare — just a state flush. Allocation-free.
+    void reset();
 
     // Process numFrames of mono audio, in -> out. in and out may alias. This is
     // the tone stack + volume ONLY (no chorus) — the mono voice of the amp, kept

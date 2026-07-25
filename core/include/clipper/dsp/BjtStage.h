@@ -125,6 +125,13 @@ public:
     // in a tight per-sample cascade (no allocation, no oversampling here).
     float processSample(float vin);
 
+    // Recovery seam (audit finding 1). Re-park the three node voltages and the two
+    // cap companions at the settled DC operating point WITHOUT re-solving:
+    // prepare() runs a damped 3-D Newton and then settles up to 12·Rf·Cin worth of
+    // silent samples. The settled state is cached at the end of settleDC(), so this
+    // is six assignments — allocation-free, and bit-identical to a fresh prepare().
+    void reset();
+
     // --- Introspection (measurement / tests) --------------------------------
     double quiescentCollectorVoltage() const { return vcQ_; }  // Vc_q (V)
     double quiescentBaseVoltage() const { return vbQ_; }       // Vb_q (V)
@@ -142,6 +149,7 @@ private:
     void reprepareReactive();
     void solveOperatingPoint();  // DC bias (caps open, diodes live) -> quiescents
     void settleDC();             // run silent samples to the discrete fixed point
+    void cachePark();            // snapshot the settled state for reset()
 
     Config cfg_{};
     double sampleRate_ = 176400.0;
@@ -157,6 +165,11 @@ private:
     double gCf_ = 0.0;   // Cf/T
     double vCin_ = 0.0;  // input-cap voltage history (Vin − Vb)
     double vCf_ = 0.0;   // feedback-cap voltage history (Vc − Vb)
+
+    // The SETTLED zero-input fixed point, snapshotted by cachePark(). reset()
+    // restores from here so recovery costs no Newton solve and no settling.
+    double vbPark_ = 0.0, vcPark_ = 0.0, vePark_ = 0.0;
+    double vCinPark_ = 0.0, vCfPark_ = 0.0;
 
     int lastMaxIters_ = 0;
 };

@@ -43,6 +43,7 @@
 #include "clipper/dsp/ChorusModel.h"
 
 #include "clipper/dsp/OnePoleSmoother.h"
+#include "clipper/dsp/ParamGuard.h"
 
 #include <algorithm>
 #include <cmath>
@@ -60,7 +61,9 @@ constexpr double kMaxHz = 8.0;       // LFO rate at speed = 1
 constexpr double kGuardMs = 3.0;     // extra delay-buffer headroom past max delay
 constexpr double kSmoothSeconds = 0.008;
 
-float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+// NaN-rejecting knob clamp (ParamGuard.h) — audit finding 1. A NaN sweep depth
+// would write NaN into the delay line and it would never wash out.
+float clamp01(float v) { return clampParam01(v); }
 
 // speed knob 0..1 -> LFO frequency (log map kMinHz..kMaxHz).
 double speedToHz(float knob) {
@@ -136,6 +139,11 @@ void ChorusModel::reset() {
     std::fill(d.buf.begin(), d.buf.end(), 0.0f);
     d.writeIdx = 0;
     d.lfoPhase = 0.0;
+    // Snap the two control smoothers onto their targets too — a poisoned smoother
+    // value never recovers on its own, and a NaN sweep would immediately re-poison
+    // the delay line we just cleared (audit finding 1).
+    d.sweepSamples.reset();
+    d.rateHz.reset();
 }
 
 void ChorusModel::setSpeed(float knob01) {

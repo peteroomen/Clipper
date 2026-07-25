@@ -53,6 +53,11 @@ public:
     // Output normalized (1.0 == full scale).
     void process(const float* in, float* out, int numFrames);
 
+    // Recovery seam (audit finding 1): clear every recursive state (preamp, power
+    // section incl. the sag envelope, spring tank) and re-park at the already-solved
+    // DC point. NOT prepare() — see Jcm800Amp::reset(). Knob positions survive.
+    void reset();
+
     int latencySamples() const {
         return preamp_.latencySamples() + power_.latencySamples();
     }

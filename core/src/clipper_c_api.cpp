@@ -19,7 +19,36 @@
 #include "clipper/dsp/SdModel.h"
 #include "clipper/dsp/TsModel.h"
 
+#include <cmath>
 #include <vector>
+
+// --- Non-finite parameter gate (2026-07-24 audit, finding 1) ------------------
+//
+// EVERY *_set_param export below rejects a non-finite value outright. This is the
+// one chokepoint guaranteed to be on the web path, and it is a HARD gate, not a
+// clamp: there is no sensible in-range meaning for NaN, so the write is dropped
+// and the knob keeps its previous value.
+//
+// Why it matters, measured: before this gate, ONE NaN parameter left every unit
+// emitting non-finite samples forever (12672/12672 in a 1 s window for Jcm800Amp,
+// AmpModel and RatModel alike). NaN latches — it lands in a smoother value, a
+// biquad delay, a WDF cap voltage or a Newton warm start, and every subsequent
+// sample inherits it. Writing a good value afterwards never cleared it. Inf was
+// always handled correctly; NaN was not, because every clamp in the tree used
+// `v < 0 ? 0 : (v > 1 ? 1 : v)`, and both comparisons are false for NaN.
+//
+// The reachable path was the assistant: web/src/assistant/tools.ts declares
+// `minimum: 0, maximum: 1` in the tool JSON schema but nothing enforced it, so a
+// non-numeric model emission ("max", null, {}) became NaN via Number(...) and the
+// worklet passed `+data.value` straight to _amp_set_param.
+//
+// This gate is DEFENCE IN DEPTH with the per-model clamps (ParamGuard.h), which
+// also cover callers that bypass this ABI entirely — notably the JUCE plugin,
+// which calls model setParameter() directly.
+#define CLIPPER_REJECT_NON_FINITE(value) \
+    do {                                 \
+        if (!std::isfinite(value)) return; \
+    } while (0)
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/emscripten.h>
@@ -47,6 +76,7 @@ void clipper_destroy(void* handle) {
 EMSCRIPTEN_KEEPALIVE
 void clipper_set_param(void* handle, int param_id, float value) {
     if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
     static_cast<clipper::Processor*>(handle)->setParameter(param_id, value);
 }
 
@@ -56,6 +86,27 @@ void clipper_process(void* handle, const float* in_ptr, float* out_ptr,
     if (!handle) return;
     static_cast<clipper::Processor*>(handle)->process(in_ptr, out_ptr,
                                                       num_frames);
+}
+
+// --- Recovery: *_reset exports (2026-07-24 audit, finding 1) ------------------
+//
+// Before this, a poisoned engine could ONLY be recovered by destroy + recreate:
+// there was no reset anywhere in the valve-amp tree and none in this ABI. The
+// front-end therefore had no way to un-brick audio short of tearing the whole
+// worklet graph down.
+//
+// Every reset() below clears recursive state and re-parks at the ALREADY-SOLVED DC
+// operating point. It deliberately does NOT re-run prepare(): a tube stage's
+// prepare() solves its DC point and then settles ~12 grid-leak RCs of silent
+// samples (~50 k samples per stage at 4x/48 k; a whole Jcm800Amp::prepare()
+// measures ~69 ms), which is not something a recovery path may cost. Knob
+// positions and the oversampling factor survive a reset; only state is cleared.
+// Allocation-free, so these are safe from the worklet's message handler.
+
+EMSCRIPTEN_KEEPALIVE
+void clipper_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::Processor*>(handle)->reset();
 }
 
 // --- M3: RAT diode-clipper model exports -------------------------------------
@@ -83,7 +134,16 @@ void rat_destroy(void* handle) {
 EMSCRIPTEN_KEEPALIVE
 void rat_set_param(void* handle, int param_id, float value) {
     if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
     static_cast<clipper::dsp::RatModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clear recursive state, keep the knobs / rate / factor. See the
+// banner above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void rat_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::RatModel*>(handle)->reset();
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -128,7 +188,16 @@ void sd_destroy(void* handle) {
 EMSCRIPTEN_KEEPALIVE
 void sd_set_param(void* handle, int param_id, float value) {
     if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
     static_cast<clipper::dsp::SdModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clear recursive state, keep the knobs / rate / factor. See the
+// banner above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void sd_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::SdModel*>(handle)->reset();
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -188,7 +257,16 @@ void ts_destroy(void* handle) {
 EMSCRIPTEN_KEEPALIVE
 void ts_set_param(void* handle, int param_id, float value) {
     if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
     static_cast<clipper::dsp::TsModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clear recursive state, keep the knobs / rate / factor. See the
+// banner above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void ts_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::TsModel*>(handle)->reset();
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -219,7 +297,16 @@ void phaser_destroy(void* handle) {
 EMSCRIPTEN_KEEPALIVE
 void phaser_set_param(void* handle, int param_id, float value) {
     if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
     static_cast<clipper::dsp::PhaserModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clears the LFO phase and all six allpass memories. See the banner
+// above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void phaser_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::PhaserModel*>(handle)->reset();
 }
 
 // No-op: the phaser is linear time-varying, so it never oversamples. Present only
@@ -262,7 +349,16 @@ void muff_destroy(void* handle) {
 EMSCRIPTEN_KEEPALIVE
 void muff_set_param(void* handle, int param_id, float value) {
     if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
     static_cast<clipper::dsp::MuffModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clear recursive state, keep the knobs / rate / factor. See the
+// banner above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void muff_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::MuffModel*>(handle)->reset();
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -308,7 +404,16 @@ void gold_destroy(void* handle) {
 EMSCRIPTEN_KEEPALIVE
 void gold_set_param(void* handle, int param_id, float value) {
     if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
     static_cast<clipper::dsp::GoldModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clear recursive state, keep the knobs / rate / factor. See the
+// banner above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void gold_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::GoldModel*>(handle)->reset();
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -478,9 +583,33 @@ void amp_destroy(void* handle) {
     delete static_cast<AmpChain*>(handle);
 }
 
+// Recovery seam for the WHOLE amp chain (see the banner above clipper_reset).
+// Resets ALL FOUR voices, not just the active one: the inactive voices keep
+// accumulating knob writes (amp_set_param deliberately keeps every voice current
+// so a model swap lands on the right tone), and a poisoned inactive voice would
+// otherwise stay poisoned until it was switched to. Both per-side cab convolvers
+// are cleared too — the FDL holds a full IR's worth of history, so a NaN sample
+// keeps re-emerging for the length of the impulse response.
+//
+// What is NOT touched: the loaded IR, the active model index, the cab on/off flag,
+// the engine rate, and every knob position. This un-bricks audio; it does not
+// reset the rig.
+EMSCRIPTEN_KEEPALIVE
+void amp_reset(void* handle) {
+    if (!handle) return;
+    auto* c = static_cast<AmpChain*>(handle);
+    c->amp.reset();
+    c->jcm.reset();
+    c->twin.reset();
+    c->ac30.reset();
+    c->cabL.reset();
+    c->cabR.reset();
+}
+
 EMSCRIPTEN_KEEPALIVE
 void amp_set_param(void* handle, int param_id, float value) {
     if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
     auto* c = static_cast<AmpChain*>(handle);
     // The cab on/off toggle is chain-level and shared by BOTH amp models.
     if (param_id == kAmpParamCab) {

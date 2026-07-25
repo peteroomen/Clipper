@@ -267,6 +267,26 @@ void BjtStage::settleDC() {
     }
     vcQ_ = vc_; vbQ_ = vb_; veQ_ = ve_;
     icQ_ = ebersMollIc(vb_ - ve_, vb_ - vc_, cfg_.bjt);
+    cachePark();
+    lastMaxIters_ = 0;
+}
+
+// Snapshot the settled zero-input fixed point so reset() can restore it without
+// re-running solveOperatingPoint() + settleDC().
+void BjtStage::cachePark() {
+    vbPark_ = vb_;
+    vcPark_ = vc_;
+    vePark_ = ve_;
+    vCinPark_ = vCin_;
+    vCfPark_ = vCf_;
+}
+
+void BjtStage::reset() {
+    vb_ = vbPark_;
+    vc_ = vcPark_;
+    ve_ = vePark_;
+    vCin_ = vCinPark_;
+    vCf_ = vCfPark_;
     lastMaxIters_ = 0;
 }
 

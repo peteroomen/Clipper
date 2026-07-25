@@ -181,6 +181,10 @@ public:
     void configure(const Config& c) { cfg_ = c; }
     const Config& config() const { return cfg_; }
     void prepare();  // solve + park the DC operating point (grids at 0)
+    // Re-park the three live node voltages at the already-solved quiescent point.
+    // Recovery seam (audit finding 1): the Newton warm start carries across samples,
+    // so a single NaN iterate is self-sustaining. No solve — three assignments.
+    void reset() { va1_ = va1q_; va2_ = va2q_; vk_ = vkq_; }
     // One sample: grid drives vg1 (input), vg2 (feedback). Fills the two anti-phase
     // plate voltages (absolute volts). Warm-started from the previous sample.
     void processSample(double vg1, double vg2, double& va1, double& va2);
@@ -227,6 +231,14 @@ public:
     int latencySamples() const { return os_.latencySamples(); }
 
     void setParameter(int paramId, float value);
+
+    // Recovery seam (audit finding 1). Re-park the whole power section — PI node
+    // state, rail/screen sag integrators, PI→EL34 coupling-cap blocking state, grid
+    // warm starts, OT and presence filter states, the feedback unit delay, and the
+    // oversampler histories — at the ALREADY-SOLVED operating point. Does NOT call
+    // solveOperatingPoint() or LtpInverter::prepare(): the idle rail/screen
+    // fixed-point iterate and the PI DC Newton stay as prepared. Allocation-free.
+    void reset();
 
     // Enable/disable global NFB (open-loop A/B for the closed-vs-open gain test).
     void setFeedbackEnabled(bool on) { fbEnabled_ = on; }
@@ -279,6 +291,9 @@ public:
 
 private:
     void solveOperatingPoint();
+    // Park every dynamic state at the (already-solved) idle point. Shared by
+    // setOversampling() and reset() so the two can never drift apart.
+    void parkState();
     inline float processSampleOS(float x);
     // Per-tube plate-load Newton: Ip with Vp = rail − (Ip−Iq)·Rpp. Returns Ip;
     // outputs the resolved plate voltage in vpOut and the hoisted Koren base

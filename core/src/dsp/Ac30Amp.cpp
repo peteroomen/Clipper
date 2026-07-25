@@ -27,6 +27,12 @@ void Ac30Amp::setOversampling(int factor) {
     power_.setOversampling(factor);
 }
 
+void Ac30Amp::reset() {
+    preamp_.reset();
+    power_.reset();
+    reverb_->reset();
+}
+
 void Ac30Amp::setParameter(int paramId, float value) {
     switch (paramId) {
         case PARAM_VOLUME: preamp_.setParameter(Ac30Preamp::PARAM_VOLUME, value); break;

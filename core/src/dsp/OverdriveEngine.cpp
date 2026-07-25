@@ -11,6 +11,7 @@
 #include "clipper/dsp/OverdriveEngine.h"
 
 #include "clipper/dsp/Denormal.h"
+#include "clipper/dsp/ParamGuard.h"
 
 #include <algorithm>
 #include <cassert>
@@ -24,7 +25,8 @@ constexpr double kTwoPi = 6.283185307179586;
 // ~5 ms glide, matches the RAT/M0 smoothers (shared across the family).
 constexpr double kSmoothSeconds = 0.005;
 
-float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+// NaN-rejecting knob clamp (ParamGuard.h) — audit finding 1.
+float clamp01(float v) { return clampParam01(v); }
 
 float onePoleCoeff(double cutoffHz, double sampleRate) {
     const double a = 1.0 - std::exp(-kTwoPi * cutoffHz / sampleRate);
@@ -86,6 +88,20 @@ void OverdriveEngine::prepare(double sampleRate, int maxBlockSize) {
 
 void OverdriveEngine::setOversampling(int factor) {
     osFactor_ = factor;
+    reprepareStage2();
+}
+
+void OverdriveEngine::reset() {
+    // Smoothers first: a poisoned smoother value never recovers on its own.
+    driveK_.reset();
+    toneTilt_.reset();
+    level_.reset();
+    toneLpState_ = 0.0f;
+    dcX1_ = 0.0f;
+    dcY1_ = 0.0f;
+    os_.reset();
+    // Re-derives the oversampled-section coefficients at the CURRENT rate/factor and
+    // resets midLpState_ / the op-amp / the clipper. Allocation-free (no DC solve).
     reprepareStage2();
 }
 

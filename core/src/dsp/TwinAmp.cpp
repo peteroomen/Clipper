@@ -30,6 +30,13 @@ void TwinAmp::setOversampling(int factor) {
     power_.setOversampling(factor);
 }
 
+void TwinAmp::reset() {
+    preamp_.reset();
+    reverb_->reset();
+    tremolo_->reset();
+    power_.reset();
+}
+
 void TwinAmp::setParameter(int paramId, float value) {
     switch (paramId) {
         case PARAM_VOLUME: preamp_.setParameter(TwinPreamp::PARAM_VOLUME, value); break;

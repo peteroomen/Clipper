@@ -101,6 +101,13 @@ public:
     // Process numFrames mono, in -> out (may alias). 1.0f == 1.0 V.
     void process(const float* in, float* out, int numFrames);
 
+    // Recovery seam (audit finding 1). Clear every recursive state — the three knob
+    // smoothers (snapped onto their targets), the mid-hump high-pass, the tone-tilt
+    // low-pass, the DC blocker, the op-amp model, the soft clipper and the
+    // oversampler histories. Keeps rate / factor / knobs / diode knees: a state
+    // flush, not a re-prepare. Allocates nothing.
+    void reset();
+
 private:
     void processChunk(const float* in, float* out, int numFrames);
     void applyKnees();

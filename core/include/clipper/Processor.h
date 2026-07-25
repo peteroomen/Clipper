@@ -31,6 +31,11 @@ public:
     // Process numFrames of mono audio from in -> out. in and out may alias.
     void process(const float* in, float* out, int numFrames);
 
+    // Recovery seam (audit finding 1): snap the smoothed gain onto its target,
+    // discarding the recursive state. Keeps the prepared rate/coefficient, so this
+    // is not a re-prepare. Allocation-free.
+    void reset();
+
     // Exposed for testing/introspection: the current (smoothed) gain value.
     float currentGain() const { return gain_; }
 

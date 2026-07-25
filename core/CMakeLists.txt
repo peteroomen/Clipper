@@ -257,6 +257,24 @@ if(NOT EMSCRIPTEN)
     endif()
     add_test(NAME clipper_player_expectations_tests COMMAND clipper_player_expectations_tests)
 
+    # --- Audit finding 1: non-finite parameter guard + recovery ---------------
+    # Injects NaN / +Inf / -Inf into EVERY parameter of EVERY unit (six pedals,
+    # four amp voices) over BOTH the C ABI (the worklet's path) and the direct C++
+    # setParameter (the JUCE plugin's path), and asserts: the ABI rejects the write
+    # bit-exactly, the models never let a non-finite value into recursive state, a
+    # subsequent good write genuinely restores the reference render, and reset()
+    # recovers a unit poisoned by a NaN AUDIO sample. Links clipper_c_api because
+    # half the suite drives the exact worklet entry points.
+    #   -DCLIPPER_NAN_TEST_NO_RESET compiles the guard blocks only (used to verify
+    #   the suite fails against a checkout that predates the reset() API).
+    add_executable(clipper_nan_guard_tests tests/test_nan_guard.cpp)
+    target_link_libraries(clipper_nan_guard_tests PRIVATE clipper_c_api)
+    if(NOT MSVC)
+        # -UNDEBUG keeps assert() live in the Release build.
+        target_compile_options(clipper_nan_guard_tests PRIVATE -Wall -Wextra -UNDEBUG)
+    endif()
+    add_test(NAME clipper_nan_guard_tests COMMAND clipper_nan_guard_tests)
+
     # --- Perf diagnosis: anti-denormal guard tests ----------------------------
     # Proves Biquad / OnePoleSmoother never leave recursive state in the subnormal
     # float range on a decaying tail (the amp-independent WASM crackle — see

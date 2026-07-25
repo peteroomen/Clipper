@@ -5,6 +5,8 @@
 
 #include "clipper/dsp/Jcm800Preamp.h"
 
+#include "clipper/dsp/ParamGuard.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -14,7 +16,12 @@ namespace clipper::dsp {
 // MarshallToneStack — trapezoidal-companion nodal MNA of the FMV/TMB network.
 // ===========================================================================
 namespace {
-inline double clampR(double r) { return r < 1.0 ? 1.0 : r; }
+// Resistance floor, written NaN-safely (the ParamGuard.h inversion: `r > 1` is
+// false for NaN, so NaN lands on the floor instead of passing through). Identical
+// to `r < 1 ? 1 : r` for every finite r. Load-bearing: a NaN pot fraction would
+// stamp a NaN conductance into the MNA matrix, and its inverse — hence every
+// sample forever after — would be NaN.
+inline double clampR(double r) { return r > 1.0 ? r : 1.0; }
 }  // namespace
 
 void MarshallToneStack::prepare(double sampleRate) {
@@ -38,7 +45,8 @@ void MarshallToneStack::setSourceImpedance(double rs) {
 }
 
 void MarshallToneStack::setKnobs(double bass, double mid, double treble) {
-    auto cl = [](double v) { return std::clamp(v, 1.0e-3, 1.0 - 1.0e-3); };
+    // NaN-rejecting (std::clamp is transparent to NaN — audit finding 1).
+    auto cl = [](double v) { return clampParam(v, 1.0e-3, 1.0 - 1.0e-3); };
     bass_ = cl(bass);
     mid_ = cl(mid);
     treble_ = cl(treble);
@@ -138,7 +146,7 @@ void MarshallToneStack::process(const float* in, float* out, int numFrames) {
 // ===========================================================================
 
 double Jcm800Preamp::audioTaper(double x) {
-    x = std::clamp(x, 0.0, 1.0);
+    x = clampParam01(x);  // NaN-rejecting (ParamGuard.h)
     constexpr double k = 4.0;  // ~12% at noon (a musical audio/log taper)
     return (std::exp(k * x) - 1.0) / (std::exp(k) - 1.0);
 }
@@ -212,13 +220,22 @@ void Jcm800Preamp::prepare(double sampleRate, int maxBlockSize) {
     tone_.setKnobs(bass_, mid_, treble_);
 }
 
+void Jcm800Preamp::reset() {
+    for (auto& s : stage_) s.reset();
+    tone_.reset();
+    lastV1bGridPeak_ = 0.0;
+    lastOutPeak_ = 0.0;
+}
+
 void Jcm800Preamp::setOversampling(int factor) {
     oversampling_ = factor;
     for (auto& s : stage_) s.setOversampling(factor);
 }
 
 void Jcm800Preamp::setParameter(int paramId, float value) {
-    const double v = std::clamp(static_cast<double>(value), 0.0, 1.0);
+    // NaN-rejecting: std::clamp(NaN, 0, 1) returns NaN, and one NaN knob poisoned
+    // the tone-stack MNA inverse permanently (audit finding 1). See ParamGuard.h.
+    const double v = clampParam01(static_cast<double>(value));
     switch (paramId) {
         case PARAM_GAIN: gain_ = v; break;
         case PARAM_MASTER: master_ = v; break;

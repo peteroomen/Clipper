@@ -138,6 +138,7 @@ void TriodeStage::prepare(double sampleRate, int maxBlockSize) {
         // Follower is algebraic (no coupling / bypass caps): the DC solve IS the
         // parked state; no discrete settling needed. See processSampleFollowerOS.
         solveFollowerOperatingPoint();
+        cachePark();
         lastMaxIters_ = 0;
         return;
     }
@@ -167,6 +168,30 @@ void TriodeStage::settleDC() {
     vaQuiescent_ = va_;
     vkQuiescent_ = vk_;
     iqQuiescent_ = korenPlateCurrent(va_, vg_ - vk_, cfg_.tube);
+    cachePark();
+    lastMaxIters_ = 0;
+}
+
+// Snapshot the settled zero-input fixed point. This is the ONLY thing that makes
+// reset() cheap: without it, re-parking would mean re-running solveOperatingPoint()
+// + settleDC() (see reset() in the header for the cost).
+void TriodeStage::cachePark() {
+    vaPark_ = va_;
+    vgPark_ = vg_;
+    vkPark_ = vk_;
+    vCcPark_ = vCc_;
+    vCkPark_ = vCk_;
+    vCoPark_ = vCo_;
+}
+
+void TriodeStage::reset() {
+    va_ = vaPark_;
+    vg_ = vgPark_;
+    vk_ = vkPark_;
+    vCc_ = vCcPark_;
+    vCk_ = vCkPark_;
+    vCo_ = vCoPark_;
+    os_.reset();  // the halfband histories hold up to 129 taps of poison
     lastMaxIters_ = 0;
 }
 
@@ -175,6 +200,7 @@ void TriodeStage::setOversampling(int factor) {
     reprepareReactive();
     if (cfg_.topology == Topology::CathodeFollower) {
         solveFollowerOperatingPoint();  // re-park (algebraic; no settle)
+        cachePark();
         lastMaxIters_ = 0;
         return;
     }

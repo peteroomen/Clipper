@@ -6,6 +6,7 @@
 
 #include "clipper/dsp/Jcm800PowerAmp.h"
 
+#include "clipper/dsp/ParamGuard.h"
 #include "clipper/dsp/TubeSolverMode.h"
 
 #include <algorithm>
@@ -199,8 +200,12 @@ void Jcm800PowerAmp::setOversampling(int factor) {
 
     ltp_.prepare();
     solveOperatingPoint();
+    parkState();
+}
 
-    // Park all dynamic state at the operating point (no turn-on thump).
+// Park all dynamic state at the operating point (no turn-on thump). Called after
+// the DC solve at prepare/OS change, and by reset() WITHOUT a re-solve.
+void Jcm800PowerAmp::parkState() {
     vRail_ = vRailIdle_;
     vScreen_ = vScreenIdle_;
     vCcUp_ = ltp_.quiescentPlate1() - kVbias;   // cap blocks DC: grid at Vbias
@@ -209,6 +214,12 @@ void Jcm800PowerAmp::setOversampling(int factor) {
     otHpS_ = 0.0; otLpS_ = 0.0; presLpS_ = 0.0;
     fbDelay_ = 0.0;
     lastOutPeak_ = 0.0;
+}
+
+void Jcm800PowerAmp::reset() {
+    ltp_.reset();
+    parkState();
+    os_.reset();
 }
 
 // Self-consistent idle: EL34 bias current depends on rail+screen, which depend on
@@ -234,7 +245,8 @@ void Jcm800PowerAmp::solveOperatingPoint() {
 }
 
 void Jcm800PowerAmp::setParameter(int paramId, float value) {
-    const double v = std::clamp(static_cast<double>(value), 0.0, 1.0);
+    // NaN-rejecting (ParamGuard.h) — audit finding 1.
+    const double v = clampParam01(static_cast<double>(value));
     switch (paramId) {
         case PARAM_PRESENCE: presence_ = v; break;
         // PARAM_DRIVE maps 0..1 -> 0..2x PI input trim (1.0 == unity at noon-ish).

@@ -119,6 +119,13 @@ public:
     // Process numFrames of mono audio, in -> out (may alias). 1.0f == 1.0 V.
     void process(const float* in, float* out, int numFrames);
 
+    // Recovery seam (audit finding 1). Re-park all four BJT stages at their
+    // already-solved DC operating points and clear the tone stack, the two knob
+    // smoothers and the oversampler histories. Does NOT re-solve: each stage's
+    // damped Newton + up to 12·Rf·Cin of settling stays as prepared. Knobs survive;
+    // allocation-free.
+    void reset();
+
     // --- Introspection (measurement / tests) --------------------------------
     // The four cascade stages Q1..Q4 (index 0..3), for per-stage DC op-point
     // validation against the analytic bias math.

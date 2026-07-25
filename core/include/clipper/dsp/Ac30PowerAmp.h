@@ -167,6 +167,11 @@ public:
 
     void setParameter(int paramId, float value);
 
+    // Recovery seam (audit finding 1) — re-park every dynamic state at the
+    // ALREADY-SOLVED idle point (no bisection re-solve of the shared cathode node,
+    // no LtpInverter::prepare()). Allocation-free; see Jcm800PowerAmp::reset().
+    void reset();
+
     // Retained ONLY for the anti-NFB test seam: there is no loop, so this is inert
     // (the output is bit-exact regardless). Mirrors the JCM/Twin API shape.
     void setFeedbackEnabled(bool on) { fbEnabled_ = on; }
@@ -253,6 +258,9 @@ public:
 
 private:
     void solveOperatingPoint();
+    // Park every dynamic state at the (already-solved) idle point. Shared by
+    // setOversampling() and reset() so the two can never drift apart.
+    void parkState();
     inline float processSampleOS(float x);
     // Plate-load Newton with the hoisted Koren base (Ip = base·atan(Vp/kvb), exact
     // dIp/dVp); baseOut feeds the shared-E1 screen current (§25).

@@ -98,6 +98,13 @@ public:
     // diode stage (documented reference; a hot humbucker peaks around ~0.3 V).
     void process(const float* in, float* out, int numFrames);
 
+    // Recovery seam (audit finding 1). Clear every recursive state — the three knob
+    // smoothers (snapped onto their targets), the two stage-1 shaping one-poles, the
+    // stage-3 low-pass, the LM308 model, the WDF cap and the oversampler histories.
+    // Keeps the sample rate, the oversampling factor and the knob positions: this is
+    // a state flush, not a re-prepare, and it allocates nothing.
+    void reset();
+
 private:
     // Process a single sub-block of at most maxBlockSize frames (the fixed
     // oversampling scratch size). process() chunks larger buffers into these.

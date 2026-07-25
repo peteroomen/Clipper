@@ -26,6 +26,12 @@ void Jcm800Amp::setOversampling(int factor) {
     power_.setOversampling(factor);
 }
 
+void Jcm800Amp::reset() {
+    preamp_.reset();
+    power_.reset();
+    reverb_->reset();
+}
+
 void Jcm800Amp::setParameter(int paramId, float value) {
     switch (paramId) {
         case PARAM_GAIN: preamp_.setParameter(Jcm800Preamp::PARAM_GAIN, value); break;

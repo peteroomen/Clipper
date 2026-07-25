@@ -117,6 +117,7 @@
 #include "clipper/dsp/LM308Stage.h"
 #include "clipper/dsp/OnePoleSmoother.h"
 #include "clipper/dsp/Oversampler.h"
+#include "clipper/dsp/ParamGuard.h"
 
 #include <chowdsp_wdf/chowdsp_wdf.h>
 
@@ -167,7 +168,8 @@ constexpr double kOutHpHz = 8.0;
 // --- Smoothing (the house ~5 ms glide) ---
 constexpr double kSmoothSeconds = 0.005;
 
-float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+// NaN-rejecting knob clamp (ParamGuard.h) — audit finding 1.
+float clamp01(float v) { return clampParam01(v); }
 
 float onePoleCoeff(double cutoffHz, double sampleRate) {
     const double a = 1.0 - std::exp(-kTwoPi * cutoffHz / sampleRate);
@@ -181,17 +183,15 @@ float toneKnobToTilt(float knob) {
 }
 }  // namespace
 
+// The three ganged maps. All three clamp through ParamGuard (NaN -> 0), so even a
+// direct call from a test or the plugin cannot hand a NaN gain to the smoothers.
 double GoldModel::driveGainAt(double knob) {
-    const double g = knob < 0.0 ? 0.0 : (knob > 1.0 ? 1.0 : knob);
-    return 1.0 + g * kGainPotOhms / kDriveRgOhms;
+    return 1.0 + clampParam01(knob) * kGainPotOhms / kDriveRgOhms;
 }
 double GoldModel::cleanBlendAt(double knob) {
-    const double g = knob < 0.0 ? 0.0 : (knob > 1.0 ? 1.0 : knob);
-    return 1.0 - kCleanTilt * g;
+    return 1.0 - kCleanTilt * clampParam01(knob);
 }
-double GoldModel::clipBlendAt(double knob) {
-    return knob < 0.0 ? 0.0 : (knob > 1.0 ? 1.0 : knob);
-}
+double GoldModel::clipBlendAt(double knob) { return clampParam01(knob); }
 
 struct GoldModel::Impl {
     double sampleRate = 44100.0;
@@ -281,6 +281,25 @@ void GoldModel::prepare(double sampleRate, int maxBlockSize) {
 void GoldModel::setOversampling(int factor) {
     impl_->osFactor = factor;
     impl_->reprepareGainSection();
+}
+
+void GoldModel::reset() {
+    Impl& d = *impl_;
+    // Smoothers first: a poisoned smoother value never recovers on its own.
+    d.driveGain.reset();
+    d.cleanMix.reset();
+    d.clipMix.reset();
+    d.toneTilt.reset();
+    d.outLevel.reset();
+    d.inHpState = 0.0f;
+    d.toneLpState = 0.0f;
+    d.dcX1 = 0.0f;
+    d.dcY1 = 0.0f;
+    d.opAmp.reset();
+    d.os.reset();
+    // Re-derives the oversampled-section coefficients at the CURRENT rate/factor and
+    // resets driveHpState / the WDF cap / the source. Allocation-free.
+    d.reprepareGainSection();
 }
 int GoldModel::oversampling() const { return impl_->os.factor(); }
 int GoldModel::latencySamples() const { return impl_->os.latencySamples(); }
