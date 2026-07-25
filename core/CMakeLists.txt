@@ -303,12 +303,20 @@ if(NOT EMSCRIPTEN)
     add_test(NAME clipper_nan_guard_tests COMMAND clipper_nan_guard_tests)
 
     # --- Perf diagnosis: anti-denormal guard tests ----------------------------
-    # Proves Biquad / OnePoleSmoother never leave recursive state in the subnormal
-    # float range on a decaying tail (the amp-independent WASM crackle — see
-    # Denormal.h and docs §25). Header-only guard, so this links clipper_dsp only
-    # for the rbj:: coefficient designers.
+    # Block 1 proves Biquad / OnePoleSmoother never leave recursive state in the
+    # subnormal float range on a decaying tail (the amp-independent WASM crackle —
+    # see Denormal.h and docs §25).
+    #
+    # Block 2 covers audit finding 11 (docs §33): the recursive states the policy had
+    # been written for but never applied to — the pedals' output DC blockers, the
+    # chowdsp WDF capacitor, the three valve tone stacks, the three power sections'
+    # OT / presence / TOP CUT / feedback states, TwinPreamp's bright bleed, and
+    # Processor's hand-rolled gain smoother. Block 2 needs clipper_core as well (for
+    # clipper::Processor) and drives real chowdsp WDF networks directly, so that
+    # block's "guarded vs unguarded" comparison uses the actual library rather than a
+    # reimplementation of it.
     add_executable(clipper_denormal_tests tests/test_denormal.cpp)
-    target_link_libraries(clipper_denormal_tests PRIVATE clipper_dsp)
+    target_link_libraries(clipper_denormal_tests PRIVATE clipper_dsp clipper_core)
     clipper_add_test_flags(clipper_denormal_tests)
     add_test(NAME clipper_denormal_tests COMMAND clipper_denormal_tests)
 
@@ -342,6 +350,22 @@ if(NOT EMSCRIPTEN)
         target_compile_options(clipper_cab_swap_tests PRIVATE -Wall -Wextra -UNDEBUG)
     endif()
     add_test(NAME clipper_cab_swap_tests COMMAND clipper_cab_swap_tests)
+
+    # --- perf/halfband-no-modulo: halfband resampler tests (docs §32) ---------
+    # The doubled-ring rewrite of HalfbandFilter.h deleted an integer division per
+    # tap from the hottest loop in the project (audit perf item 2). A perf change to
+    # the resampler is only acceptable if it is BIT-IDENTICAL, so this target carries
+    # a verbatim copy of the pre-change (modulo-indexed) implementation and compares
+    # the shipped classes against it sample-for-sample — plus the stopband (worst-case
+    # image / alias rejection across the audio band, measured through the live
+    # objects) and the round-trip group delay measured from an impulse, so a wrong
+    # filter or a wrong latency cannot hide behind the identity check.
+    add_executable(clipper_halfband_tests tests/test_halfband.cpp)
+    target_link_libraries(clipper_halfband_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (Goertzel) under tools/measure.
+    target_include_directories(clipper_halfband_tests PRIVATE tools)
+    clipper_add_test_flags(clipper_halfband_tests)
+    add_test(NAME clipper_halfband_tests COMMAND clipper_halfband_tests)
 
     # --- Per-unit CPU cost benchmark (native only; docs §25) ------------------
     add_executable(clipper-bench tools/bench/main.cpp)

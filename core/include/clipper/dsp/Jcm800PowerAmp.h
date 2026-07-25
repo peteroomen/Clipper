@@ -131,6 +131,7 @@
 
 #include <vector>
 
+#include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/Oversampler.h"
 #include "clipper/dsp/TriodeStage.h"
 
@@ -256,6 +257,18 @@ public:
     double railNow() const { return vRail_; }        // live rail (sag readout)
     double screenNow() const { return vScreen_; }
     double lastOutputPeak() const { return lastOutPeak_; }  // normalized
+
+    // NO maxAbsRestingState() here, deliberately (Denormal.h, docs §33). Every state in
+    // this stage was MEASURED to idle at a nonzero value, so there is no "rests at
+    // exactly zero" property to assert: otHpS_/otLpS_/presLpS_/fbDelay_ settle at
+    // ~4.6e-14 because a push-pull pair's differential plate current does not cancel
+    // exactly, and vRail_/vScreen_/vCcUp_/vCcDown_/the grid warm starts/the LTP node
+    // state all park at their DC operating point. ~294 orders of magnitude above the
+    // subnormal boundary. Their flushes in processSampleOS are a guard-rail for the
+    // post-reset() case (parkState() does set them to exactly 0) and for uniformity with
+    // the AC30's TOP CUT states, which DO rest at zero and did measure a cliff — NOT a
+    // fix for a measured cliff here: 3084 ms of silence vs 3032 ms with hardware FTZ
+    // before the flushes. An accessor here would only buy an assertion with no teeth.
     const El34Params& el34() const { return el34_; }
     const LtpInverter& inverter() const { return ltp_; }
 
