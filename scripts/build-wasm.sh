@@ -115,6 +115,24 @@ EMCC_ARGS=(
     -O3
     -msimd128
     -std=c++17
+    # Make the artifact PATH-INDEPENDENT so two people (or two worktrees) building
+    # the same source produce the same bytes.
+    #
+    # The link is -O3 with NO -DNDEBUG, so assert() is live in the shipped engine
+    # and every one of them bakes its __FILE__ into the WASM. Those are ABSOLUTE
+    # paths, so the committed artifact recorded whichever directory the builder
+    # happened to be in: main's artifact currently embeds four strings pointing at
+    # `/home/user/Clipper/.claude/worktrees/agent-ab1bbfef070dfac5b/...`, an
+    # ephemeral agent worktree, because that is where it was last rebuilt. Same
+    # source, same emcc, 64 differing bytes — which is why the "reproduces
+    # byte-for-byte" claim only ever held from an identically-named directory.
+    #
+    # -ffile-prefix-map rewrites those to repo-relative, which makes a future
+    # rebuild-and-compare CI check possible. It does NOT remove the asserts: that
+    # is -DNDEBUG, a change to what the audio engine does at runtime, and it wants
+    # a deliberate decision rather than a drive-by (docs §30).
+    -ffile-prefix-map="$REPO_ROOT/="
+    -ffile-prefix-map="$CORE_DIR/=core/"
     -s MODULARIZE=1
     -s EXPORT_ES6=1
     -s SINGLE_FILE=1
