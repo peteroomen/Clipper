@@ -5,6 +5,7 @@
 
 #include "clipper/dsp/Jcm800Preamp.h"
 
+#include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/ParamGuard.h"
 
 #include <algorithm>
@@ -131,12 +132,18 @@ void MarshallToneStack::process(const float* in, float* out, int numFrames) {
         const double vTn = v[IN] - v[N2];
         const double vBn = v[N3] - v[N4];
         const double vMn = v[N4];  // N4 - GND
-        iT_ = geqT_ * vTn - IeqT;
-        iB_ = geqB_ * vBn - IeqB;
-        iM_ = geqM_ * vMn - IeqM;
-        vT_ = vTn;
-        vB_ = vBn;
-        vM_ = vMn;
+        // Anti-denormal (Denormal.h). All six trapezoidal cap companions REST AT ZERO,
+        // so a silent tail rings them down into DOUBLE subnormals (< 2.2e-308) and
+        // they stick: measured 68.2x slower on silence than with hardware FTZ before
+        // these flushes — the largest denormal cliff of any component in the core.
+        // Invisible in the audio (out[] is a float cast of a double node voltage, and
+        // float(1e-310) is 0.0f), which is why it survived. Audit finding 11, §33.
+        iT_ = flushDenormal(geqT_ * vTn - IeqT);
+        iB_ = flushDenormal(geqB_ * vBn - IeqB);
+        iM_ = flushDenormal(geqM_ * vMn - IeqM);
+        vT_ = flushDenormal(vTn);
+        vB_ = flushDenormal(vBn);
+        vM_ = flushDenormal(vMn);
         out[n] = static_cast<float>(v[OUT]);
     }
 }

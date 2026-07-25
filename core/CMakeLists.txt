@@ -303,12 +303,20 @@ if(NOT EMSCRIPTEN)
     add_test(NAME clipper_nan_guard_tests COMMAND clipper_nan_guard_tests)
 
     # --- Perf diagnosis: anti-denormal guard tests ----------------------------
-    # Proves Biquad / OnePoleSmoother never leave recursive state in the subnormal
-    # float range on a decaying tail (the amp-independent WASM crackle — see
-    # Denormal.h and docs §25). Header-only guard, so this links clipper_dsp only
-    # for the rbj:: coefficient designers.
+    # Block 1 proves Biquad / OnePoleSmoother never leave recursive state in the
+    # subnormal float range on a decaying tail (the amp-independent WASM crackle —
+    # see Denormal.h and docs §25).
+    #
+    # Block 2 covers audit finding 11 (docs §33): the recursive states the policy had
+    # been written for but never applied to — the pedals' output DC blockers, the
+    # chowdsp WDF capacitor, the three valve tone stacks, the three power sections'
+    # OT / presence / TOP CUT / feedback states, TwinPreamp's bright bleed, and
+    # Processor's hand-rolled gain smoother. Block 2 needs clipper_core as well (for
+    # clipper::Processor) and drives real chowdsp WDF networks directly, so that
+    # block's "guarded vs unguarded" comparison uses the actual library rather than a
+    # reimplementation of it.
     add_executable(clipper_denormal_tests tests/test_denormal.cpp)
-    target_link_libraries(clipper_denormal_tests PRIVATE clipper_dsp)
+    target_link_libraries(clipper_denormal_tests PRIVATE clipper_dsp clipper_core)
     clipper_add_test_flags(clipper_denormal_tests)
     add_test(NAME clipper_denormal_tests COMMAND clipper_denormal_tests)
 

@@ -8,6 +8,7 @@
 
 #include "clipper/dsp/Ac30PowerAmp.h"
 
+#include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/ParamGuard.h"
 #include "clipper/dsp/TubeSolverMode.h"
 
@@ -248,11 +249,18 @@ inline float Ac30PowerAmp::processSampleOS(float xf) {
     // 2. TOP CUT: one-pole low-pass on each anti-phase leg (a cap across the PI
     //    outputs). Higher knob -> lower corner -> more treble removed (inverted sense).
     {
+        // Anti-denormal (Denormal.h), but a GUARD-RAIL rather than a fix: these two were
+        // MEASURED to rest at 2.84e-14 (one ULP of the LTP plate voltage — the Newton
+        // fixed point does not land exactly on quiescentPlate1()), so they never reach
+        // the subnormal range and this flush never fires. Bisected: removing it leaves
+        // the stage at 0.99x, removing the OT flushes below takes it to 1.33x. Kept for
+        // uniformity with the OT pair and because that ULP residual is an artifact of
+        // solver tolerance, not a design invariant. Audit finding 11, docs §33.
         const double lp1 = topCutS1_ + topCutA_ * (va1AC - topCutS1_);
-        topCutS1_ = 2.0 * lp1 - topCutS1_;
+        topCutS1_ = flushDenormal(2.0 * lp1 - topCutS1_);
         va1AC = lp1;
         const double lp2 = topCutS2_ + topCutA_ * (va2AC - topCutS2_);
-        topCutS2_ = 2.0 * lp2 - topCutS2_;
+        topCutS2_ = flushDenormal(2.0 * lp2 - topCutS2_);
         va2AC = lp2;
     }
 
@@ -277,11 +285,26 @@ inline float Ac30PowerAmp::processSampleOS(float xf) {
     const double vPriDiff = (ipUp - ipDown) * kRppReflected;
     double vSec = vPriDiff / otTurnsRatio();
     {
+        // Anti-denormal (Denormal.h) — THIS is audit finding 11's bite on the AC30, and
+        // the bisection is worth recording because it is not where you would guess.
+        // Unlike the JCM800's and the Twin's, this amp's secondary settles at EXACTLY
+        // zero on silence (out[0] == 0.0 after 8 s; the other two idle at ~1e-28 because
+        // their global NFB loops keep a residual alive, and the AC30 has no NFB loop at
+        // all). So these two TPT states have nothing holding them up: they ring down
+        // into the double subnormal range and stick. Measured on the isolated stage:
+        //   both flushes off  -> 866 ms of silence vs 641 ms with hardware FTZ (1.35x),
+        //                        1588 subnormal output samples
+        //   only TOP CUT on   -> 834 ms vs 629 ms (1.33x), 1588 still  (so TOP CUT is
+        //                        NOT the culprit, despite resting nearer zero)
+        //   both on           -> 638 ms vs 644 ms (0.99x), 2 subnormal samples
+        // End to end the AC30 went 1995 -> 1590 ms of silence, meeting its FTZ floor.
+        // The residual 2 samples are a float-cast transient during the ring-down, not
+        // parked state: the cliff is gone. Docs §33.
         const double vLp = otLpS_ + otLpA_ * (vSec - otLpS_);
-        otLpS_ = 2.0 * vLp - otLpS_;
+        otLpS_ = flushDenormal(2.0 * vLp - otLpS_);
         vSec = vLp;
         const double vLp2 = otHpS_ + otHpA_ * (vSec - otHpS_);
-        otHpS_ = 2.0 * vLp2 - otHpS_;
+        otHpS_ = flushDenormal(2.0 * vLp2 - otHpS_);
         vSec = vSec - vLp2;
     }
 
@@ -313,6 +336,16 @@ inline float Ac30PowerAmp::processSampleOS(float xf) {
     const double iDemand = iIdleTotal_ +
         static_cast<double>(kTubesPerSide) * std::fabs(ipUp - ipDown);
     const double aEnv = (iDemand > iSagEnv_) ? gSagAtk_ : gSagRel_;
+    // NO anti-denormal guard here, deliberately (Denormal.h / audit finding 11). This
+    // is a recursive accumulator, but its REST VALUE IS NOT ZERO: with no signal
+    // iDemand == iIdleTotal_, a class-A idle draw of tens of milliamps, so iSagEnv_
+    // relaxes onto iIdleTotal_ and can never approach the subnormal range. Same for
+    // vRail_, vScreen_ and vk_ below (a B+ rail, a screen node and a cathode node, all
+    // parked at hundreds of volts / milliamps by the DC operating point) and for the
+    // PI→EL84 coupling states vCcUp_/vCcDown_ and the Newton warm starts
+    // vgUp_/vgDown_. A flush at 1e-30 on a 300 V node is unreachable code, and the
+    // measured 1.29x silent-tail cliff on this stage came entirely from the TOP CUT and
+    // OT states above, which do rest at zero. Measured, not assumed — see docs §33.
     iSagEnv_ += aEnv * (iDemand - iSagEnv_);
     const double sagComp = 1.0 / (1.0 + kSagCompGain * (iSagEnv_ - iIdleTotal_));
     vSec *= sagComp;

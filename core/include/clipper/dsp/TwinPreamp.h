@@ -39,6 +39,7 @@
 #include <array>
 #include <vector>
 
+#include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/TriodeStage.h"
 
 namespace clipper::dsp {
@@ -80,6 +81,14 @@ public:
     void process(const float* in, float* out, int numFrames);
 
     double sourceImpedance() const { return rs_; }
+
+    // Anti-denormal diagnostic (Denormal.h, docs §33) — not used by the audio path.
+    // All six cap companions rest at zero, so after a silent tail this must be
+    // EXACTLY 0.0; a tiny nonzero residual means a state is asymptoting through the
+    // double subnormal range. Measured 18.6x slower than hardware FTZ before the flush.
+    double maxAbsRestingState() const {
+        return maxAbsState(vT_, iT_, vB_, iB_, vM_, iM_);
+    }
 
 private:
     void rebuild();  // recompute the 5x5 conductance matrix + its inverse
@@ -146,6 +155,26 @@ public:
     FenderToneStack& toneStack() { return tone_; }
 
     double lastOutputPeak() const { return lastOutPeak_; }
+
+    // NO maxAbsRestingState() on the COMPOSED preamp, deliberately (Denormal.h, docs
+    // §33) — and the reason is the most interesting measurement in this slice.
+    //
+    // The Fender stack's six cap companions DO rest at exactly zero, and standalone they
+    // measured the second-worst denormal cliff in the core (18.6x on a silent tail vs
+    // hardware FTZ). But WIRED UP HERE they never get there: V1 is a nonlinear tube stage
+    // whose own coupling-cap state parks at a nonzero grid-current bias point, so it
+    // feeds the stack a small but NORMAL residual forever instead of true digital
+    // silence. Measured inside this preamp, the stack + bright state idle at 5.7e-11 —
+    // 297 orders of magnitude clear of the subnormal boundary — and the composed preamp
+    // measures 0.99x, i.e. no cliff at all.
+    //
+    // So the bug is real, the fix is real, and TODAY it is masked in-product by an
+    // upstream DC residual. That masking is incidental: it depends on a tube stage's idle
+    // offset, and it disappears the moment the stack is driven by anything that emits
+    // exact zeros (a bypassed stage, a muted chain, a reset()). Assert the property where
+    // it holds unconditionally — on FenderToneStack itself, which
+    // clipper_denormal_tests does — and do not pretend the composite has it.
+    // Same for brightS_: it rests on the same residual.
 
     // Documented interstage constant: V1 plate AC → tone-stack input trim. The
     // coupling to the pre-gain Fender stack is ~unity (grid-leak coupling); this

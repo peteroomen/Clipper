@@ -5,6 +5,7 @@
 
 #include "clipper/dsp/Ac30Preamp.h"
 
+#include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/ParamGuard.h"
 
 #include <algorithm>
@@ -120,12 +121,21 @@ void TopBoostToneStack::process(const float* in, float* out, int numFrames) {
         const double vCn = v[SRC] - v[IN];
         const double vTn = v[IN] - v[N2];
         const double vBn = v[N4];
-        iC_ = geqC_ * vCn - IeqC;
-        iT_ = geqT_ * vTn - IeqT;
-        iB_ = geqB_ * vBn - IeqB;
-        vC_ = vCn;
-        vT_ = vTn;
-        vB_ = vBn;
+        // Anti-denormal (Denormal.h). Six trapezoidal cap companions, all resting at
+        // zero — including the vC_/iC_ pair for the 0.022 uF input coupling cap, which
+        // the audit's list of unguarded states missed because the other two stacks have
+        // no series input cap to have a companion for. This stack happens to measure a
+        // clean 1.00x at knobs-at-noon (its poles decay fast enough to underflow
+        // straight to zero rather than dwelling in the subnormal band, unlike the
+        // Fender's 18.6x and the Marshall's 68.2x), but the pole positions MOVE WITH
+        // THE KNOBS, so "it does not bite at noon" is not a reason to leave the class
+        // of bug in. Audit finding 11, docs §33.
+        iC_ = flushDenormal(geqC_ * vCn - IeqC);
+        iT_ = flushDenormal(geqT_ * vTn - IeqT);
+        iB_ = flushDenormal(geqB_ * vBn - IeqB);
+        vC_ = flushDenormal(vCn);
+        vT_ = flushDenormal(vTn);
+        vB_ = flushDenormal(vBn);
         out[n] = static_cast<float>(v[OUT]);
     }
 }
