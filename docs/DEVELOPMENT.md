@@ -758,17 +758,77 @@ Uniform-partitioned **overlap-save** convolution, "one partition behind":
   256** (hand-rolled radix-2, `FFT.h`).
 - The IR is split into `K = ceil(irLen/P)` partitions, each forward-transformed
   once at `prepare()`. Per block: FFT the `[prev P, current P]` window, push into
-  a frequency-domain delay line, `Y = Σ FDL[k+1]·H_k` (the `+1` defers the newest
-  block one cycle), inverse-FFT, take the last P samples.
-- **Latency = exactly one partition = 128 samples.** The `+1` offset realizes it;
-  an impulse comes out as the IR delayed by 128 samples (`latencySamples()`
-  matches the measured impulse delay; the impulse reproduces the IR to ~3e-17 —
-  the FFT partitioning is exact). If the IR sample rate ≠ engine rate it is
-  linearly resampled at load (fine for the smooth synthetic IR; a documented
-  compromise for future real IRs).
-- `process()` allocates nothing (all FFT scratch, the FDL, and the IR spectra are
-  sized in `prepare()`). The amp+cab chain processes 1 s of audio in ~6 ms (44.1
-  k) / ~12 ms (96 k) — far under real time.
+  a frequency-domain delay line, `Z = Σ FDL[head−k]·H_k`, inverse-FFT, take the
+  last P samples — the un-delayed linear convolution of the positions that block
+  covers.
+- **Latency = exactly one partition = 128 samples.** An impulse comes out as the
+  IR delayed by 128 samples (`latencySamples()` matches the measured impulse
+  delay; the impulse reproduces the IR to ~5e-18 — the FFT partitioning is
+  exact). If the IR sample rate ≠ engine rate it is linearly resampled at load
+  (fine for the smooth synthetic IR; a documented compromise for future real
+  IRs).
+- **The latency lives in the output FIFO's seed zeros, not in the FDL indexing.**
+  See "Block-size independence" below. Historically the deferral was an FDL
+  offset (`FDL[head−1−k]`, i.e. the newest block was not consumed until the next
+  cycle); the sum is now un-deferred and the output FIFO is seeded with P zeros
+  instead. Same complex products in the same order, so the emitted stream is
+  bit-identical — this is a refactor of *where* the delay is stored, not a change
+  to the delay.
+- `process()` allocates nothing (all FFT scratch, the FDL, the FIFOs, and the IR
+  spectra are sized in `prepare()`). The amp+cab chain processes 1 s of audio in
+  ~6 ms (44.1 k) / ~12 ms (96 k) — far under real time.
+
+### Block-size independence (2026-07-25, audit finding 3)
+
+`process()` accepts **any** `numFrames` — smaller than, larger than or coprime
+with the partition, a different value every call, or `<= 0` (a no-op) — and emits
+the **same stream** in every case, bit-identically. Input accumulates in a
+one-partition FIFO; `processBlock()` runs only on a genuinely full partition;
+output drains from a `2P` ring that `reset()` seeds with P zeros.
+
+Why the FIFO costs no extra latency: an un-deferred `Σ FDL[head−k]·H_k` consumes
+input block *m* as soon as it lands, and produces exactly what the output stream
+needs one partition later. The 128 samples of latency are therefore a whole
+partition of *slack*, and the FIFO spends it. No underflow is possible — after
+*K* input samples the convolver has produced `P + floor(K/P)·P` and emitted `K`,
+so `available = P − (K mod P) ≥ 1`. Segmenting each call at `P − inFill` keeps the
+ring bounded at `2P` and runs at most one block per segment, so nothing allocates.
+
+**The bug this replaced (shipping-blocker).** A block shorter than a partition was
+zero-padded to a whole partition and run anyway: the FDL and `overlap_` advanced a
+FULL partition for a partial partition of real input, and `P − n` computed output
+samples were discarded. The stream was permanently misaligned from that point and
+every later call inherited it. This was live in the plugin —
+`native/src/PluginProcessor.cpp` passes `buffer.getNumSamples()` straight through
+and `ClipperEngine` only chunks when `numFrames > maxBlock_` — so any DAW on 64-,
+96-, 100-, 441- or variable-size buffers got a broken cab. Measured
+`max |128-aligned reference − chunked|` on the default 2×12 IR, before → after:
+
+| block | impulse (44.1 k) | pluck (44.1 k) | impulse (48 k) | pluck (48 k) | after (all) |
+| ----- | ---------------- | -------------- | -------------- | ------------ | ----------- |
+| 1     | 0.1521           | 0.3253         | 0.1423         | 0.3256       | 0.0         |
+| 64    | 0.1535           | 0.4826         | 0.1442         | 0.5331       | 0.0         |
+| 96    | 0.1609           | 0.4241         | 0.1519         | 0.4151       | 0.0         |
+| 100   | 0.1636           | 0.4140         | 0.1533         | 0.4365       | 0.0         |
+| 128   | 0.0              | 0.0            | 0.0            | 0.0          | 0.0         |
+| 441   | 0.0              | 0.5517         | 0.0            | 0.4206       | 0.0         |
+| vary  | 0.1556           | 0.6048         | 0.1464         | 0.5013       | 0.0         |
+
+Reference peaks are 0.1521 (impulse) and 0.3260 (pluck) at 44.1 k — i.e. before
+the fix **the error exceeded the signal**. Note 128 was already exact, which is
+why the goldens and `identical_core_test` never saw this.
+
+The same slice removed the `float tmpIn[4096]/tmpOut[4096]` locals from that
+padding path — 32 KB of stack indexed by the *caller-supplied* `partition_`, so
+`partitionSize > 4096` was a stack overflow.
+
+`testConvolverChunking` in `core/tests/test_amp_model.cpp` pins the property. It
+used to compare a whole-buffer call against an explicit 128-block loop — two
+identical internal paths, so it passed trivially and never tested a non-aligned
+segmentation. It now renders an impulse and a decaying pluck at block sizes
+1/64/96/100/128/441/4096 plus a randomly-varying size, in place and out of place,
+with zero- and negative-length calls interleaved, and asserts every one is
+**exactly** equal to the 128-aligned reference.
 
 ### Total chain latency (reported in the UI)
 
@@ -2778,6 +2838,13 @@ captured the *output*, not the input — corrupting the next block's window. On 
 smooth default IR the error looked harmless; on a peaky IR (a user cab, or the
 test comb) it **filled notches**. Fixed by saving the overlap from `in` *before*
 writing `out`; a dedicated **in-place comb null test** (−152 dB) now guards it.
+
+> **2026-07-25 follow-up.** `processBlock` is no longer reachable with caller
+> buffers at all: `process()` now copies into a convolver-owned input FIFO and
+> `processBlock` writes to a convolver-owned block buffer, so the in-place hazard
+> is handled once, in `process()`. The overlap-before-output ordering is kept
+> anyway. See **Block-size independence** under "Convolver design" — the same
+> slice fixed a much worse sibling of this bug (non-128-multiple block sizes).
 
 ### 15.5 Cab selection + user IR upload — the pipeline
 
