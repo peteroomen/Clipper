@@ -17,6 +17,7 @@
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/OutputLimiter.h"
+#include "clipper/dsp/Oversampler.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/ReverbModel.h"
@@ -142,6 +143,32 @@ int main(int argc, char** argv) {
         m.prepare(kSr);
         benchUnit("ninety (phaser)", riff,
                   [&](const float* i, float* o, int n) { m.process(i, o, n); });
+    }
+
+    // --- Resampling in isolation (docs §32) ----------------------------------
+    // Every oversampled unit above pays this cost, and in the valve amps it is
+    // paid once PER TRIODE STAGE, so the halfband inner loop is the hottest loop
+    // in the project. Benching it alone keeps a resampler change from being
+    // diluted (or hidden) by whatever nonlinearity sits inside the domain: the
+    // in-domain work here is one multiply per oversampled sample, so ~all of the
+    // time is up/down filtering. 4x is the shipped default for every nonlinear
+    // stage; 8x is the worst case the scratch is sized for.
+    for (const int factor : {2, 4, 8}) {
+        char name[32];
+        std::snprintf(name, sizeof(name), "os%dx (up+down only)", factor);
+        char sel[8];
+        std::snprintf(sel, sizeof(sel), "os%d", factor);
+        if (!want(sel)) continue;
+        clipper::dsp::Oversampler os;
+        os.prepare(kBlock);
+        os.setFactor(factor);
+        benchUnit(name, riff, [&](const float* i, float* o, int n) {
+            os.upsample(i, n);
+            float* w = os.buffer();
+            const int m = os.bufferLength();
+            for (int k = 0; k < m; ++k) w[k] *= 0.9f;
+            os.downsample(o, n);
+        });
     }
 
     // --- Amps ----------------------------------------------------------------
