@@ -7,7 +7,13 @@
 //                        toward mids/highs). Linear filter + gain; no WDF.
 //   2. Clipper stage   — antiparallel silicon diode pair to ground, built with
 //                        chowdsp_wdf (voltage source + series R || shunt C ->
-//                        diode-pair root). Hard clip at ~+/-0.6 V.
+//                        diode-pair root). 1N4148 SPICE device (Is = 2.52 nA,
+//                        ideality n = 1.752): a soft silicon knee whose MEASURED
+//                        settled ceiling runs +/-0.55 V at 1 V of drive to
+//                        +/-0.74 V at 100 V. Until 2026-07-25 the ideality factor
+//                        was 1.0 and the real ceiling was 0.32-0.43 V, 5-6 dB
+//                        below what this comment claimed (audit finding 15; docs
+//                        §36, ADR 008).
 //   3. Tone / output   — one-pole passive low-pass whose cutoff the FILTER knob
 //                        sweeps (clockwise = darker), then LEVEL as clean gain.
 //
