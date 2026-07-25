@@ -19,6 +19,12 @@ function findChromium(): string | undefined {
 
 const executablePath = findChromium();
 
+// Preview-server port. Overridable because parallel git worktrees (agents) each
+// run this suite and all want 4173; `strictPort` + `reuseExistingServer: false`
+// (below) turn a collision into a hard error, which is correct but leaves no way
+// to run two suites at once. `PW_PORT=4174 npx playwright test` is that way.
+const PORT = Number(process.env.PW_PORT || 4173);
+
 // Serve the production build (which includes public/generated/*) and run the
 // offline-audio test against it. Headless Chromium only.
 export default defineConfig({
@@ -34,7 +40,7 @@ export default defineConfig({
   retries: 2,
   reporter: [['list']],
   use: {
-    baseURL: 'http://localhost:4173',
+    baseURL: `http://localhost:${PORT}`,
   },
   projects: [
     {
@@ -57,8 +63,8 @@ export default defineConfig({
   ],
   webServer: {
     // Build already ran via `npm test`? No — run it here so `npm test` alone works.
-    command: 'npm run build && npm run preview -- --port 4173 --strictPort',
-    url: 'http://localhost:4173',
+    command: `npm run build && npm run preview -- --port ${PORT} --strictPort`,
+    url: `http://localhost:${PORT}`,
     // NEVER reuse: with parallel git worktrees (agents) all binding 4173, reuse
     // silently adopts a FOREIGN server and tests someone else's build (observed:
     // main-tree run tested a worktree's dist -> phantom serializer failures).
