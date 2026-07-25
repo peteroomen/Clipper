@@ -758,17 +758,77 @@ Uniform-partitioned **overlap-save** convolution, "one partition behind":
   256** (hand-rolled radix-2, `FFT.h`).
 - The IR is split into `K = ceil(irLen/P)` partitions, each forward-transformed
   once at `prepare()`. Per block: FFT the `[prev P, current P]` window, push into
-  a frequency-domain delay line, `Y = Σ FDL[k+1]·H_k` (the `+1` defers the newest
-  block one cycle), inverse-FFT, take the last P samples.
-- **Latency = exactly one partition = 128 samples.** The `+1` offset realizes it;
-  an impulse comes out as the IR delayed by 128 samples (`latencySamples()`
-  matches the measured impulse delay; the impulse reproduces the IR to ~3e-17 —
-  the FFT partitioning is exact). If the IR sample rate ≠ engine rate it is
-  linearly resampled at load (fine for the smooth synthetic IR; a documented
-  compromise for future real IRs).
-- `process()` allocates nothing (all FFT scratch, the FDL, and the IR spectra are
-  sized in `prepare()`). The amp+cab chain processes 1 s of audio in ~6 ms (44.1
-  k) / ~12 ms (96 k) — far under real time.
+  a frequency-domain delay line, `Z = Σ FDL[head−k]·H_k`, inverse-FFT, take the
+  last P samples — the un-delayed linear convolution of the positions that block
+  covers.
+- **Latency = exactly one partition = 128 samples.** An impulse comes out as the
+  IR delayed by 128 samples (`latencySamples()` matches the measured impulse
+  delay; the impulse reproduces the IR to ~5e-18 — the FFT partitioning is
+  exact). If the IR sample rate ≠ engine rate it is linearly resampled at load
+  (fine for the smooth synthetic IR; a documented compromise for future real
+  IRs).
+- **The latency lives in the output FIFO's seed zeros, not in the FDL indexing.**
+  See "Block-size independence" below. Historically the deferral was an FDL
+  offset (`FDL[head−1−k]`, i.e. the newest block was not consumed until the next
+  cycle); the sum is now un-deferred and the output FIFO is seeded with P zeros
+  instead. Same complex products in the same order, so the emitted stream is
+  bit-identical — this is a refactor of *where* the delay is stored, not a change
+  to the delay.
+- `process()` allocates nothing (all FFT scratch, the FDL, the FIFOs, and the IR
+  spectra are sized in `prepare()`). The amp+cab chain processes 1 s of audio in
+  ~6 ms (44.1 k) / ~12 ms (96 k) — far under real time.
+
+### Block-size independence (2026-07-25, audit finding 3)
+
+`process()` accepts **any** `numFrames` — smaller than, larger than or coprime
+with the partition, a different value every call, or `<= 0` (a no-op) — and emits
+the **same stream** in every case, bit-identically. Input accumulates in a
+one-partition FIFO; `processBlock()` runs only on a genuinely full partition;
+output drains from a `2P` ring that `reset()` seeds with P zeros.
+
+Why the FIFO costs no extra latency: an un-deferred `Σ FDL[head−k]·H_k` consumes
+input block *m* as soon as it lands, and produces exactly what the output stream
+needs one partition later. The 128 samples of latency are therefore a whole
+partition of *slack*, and the FIFO spends it. No underflow is possible — after
+*K* input samples the convolver has produced `P + floor(K/P)·P` and emitted `K`,
+so `available = P − (K mod P) ≥ 1`. Segmenting each call at `P − inFill` keeps the
+ring bounded at `2P` and runs at most one block per segment, so nothing allocates.
+
+**The bug this replaced (shipping-blocker).** A block shorter than a partition was
+zero-padded to a whole partition and run anyway: the FDL and `overlap_` advanced a
+FULL partition for a partial partition of real input, and `P − n` computed output
+samples were discarded. The stream was permanently misaligned from that point and
+every later call inherited it. This was live in the plugin —
+`native/src/PluginProcessor.cpp` passes `buffer.getNumSamples()` straight through
+and `ClipperEngine` only chunks when `numFrames > maxBlock_` — so any DAW on 64-,
+96-, 100-, 441- or variable-size buffers got a broken cab. Measured
+`max |128-aligned reference − chunked|` on the default 2×12 IR, before → after:
+
+| block | impulse (44.1 k) | pluck (44.1 k) | impulse (48 k) | pluck (48 k) | after (all) |
+| ----- | ---------------- | -------------- | -------------- | ------------ | ----------- |
+| 1     | 0.1521           | 0.3253         | 0.1423         | 0.3256       | 0.0         |
+| 64    | 0.1535           | 0.4826         | 0.1442         | 0.5331       | 0.0         |
+| 96    | 0.1609           | 0.4241         | 0.1519         | 0.4151       | 0.0         |
+| 100   | 0.1636           | 0.4140         | 0.1533         | 0.4365       | 0.0         |
+| 128   | 0.0              | 0.0            | 0.0            | 0.0          | 0.0         |
+| 441   | 0.0              | 0.5517         | 0.0            | 0.4206       | 0.0         |
+| vary  | 0.1556           | 0.6048         | 0.1464         | 0.5013       | 0.0         |
+
+Reference peaks are 0.1521 (impulse) and 0.3260 (pluck) at 44.1 k — i.e. before
+the fix **the error exceeded the signal**. Note 128 was already exact, which is
+why the goldens and `identical_core_test` never saw this.
+
+The same slice removed the `float tmpIn[4096]/tmpOut[4096]` locals from that
+padding path — 32 KB of stack indexed by the *caller-supplied* `partition_`, so
+`partitionSize > 4096` was a stack overflow.
+
+`testConvolverChunking` in `core/tests/test_amp_model.cpp` pins the property. It
+used to compare a whole-buffer call against an explicit 128-block loop — two
+identical internal paths, so it passed trivially and never tested a non-aligned
+segmentation. It now renders an impulse and a decaying pluck at block sizes
+1/64/96/100/128/441/4096 plus a randomly-varying size, in place and out of place,
+with zero- and negative-length calls interleaved, and asserts every one is
+**exactly** equal to the 128-aligned reference.
 
 ### Total chain latency (reported in the UI)
 
@@ -979,6 +1039,30 @@ Model / env config (all read by `server/index.mjs`):
   the client bundle (the browser only ever talks to same-origin `/api`).
 - The tool surface is small and typed; the assistant never sends freeform
   parameter values — only the three tools above, all clamped/validated.
+- **The proxy binds loopback only (`127.0.0.1`).** This process is an
+  **unauthenticated** relay to your Anthropic key: anything that can reach the
+  port can spend it. Until 2026-07-25 it called `server.listen(PORT, cb)` with no
+  host, which binds `0.0.0.0`/`::` — the 2026-07-24 audit (finding 17) verified
+  both `/api/health` and `/api/chat` answering from a non-loopback address, while
+  the startup banner claimed `http://localhost:8787`. Now:
+  - `HOST` (default `127.0.0.1`) selects the bind address. `HOST=0.0.0.0` opts
+    into LAN exposure deliberately and the banner prints a warning saying what
+    that means. A `HOST` that cannot be resolved **fails the bind loudly** with a
+    non-zero exit — it never falls back to every interface.
+  - The banner reports the address **actually bound**, read back from
+    `server.address()`, never a hardcoded `localhost`.
+  - `PORT=0` now means "ephemeral port" instead of silently becoming 8787
+    (`Number('0') || 8787` was truthy-testing a valid port).
+  - There is still **no auth and no rate limit** — that is a separate slice, and
+    it is why `HOST=0.0.0.0` is only ever safe on a network you fully trust.
+- **A body over the 5 MB limit destroys the request.** `readJsonBody` used to
+  throw and let the handler reply 400 while the client kept uploading into a
+  socket nobody drained, holding the connection and its buffers open for as long
+  as the sender liked. It now calls `req.destroy()` at the throw site.
+- `server/index.mjs` exports `resolveHost` / `resolvePort` / `createProxyServer` /
+  `startProxy` / `startupBanner` and only self-`listen`s when it is the process
+  entry point, so `server/index.test.mjs` can bind it on an ephemeral port without
+  a stray listener appearing. `npm run server` is unchanged.
 
 ### Vercel-deploy note (handler is liftable)
 
@@ -2437,15 +2521,21 @@ build — no second engine to reason about.
   the window loads `http://localhost:<port>/` and the app's relative `/api/*`
   fetches "just work". Behaviorally identical to `npm run server` fronted by a
   static host — no `file://` hacks. (`server/index.mjs` isn't imported because it
-  self-`listen`s on a fixed port and serves no statics; the ~40 lines of http
-  glue that `serve.mjs` and it share are the only duplication.)
+  serves no statics and takes its config from `process.env` rather than by
+  injection; the ~40 lines of http glue that `serve.mjs` and it share are the only
+  duplication. It no longer self-`listen`s on import — that is gated on being the
+  process entry point — but the static serving is still the reason for the split.)
 - **API key resolution** (`electron/config.mjs`), first hit wins: (1)
   `ANTHROPIC_API_KEY` env, (2) `config.json` in the app's `userData` dir, (3)
   neither → a minimal in-app prompt to paste a key, saved to that `config.json`.
   **`MOCK=1` runs keyless** (canned `[mock]` responses, no key, no spend).
 - **Key storage — v1 tradeoff:** the key is saved as **plain text** in
   `~/Library/Application Support/Clipper/config.json` (mode `0600`), **not** the
-  macOS Keychain. Documented here as a known v1 limitation.
+  macOS Keychain. Documented here as a known v1 limitation. The `0600` is applied
+  with an explicit `chmodSync` **after** the write, because `writeFileSync(…,
+  { mode })` only honours the mode when it *creates* the file — an already
+  existing `0644` config would otherwise have the key rewritten into it
+  world-readable (2026-07-24 audit).
 - **Mic permission:** on startup the app calls
   `systemPreferences.askForMediaAccess('microphone')`; the built app declares
   `NSMicrophoneUsageDescription` (guitar input) in its Info.plist.
@@ -2453,6 +2543,62 @@ build — no second engine to reason about.
   to the repo; when packaged, electron-builder copies them into the `.app`'s
   `Resources/` (`web-dist/` and `server/`) and `main.mjs` resolves them via
   `process.resourcesPath`.
+
+### Shell hardening (CSP, navigation, permissions)
+
+The main window renders **model-influenced text**, so it is treated as a hostile
+rendering surface. `key-prompt.html` already carried a CSP; the main window did
+not, and Electron's navigation defaults are permissive (2026-07-24 audit,
+Security & app layer). What is in place now:
+
+- **CSP as a response header on `.html` only** (`electron/serve.mjs`, exported as
+  `CSP` so the test asserts the string actually served). A header rather than a
+  `<meta>` in `web/index.html`, because a meta tag would also apply under `vite
+  dev` where it fights HMR; the CSP for a browser-hosted deploy belongs to
+  whatever host serves it. The policy:
+
+  ```
+  default-src 'self'; script-src 'self' 'wasm-unsafe-eval';
+  style-src 'self' 'unsafe-inline'; connect-src 'self';
+  img-src 'self' data:; font-src 'self' data:;
+  object-src 'none'; base-uri 'none'; frame-ancestors 'none'
+  ```
+
+  Two relaxations beyond the audit's suggested policy, both **measured** against
+  the real `vite build` output in Chromium rather than assumed:
+
+  | Directive | Why it is required | What happens without it (measured) |
+  | --- | --- | --- |
+  | `script-src 'wasm-unsafe-eval'` | the engine is `WebAssembly.instantiate()` over a binary embedded in `web/public/generated/clipper.js` (Emscripten SINGLE_FILE) | `CompileError: … Refused to compile or instantiate WebAssembly module because 'unsafe-eval' is not an allowed source of script` — **every sound the app makes is dead** |
+  | `font-src data:` | the single `@font-face` in `web/src/styles/tokens.css` ships its woff2 as a base64 `data:` URI | `Refused to load the font 'data:font/woff2;base64,…'`, app renders in a fallback face |
+
+  Note what is *not* relaxed: `script-src` has no `'unsafe-inline'`, no
+  `'unsafe-eval'`, and no remote origin, so assistant-authored `<script>` cannot
+  run. `style-src 'unsafe-inline'` is required for React `style={{…}}` props;
+  `img-src data:` for the inline data-URI favicon.
+- **`will-navigate`** denies any navigation whose origin is not the served origin.
+  SPA history routing fires `did-navigate-in-page`, not `will-navigate`, so this
+  costs the app nothing.
+- **`setWindowOpenHandler` returns `{action:'deny'}`.** The Electron default is
+  *allow*, so `window.open` was spawning real `BrowserWindow`s with no policy of
+  their own. `https:`/`http:`/`mailto:` targets are handed to
+  `shell.openExternal` instead; everything else is dropped and logged.
+  `will-attach-webview` is refused outright (no `<webview>` exists in this app).
+- **`setPermissionRequestHandler` + `setPermissionCheckHandler`** grant exactly
+  one permission — `media`, and only to the served origin. Without a handler, any
+  origin the window ended up on inherited the microphone grant the user gave for
+  guitar input. `media` is the only permission anything in `web/src` asks for
+  (`audio.ts` → `getUserMedia`); nothing uses clipboard, notifications,
+  geolocation or fullscreen.
+- **`sandbox: true`** is pinned explicitly on the main window alongside the
+  already-correct `contextIsolation: true` / `nodeIntegration: false`. It is the
+  Electron 20+ default; pinning it stops the default drifting silently.
+- **Static path containment** (`isContainedIn`) compares against `distDir +
+  path.sep` instead of a bare `startsWith(distDir)`, which accepted any sibling
+  directory sharing the prefix (`/app/dist-evil` "inside" `/app/dist`). Not
+  reachable over HTTP — `path.posix.normalize` absorbs every `..` before the join
+  — but the predicate was wrong regardless, so the test pins the predicate rather
+  than dressing it up as an exploit that does not exist.
 
 ### Dev loop (any OS with Electron)
 
@@ -2465,7 +2611,9 @@ MOCK=1 npm run dev             # keyless demo window (or set ANTHROPIC_API_KEY)
 `npm test` (in `electron/`) runs the main-process unit suites with plain Node —
 no Electron needed: `serve.test.mjs` (ephemeral port, statics, SPA fallback,
 `/api` wired to the real handler, keyless-mock + no-key-500, path-traversal
-guard — 10 tests) and `config.test.mjs` (key resolution order — 6 tests).
+guard, the CSP header, the containment predicate — 12 tests) and
+`config.test.mjs` (key resolution order + the `0600` mode on both a fresh and a
+pre-existing `0644` file — 8 tests).
 
 ### Build a `.dmg` (on your Mac)
 
@@ -2496,7 +2644,7 @@ above.
 
 ### What is verified vs. deferred to a Mac
 
-- **Verified in CI/container:** both Node unit suites (16 tests) pass, and
+- **Verified in CI/container:** both Node unit suites (20 tests) pass, and
   `electron-builder --dir` parses the `build` config and reaches the packaging
   step (it only stops when it cannot download the Electron binary from GitHub —
   an egress-policy restriction, not a config problem).
@@ -2690,6 +2838,13 @@ captured the *output*, not the input — corrupting the next block's window. On 
 smooth default IR the error looked harmless; on a peaky IR (a user cab, or the
 test comb) it **filled notches**. Fixed by saving the overlap from `in` *before*
 writing `out`; a dedicated **in-place comb null test** (−152 dB) now guards it.
+
+> **2026-07-25 follow-up.** `processBlock` is no longer reachable with caller
+> buffers at all: `process()` now copies into a convolver-owned input FIFO and
+> `processBlock` writes to a convolver-owned block buffer, so the in-place hazard
+> is handled once, in `process()`. The overlap-before-output ordering is kept
+> anyway. See **Block-size independence** under "Convolver design" — the same
+> slice fixed a much worse sibling of this bug (non-128-multiple block sizes).
 
 ### 15.5 Cab selection + user IR upload — the pipeline
 

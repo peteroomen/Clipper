@@ -1,0 +1,184 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The DSP core: 16 plain-assert ctest targets. This is the load-bearing suite —
+  # every circuit model is offline-testable precisely so that audio bugs are
+  # attributable to a model rather than to a shell.
+  core:
+    name: Core DSP (ctest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # chowdsp_wdf is pulled by FetchContent and cached under build/_deps, keyed
+      # on the pinned commit SHA in core/CMakeLists.txt.
+      - name: Cache FetchContent deps
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: core-deps-${{ hashFiles('core/CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake -S core -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # The web app: tsc + vite build, then the Playwright OfflineAudioContext suite
+  # that renders real audio through the committed WASM artifact and asserts on it.
+  web:
+    name: Web (tsc, build, Playwright)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Existence check today. The real staleness guard (a hash over core/ +
+      # web/worklet/ vs a build stamp) is the chore/artifact-staleness slice —
+      # until it lands, a stale committed artifact is NOT caught here.
+      - name: Check WASM artifact present
+        run: node scripts/check-artifact.mjs
+
+      # This repo's playwright.config.ts prefers a preinstalled Chromium under
+      # PLAYWRIGHT_BROWSERS_PATH and falls back to Playwright's own browser when
+      # that path is absent (which it is on a GitHub runner), so install it.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # `npm run build` is tsc --noEmit && vite build. Run it explicitly so a type
+      # error is reported as its own step rather than inside the webServer boot.
+      - name: Typecheck and build
+        run: npm run build
+
+      - name: Playwright audio suite
+        run: npx playwright test
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 7
+
+  # The Node suites: the assistant proxy, the history trimmer, and the Electron
+  # shell's server + key-store. None of these need the Electron binary — serve.mjs
+  # and config.mjs are plain Node modules — so we deliberately skip `npm ci` in
+  # electron/ and save the ~100 MB download.
+  node-suites:
+    name: Node suites (proxy, history, Electron shell)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Proxy handler tests
+        run: npm run test:server
+
+      - name: Assistant history tests
+        run: npm run test:history
+
+      - name: Electron shell tests
+        working-directory: electron
+        run: node --test 'serve.test.mjs' 'config.test.mjs'
+
+  # Conventional Commits gate, dependency-free (riff uses commitlint + husky; this
+  # project's root package.json is deliberately dependency-free, so the same rule
+  # is enforced here with a regex instead of adding a toolchain).
+  commit-messages:
+    name: Commit messages
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate Conventional Commits
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          pattern='^(feat|fix|perf|refactor|chore|docs|test|style|ci|build|revert)(\([a-z0-9._/-]+\))?!?: .+'
+          fail=0
+          # Only first-parent subjects: a merge commit's second parent drags in
+          # history that was already validated on its own PR.
+          while IFS= read -r subject; do
+            [ -z "$subject" ] && continue
+            case "$subject" in
+              "Merge "*) continue ;;
+            esac
+            if ! printf '%s' "$subject" | grep -Eq "$pattern"; then
+              echo "::error::Not a Conventional Commit: $subject"
+              fail=1
+            fi
+          done < <(git log --first-parent --format=%s "$BASE..$HEAD")
+          if [ "$fail" -ne 0 ]; then
+            echo "Expected: type(optional-scope): description"
+            echo "Allowed types: feat fix perf refactor chore docs test style ci build revert"
+            exit 1
+          fi
+          echo "All commit subjects are Conventional Commits."
+
+  # The JUCE plugin. identical_core_test is load-bearing: it proves the plugin is a
+  # re-wrap of the core rather than a re-implementation, across all four amp voices.
+  # Marked advisory (continue-on-error) for its first outings only — the Linux JUCE
+  # system-dependency list is easy to get subtly wrong, and a flaky new job must not
+  # block PRs on day one. Once it has been green a few times, drop the flag and add
+  # it to the required checks in branch protection.
+  native:
+    name: Native (JUCE identical-core) [advisory]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install JUCE Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libjack-jackd2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
+            libxrandr-dev libxrender-dev libglu1-mesa-dev mesa-common-dev
+
+      - name: Cache JUCE checkout
+        uses: actions/cache@v4
+        with:
+          path: native/build/_deps
+          key: juce-${{ hashFiles('native/CMakeLists.txt') }}
+
+      - name: Configure
+        run: cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build console tests
+        run: cmake --build native/build -j --target clipper_identical_test clipper_chain_edit_test
+
+      - name: Run identical-core test
+        run: ctest --test-dir native/build --output-on-failure
