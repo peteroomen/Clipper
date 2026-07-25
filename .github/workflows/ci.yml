@@ -63,10 +63,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Existence check today. The real staleness guard (a hash over core/ +
-      # web/worklet/ vs a build stamp) is the chore/artifact-staleness slice —
-      # until it lands, a stale committed artifact is NOT caught here.
-      - name: Check WASM artifact present
+      # The real staleness guard: recomputes a SHA-256 over core/src, core/include,
+      # web/worklet/clipper-processor.js and the emcc flag region of
+      # scripts/build-wasm.sh, and compares it to web/public/generated/.build-stamp.json.
+      # Needs no emsdk — that is the whole design. A failure here means the committed
+      # engine was built from different sources than the ones in the tree, so the app
+      # is bound to an old engine.
+      - name: Check WASM artifact present and not stale
         run: node scripts/check-artifact.mjs
 
       # This repo's playwright.config.ts prefers a preinstalled Chromium under
@@ -111,9 +114,50 @@ jobs:
       - name: Assistant history tests
         run: npm run test:history
 
+      # The artifact staleness guard's own tests. They run here rather than in the
+      # web job because they need no npm install — they build synthetic repo trees
+      # in a temp dir and run web/scripts/check-artifact.mjs against them.
+      - name: Artifact staleness guard tests
+        run: npm run test:scripts
+
       - name: Electron shell tests
         working-directory: electron
         run: node --test 'serve.test.mjs' 'config.test.mjs'
+
+  # A golden .wav is a binary a reviewer cannot read in a diff, so a PR that changes
+  # one must also explain it in core/tests/goldens/GOLDENS.md.
+  # scripts/update-goldens.sh writes and stages that entry for you; this job is the
+  # backstop for a golden changed some other way.
+  goldens:
+    name: Goldens changelog
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: A changed golden must come with a GOLDENS.md entry
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed="$(git diff --name-only "$BASE" "$HEAD" -- 'core/tests/goldens/*.wav')"
+          if [ -z "$changed" ]; then
+            echo "No golden .wav changed."
+            exit 0
+          fi
+          echo "Goldens changed in this PR:"
+          echo "$changed"
+          if git diff --name-only "$BASE" "$HEAD" -- core/tests/goldens/GOLDENS.md | grep -q .; then
+            echo "core/tests/goldens/GOLDENS.md was updated too."
+            exit 0
+          fi
+          echo "::error::A golden render changed with no entry in core/tests/goldens/GOLDENS.md."
+          echo "Re-blessing a golden is how a regression becomes canon. Run"
+          echo "  bash scripts/update-goldens.sh -m \"why the new render is correct\""
+          echo "which records the dB deltas and your justification, and stages both."
+          exit 1
 
   # Conventional Commits gate, dependency-free (riff uses commitlint + husky; this
   # project's root package.json is deliberately dependency-free, so the same rule

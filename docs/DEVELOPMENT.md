@@ -5909,3 +5909,149 @@ tests were instead verified by driving the real worklet under Node with a stubbe
 `AudioWorkletGlobalScope`, against both the pre-fix and fixed worklets sharing one
 rebuilt WASM artifact; all the before/after numbers quoted above come from that.
 
+## 31. Audit "Test & process integrity" — the artifact staleness stamp, the golden blessing ritual, and a reproducible artifact
+
+Two process holes from the 2026-07-24 audit, both of which had already cost something
+real by the time they were fixed — plus the reproducibility defect found while fixing them.
+
+### 31.1 `check-artifact.mjs` could not detect a stale artifact
+
+`web/public/generated/clipper.js` is committed build output. The contract is stated in
+CLAUDE.md — change `core/` or `web/worklet/`, run `bash scripts/build-wasm.sh`, commit
+the artifact in the same commit — and the only thing standing behind it was a script
+that called `existsSync` on two paths. It passed for an arbitrarily old artifact, and
+it is the sole guard: `prebuild`, `npm test`, and the CI web job all run it.
+
+**What it cost.** On 2026-07-24 two PRs each changed `core/` and each rebuilt
+`clipper.js`. The merge conflicted on the binary. Taking either side would have
+produced a `main` whose committed engine held **one** of the two fixes while the
+committed source held **both** — a rig where a knob you can see in the source does
+nothing in the browser — and nothing in the repo could have detected it. The correct
+artifact, rebuilt from the merged source, is 173337 bytes; the two conflicting inputs
+were 165971 and 172290.
+
+**The fix.** `scripts/build-wasm.sh` now writes `web/public/generated/.build-stamp.json`
+(committed, like the artifact) holding a SHA-256 over the *contents* of everything that
+affects the artifact, plus a per-input hash map so a failure can name the culprit.
+`check-artifact.mjs` recomputes it and fails on a mismatch. See ADR 004 for the four
+design decisions inside that; the one worth repeating here is that the **emcc flags are
+hashed out of `build-wasm.sh`'s marked region, not recorded into the stamp** — a
+self-reported flag list cannot detect its own staleness.
+
+**What is in the hash, measured rather than assumed.** `g++ -std=c++17 -MM` over the
+exact 26 translation units `build-wasm.sh` hands to `emcc`, with the same
+`-I core/include`, gives the artifact's real file closure:
+
+| | count |
+| --- | --- |
+| files under `core/src/` compiled into the artifact | **26 of 26** (the emcc list is exactly `find core/src -type f`) |
+| headers under `core/include/` in the closure | **36 of 37** (only `OutputLimiter.h` is outside it) |
+| files from `core/tests/` or `core/tools/` in the closure | **0** |
+
+So the hash covers `core/src` + `core/include` + the worklet + the flag region — 65
+inputs — and deliberately excludes `core/tools/`, `core/tests/`, and `core/CMakeLists.txt`.
+Excluding the test and tool trees is what keeps the guard from firing on every test
+edit, which is how a guard gets deleted.
+
+The check needs **no toolchain**: recomputing a content hash is pure Node, which is the
+whole point, because the CI job that catches this has no emsdk. The recorded emcc
+version is compared only when `emcc` happens to be on `PATH`, and a mismatch warns
+rather than fails.
+
+`EMSDK_VERSION` is also pinned, `latest` → **6.0.4**. Under `latest`, two machines with
+identical source could not agree on the artifact bytes.
+
+**A reproducibility finding that fell out of the bootstrap.** Rebuilding at the pinned
+6.0.4 to generate the first stamp produced a file of exactly the same size (173337 B)
+differing in exactly **64 bytes** — four 16-character runs, all inside *absolute build
+paths embedded in the WASM*. They are `__FILE__` strings from live `assert()`s: the
+emcc link uses `-O3` but never defines `NDEBUG`, so the asserts in `Oversampler.h`,
+`RatModel.cpp`, `GoldModel.cpp` and `OverdriveEngine.cpp` are compiled into the shipped
+engine together with the build directory of whoever produced it. Consequences: the
+"6.0.4 reproduces the artifact byte-for-byte" claim holds only when building from an
+identically-named directory; a future rebuild-and-`cmp` CI job needs
+`-ffile-prefix-map` first; and there is an open question, not settled here, about
+whether `assert()` belongs in a shipped real-time audio engine at all. The committed
+artifact was therefore left untouched by this slice — only the stamp was added, and the
+stamp attests *source content*, which is path-independent.
+
+### 29.2 `update-goldens.sh` blessed any regression in one command, and measured the wrong thing
+
+The goldens (`core/tests/goldens/`, docs §26 block C) are the only defence against
+voicing drift and are `.wav` files a reviewer cannot read in a diff. Re-blessing one is
+the easiest way in the whole repo to turn a regression into canon. The old script was
+`cmake && ./tests --update-goldens`: no clean-tree check, no summary, no confirmation,
+no justification.
+
+Worse, the `--update-goldens` path in `core/tests/test_player_expectations.cpp` was
+
+```cpp
+if (update) writeGolden(r);
+compareGolden(r);   // ← compares against the file it just wrote
+```
+
+so the ±1.5 dB third-octave gate could only ever see 16-bit storage quantisation
+(≤0.11 dB). It was a guaranteed pass that silently rewrote the references. And because
+`compareGolden` also asserts the frame count, a change that altered the render *length*
+sailed through too.
+
+**The fix, in the test:** measurement is now separated from the gate.
+`measureAgainstGolden()` returns the deltas and asserts nothing; `compareGolden()`
+applies the gate; and three modes exist —
+
+- default: the gate, unchanged in behaviour;
+- `--golden-report`: measure against the committed goldens and print one
+  `GOLDEN-DELTA <name> <status> <rmsDb> <worstBandDb> <worstHz> <bands>` line per rig,
+  writing nothing;
+- `--update-goldens`: measure against the **previous** golden, print the same lines,
+  *then* write. The post-write round-trip check is kept but is now labelled for what it
+  is — a check of the wav write path, bounded by quantisation by construction, not a
+  voicing gate.
+
+`UNCHANGED` means within 0.15 dB, the measured storage + windowing floor. On the
+current source all five rigs report 0.00–0.11 dB against their committed goldens, which
+is both a null result for this slice and the calibration for that threshold.
+
+The before/after was measured directly, by planting a wrong golden (`rat_jcm800.wav`
+replaced with `muff_twin.wav` — same format and length, different audio) on a throwaway
+commit. The pre-fix `--update-goldens` reported **worst band Δ 0.00 dB**, printed "within
+the ±1.5 dB voicing gate", and rewrote the file. The post-fix `--golden-report` reports
+**17.35 dB @ 800 Hz** (RMS +2.59 dB), flags it `CHANGED`, and writes nothing. A 17 dB
+voicing error reported as 0.00 dB is what "compare against the file you just wrote" was
+worth.
+
+**The fix, in the script:** `scripts/update-goldens.sh` now requires (1) a clean working
+tree, so the golden diff is reviewable on its own; (2) a printed per-golden before/after
+table in dB, from `--golden-report`, *before* anything is written; (3) a confirmation
+typed at a terminal — read from `/dev/tty`, which a pipe cannot answer (`yes | …` fails)
+and CI cannot answer either (no controlling terminal), requiring the exact phrase
+`bless N goldens` where N comes from the table; (4) a justification of ≥ 20 characters,
+appended to the new `core/tests/goldens/GOLDENS.md` changelog and `git add`ed together
+with the goldens. If nothing differs by more than the storage floor the script exits
+early rather than churning five files for nothing.
+
+Both confirmation defences were exercised against that planted wrong golden. With no
+controlling terminal (the CI case) `yes | bash scripts/update-goldens.sh` prints the
+table and aborts on the missing `/dev/tty`. Under a **real pty**
+(`yes | script -qec 'bash scripts/update-goldens.sh' /dev/null`), where the `y` genuinely
+arrives at the prompt, it aborts on the phrase instead — which is the load-bearing half:
+the requirement is not "a tty exists" but "someone typed a sentence derived from the
+table". Zero goldens written either way.
+
+CI gains a PR-only `goldens` job as the backstop: a changed `.wav` under
+`core/tests/goldens/` with no `GOLDENS.md` change fails the PR.
+
+### Suites
+
+Core **ctest 17/17**, `web` `tsc --noEmit` + `vite build` green, **Playwright 70/70**.
+Node suites 45 → **57** (`test:server` 15, `test:history` 10, `electron` 20, and twelve
+new cases in `test:scripts`): the new file is `web/scripts/check-artifact.test.mjs`, whose
+cases build synthetic repo trees in a temp dir and run the real CLI against them via
+`--repo-root`. Pointed at the pre-fix `check-artifact.mjs`, **8 of the 12 fail** —
+including all three of the cases that matter (a `core/src` edit undetected, a diverged
+worklet copy undetected, a missing stamp undetected). The four that pass are the two
+asserting the check does *not* fire (a healthy tree; an edit under `core/tests/` or
+`core/tools/`), which pass vacuously when there is no staleness check at all, and the two
+that pin the toolchain sub-check as advisory, which call the exported `checkArtifact()`
+directly rather than the CLI.
+
