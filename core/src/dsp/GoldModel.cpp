@@ -394,6 +394,11 @@ void GoldModel::processChunk(const float* in, float* out, int numFrames) {
         d.diodes.incident(d.P1.reflected());
         d.P1.incident(d.diodes.reflected());
         const float clipped = static_cast<float>(chowdsp::wdft::voltage<double>(d.Cp));
+        // Anti-denormal (Denormal.h): the WDF shunt cap's wave state is the network's
+        // recursive memory and rings down into DOUBLE subnormals on silence. Flushed
+        // AFTER the voltage above is read, so this sample is bit-identical to the
+        // unguarded network. Audit finding 11, docs §33.
+        flushDenormalWdfCapacitor(d.Cp);
         // The summing amp: the ganged crossfade, then the charge-pump rails (which
         // at guitar levels never engage — the diodes are the only clipper).
         float s = static_cast<float>(kSumGain) * (cleanW * x + clipW * clipped);
@@ -416,9 +421,15 @@ void GoldModel::processChunk(const float* in, float* out, int numFrames) {
         else if (toned < -static_cast<float>(kRailVolts)) toned = -static_cast<float>(kRailVolts);
         const float lvl = toned * d.outLevel.next();
         // Output coupling cap (one-pole DC blocker).
+        // Anti-denormal (Denormal.h): on silence this degenerates to y = dcR*dcY1
+        // with dcR ~= 0.9984, which in the subnormal range rounds back to itself and
+        // NEVER reaches zero. This one state was GOLD's whole subnormal problem:
+        // measured 393607 of 480000 output samples subnormal over 10 s of silence,
+        // shoved straight into whatever follows GOLD in the chain. Audit finding 11,
+        // docs §33. dcX1 is an input history (assigned, never fed back) — no guard.
         const float y = lvl - d.dcX1 + static_cast<float>(d.dcR) * d.dcY1;
         d.dcX1 = lvl;
-        d.dcY1 = y;
+        d.dcY1 = flushDenormal(y);
         out[i] = y;
     }
 }

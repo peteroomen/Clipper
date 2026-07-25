@@ -137,6 +137,18 @@ public:
     double railNow() const { return vRail_; }
     double screenNow() const { return vScreen_; }
     double lastOutputPeak() const { return lastOutPeak_; }
+
+    // NO maxAbsRestingState() here, deliberately (Denormal.h, docs §33). Every state in
+    // this stage was MEASURED to idle at a nonzero value, so there is no "rests at
+    // exactly zero" property to assert: otHpS_/otLpS_/fbDelay_ settle at ~1.6e-13
+    // because a push-pull pair's differential plate current does not cancel exactly, and
+    // vRail_/vScreen_/the coupling states/the warm starts all park at their DC operating
+    // point. ~294 orders of magnitude above the subnormal boundary. Their flushes in
+    // processSampleOS are a guard-rail for the post-reset() case (parkState() does set
+    // them to exactly 0) and for uniformity with the JCM800/AC30 sections — NOT a fix
+    // for a measured cliff. Measured end-to-end: 2039 ms of silence vs 2042 ms with
+    // hardware FTZ before the flushes, i.e. no denormal cost to begin with. An accessor
+    // here would only buy an assertion with no teeth.
     const El34Params& tube() const { return tube6L6_; }
     const LtpInverter& inverter() const { return ltp_; }
 

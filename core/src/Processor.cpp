@@ -1,5 +1,6 @@
 #include "clipper/Processor.h"
 
+#include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/ParamGuard.h"
 
 #include <cmath>
@@ -54,7 +55,25 @@ void Processor::process(const float* in, float* out, int numFrames) {
     float g = gain_;
 
     for (int i = 0; i < numFrames; ++i) {
+        // Anti-denormal (Denormal.h). This is the ONE place in the tree that
+        // hand-rolls the OnePoleSmoother recurrence instead of using the guarded
+        // primitive, so it never inherited the guard. With GAIN at 0 the value
+        // asymptotes toward zero and STICKS in the subnormal range — its own ULP
+        // shrinks with it, so the increment can never close the gap. Then EVERY
+        // sample is multiplied by a subnormal, forever, even on full-scale audio:
+        // measured 445514 subnormal output samples and a 12-21x slowdown against
+        // hardware FTZ before this flush (audit finding 11, docs §33).
+        //
+        // The rule is OnePoleSmoother::next()'s, verbatim — snap on the RESIDUAL, not
+        // on the value — so the duplicated recurrence and the shared primitive now
+        // behave identically, and both settle EXACTLY on the target instead of
+        // asymptoting. Bit-identical to the unguarded form for every trajectory whose
+        // residual stays above 1e-30, i.e. every trajectory a player can hear.
+        // (Collapsing this duplicate into OnePoleSmoother outright is a refactor, not
+        // this slice: it would change Processor's prepare/reset/parameter seams.)
         g += coeff * (target - g);
+        const float residual = target - g;
+        if (residual < dsp::kDenormalFloor && residual > -dsp::kDenormalFloor) g = target;
         out[i] = in[i] * g;
     }
 

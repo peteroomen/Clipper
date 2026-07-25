@@ -189,6 +189,22 @@ public:
     double cathodeIdle() const { return vkIdle_; }   // quiescent shared cathode V
     double cathodeNow() const { return vk_; }        // live cathode V (bias shift)
     double lastOutputPeak() const { return lastOutPeak_; }
+
+    // Anti-denormal diagnostic (Denormal.h, docs §33) — not used by the audio path.
+    // The OT bandwidth pair are the states that rest at EXACTLY zero, so after a silent
+    // tail this must read exactly 0.0. This amp has no global NFB loop, so unlike the
+    // JCM800's and the Twin's its secondary genuinely settles to zero rather than to a
+    // ~1e-28 loop residual — which is why THESE two, and not the ones nearer the signal,
+    // were the whole of the AC30's measured silent-tail cliff (isolated stage 1.35x ->
+    // 0.99x; 1588 -> 2 subnormal output samples; bisected in Ac30PowerAmp.cpp).
+    //
+    // DELIBERATELY EXCLUDED, measured rather than assumed: topCutS1_/topCutS2_ idle at
+    // 2.84e-14 (one ULP of the LTP plate voltage — the Newton fixed point does not land
+    // exactly on quiescentPlate1()), so they never go subnormal and their flush is a
+    // guard-rail. Likewise iSagEnv_ (relaxes onto the class-A idle draw),
+    // vRail_/vScreen_/vk_ (rail, screen and shared-cathode nodes at their DC point) and
+    // the coupling / warm-start states — see Ac30PowerAmp.cpp for each.
+    double maxAbsRestingState() const { return maxAbsState(otHpS_, otLpS_); }
     const El34Params& tube() const { return tubeEl84_; }
     const LtpInverter& inverter() const { return ltp_; }
 

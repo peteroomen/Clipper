@@ -192,9 +192,16 @@ void OverdriveEngine::processChunk(const float* in, float* out, int numFrames) {
     for (int i = 0; i < numFrames; ++i) {
         const float v = out[i];
         // One-pole DC blocker (output coupling cap, ~12 Hz).
+        // Anti-denormal (Denormal.h): on silence this degenerates to y = dcR_*dcY1_
+        // with dcR_ ~= 0.9984, and in the subnormal range that product ROUNDS BACK
+        // TO ITSELF — the state never reaches zero and every later sample pays the
+        // microcode penalty forever. Measured 1.15x (SD-1) / 1.13x (Screamer) on
+        // silence before the flush; audit finding 11, docs §33. dcX1_ needs no guard:
+        // it is an INPUT history (assigned, never fed back), so it is whatever the
+        // signal is — never an asymptote.
         const float y = v - dcX1_ + static_cast<float>(dcR_) * dcY1_;
         dcX1_ = v;
-        dcY1_ = y;
+        dcY1_ = flushDenormal(y);
         // Treble tilt: scale the HF half (y - LP_pivot) by the tilt gain.
         toneLpState_ = flushDenormal(toneLpState_ + toneCoef_ * (y - toneLpState_));
         const float hpTone = y - toneLpState_;

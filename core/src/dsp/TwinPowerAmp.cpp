@@ -7,6 +7,7 @@
 
 #include "clipper/dsp/TwinPowerAmp.h"
 
+#include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/ParamGuard.h"
 #include "clipper/dsp/TubeSolverMode.h"
 
@@ -205,11 +206,14 @@ inline float TwinPowerAmp::processSampleOS(float xf) {
     const double vPriDiff = (ipUp - ipDown) * kRppReflected;
     double vSec = vPriDiff / otTurnsRatio();
     {
+        // Anti-denormal (Denormal.h) on both TPT states — vSec rests at zero, so on
+        // silence these sink into the double subnormal range and stick. `vLp`/`vLp2`
+        // are untouched, so the tripping sample stays bit-identical. Finding 11, §33.
         const double vLp = otLpS_ + otLpA_ * (vSec - otLpS_);
-        otLpS_ = 2.0 * vLp - otLpS_;
+        otLpS_ = flushDenormal(2.0 * vLp - otLpS_);
         vSec = vLp;
         const double vLp2 = otHpS_ + otHpA_ * (vSec - otHpS_);
-        otHpS_ = 2.0 * vLp2 - otHpS_;
+        otHpS_ = flushDenormal(2.0 * vLp2 - otHpS_);
         vSec = vSec - vLp2;
     }
 
@@ -223,7 +227,10 @@ inline float TwinPowerAmp::processSampleOS(float xf) {
                (gScr_ + 1.0 / kRscreen);
 
     // 6. Flat feedback (unit delay for the next sample) — NO presence low-pass.
-    fbDelay_ = vSec;
+    // Anti-denormal (Denormal.h): a FEEDBACK node resting at zero, so a subnormal
+    // parked here is re-multiplied by beta and re-injected at the cold grid every
+    // sample, forever. Audit finding 11, docs §33.
+    fbDelay_ = flushDenormal(vSec);
 
     const double outNorm = vSec / kFullScaleSecV;
     lastOutPeak_ = std::max(lastOutPeak_, std::fabs(outNorm));
