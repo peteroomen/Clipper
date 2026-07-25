@@ -343,6 +343,22 @@ if(NOT EMSCRIPTEN)
     endif()
     add_test(NAME clipper_cab_swap_tests COMMAND clipper_cab_swap_tests)
 
+    # --- perf/halfband-no-modulo: halfband resampler tests (docs §32) ---------
+    # The doubled-ring rewrite of HalfbandFilter.h deleted an integer division per
+    # tap from the hottest loop in the project (audit perf item 2). A perf change to
+    # the resampler is only acceptable if it is BIT-IDENTICAL, so this target carries
+    # a verbatim copy of the pre-change (modulo-indexed) implementation and compares
+    # the shipped classes against it sample-for-sample — plus the stopband (worst-case
+    # image / alias rejection across the audio band, measured through the live
+    # objects) and the round-trip group delay measured from an impulse, so a wrong
+    # filter or a wrong latency cannot hide behind the identity check.
+    add_executable(clipper_halfband_tests tests/test_halfband.cpp)
+    target_link_libraries(clipper_halfband_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (Goertzel) under tools/measure.
+    target_include_directories(clipper_halfband_tests PRIVATE tools)
+    clipper_add_test_flags(clipper_halfband_tests)
+    add_test(NAME clipper_halfband_tests COMMAND clipper_halfband_tests)
+
     # --- Per-unit CPU cost benchmark (native only; docs §25) ------------------
     add_executable(clipper-bench tools/bench/main.cpp)
     target_link_libraries(clipper-bench PRIVATE clipper_dsp)

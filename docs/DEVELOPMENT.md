@@ -4816,26 +4816,37 @@ warm-up pass; the table reports audio-seconds-per-wall-second (× realtime) and
 the share of one realtime stream. Native numbers are a **proxy** for WASM (same
 core source); the *ranking* is the point. Post-pass numbers:
 
-| unit | × realtime | % of one 48 k stream |
-|---|---|---|
-| jcm800 (valve amp) | 1.96× | 51.1 % |
-| twin (valve amp) | 2.90× | 34.5 % |
-| ac30 (valve amp) | 3.80× | 26.3 % |
-| muff (BJT fuzz) | 4.10× | 24.4 % |
-| rat (dist pedal) | 35.2× | 2.8 % |
-| sd1 / screamer (overdrive) | ~43× | 2.3 % |
-| clean amp + chorus + reverb (stereo) | 89.4× | 1.1 % |
-| spring reverb alone (mix 0.5) | 114.6× | 0.9 % |
-| ninety (phaser) | 298.7× | 0.3 % |
-| cab convolver (either IR) | ~460× | 0.2 % |
-| clean amp alone (JC-120, mono) | 1403.6× | 0.07 % |
-| output limiter | 1677.3× | 0.06 % |
+| unit | × realtime | % of one 48 k stream | × faster after §32 |
+|---|---|---|---|
+| jcm800 (valve amp) | 1.96× | 51.1 % | 1.14× |
+| twin (valve amp) | 2.90× | 34.5 % | 1.14× |
+| ac30 (valve amp) | 3.80× | 26.3 % | 1.12× |
+| muff (BJT fuzz) | 4.10× | 24.4 % | 1.06× |
+| rat (dist pedal) | 35.2× | 2.8 % | 1.80× |
+| sd1 / screamer (overdrive) | ~43× | 2.3 % | ~2.17× |
+| gold (clean-blend drive) | — | — | 1.80× |
+| clean amp + chorus + reverb (stereo) | 89.4× | 1.1 % | 1.00× |
+| spring reverb alone (mix 0.5) | 114.6× | 0.9 % | 1.00× |
+| ninety (phaser) | 298.7× | 0.3 % | 1.00× |
+| cab convolver (either IR) | ~460× | 0.2 % | 1.00× |
+| clean amp alone (JC-120, mono) | 1403.6× | 0.07 % | 1.00× |
+| output limiter | 1677.3× | 0.06 % | 1.00× |
+| oversampler alone, 4× (up+down) | — | — | 2.72× |
 
 Reading it: the **valve amps are the budget** — a valve head plus a dirt pedal,
 cab, and reverb is dominated by the head alone; everything linear is noise. The
 denormal guard is invisible here by design (it costs a compare+select per state
 update) — its payoff is the *absence* of the tail-triggered spikes that no
 steady-state benchmark shows.
+
+**The absolute columns predate §32** (the halfband doubled-ring change) and were
+taken on a different machine, so they are not directly comparable with anything
+`clipper-bench` prints today — which is why the fourth column is a *ratio*: the
+same-machine, same-binary-flags before → after multiplier measured in §32, where
+the full table (including the new `os2x` / `os4x` / `os8x` resampler-only units and
+the % -of-one-stream figures both before and after) lives. Anything at 1.00× is a
+control: it contains no oversampled nonlinearity, so it must not have moved, and it
+did not.
 
 ### 25.4 The web DSP load meter (ground truth on the user's machine)
 
@@ -6055,3 +6066,194 @@ asserting the check does *not* fire (a healthy tree; an edit under `core/tests/`
 that pin the toolchain sub-check as advisory, which call the exported `checkArtifact()`
 directly rather than the CLI.
 
+## 32. Audit perf item 2 — the halfband resampler's per-tap integer division
+
+**The finding** (`docs/audits/2026-07-24-project-audit.md:309`, "Fidelity-neutral
+performance wins", item 2). `HalfbandFilter.h` indexed its ring buffer as
+
+```cpp
+for (int p = 0; p < M; ++p)
+    acc += e1_[p] * ring_[(w_ - p + M) % M];      // M = M_, a runtime int
+```
+
+`M_` / `L_` are runtime `int` members, so the compiler cannot strength-reduce `%`
+to a mask even though the value happens to be a power of two: it must emit a
+hardware integer division **per tap**. That is 64 divisions per output sample on
+the interpolator's tight stage and 65 on the decimator's, at the **oversampled**
+rate, for every oversampled pedal (RAT, SD-1, Screamer, Muff, Gold) and — once
+per triode stage, so up to eight times over in the JCM800 preamp — every valve
+amp. It is the hottest loop in the project, and the audit called it "best
+perf-per-effort item in the project".
+
+### The fix: a doubled ring buffer
+
+Allocate `2*M` (resp. `2*L`) floats and maintain the invariant
+
+```
+ring_[i] == ring_[i + N]     for all i in [0, N)          (N = M_ or L_)
+```
+
+by writing every incoming sample **twice**. The wrapped read then becomes the
+unwrapped `ring_[w_ + N - p]`, which is in range for every tap, and `w_` advances
+with a compare (`if (++w_ == N) w_ = 0;`) instead of a `%`. The decimator
+additionally swaps `std::vector<Tap>` — a struct of `{int, float}`, so the
+coefficient stream was strided by 8 bytes — for parallel `int` / `float` arrays.
+
+Two properties are load-bearing and are called out in the header, because both
+are the kind of thing a later "tidy-up" would break silently:
+
+1. **Every write must update both copies, including `reset()`.** A half-cleared
+   ring keeps re-injecting stale history for a whole filter length — correct
+   output for a while, then a ghost. The extra store is a rounding error next to
+   a 64-tap FIR and costs nothing in the tap loop.
+2. **The tap loop still walks `p` upward, i.e. reads memory backwards.** Float
+   addition is not associative. Reversing the loop into a forward-streaming one
+   (or reordering the coefficients to match) is mathematically identical and
+   **not bit-identical** — measured below.
+
+No SIMD, no reassociation, no `-ffast-math`. This is a data-structure change and
+nothing else.
+
+### Bit-identity (the acceptance criterion)
+
+`core/tests/test_halfband.cpp` / ctest target **`clipper_halfband_tests`** carries a
+verbatim copy of the pre-change (modulo-indexed) implementation — plus a copy of the
+`Oversampler` cascade rebuilt on it — and compares the shipped classes against it
+**bit-for-bit**, not within a tolerance. `==` is not sufficient (it calls `+0.0`
+equal to `-0.0` and every NaN unequal to itself), so the comparison is a `memcmp`
+of the float representations.
+
+| comparison | samples | differing bits | max abs diff |
+|---|---|---|---|
+| interpolator, tight (M=64) | 480 000 | **0** | 0.0 |
+| interpolator, relaxed (M=16) | 480 000 | **0** | 0.0 |
+| decimator, tight (L=129) | 120 000 | **0** | 0.0 |
+| decimator, relaxed (L=33) | 120 000 | **0** | 0.0 |
+| full cascade 1× / 2× / 4× / 8×, ragged blocks | 200 000 each | **0** (up **and** down) | 0.0 |
+| after NaN poisoning + `reset()`, vs a virgin instance | 20 000 × 3 factors | **0** | — |
+
+The cascade cases drive the oversampler the way a pedal does (upsample → edit the
+buffer in place → downsample) over **ragged** block sizes `{1, 7, 128, 31, 200, 3,
+65, 256, 17, 100}`, so the ring wrap lands at every offset instead of always on a
+128 boundary, and they compare the *upsampled buffer* as well as the round trip.
+The program signal is deliberately hostile: a 12-harmonic plucked riff, a
+full-scale square burst every 0.37 s, LCG noise at −40 dBFS, lone full-scale
+impulses, and stretches of exact silence (where a stale ring copy shows up as a
+ghost). End to end, `clipper-render --alias-report` is identical to the digit
+before and after, and the goldens were not touched.
+
+### Measured speedup
+
+`clipper-bench`, 6 s riff @ 48 kHz in 128-frame blocks, best of three runs on one
+idle machine, same binary flags — the only difference is the header. A new
+`os2x` / `os4x` / `os8x` unit benches the resampler **alone** (up → one multiply
+per oversampled sample → down) so the change is neither diluted nor hidden by
+whatever nonlinearity sits inside the domain.
+
+| unit | before (× realtime) | after (× realtime) | speedup | % of one 48 k stream |
+|---|---|---|---|---|
+| **os2x (up+down only)** | 71.5× | **207.3×** | **2.90×** | 1.40 % → 0.48 % |
+| **os4x (up+down only)** | 44.6× | **121.5×** | **2.72×** | 2.24 % → 0.82 % |
+| **os8x (up+down only)** | 25.4× | **67.3×** | **2.65×** | 3.94 % → 1.49 % |
+| sd1 (overdrive) | 36.9× | 80.6× | 2.18× | 2.71 % → 1.24 % |
+| screamer (overdrive) | 37.3× | 80.7× | 2.16× | 2.68 % → 1.24 % |
+| rat (dist pedal) | 29.7× | 53.5× | 1.80× | 3.37 % → 1.87 % |
+| gold (clean-blend drive) | 31.1× | 56.1× | 1.80× | 3.22 % → 1.78 % |
+| jcm800 (valve amp) | 1.65× | 1.88× | 1.14× | **60.6 % → 53.3 %** |
+| twin (valve amp) | 2.50× | 2.86× | 1.14× | 40.0 % → 35.0 % |
+| ac30 (valve amp) | 3.03× | 3.39× | 1.12× | 33.1 % → 29.5 % |
+| muff (BJT fuzz) | 3.91× | 4.15× | 1.06× | 25.6 % → 24.1 % |
+| ninety (phaser) — *control, not oversampled* | 255.1× | 253.0× | 1.00× | unchanged |
+| cab / reverb / limiter / clean amp — *controls* | — | — | 1.00× | unchanged |
+
+Reading it: the resampler itself is ~2.7× faster; the two-diode overdrives, whose
+cost is nearly all resampling, come within a whisker of that; the valve amps gain
+~13 % overall because their budget is the tube Newton solve, not the filters — but
+13 % of the JCM800 is **7 percentage points of one realtime stream**, the single
+biggest headroom win available for the effort. The unchanged control rows are the
+evidence that nothing outside the oversampled path moved.
+
+Whether the divisions are worth ~2.7× or the audit prototype's ~3.3× depends on the
+host's divider latency; the ranking and the bit-identity are the durable results.
+
+### Stopband and latency: unchanged, and measured rather than restated
+
+Bit-identity makes both trivially unchanged, but block A alone cannot catch a wrong
+*filter* (it compares the same coefficients through two indexing schemes — perturbing
+`kBeta` to 5.0 leaves block A green, see below), so blocks B and C carry absolute,
+player-observable references measured through the live objects.
+
+**Stopband**, as worst-case **image** rejection (interpolator: a base-rate tone `f`
+puts an image at `baseRate − f` in the doubled-rate stream) and worst-case **alias**
+rejection (decimator: a high-rate tone folds to `|f − outRate|`), swept across the
+whole audio band up to 20 kHz:
+
+| design | worst image | worst alias |
+|---|---|---|
+| tight, L = 129 (first 2× stage, 44.1 k base) | **−86.1 dB** | **−87.3 dB** |
+| relaxed, L = 33 (later stages, ≥ 88.2 k in) | **−88.5 dB** | **−87.9 dB** |
+
+These are better than the audit's quoted −79.8 / −78.7 because the measurement is
+band-limited to what a guitar rig actually carries: the worst case over
+*frequencies that matter* (images and aliases landing at or below 20 kHz) rather
+than over the whole stopband including the 20–22.05 kHz sliver. Both definitions
+describe the same untouched filter design; the test asserts ≤ −78 dB so it is
+compatible with either.
+
+**Round-trip group delay**, measured from the composite impulse response by phase
+slope (the argmax is an arbitrary pick between two near-equal peaks when the true
+delay is fractional, and an energy centroid is biased unless that fraction is
+exactly 0.5):
+
+| factor | `latencySamples()` reports | measured / structural true delay | over-report |
+|---|---|---|---|
+| 1× | 0 | 0 | 0 |
+| 2× | 64 | **63.500** | 0.500 |
+| 4× | 72 | **71.250** | 0.750 |
+| 8× | 76 | **75.125** | 0.875 |
+
+**This is a new finding, not a regression** — block A proves the filters are
+bit-identical, so it was always true. Stage `s` contributes `M` samples of
+interpolator delay and `M − 1` of decimator delay at its own doubled rate, i.e.
+`(2M − 1) / 2^(s+1)` base samples; the missing 1 per stage is the decimator
+emitting on the **second** sample of each pair. `latencySamples()` uses
+`(2M) >> (s+1)` and therefore over-reports by up to 0.875 base samples — 18 µs at
+48 kHz, inaudible, and it errs in the safe direction (the reported latency is never
+short). It is left alone here: the API returns an `int`, and the number is
+surfaced in the web UI and in the JUCE plugin's latency reporting, so changing it is
+a plumbing slice, not a resampler slice. The test now pins the measured delay to
+0.01 samples and pins the reported value to within one sample of it, so neither can
+drift unnoticed.
+
+### Proving the test has teeth
+
+Per CLAUDE.md, each perturbation was applied in the tree, rebuilt (with a `touch`
+after both patch and restore, or `make` measures stale code) and observed to fail:
+
+| perturbation | result |
+|---|---|
+| drop the mirrored `ring_[w_ + M] = in` write | **block A fails** — 329 277 / 480 000 samples differ, max abs diff 1.6 |
+| reverse the tap loop (`p` descending, reads streaming forward) | **block A fails** — 183 049 / 480 000 samples differ, all by ~1 ULP (`max abs diff` prints as 0.0 at one decimal). This is precisely the change a tolerance-based test would wave through, and it is why the comparison is a `memcmp` |
+| `kBeta` 7.857 → 5.0 | **block B fails** — image rejection −86.1 → −62.3 dB. Block A stays green, which is the point: identity alone cannot catch a wrong filter |
+| `kRelaxedM` 16 → 20 | **block C fails** — `latencySamples()` 72 → 74, measured delay 71.25 → 73.25 |
+
+### Notes for the next slice
+
+- `core/` changed, so the committed WASM artifact must be rebuilt
+  (`bash scripts/build-wasm.sh`) in the same change. WASM has no integer-division
+  strength reduction to fall back on either, so the win should carry — but it is a
+  `div` instruction on a different machine and has not been measured in-browser.
+  The DSP load meter (§25.4) is the place to confirm it.
+- **Still open, and now quantified:** `Oversampler::latencySamples()` over-reports
+  by up to 0.875 base samples (table above).
+- Observed while verifying: the `--alias-report` table in **§7** no longer matches
+  what the tool prints (`−17.6 / −16.2 / −89.7 / −91.9`, fund-amp 0.40564 at 4×, vs
+  §7's `−18.4 / −26.7 / −86.6 / −90.6` and 0.46202). That drift is
+  **pre-existing** — the before and after builds print the same table to the digit
+  — and dates from the RAT re-voice / input calibration of §11.1. Not corrected
+  here, because attributing it belongs with whichever slice moved it.
+- Audit perf item **1** (one oversampler per preamp instead of one per triode
+  stage) is untouched and is now the biggest remaining resampling win: it removes
+  ~4× of the *calls* rather than making each call cheaper, and halves the JCM800's
+  7.5 ms latency. It is a fidelity change (less repeated band-limiting), so it
+  needs its own slice and its own argument.
