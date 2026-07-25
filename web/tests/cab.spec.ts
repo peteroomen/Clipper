@@ -315,6 +315,14 @@ test('four edits in one declick fade window: all land at output zero', async ({ 
         });
         node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.4 });
         node.port.postMessage({ type: 'cab', builtin: 1 });
+        // Sentinel LAST, purely as the delivery barrier. `chain`, `param` and `cab`
+        // all stage silently — none of them echoes `latency` from the message
+        // handler (only `bypass` and `oversampling` do; a cab's echo comes from
+        // _commitPending, which needs process() to have run, so awaiting it before
+        // startRendering() deadlocks). Messages on one port are delivered in order,
+        // so an echo from this no-op (4 is already the default) proves the three
+        // above were consumed.
+        node.port.postMessage({ type: 'oversampling', factor: 4 });
       });
 
       if (edits) {
