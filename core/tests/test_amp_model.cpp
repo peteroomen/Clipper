@@ -586,30 +586,163 @@ void testConvolverImpulse(double fs) {
                 maxErr, outPeak - irPeak, fs);
 }
 
-// --- Test 6: convolver linearity chunking — whole-buffer vs block-by-block. ----
+// --- Test 6: the convolver's output stream is INDEPENDENT of how the host
+//     segments it (2026-07-24 audit finding 3). --------------------------------
+//
+// What this used to be: a whole-buffer call compared against an explicit 128-block
+// loop. Both took the identical internal path (process() chunked at 128 and the
+// signal length happened to line up), so it passed trivially and never exercised a
+// non-128-aligned segmentation — the only case that was broken. A DAW handing the
+// plugin 64-, 96-, 100-, 441- or variable-size buffers got a permanently
+// misaligned cab: the convolver zero-padded the short block, advanced the
+// frequency-delay line by a WHOLE partition anyway, and discarded the surplus
+// output samples. The measured error at 100-sample blocks was LARGER than the
+// signal itself.
+//
+// What it is now: the player-observable property the name claims. The 128-aligned
+// render (the worklet's quantum, and what the goldens are blessed against) is the
+// reference; every other segmentation must reproduce it sample for sample.
+
+// Render `in` through a fresh convolver, feeding it segments whose lengths come
+// from nextSize(). If inPlace, the cab runs with in == out, which is exactly how
+// amp_process / the worklet call it.
+template <typename NextSize>
+std::vector<float> renderCabSegmented(const std::vector<float>& in,
+                                      const std::vector<float>& ir, double fs,
+                                      NextSize nextSize, bool inPlace) {
+    CabConvolver cab;
+    cab.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
+    const int n = static_cast<int>(in.size());
+    std::vector<float> out = inPlace ? in : std::vector<float>(static_cast<size_t>(n), 0.0f);
+    int off = 0;
+    while (off < n) {
+        int s = nextSize();
+        if (s < 1) s = 1;
+        s = std::min(s, n - off);
+        const float* src = inPlace ? out.data() + off : in.data() + off;
+        cab.process(src, out.data() + off, s);
+        off += s;
+    }
+    return out;
+}
+
 void testConvolverChunking(double fs) {
     auto ir = clipper::dsp::generateDefaultCab2x12IR(fs);
-    auto in = sine(440.0, 0.3f, 0.05, fs);
-    const int n = static_cast<int>(in.size());
 
-    CabConvolver a;
-    a.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
-    std::vector<float> whole(static_cast<size_t>(n), 0.0f);
-    a.process(in.data(), whole.data(), n);
+    // 4873 = 11 x 443, so it is not a multiple of ANY block size below (bar 1) —
+    // every schedule therefore also ends on a partial segment.
+    const int n = 4096 + 777;
 
-    CabConvolver b;
-    b.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
-    std::vector<float> blocked(static_cast<size_t>(n), 0.0f);
-    for (int off = 0; off < n; off += 128) {
-        const int m = std::min(128, n - off);
-        b.process(in.data() + off, blocked.data() + off, m);
+    // Probe 1: an impulse. Worst case for misalignment — every bit of the IR's
+    // energy sits in one sample, so a stream shifted by even one partition shows
+    // up at full scale rather than being smeared into something plausible.
+    std::vector<float> impulse(static_cast<size_t>(n), 0.0f);
+    impulse[7] = 1.0f;
+
+    // Probe 2: what a player actually sends a cab — a decaying plucked note with
+    // a couple of harmonics. A misalignment here is an audible transient smear.
+    std::vector<float> pluck(static_cast<size_t>(n), 0.0f);
+    for (int i = 0; i < n; ++i) {
+        const double t = i / fs;
+        const double env = std::exp(-t * 8.0);
+        pluck[static_cast<size_t>(i)] = static_cast<float>(
+            0.35 * env * (std::sin(kTwoPi * 220.0 * t) +
+                          0.4 * std::sin(kTwoPi * 440.0 * t) +
+                          0.15 * std::sin(kTwoPi * 1320.0 * t)));
     }
-    double maxErr = 0.0;
-    for (int i = 0; i < n; ++i)
-        maxErr = std::max(maxErr, static_cast<double>(std::fabs(whole[static_cast<size_t>(i)] -
-                                                                blocked[static_cast<size_t>(i)])));
-    assert(maxErr < 1e-5 && "convolver output depends on block segmentation");
-    std::printf("  [ok] convolver chunking invariant (maxErr %.2e, fs=%g)\n", maxErr, fs);
+
+    auto peakOf = [](const std::vector<float>& v) {
+        double p = 0.0;
+        for (float s : v) p = std::max(p, static_cast<double>(std::fabs(s)));
+        return p;
+    };
+
+    // The reference: 128-aligned, out-of-place. This is the stream the goldens,
+    // the worklet and latencySamples() are all defined against.
+    auto ref128 = [&](const std::vector<float>& sig) {
+        return renderCabSegmented(sig, ir, fs, [] { return 128; }, false);
+    };
+    const std::vector<float> refImp = ref128(impulse);
+    const std::vector<float> refPluck = ref128(pluck);
+    const double peakImp = peakOf(refImp);
+    const double peakPluck = peakOf(refPluck);
+    assert(peakImp > 0.01 && peakPluck > 0.01 && "reference render is silent — test is vacuous");
+
+    // The reference itself must still honour the latency contract: nothing before
+    // the impulse position + one partition. (Pins that the FIFO did not silently
+    // add latency to the aligned path.)
+    for (int i = 0; i < 7 + 128; ++i)
+        assert(std::fabs(refImp[static_cast<size_t>(i)]) < 1e-7 &&
+               "aligned render violates the one-partition latency contract");
+
+    auto maxDiff = [&](const std::vector<float>& a, const std::vector<float>& b) {
+        double m = 0.0;
+        for (int i = 0; i < n; ++i)
+            m = std::max(m, static_cast<double>(std::fabs(a[static_cast<size_t>(i)] -
+                                                         b[static_cast<size_t>(i)])));
+        return m;
+    };
+
+    // 1 exercises the pathological per-sample host; 4096 is bigger than a
+    // partition AND bigger than the stack arrays this code used to keep; 96/100/441
+    // are real DAW/driver sizes that are not multiples of 128.
+    const int sizes[] = {1, 64, 96, 100, 128, 441, 4096};
+    double worst = 0.0;
+    for (int bs : sizes) {
+        for (int ip = 0; ip < 2; ++ip) {
+            const bool inPlace = (ip == 1);
+            const double eImp =
+                maxDiff(refImp, renderCabSegmented(impulse, ir, fs, [bs] { return bs; }, inPlace));
+            const double ePluck =
+                maxDiff(refPluck, renderCabSegmented(pluck, ir, fs, [bs] { return bs; }, inPlace));
+            if (eImp != 0.0 || ePluck != 0.0) {
+                std::printf("  [!!] block=%d inPlace=%d impulse maxErr %.2e (ref peak %.2e), "
+                            "pluck maxErr %.2e (ref peak %.2e)\n",
+                            bs, ip, eImp, peakImp, ePluck, peakPluck);
+                std::fflush(stdout);  // the assert below aborts; don't lose the number
+            }
+            // Exact: a different segmentation makes the SAME processBlock calls on
+            // the SAME samples in the SAME order, so the only thing that changes is
+            // which FIFO slot a float is copied out of. Anything nonzero is a bug.
+            assert(eImp == 0.0 && "convolver output depends on block segmentation");
+            assert(ePluck == 0.0 && "convolver output depends on block segmentation");
+            worst = std::max(worst, std::max(eImp, ePluck));
+        }
+    }
+
+    // A host whose buffer size changes every callback (variable-block hosts, and
+    // anything doing tempo-synced splits). Zero- and negative-length calls are
+    // interleaved and must be no-ops that do not perturb the stream.
+    for (int ip = 0; ip < 2; ++ip) {
+        uint32_t rng = 0x9E3779B9u;
+        CabConvolver cab;
+        cab.prepare(fs, ir.data(), static_cast<int>(ir.size()), fs, 128);
+        const bool inPlace = (ip == 1);
+        std::vector<float> got = inPlace ? pluck : std::vector<float>(static_cast<size_t>(n), 0.0f);
+        int off = 0;
+        while (off < n) {
+            rng = rng * 1664525u + 1013904223u;
+            // Degenerate frame counts, on the same buffer position, must do nothing.
+            cab.process(inPlace ? got.data() + off : pluck.data() + off, got.data() + off, 0);
+            cab.process(inPlace ? got.data() + off : pluck.data() + off, got.data() + off, -17);
+            const int s = std::min(1 + static_cast<int>((rng >> 13) % 300u), n - off);
+            cab.process(inPlace ? got.data() + off : pluck.data() + off, got.data() + off, s);
+            off += s;
+        }
+        const double eVary = maxDiff(refPluck, got);
+        if (eVary != 0.0) {
+            std::printf("  [!!] varying-block inPlace=%d pluck maxErr %.2e (ref peak %.2e)\n",
+                        ip, eVary, peakPluck);
+            std::fflush(stdout);
+        }
+        assert(eVary == 0.0 && "convolver output depends on block segmentation");
+        worst = std::max(worst, eVary);
+    }
+
+    std::printf("  [ok] convolver segmentation-invariant: blocks 1/64/96/100/128/441/4096 + "
+                "random-varying, in-place and out-of-place, all bit-identical to the 128-aligned "
+                "reference (maxErr %.2e, ref peaks %.3f/%.3f, fs=%g)\n",
+                worst, peakImp, peakPluck, fs);
 }
 
 // --- Test 7: no zipper noise on a volume sweep during a sine. -----------------
