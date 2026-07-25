@@ -63,7 +63,20 @@
 // collapses to a Thevenin from the driving node. Warm-start = the previous
 // sample's solution (RC constants are ms, the step is µs, so 2–4 iterations
 // converge). Iteration cap + per-iteration step clamps + a clamped exp guarantee
-// no NaN/divergence on a ±10 V slam (see the .cpp and the stability test).
+// no NaN/divergence on a ±20 V slam (see the .cpp and the stability test).
+//
+// The loop exits on the KCL RESIDUAL reaching kNewtonResidualTolA (1e-17 A — the
+// .cpp carries the measured derivation and the accuracy trade), so a warm start that
+// is already the solution costs ONE system evaluation and ZERO iterations. Before
+// that early-out existed, an already-converged sample was the solver's WORST case:
+// the backtracking line search accepts only a STRICT residual decrease, which is
+// unsatisfiable at the floating-point floor, so it burned all 30 backtracks — 31
+// evaluations to reproduce the answer it already had. That is why the Muff cost ~3x
+// more CPU when you were NOT playing than when you were (audit finding 12, docs §34,
+// fixed 2026-07-25). The early-out is NOT bit-identical to the old solver — it
+// declines sub-picovolt refinement the old one performed — but it is 7.4 dB inside
+// the project's -120 dBFS solver-accuracy gate, measured every run by
+// test_tube_solver.cpp. The DC operating-point solve deliberately opts out.
 //
 // The stage is run at whatever rate prepare() is given: MuffModel prepares its four
 // BjtStages at the OVERSAMPLED rate and drives them per oversampled sample through
@@ -137,6 +150,13 @@ public:
     double quiescentBaseVoltage() const { return vbQ_; }       // Vb_q (V)
     double quiescentEmitterVoltage() const { return veQ_; }    // Ve_q (V)
     double quiescentCollectorCurrent() const { return icQ_; }  // Ic_q (A)
+    // High-water mark of Newton iterations that actually MOVED the iterate, since
+    // prepare()/reset(). Guaranteed <= kMaxNewtonIter (it used to be able to report
+    // kMaxNewtonIter + 1, because the solver returned `it + 1` even when the loop
+    // exhausted the cap without taking a step — audit finding 12's secondary note).
+    // 0 is the healthy PARKED reading: with no input the warm start is already the
+    // solution and the residual early-out returns without iterating, which is the
+    // property test_muff_model.cpp block "idle solver cost" pins.
     int lastMaxNewtonIterations() const { return lastMaxIters_; }
     static constexpr int kMaxNewtonIter = 60;
 

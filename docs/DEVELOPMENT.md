@@ -4821,7 +4821,7 @@ core source); the *ranking* is the point. Post-pass numbers:
 | jcm800 (valve amp) | 1.96× | 51.1 % | 1.14× |
 | twin (valve amp) | 2.90× | 34.5 % | 1.14× |
 | ac30 (valve amp) | 3.80× | 26.3 % | 1.12× |
-| muff (BJT fuzz) | 4.10× | 24.4 % | 1.06× |
+| muff (BJT fuzz) | 4.94× | 20.3 % † | 1.06× |
 | rat (dist pedal) | 35.2× | 2.8 % | 1.80× |
 | sd1 / screamer (overdrive) | ~43× | 2.3 % | ~2.17× |
 | gold (clean-blend drive) | — | — | 1.80× |
@@ -4832,6 +4832,14 @@ core source); the *ranking* is the point. Post-pass numbers:
 | clean amp alone (JC-120, mono) | 1403.6× | 0.07 % | 1.00× |
 | output limiter | 1677.3× | 0.06 % | 1.00× |
 | oversampler alone, 4× (up+down) | — | — | 2.72× |
+
+† **muff row updated 2026-07-25** by the residual early-out (§34, audit finding 12).
+Measured interleaved against the pre-fix solver on the same idle machine in the same
+session, three runs each: **3.81–3.93× / 25.4–26.2 % → 4.78–4.94× / 20.3–20.9 %**.
+The row previously read 4.10× / 24.4 %, measured on different hardware — so take the
+before→after *pair* as the result and the absolute figure as machine-dependent. Note
+this bench riff decays to silence between plucks, so it under-reports the fix: the
+headline win is on **silence**, where the same change is ~13.7× (§34).
 
 Reading it: the **valve amps are the budget** — a valve head plus a dirt pedal,
 cab, and reverb is dominated by the head alone; everything linear is noise. The
@@ -6066,6 +6074,8 @@ asserting the check does *not* fire (a healthy tree; an edit under `core/tests/`
 that pin the toolchain sub-check as advisory, which call the exported `checkArtifact()`
 directly rather than the CLI.
 
+---
+
 ## 32. Audit perf item 2 — the halfband resampler's per-tap integer division
 
 **The finding** (`docs/audits/2026-07-24-project-audit.md:309`, "Fidelity-neutral
@@ -6468,3 +6478,181 @@ network really does go subnormal**, so if a future `chowdsp` bump changes that, 
 - **`web/public/generated/*` must be rebuilt** — `core/` changed, so the committed WASM
   artifact is stale until `bash scripts/build-wasm.sh` runs. This slice fixes a cliff that is
   *worst* on WASM (no FTZ at all), so it is worth nothing to a player until the artifact ships.
+
+---
+
+## 34. Audit finding 12 — the Muff cost more CPU when you were *not* playing
+
+**Slice:** `perf/muff-newton-earlyout` (2026-07-25). **Touches:** `core/src/dsp/BjtStage.cpp`,
+`core/include/clipper/dsp/BjtStage.h`, `core/include/clipper/dsp/TubeSolverMode.h`,
+`core/tests/test_muff_model.cpp`, `core/tests/test_tube_solver.cpp`. No component value, no
+Ebers-Moll change, no damping-strategy change. Goldens untouched.
+
+### The symptom, and why the two obvious explanations were both wrong
+
+The audit measured the Muff at **59 % of one core on silence vs 20 % while playing** — 3.2×
+*more* expensive idle than in use. It ruled out the two things one would reach for first:
+forcing hardware FTZ/DAZ changes nothing (so not denormals), and the iteration count does not
+rise (so not extra Newton iterations).
+
+Both rebuttals hold up, and the iteration count is even more damning than the audit thought.
+On this build a parked stage reports **1** Newton iteration (0 once the off-by-one below is
+fixed) against **8–13** on signal. Idle did *strictly less* Newton work than playing and still
+cost ~2.7× the wall time.
+
+### The cause: an unsatisfiable line search
+
+`dampedNewton` accepts a trial step only on a **strict** residual decrease:
+
+```cpp
+if (infNorm3(rt) < cur * (1.0 - 1e-4 * lam)) break;
+lam *= 0.5;
+```
+
+and its only exit was on **step size** (`|lam·dx| < 1e-9` V). There was no residual-based
+early-out. At the quiescent point the residual is already at the floating-point floor, so *no*
+trial step can make it strictly smaller — the search runs all 30 backtracks, every iteration,
+and each backtrack is a full Ebers-Moll + diode system evaluation with 4 `std::exp` calls.
+
+Instrumented, per solve (4 stages × 4× oversampling × every sample):
+
+| input | system evaluations / solve | iterations exhausting all 30 backtracks |
+|---|---|---|
+| silence | **31.00** | **100 %** |
+| tiny (0.001) | 4.10–5.41 | 1.5–2.1 % |
+| hot DI (0.20) | 6.05–6.65 | 1.9–2.0 % |
+| ±20 V slam | 9.92–13.47 | 6.2–10.9 % |
+
+31 evaluations, 124 `exp` calls, per stage per sample, to reproduce an answer already in hand.
+
+### The fix, and the tolerance
+
+A residual-norm early-out at the top of the iteration: if the KCL residual ∞-norm is at
+tolerance, return without solving or line-searching. The residuals are **node currents**, so
+the tolerance is a **current in amps** — `kNewtonResidualTolA`, scaled by the existing
+`tubeSolverTolScale()` rather than a second knob (`TubeSolverMode.h`'s scope note now covers
+the BJT solver too).
+
+The audit also suggested short-circuiting the backtracking when `cur` is already at tolerance.
+**That is dead code** once the top-of-loop check exists — `cur` is `infNorm3(r)` with `r`
+unchanged between the two points, so the branch is unreachable. Not added.
+
+**This is an accuracy trade, and the slice's main finding is that it cannot be otherwise.**
+The pre-fix solver drove the residual all the way to the floating-point floor, so *any*
+early-out that fires declines refinement it performed. Bit-identity was the acceptance bar and
+it is unreachable. Swept against the pre-fix solver over 25 renders (5 sustain × 5 input
+levels, 2 s each at 48 kHz, byte-compared):
+
+| `kNewtonResidualTolA` | fires when parked? | worst difference vs the pre-fix solver |
+|---|---|---|
+| 1e-13 | yes | −81.8 dBFS abs / −89.0 dB rel |
+| 1e-14 | yes | −104.3 / −111.8 |
+| 1e-15 | yes | −108.5 / −116.0 |
+| 1e-16 | yes | −124.3 / −129.5 |
+| **1e-17** | **yes** | **−127.4 / −134.1** ← chosen |
+| 1e-18 | **no** | −132.5 / −137.7 |
+| 1e-19 | **no** | bit-identical (never fires) |
+
+The floor of the window is the **idle residual ceiling**: the largest residual a parked stage
+ever presents, measured at **2.0600e-18 A**. Below that the early-out stops firing and the
+pathology returns. That ceiling is remarkably stable — 2.0600e-18 to five figures at every one
+of 44.1/48/88.2/96/192 kHz × 1/2/4/8 oversampling × sustain MIN/mid/MAX — because at the parked
+point the two large companion terms `gCin·(vin−Vb)` and `histCin` cancel exactly, leaving the
+residual set by the DC branch currents (~0.9 mA scale) and not by `gCin = Cin/T`. So the margin
+does not erode with rate or oversampling factor.
+
+**1e-17 is the tightest value that still fires**: 4.9× above the idle ceiling, and **7.4 dB
+inside the project's established −120 dBFS solver-accuracy gate** — the same bar every valve
+solver's early exit is held to (§25). Per solve the error is 1e-17 A ÷ ~1.9e-4 S ≈ **53
+femtovolts** of node voltage; the −127 dBFS output figure is that 53 fV amplified by the Muff's
+four cascaded high-gain stages and accumulated through their recursive state, i.e. a
+cascade-gain figure rather than a per-solve one.
+
+**The DC operating-point solve deliberately opts out** (`tol = 0.0`). It runs once inside
+`prepare()`, so early-outing it buys nothing measurable — and it is not free, because its final
+iterate seeds `vbQ_`/`vcQ_`/`veQ_` and `settleDC()`, so stopping it earlier shifts the quiescent
+point every render is referenced to. Measured, that shift contributed ~3× more output
+difference than the per-sample early-out alone. `tol = 0.0` makes `cur <= tol` fire only on an
+exactly-zero residual, where the Newton step is exactly zero, so opting out preserves the old
+behaviour exactly rather than approximately.
+
+### Secondary fix: an iteration count above its own cap
+
+`dampedNewton` returned `it + 1`, which over-reports by one when the loop exhausts `maxIter`.
+This was not hypothetical: a ±20 V slam at 96 kHz × 4 made `lastMaxNewtonIterations()` report
+**61** against `kMaxNewtonIter == 60`. It now counts iterations that actually moved the iterate,
+so a parked stage reports 0 and an exhausted loop reports exactly 60.
+
+### Measured results
+
+**Silence vs signal**, 10 s of audio at 48 kHz in 128-frame blocks, interleaved before/after on
+an idle machine, two passes (wall ms):
+
+| sustain | input | before | after | speedup |
+|---|---|---|---|---|
+| 0.00 | silence | 6797–6820 | 498–501 | **13.6×** |
+| 0.00 | hot 0.20 | 2375–2511 | 1857–1863 | 1.28× |
+| 0.60 | silence | 6871–7002 | 494–498 | **13.9×** |
+| 0.60 | hot 0.20 | 2479–2534 | 2007–2108 | 1.22× |
+| 1.00 | silence | 6837–6982 | 488–534 | **13.4×** |
+| 1.00 | hot 0.20 | 2598–2653 | 2114–2186 | 1.21× |
+
+**Silence/signal ratio 2.58–2.87× → 0.23–0.27×.** Idle is now *cheaper* than playing, which is
+the expected ordering; the audit's target of ~1.0 is beaten because the fix removes 30 of 31
+evaluations rather than merely equalising. System evaluations per solve on silence:
+**31.00 → 1.00**. Signal also improves (1.21–1.28×) because program material spends a lot of
+its time in decayed, already-converged samples.
+
+`clipper-bench --unit muff`: **3.81–3.93× realtime / 25.4–26.2 % → 4.78–4.94× / 20.3–20.9 %**
+(§25.3 table updated).
+
+### What is pinned, and proved to have teeth
+
+- **`clipper_muff_tests` → `testIdleSolverCost`** — a parked stage does **0** Newton iterations,
+  across 48 rate × oversampling × sustain combinations. Asserted as a solver-work count, not a
+  wall-clock time, so it is not flaky on a shared CI box. It is checked after driving real
+  signal through first, so it covers a stage that fell quiet after being played rather than one
+  sitting on its `prepare()`-time park.
+- **`clipper_tube_solver_tests`** — the Muff joins the production-vs-reference-mode −120 dBFS
+  gate. Reference mode scales the tolerance to 1e-20, *below* the idle ceiling, so the early-out
+  never fires there and the reference render **is** the pre-fix solver: this measures the
+  early-out's true audio cost on every run. Measured −138.5 to −228.8 dBFS across sustain
+  MIN/mid/MAX at hot-DI and loud input.
+- **Perturbation check** (both directions, confirmed red then restored green):
+  `kNewtonResidualTolA = 1e-19` → `clipper_muff_tests` RED (early-out stops firing);
+  `= 1e-11` → `clipper_tube_solver_tests` RED (truncates real work); restoring the `it + 1`
+  over-report → `clipper_muff_tests` RED.
+
+### Two traps this slice hit, recorded so the next person does not
+
+1. **A whole bit-identity sweep was vacuous.** `MuffModel`'s `PARAM_VOLUME` smoother defaults
+   to **0**, so a Muff driven only through `PARAM_SUSTAIN` renders **digital silence** — and 25
+   of 25 renders compared byte-identical for the wrong reason. The `assert(peak > 0.01)` guard
+   in `test_tube_solver.cpp` is what caught it and is commented to stay. Any harness that
+   renders a pedal must assert its output is non-silent before comparing anything.
+2. **The worst case was not the obvious one.** The early-out's audio cost at hot-DI level is
+   −228 dBFS; at a *loud* input (riff ×5) and sustain 0.70 it is −127 dBFS, 19 dB worse. A test
+   that only ever drove hot DI would have reported a number 100 dB better than the truth. The
+   gate now drives MIN/mid/MAX sustain at **both** levels.
+
+### Newly found, left as an XFAIL
+
+Widening the old ±10 V single-oversampling-factor slam test to **±20 V across every rate ×
+factor** exposed a pre-existing defect: **6 of 16 combinations exhaust the 60-iteration cap**
+(2× oversampling at all four base rates, and 4× at 88.2 and 96 kHz). Output stays finite and
+bounded — this is not the old cascade blow-up — but at those samples the solve has not
+converged, so the audio there is not the circuit's answer. Confirmed pre-existing by measuring
+the identical counts on the pre-early-out solver (which reported the cap as 61). The shipped
+desktop path (4× at 44.1/48 kHz) converges in 17–18 iterations, but 96 kHz × 4 is a real user
+configuration. Recorded as `muff-slam-exhausts-newton-cap` in `clipper_muff_tests`' XFAIL
+ledger; **do not** paper over it by raising `kMaxNewtonIter`, which buys iterations rather than
+convergence.
+
+### Not affected
+
+The control-rate parameter-sampling XFAIL still measures the Muff at **1.473 absolute inside
+25 ms**, unchanged — it is about which smoothed value a chunk keeps, not about the solver, so
+it stays open. The valve solvers (`TriodeStage`, the three power amps) use a plain step-size
+exit with **no** backtracking line search, so finding 12 does not apply to them.
+
+**The WASM artifact must be rebuilt** (`bash scripts/build-wasm.sh`) — `core/` changed.
