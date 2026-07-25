@@ -33,6 +33,7 @@
 #include <array>
 #include <vector>
 
+#include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/TriodeStage.h"
 
 namespace clipper::dsp {
@@ -75,6 +76,14 @@ public:
     void process(const float* in, float* out, int numFrames);
 
     double sourceImpedance() const { return rs_; }
+
+    // Anti-denormal diagnostic (Denormal.h, docs §33) — not used by the audio path.
+    // All six cap companions rest at zero (including the vC_/iC_ pair for the series
+    // input coupling cap, which the other two stacks do not have), so after a silent
+    // tail this must be EXACTLY 0.0.
+    double maxAbsRestingState() const {
+        return maxAbsState(vC_, iC_, vT_, iT_, vB_, iB_);
+    }
 
 private:
     void rebuild();  // recompute the 5x5 conductance matrix + its inverse

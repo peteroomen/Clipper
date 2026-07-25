@@ -382,6 +382,21 @@ inline float TriodeStage::processSampleOS(float xf) {
     const double Vgk = Vg - Vk;
     const GridEval g = gridEval(Vgk, cfg_);
     const double vGL = Vg + g.Ig * cfg_.Rg;  // grid-leak node (drop across stopper)
+    // NO anti-denormal guard on the three cap companions, deliberately (Denormal.h /
+    // audit finding 11). All three REST AT A NONZERO DC OPERATING POINT, so none can
+    // reach the subnormal range:
+    //   vCk_ -> vkQuiescent_  (the cathode cap sits charged at the bias voltage)
+    //   vCo_ -> vaQuiescent_  (the output coupling cap sits charged at the plate DC)
+    //   vCc_ -> −vGL at idle. The audit's list expected this one to decay to zero, and
+    //     it does NOT: the grid-leak node parks at the grid-current bias point, so
+    //     vCc_ measures 8.15e-4 V after 20 SECONDS of digital silence, with a smallest
+    //     nonzero magnitude of 1.40e-5 and ZERO subnormal blocks. Measured with
+    //     couplingCapVoltage(), which is public precisely so claims like this can be
+    //     checked rather than argued (docs §33).
+    // Nor do the Newton warm starts va_/vg_/vk_ committed just above: those are solver
+    // seeds at 1e2-1e2 V, not accumulators. That is why this file has no flush in its
+    // hot loop despite being the single most-executed loop in the core — a guard that
+    // cannot fire is not free here, it is 3 compares per Newton sample for nothing.
     vCc_ = x - vGL;                          // input coupling-cap V (blocking state)
     vCk_ = Vk;                               // cathode-cap history
 

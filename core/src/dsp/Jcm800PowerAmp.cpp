@@ -6,6 +6,7 @@
 
 #include "clipper/dsp/Jcm800PowerAmp.h"
 
+#include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/ParamGuard.h"
 #include "clipper/dsp/TubeSolverMode.h"
 
@@ -344,11 +345,15 @@ inline float Jcm800PowerAmp::processSampleOS(float xf) {
     double vSec = vPriDiff / otTurnsRatio();
     // OT bandwidth: HF low-pass then LF high-pass (one-pole TPT).
     {
+        // Anti-denormal (Denormal.h) on both TPT states. vSec rests at zero, so on
+        // silence these ring down into the double subnormal range and stick. The
+        // per-sample `vLp`/`vLp2` values are untouched, so the audio of the sample that
+        // trips the guard is bit-identical. Audit finding 11, docs §33.
         const double vLp = otLpS_ + otLpA_ * (vSec - otLpS_);
-        otLpS_ = 2.0 * vLp - otLpS_;
+        otLpS_ = flushDenormal(2.0 * vLp - otLpS_);
         vSec = vLp;
         const double vLp2 = otHpS_ + otHpA_ * (vSec - otHpS_);
-        otHpS_ = 2.0 * vLp2 - otHpS_;
+        otHpS_ = flushDenormal(2.0 * vLp2 - otHpS_);
         vSec = vSec - vLp2;  // high-pass = input − low-pass
     }
 
@@ -365,8 +370,12 @@ inline float Jcm800PowerAmp::processSampleOS(float xf) {
     // 6. Presence-shaped feedback (unit delay for the next sample). β(f) reduces HF
     //    feedback: shaped = (1−p)·vSec + p·LP(vSec). p=0 → full (dark), p=1 → HF free.
     const double vLpP = presLpS_ + presLpA_ * (vSec - presLpS_);
-    presLpS_ = 2.0 * vLpP - presLpS_;
-    fbDelay_ = (1.0 - presence_) * vSec + presence_ * vLpP;
+    // Anti-denormal (Denormal.h): the presence low-pass state and the feedback unit
+    // delay both rest at zero. fbDelay_ matters most of the three — it is a genuine
+    // FEEDBACK node, so a subnormal parked there is re-multiplied by beta and fed back
+    // into the phase inverter every single sample. Audit finding 11, docs §33.
+    presLpS_ = flushDenormal(2.0 * vLpP - presLpS_);
+    fbDelay_ = flushDenormal((1.0 - presence_) * vSec + presence_ * vLpP);
 
     // Normalize to 1.0 == full scale.
     const double outNorm = vSec / kFullScaleSecV;
