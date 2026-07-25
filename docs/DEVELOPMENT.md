@@ -6674,6 +6674,138 @@ exit with **no** backtracking line search, so finding 12 does not apply to them.
 
 ---
 
+## 35. Audit finding 6 — parameter smoothing on the valve amps
+
+**Slice:** `fix/valve-amp-smoothing` (2026-07-25). **Touches:**
+`core/include/clipper/dsp/OnePoleSmoother.h`, the three valve preamps
+(`Jcm800Preamp`, `TwinPreamp`, `Ac30Preamp`) and their tone stacks,
+`core/tests/support/StepSlew.h`, `core/tests/test_param_smoothing.cpp`.
+
+**The finding** (audit finding 6). `OnePoleSmoother` was used by the pedals, the clean
+`AmpModel`, chorus, phaser and reverb — and by **none** of `Jcm800*`, `Twin*`, `Ac30*`,
+which assigned knob values straight to state. Both `web/worklet/clipper-processor.js`
+and `native/src/ClipperEngine.h` carry a comment saying *"Plain knob moves are NOT
+bracketed — the core's ~5 ms one-pole smoothing already declicks those."* That was true
+for pedals and **false for exactly the three flagship amps**, which sit behind up to
+76 dB of gain. In the web app a knob drag pushes values at pointer rate, so it was a
+continuous stream of these steps.
+
+### What the metric is, and why the audit's version was not enough
+
+The project's own definition (`native/tests/chain_edit_test.cpp`): a steady 220 Hz
+sine, the largest sample-to-sample step in a window around the knob move, divided by
+the signal's own steady-state slew measured before it. `core/tests/support/StepSlew.h`
+now holds it once, shared. Two refinements the audit's table needed:
+
+* **Worst of 16 successive step positions.** A step delivered at an output zero
+  crossing produces no discontinuity at all, so a single fixed position measures luck
+  rather than the amp. This is the same lesson as the §29 "land the change mid-render"
+  rule, applied to a parameter instead of a topology change.
+* **Two step sizes** — a `0.05` arrow-key step (`KEY_STEP` in `Knob.tsx`) and a `0.40`
+  preset/assistant-sized jump, because they exercise different parts of the ramp.
+
+### Measured
+
+The four knobs the audit named, its figure → this slice's 0.40-jump ratio:
+
+| knob | audit (unsmoothed) | after |
+|---|---|---|
+| AC30 VOLUME — its primary overdrive control | **38.9×** | **0.98×** |
+| Twin VOLUME | **29.5×** | **0.95×** |
+| JCM800 MASTER | **10.3×** | **0.96×** |
+| JCM800 GAIN | **6.8×** | **0.90×** |
+| clean120 VOLUME *(already smoothed — control)* | 2.0× | 0.99× |
+
+A ratio **below 1.0** means the seam step is smaller than the signal's own steady-state
+slew: the knob move is buried under the waveform's natural sample-to-sample motion.
+
+Worst case across every knob on all three amps: **1.11×** (0.05 step) / **2.07×**
+(0.40 jump), against the already-compliant clean amp's **1.05× / 2.84×** measured in
+the same run. The valve amps now sit at or below the amp that was already correct.
+
+**The same-metric before number is in the suite**, not just in the audit: block C
+splices the identical move with no smoothing and measures **22.95×** (jcm800 GAIN),
+**26.80×** (MASTER), **28.46×** (twin VOLUME), **27.79×** (ac30 VOLUME) against a 12×
+bar. ~28× → ~2×, same metric, same signal, same binary.
+
+### Fidelity: bit-identical for any static render, and that is enforced
+
+`OnePoleSmoother` is now `OnePoleSmootherT<T>`; `OnePoleSmoother` is the **unchanged**
+float instantiation used by all eleven existing users, and `OnePoleSmootherD` is the
+double sibling the valve amps use. This is what makes the change provably bit-neutral
+rather than merely close: the valve amps carry pot fractions and post-taper scale
+factors as **doubles** all the way to the multiply, so a settled double smoother
+returns *exactly* the constant the code used before. Smoothing them through a float
+would perturb the last mantissa bits of a static render, which both the goldens and
+`identical_core_test` forbid.
+
+`settled()` (new) reports when the ramp has landed exactly on target, so a parked
+smoother is a no-op and the tone-stack matrix is **not rebuilt at all** while idle.
+
+* **All five goldens `UNCHANGED`, worst band 0.00 dB.**
+* Block D asserts bit-identity for knobs set *after* `prepare()` versus before —
+  `max |Δ| 0.000e+00` on all three valve amps. `clean120` reports `DIFFERS`
+  (3.304e-02), the control proving the check distinguishes the two cases instead of
+  passing vacuously.
+* Core ctest **26 → 27** targets (`clipper_param_smoothing_tests`).
+
+**Deferred snap** is what buys that. `prepare()` marks the unit unprimed and the first
+`process()` snaps every smoother onto its target. The house convention is "push
+targets, then prepare", but the C ABI prepares inside `amp_create` and the params
+arrive *afterwards* — without the deferred snap, every golden and every `amp_*` render
+would ramp for 8 ms from the prepare-time defaults.
+
+### Tone stacks: control-rate rebuild, not matrix interpolation
+
+The three stacks smooth the *knob fractions* per sample and re-derive the 5×5
+conductance matrix and its inverse at a **32-sample control rate** — what `AmpModel`
+already does with its four biquads. Interpolating between two matrix inverses was
+rejected: the inverse of a conductance matrix is **not affine in the pot fraction**, so
+a blend of two inverses is not the inverse of any network. The cap states are physical
+node voltages and currents, and carrying them across a small matrix perturbation *is*
+what a real pot wiper does, so no state migration is needed.
+
+### CPU: no regression, measured as an interleaved same-machine A/B
+
+3 runs each, alternating binaries; run 1 is a warm-up outlier on both sides, so these
+are runs 2–3, as % of one 48 kHz stream:
+
+| unit | `main` | this slice | |
+|---|---|---|---|
+| jcm800 | 58.21 / 58.04 | 58.48 / 58.49 | +0.6 % relative |
+| twin | 39.70 / 39.42 | 38.95 / 38.57 | slice faster |
+| ac30 | 33.86 / 34.83 | 33.74 / 33.65 | slice faster |
+
+Two of three move faster and the third moves +0.6 %, inside a 2.2-point run-to-run
+spread on `main` alone.
+
+**Read this before quoting an absolute bench number.** The JCM800 measures ~58 % here
+against the **53.3 %** recorded in §32, which looks like a 5-point regression from this
+slice and is not: `main` measures 58.04–60.25 % on the *same machine in the same
+session*. §32's absolute column was taken on different hardware. The only defensible
+form of this claim is an interleaved same-machine A/B.
+
+### Not smoothed, on measurement
+
+`Jcm800PowerAmp` PRESENCE and `Ac30PowerAmp` TOP CUT are already applied per sample and
+both measure at or below the clean amp's baseline, so a smoother there would be pure
+cost. They are pinned by the new test regardless, so a regression cannot creep in.
+
+### Teeth, proven by perturbation
+
+Reverting `gainSm_.next()` / `masterSm_.next()` to `.target()` — a once-per-block
+constant, exactly the pre-fix behaviour — makes the suite fail on jcm800 GAIN at
+**6.23×** (0.05 step), **16.75×** (0.40 jump) and **27.49×** (0.40 drop), with a
+message naming audit finding 6. Restored, it passes again at the identical 1.11× /
+2.07×. The file was `touch`ed after both patch and restore: a restored backup carries
+the backup's mtime, `make` skips the rebuild, and you measure stale code (the trap
+recorded in §29).
+
+**The WASM artifact was rebuilt** — `core/` changed. sourceHash 71e5ce4f02fb…,
+65 inputs, 181571 bytes.
+
+---
+
 ## 36. Audit finding 15 — the diode ideality factor, and a reference fitted to the bug
 
 **This is a deliberate tone change.** The RAT is now ~5 dB louder and correspondingly

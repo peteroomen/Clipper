@@ -29,12 +29,30 @@ void FenderToneStack::prepare(double sampleRate) {
     geqT_ = 2.0 * kCt / T_;
     geqB_ = 2.0 * kCb / T_;
     geqM_ = 2.0 * kCm / T_;
-    reset();
-    dirty_ = true;
-    rebuild();
+    // Smoothers first: prepare() snaps each onto whatever target it already holds, so a
+    // knob pushed BEFORE prepare is honoured with no ramp (the house convention).
+    bassSm_.prepare(kKnobSmoothSeconds, sampleRate_);
+    midSm_.prepare(kKnobSmoothSeconds, sampleRate_);
+    trebleSm_.prepare(kKnobSmoothSeconds, sampleRate_);
+    reset();  // clears the cap states, snaps the knobs and rebuilds the matrix
 }
 
-void FenderToneStack::reset() { vT_ = iT_ = vB_ = iB_ = vM_ = iM_ = 0.0; }
+void FenderToneStack::reset() {
+    vT_ = iT_ = vB_ = iB_ = vM_ = iM_ = 0.0;
+    snapKnobs();
+}
+
+void FenderToneStack::snapKnobs() {
+    bassSm_.reset();
+    midSm_.reset();
+    trebleSm_.reset();
+    bass_ = bassSm_.value();
+    mid_ = midSm_.value();
+    treble_ = trebleSm_.value();
+    knobsMoving_ = false;
+    ctrlCounter_ = 0;
+    rebuild();
+}
 
 void FenderToneStack::setSourceImpedance(double rs) {
     rs_ = clampR(rs);
@@ -42,12 +60,14 @@ void FenderToneStack::setSourceImpedance(double rs) {
 }
 
 void FenderToneStack::setKnobs(double bass, double mid, double treble) {
-    // NaN-rejecting (std::clamp is transparent to NaN — audit finding 1).
+    // NaN-rejecting (std::clamp is transparent to NaN — audit finding 1). Sets the
+    // SMOOTHER TARGETS; the matrix follows at the control rate (audit finding 6).
     auto cl = [](double v) { return clampParam(v, 1.0e-3, 1.0 - 1.0e-3); };
-    bass_ = cl(bass);
-    mid_ = cl(mid);
-    treble_ = cl(treble);
-    dirty_ = true;
+    bassSm_.setTarget(cl(bass));
+    midSm_.setTarget(cl(mid));
+    trebleSm_.setTarget(cl(treble));
+    ctrlCounter_ = 0;
+    if (!(bassSm_.settled() && midSm_.settled() && trebleSm_.settled())) knobsMoving_ = true;
 }
 
 void FenderToneStack::rebuild() {
@@ -103,6 +123,23 @@ void FenderToneStack::process(const float* in, float* out, int numFrames) {
     enum { IN = 0, N2 = 1, N3 = 2, N4 = 3, OUT = 4 };
     const double gs = 1.0 / rs_;
     for (int n = 0; n < numFrames; ++n) {
+        // Knob smoothing (audit finding 6) — see MarshallToneStack::process.
+        if (knobsMoving_) {
+            const double b = bassSm_.next();
+            const double m = midSm_.next();
+            const double t = trebleSm_.next();
+            if (ctrlCounter_ == 0) {
+                if (b != bass_ || m != mid_ || t != treble_) {
+                    bass_ = b;
+                    mid_ = m;
+                    treble_ = t;
+                    rebuild();
+                }
+                if (bassSm_.settled() && midSm_.settled() && trebleSm_.settled())
+                    knobsMoving_ = false;
+            }
+            if (++ctrlCounter_ >= kCtrlBlock) ctrlCounter_ = 0;
+        }
         const double Vs = static_cast<double>(in[n]);
         const double IeqT = geqT_ * vT_ + iT_;
         const double IeqB = geqB_ * vB_ + iB_;
@@ -202,11 +239,28 @@ void TwinPreamp::prepare(double sampleRate, int maxBlockSize) {
     const double g = std::tan(M_PI * kBrightHz / sampleRate_);
     brightA_ = g / (1.0 + g);
     brightS_ = 0.0;
+
+    // VOLUME / BRIGHT smoothers (audit finding 6). primed_ = false defers a second
+    // snap to the first process(), covering knobs pushed AFTER prepare (the C ABI's
+    // order — see the header).
+    volSm_.prepare(kSmoothSeconds, sampleRate_);
+    brightSm_.prepare(kSmoothSeconds, sampleRate_);
+    volSm_.setTarget(volumeScale());
+    brightSm_.setTarget(bright_ ? 1.0 : 0.0);
+    primed_ = false;
+}
+
+void TwinPreamp::primeSmoothers() {
+    volSm_.reset();
+    brightSm_.reset();
+    tone_.snapKnobs();
 }
 
 void TwinPreamp::reset() {
     for (auto& s : stage_) s.reset();
     tone_.reset();
+    volSm_.reset();
+    brightSm_.reset();
     brightS_ = 0.0;
     lastOutPeak_ = 0.0;
 }
@@ -220,11 +274,15 @@ void TwinPreamp::setParameter(int paramId, float value) {
     // NaN-rejecting (ParamGuard.h) — audit finding 1.
     const double v = clampParam01(static_cast<double>(value));
     switch (paramId) {
-        case PARAM_VOLUME: volume_ = v; break;
+        // VOLUME/BRIGHT set the SMOOTHER TARGET, not the applied scale (finding 6).
+        case PARAM_VOLUME: volume_ = v; volSm_.setTarget(volumeScale()); break;
         case PARAM_BASS: bass_ = v; tone_.setKnobs(bass_, mid_, treble_); break;
         case PARAM_MID: mid_ = v; tone_.setKnobs(bass_, mid_, treble_); break;
         case PARAM_TREBLE: treble_ = v; tone_.setKnobs(bass_, mid_, treble_); break;
-        case PARAM_BRIGHT: bright_ = value >= 0.5f; break;
+        case PARAM_BRIGHT:
+            bright_ = value >= 0.5f;
+            brightSm_.setTarget(bright_ ? 1.0 : 0.0);
+            break;
         default: break;
     }
 }
@@ -232,9 +290,10 @@ void TwinPreamp::setParameter(int paramId, float value) {
 double TwinPreamp::volumeScale() const { return audioTaper(volume_); }
 
 void TwinPreamp::process(const float* in, float* out, int numFrames) {
-    const double vScale = volumeScale();
-    // Bright treble-bleed gain rises as volume falls (cap around the pot). Off = 0.
-    const double brightExtra = bright_ ? kBrightMax * (1.0 - vScale) : 0.0;
+    if (!primed_) {
+        primeSmoothers();
+        primed_ = true;
+    }
     lastOutPeak_ = 0.0;
     int off = 0;
     while (off < numFrames) {
@@ -247,8 +306,13 @@ void TwinPreamp::process(const float* in, float* out, int numFrames) {
         tone_.process(w, w, n);
         // V2 recovery stage.
         stage_[V2].process(w, w, n);
-        // VOLUME + BRIGHT treble-bleed.
+        // VOLUME + BRIGHT treble-bleed, both advanced PER SAMPLE (audit finding 6 —
+        // vScale used to be one constant per process() call). The bright treble-bleed
+        // gain rises as volume falls (cap around the pot); switch off == amount 0, and
+        // the `> 0.0` guard then skips the filter exactly as it always has.
         for (int i = 0; i < n; ++i) {
+            const double vScale = volSm_.next();
+            const double brightExtra = brightSm_.next() * kBrightMax * (1.0 - vScale);
             double x = static_cast<double>(w[i]) * vScale;
             if (brightExtra > 0.0) {
                 // One-pole high-pass -> add scaled highs (treble bleed).

@@ -39,6 +39,7 @@
 #include <array>
 #include <vector>
 
+#include "clipper/dsp/OnePoleSmoother.h"
 #include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/TriodeStage.h"
 
@@ -62,6 +63,13 @@ namespace clipper::dsp {
 //   RM  : N4 -(m*RM)- GND            (mid pot as rheostat to ground)
 //   Cm  : N4 - GND                   (mid cap, across the mid pot)
 // (t,m,l = treble,mid,bass pot fractions in [0,1].)
+//
+// KNOB SMOOTHING (2026-07-25, audit finding 6 — docs §35): identical treatment to
+// MarshallToneStack — the three pot fractions are one-pole smoothed (~8 ms) per sample
+// and the matrix inverse is re-derived at a 32-sample control rate, only while a
+// smoother is moving. See the note on MarshallToneStack in Jcm800Preamp.h for why the
+// cap states are (correctly) carried across a rebuild and why blending two matrix
+// inverses was rejected.
 // ---------------------------------------------------------------------------
 class FenderToneStack {
 public:
@@ -80,6 +88,9 @@ public:
     void setKnobs(double bass, double mid, double treble);  // each in [0,1]
     void process(const float* in, float* out, int numFrames);
 
+    // Snap the knob smoothers onto their targets and re-derive the matrix, no ramp.
+    void snapKnobs();
+
     double sourceImpedance() const { return rs_; }
 
     // Anti-denormal diagnostic (Denormal.h, docs §33) — not used by the audio path.
@@ -94,10 +105,16 @@ private:
     void rebuild();  // recompute the 5x5 conductance matrix + its inverse
 
     static constexpr int N = 5;  // nodes: IN=0, N2=1, N3=2, N4=3, OUT=4
+    static constexpr double kKnobSmoothSeconds = 0.008;  // ~8 ms, as AmpModel
+    static constexpr int kCtrlBlock = 32;  // matrix re-derivation interval, in samples
+
     double sampleRate_ = 44100.0;
     double T_ = 1.0 / 44100.0;
     double rs_ = 38.0e3;   // high-Z plate source (Ra||rp), not a follower
-    double bass_ = 0.5, mid_ = 0.5, treble_ = 0.5;
+    OnePoleSmootherD bassSm_, midSm_, trebleSm_;
+    double bass_ = 0.5, mid_ = 0.5, treble_ = 0.5;  // what the matrix was built from
+    bool knobsMoving_ = false;
+    int ctrlCounter_ = 0;
     double geqT_ = 0.0, geqB_ = 0.0, geqM_ = 0.0;  // cap companion conductances
     std::array<std::array<double, N>, N> Ginv_{};  // inverse of the node matrix
     double vT_ = 0.0, iT_ = 0.0;   // Ct  (IN-N2)
@@ -148,7 +165,9 @@ public:
     double stageQuiescentCurrent(int stage) const;
     double toneSourceImpedance() const { return toneRs_; }
 
-    double volumeScale() const;  // audio-taper wiper for the current VOLUME knob
+    // The audio-taper wiper for the current VOLUME knob — i.e. the smoother's TARGET,
+    // the steady-state scale the knob asks for (what an analytic gain test compares to).
+    double volumeScale() const;
     static double audioTaper(double x);  // (e^{k x}-1)/(e^k-1), k=4 — exposed to tests
 
     const TriodeStage::Config& stageConfig(int stage) const { return cfg_[stage]; }
@@ -183,6 +202,10 @@ public:
 
 private:
     void configureStages();
+    // Deferred prime — see the identical note on Jcm800Preamp::primeSmoothers.
+    void primeSmoothers();
+
+    static constexpr double kSmoothSeconds = 0.008;  // ~8 ms, as AmpModel
 
     double sampleRate_ = 44100.0;
     int maxBlockSize_ = 128;
@@ -193,6 +216,12 @@ private:
     FenderToneStack tone_;
 
     double volume_ = 0.5;
+    // VOLUME wiper and the BRIGHT switch's 0..1 amount, both smoothed and applied PER
+    // SAMPLE (audit finding 6). VOLUME measured the worst of the Twin's knobs; BRIGHT
+    // is a switch, and fading its treble-bleed in matches what AmpModel does with its
+    // own BRIGHT (a smoothed shelf target rather than a hard shelf swap).
+    OnePoleSmootherD volSm_, brightSm_;
+    bool primed_ = false;
     double bass_ = 0.5, mid_ = 0.5, treble_ = 0.5;
     bool bright_ = false;
     double toneRs_ = 38.0e3;

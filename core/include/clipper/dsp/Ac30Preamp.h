@@ -33,6 +33,7 @@
 #include <array>
 #include <vector>
 
+#include "clipper/dsp/OnePoleSmoother.h"
 #include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/TriodeStage.h"
 
@@ -58,6 +59,11 @@ namespace clipper::dsp {
 // (t,b = treble,bass pot fractions in [0,1].) The wiper OUT tapping BETWEEN the
 // treble-cap-fed N2 and the bass network at N4 is the source of the strong treble
 // <-> bass interaction, the AC30 tone-control signature.
+//
+// KNOB SMOOTHING (2026-07-25, audit finding 6 — docs §35): the two pot fractions are
+// one-pole smoothed (~8 ms) per sample and the matrix inverse is re-derived at a
+// 32-sample control rate, only while a smoother is moving. See the note on
+// MarshallToneStack in Jcm800Preamp.h for the reasoning.
 // ---------------------------------------------------------------------------
 class TopBoostToneStack {
 public:
@@ -75,6 +81,9 @@ public:
     void setKnobs(double bass, double treble);   // each in [0,1] (NO mid)
     void process(const float* in, float* out, int numFrames);
 
+    // Snap the knob smoothers onto their targets and re-derive the matrix, no ramp.
+    void snapKnobs();
+
     double sourceImpedance() const { return rs_; }
 
     // Anti-denormal diagnostic (Denormal.h, docs §33) — not used by the audio path.
@@ -89,10 +98,16 @@ private:
     void rebuild();  // recompute the 5x5 conductance matrix + its inverse
 
     static constexpr int N = 5;  // nodes: SRC=0, IN=1, N2=2, OUT=3, N4=4
+    static constexpr double kKnobSmoothSeconds = 0.008;  // ~8 ms, as AmpModel
+    static constexpr int kCtrlBlock = 32;  // matrix re-derivation interval, in samples
+
     double sampleRate_ = 44100.0;
     double T_ = 1.0 / 44100.0;
     double rs_ = 45.0e3;   // high-Z plate source (Ra||rp), not a follower
-    double bass_ = 0.5, treble_ = 0.5;
+    OnePoleSmootherD bassSm_, trebleSm_;
+    double bass_ = 0.5, treble_ = 0.5;  // what the matrix was built from
+    bool knobsMoving_ = false;
+    int ctrlCounter_ = 0;
     double geqC_ = 0.0, geqT_ = 0.0, geqB_ = 0.0;  // cap companion conductances
     std::array<std::array<double, N>, N> Ginv_{};  // inverse of the node matrix
     double vC_ = 0.0, iC_ = 0.0;   // Cc  (SRC-IN)
@@ -137,7 +152,9 @@ public:
     double stageQuiescentCurrent(int stage) const;
     double toneSourceImpedance() const { return toneRs_; }
 
-    double volumeScale() const;  // audio-taper wiper for the current VOLUME knob
+    // The audio-taper wiper for the current VOLUME knob — i.e. the smoother's TARGET,
+    // the steady-state scale the knob asks for (what an analytic gain test compares to).
+    double volumeScale() const;
     static double audioTaper(double x);  // (e^{k x}-1)/(e^k-1), k=4 — exposed to tests
 
     const TriodeStage::Config& stageConfig(int stage) const { return cfg_[stage]; }
@@ -151,6 +168,10 @@ public:
 
 private:
     void configureStages();
+    // Deferred prime — see the identical note on Jcm800Preamp::primeSmoothers.
+    void primeSmoothers();
+
+    static constexpr double kSmoothSeconds = 0.008;  // ~8 ms, as AmpModel
 
     double sampleRate_ = 44100.0;
     int maxBlockSize_ = 128;
@@ -161,6 +182,10 @@ private:
     TopBoostToneStack tone_;
 
     double volume_ = 0.5;
+    // VOLUME is this amp's PRIMARY overdrive control and measured the single worst step
+    // discontinuity in the whole rig (audit finding 6). Smoothed, applied per sample.
+    OnePoleSmootherD volSm_;
+    bool primed_ = false;
     double bass_ = 0.5, treble_ = 0.5;
     double toneRs_ = 45.0e3;
 
