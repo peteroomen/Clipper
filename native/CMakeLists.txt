@@ -158,6 +158,11 @@ if(CLIPPER_BUILD_PAINT_BENCH)
     target_compile_definitions(clipper_paint_bench PRIVATE
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
+        # The bench has to advance the message loop for a bounded time between synthetic
+        # events (that is what makes JUCE's dirty-region plumbing actually paint), and
+        # MessageManager::runDispatchLoopUntil is compiled out unless modal loops are
+        # permitted. Console tool only — never defined for a plugin target.
+        JUCE_MODAL_LOOPS_PERMITTED=1
         CLIPPER_GIT_HASH="${CLIPPER_GIT_HASH}")
     target_link_libraries(clipper_paint_bench PRIVATE
         Clipper
