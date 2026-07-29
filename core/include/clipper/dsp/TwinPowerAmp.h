@@ -19,20 +19,26 @@
 // source: a widely-circulated Koren 12AT7 fit (the modeling-community parameter
 // table in the Koren 1996 form): mu = 60, ex = 1.35, kg1 = 460, kp = 300,
 // kvb = 300. GAIN-balanced anti-phase legs (the point of the AB763's more
-// symmetric PI, against the JCM's deliberate 100k/82k imbalance): a 10 k shared
-// tail returned to a −7 V reference, and a 100k/142k plate pair that compensates
-// the finite tail impedance. B+_PI ≈ 410 V.
+// symmetric PI, against the JCM's deliberate 100k/82k imbalance): a LONG 22 k
+// shared tail returned to a −26 V reference, and a 100k/119k plate pair that
+// compensates the finite tail impedance. B+_PI ≈ 410 V. Measured: Va 330.8/326.4 V
+// (80.7 / 79.6 % of B+), 0.792/0.703 mA per triode, legs ×13.93/×13.90, leg-gain
+// ratio 0.9978 — balanced to 0.2 %, which is the number §20 always claimed.
 //
-// 2026-07-29 (finding 7): this comment used to say "balanced 100k/100k plate
-// loads" while the code shipped 100k/142k, and the audit read the 142 k as an
-// artifact compensating the starved 22 k tail. MEASURED, it is not: with the tail
-// fixed (10 k to −7 V) and matched 100k/100k loads the leg-gain ratio is 0.718,
-// and no tailRef that also meets the DC targets gets it past 0.79. Unequal plate
-// loads are how a finite-tail LTP is balanced; 142 k is this model's compensating
-// value (the balance crossover is Ra2 ≈ 133 k). The code is right, the comment was
-// wrong, and it is the comment that has been fixed. Whether 142 k is the RIGHT
-// compensation, or the model's leg-2 gain deficit is itself too large, belongs to
-// finding 8 (plate-load balance) with its sweep re-measured post-tailRef.
+// 2026-07-29 (finding 7, docs §42): this comment used to say "balanced 100k/100k
+// plate loads" while the code shipped 100k/142k, and the audit read the 142 k as an
+// artifact compensating the starved tail. MEASURED, it is not: with the tail fixed
+// and matched 100k/100k loads the leg-gain ratio is 0.718, and no tail reference that
+// also meets the DC targets gets it past 0.79. Unequal plate loads are how a
+// finite-tail LTP is balanced — that IS the resistor's job. But the VALUE was fitted
+// against the old ground-referenced tail, so it was re-derived by measurement in the
+// same slice as the fix: 142 k -> 119 k, the balance optimum at Rtail 22 k / −26 V.
+// The tail deliberately keeps its 22 k length rather than the 10 k on the drawing,
+// because this amp's global NFB is injected single-endedly into the cold grid and the
+// tail impedance is what rejects the resulting common mode — the full measurement is
+// in TwinPowerAmp.cpp, next to the config. Whether the model's leg-2 gain deficit is
+// itself too large (it needs 19 % more plate load than leg 1) still belongs to
+// finding 8.
 //
 // ===========================================================================
 // 2. 6L6GC PUSH-PULL QUAD — Koren pentode
@@ -188,10 +194,25 @@ public:
     // than the lightly-fed-back JCM). Flat (no presence shaping).
     static constexpr double kFeedbackBeta = 0.16;    // effective NFB divider
     // Secondary volts that map to 1.0 full scale. Calibrated (docs §20) against the
-    // COMPOSED amp: fully cranked (VOLUME 1, hot input) a power sine peaks ~0.9, a
-    // normal full-send ~0.78 — headroom to 1.0 for transients. The modelled OT
-    // secondary saturates near ~28 V at the clipping ceiling.
-    static constexpr double kFullScaleSecV = 24.0;
+    // COMPOSED amp: fully cranked (VOLUME 1, hot 0.5 V input) a power sine peaks ~0.9 —
+    // headroom to 1.0 for transients. It is a NORMALIZATION and it follows the measured
+    // cranked swing (§23's rule: every voice is normalized to its own cranked peak, so
+    // the voices stay level-comparable). The NFB tap uses the real secondary volts, so
+    // this constant does not touch the loop gain.
+    //
+    // 24 -> 42 V (2026-07-29, docs §42). 24 V was calibrated against the finding-7
+    // STARVED phase inverter (×7.4 per leg), which could not swing the 6L6 grids anywhere
+    // near full drive: cranked, the model's secondary topped out at 24 V·0.933 = 22.4 V
+    // peak = 31 W into 8 Ω, from an 85 W amp. With the tail reference in place the same
+    // cranked case measures 37.7 V peak (1.571 normalized at the old constant;
+    // 44.1/48/96 kHz 1.5711/1.5712/1.5720) = 89 W — the model reaches its rated power for
+    // the first time, and 1.571 is far past full scale. Re-derived by measurement to the
+    // documented convention: 24 · 1.5714 / 0.90 = 41.9 -> 42.0, cranked peak back to
+    // 0.898. That normalization, not the drive, is why the voice is ~4.9 dB quieter than
+    // it shipped below clipping (the interstage trim holds the 6L6 grid drive constant —
+    // see TwinAmp.cpp): the amp gained 4.9 dB of real headroom above its clean range,
+    // which is exactly what a blackface Twin has and this model did not.
+    static constexpr double kFullScaleSecV = 42.0;
 
     static double otTurnsRatio() { return 15.811; }  // √(Raa/8) = √250
     double feedbackBeta() const { return fbEnabled_ ? kFeedbackBeta : 0.0; }

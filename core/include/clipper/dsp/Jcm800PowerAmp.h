@@ -321,9 +321,26 @@ public:
     static constexpr double kPresenceHz = 1500.0;  // presence shelf corner (Hz)
     // Secondary volts that map to 1.0 full scale. Calibrated (docs §18) against the
     // COMPOSED amp: fully cranked (GAIN 1, MASTER 1, hot input) a power sine peaks
-    // ~0.9, a normal full-send (MASTER 0.7) ~0.78 — headroom to 1.0 for transients.
-    // The OT secondary reaches ~23 V peak at full cranked output into the rated load.
-    static constexpr double kFullScaleSecV = 26.0;
+    // ~0.9 — headroom to 1.0 for transients. It is a NORMALIZATION and it follows the
+    // measured cranked swing (§23's rule: every voice is normalized to its own cranked
+    // peak so the voices stay level-comparable); the NFB tap uses the real secondary
+    // volts, not the normalized output, so this constant is independent of the loop gain.
+    //
+    // 26 -> 33 V (2026-07-29, docs §42). 26 V was calibrated against the finding-7
+    // STARVED phase inverter, which could not swing the EL34 grids far enough to reach
+    // the amp's rated power: cranked, the model's secondary topped out at 26 V·0.899 =
+    // 23.4 V peak = 34 W into 8 Ω, from a 50 W amp. With the inverter on its real
+    // operating point the same cranked case measures 29.3 V peak (1.128 normalized at the
+    // old constant, 44.1/48/96 kHz: 1.1263/1.1298/1.1286) = 54 W, i.e. the model finally
+    // reaches rated power — and 1.128 is PAST full scale, which the chain's output
+    // limiter would have clipped. Re-derived by measurement to the documented convention:
+    // 26 · 1.1282 / 0.90 = 32.6 -> 33.0, cranked peak back to 0.888-0.890. This is the
+    // only reason the composed voice is ~2.0 dB quieter than it shipped below clipping:
+    // the drive is unchanged (see Jcm800Amp.cpp's kInterstageScale note), full scale now
+    // means 2 dB more volts. A full-power sine peaks ~0.89; the older "~0.78 at MASTER
+    // 0.7" figure measures 0.85 now, because the mid-travel part of the knob is no
+    // longer being pushed into a starved inverter's early clip.
+    static constexpr double kFullScaleSecV = 33.0;
 
     // Analytic helpers exposed for the tests.
     static double otTurnsRatio() { return 20.616; }  // √(Raa/8)

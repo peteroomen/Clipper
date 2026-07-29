@@ -64,6 +64,21 @@ void TwinAmp::process(const float* in, float* out, int numFrames) {
         // Optical tremolo ("vibrato" on the panel) — amplitude modulation.
         tremolo_->process(w, w, n);
         // Preamp volts → PI grid drive (memoryless trim, documented constant).
+        //
+        // 0.16 -> 0.107 (2026-07-29, docs §42). 0.16 was fitted around the STARVED phase
+        // inverter of audit finding 7 (×7.4 per leg, 0.23 mA/triode, plates at 94 % of
+        // B+), so it was absorbing the PI gain the model was missing and the corrected
+        // inverter arrived 3.4-4.9 dB hot. Un-fitted in the same slice as the fix (the
+        // ADR 008 precedent) and re-derived BY MEASUREMENT — not by the PI's gain ratio,
+        // which the global NFB absorbs half of. The measured quantity is the power
+        // section's CLOSED-LOOP gain, normalized-out per volt at the PI grid:
+        //   f0 Hz      82      110     220     440     880
+        //   before  0.0761  0.0777  0.0792  0.0796  0.0797
+        //   after   0.1150  0.1163  0.1175  0.1179  0.1179
+        //   ratio    1.511   1.497   1.484   1.480   1.480   (mean 1.490)
+        // 0.16 / 1.490 = 0.1074 -> 0.107, so the 6L6 grids see the drive they were
+        // calibrated with at every knob position below clipping. The ceiling moved too,
+        // and that is kFullScaleSecV's job (see its comment in TwinPowerAmp.h).
         for (int i = 0; i < n; ++i)
             w[i] = static_cast<float>(w[i] * kInterstageScale);
         power_.process(w, out + off, n);

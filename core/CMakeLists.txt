@@ -263,9 +263,12 @@ if(NOT EMSCRIPTEN)
     target_include_directories(clipper_ac30_tests PRIVATE tools)
     clipper_add_test_flags(clipper_ac30_tests)
     add_test(NAME clipper_ac30_tests COMMAND clipper_ac30_tests)
-    # NO XFAILs since 2026-07-29 (finding 7, docs §42): the AC30's leg-balance XFAIL
-    # XPASSed once the tail became 10 kΩ to a −10 V reference instead of 2.2 kΩ to ground,
-    # and was deleted. `clipper_ac30_tests --xfail-ledger` still answers, count zero.
+    # XFAILs (2026-07-29, finding 7, docs §42): the AC30's leg-balance XFAIL XPASSed once
+    # the tail became 10 kΩ to a −10 V reference instead of 2.2 kΩ to ground, and was
+    # deleted — but balancing the legs removed the even-harmonic leakage that §23's
+    # breakup-ordering guard was measuring, so its four bars are ledgered here until an
+    # AC30 gain-structure slice gives that voice the drive to earn them.
+    clipper_add_xfail_ledger(clipper_ac30_tests)
 
     # --- M11: Player Expectations Suite ---------------------------------------
     # Tests the PLAYER'S expectations, not the circuit (docs §26): universal gear

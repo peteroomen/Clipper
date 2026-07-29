@@ -87,7 +87,7 @@ public:
     double lastOutputPeak() const { return power_.lastOutputPeak(); }
 
     // The preamp-volts → PI-grid-drive trim (documented in the .cpp).
-    static constexpr double kInterstageScale = 0.16;
+    static constexpr double kInterstageScale = 0.107;
 
 private:
     double sampleRate_ = 44100.0;

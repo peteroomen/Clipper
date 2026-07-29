@@ -93,6 +93,26 @@ double thd(const std::vector<float>& o, double f0, double fs) {
     return std::sqrt(hh) / (f1 + 1e-12);
 }
 
+// ODD-harmonic-only THD (h3, h5, h7 relative to the fundamental). Why this exists
+// (2026-07-29, docs §42): total THD on a push-pull stage is a mixture of two very
+// different things. The ODD harmonics are the pair's own symmetric CLIPPING — what a
+// player calls breakup. The EVEN harmonics are whatever the topology FAILED to cancel,
+// which on a long-tailed-pair-driven push-pull is dominated by the inverter's leg-gain
+// imbalance. Finding 7 removed a real imbalance (the Twin PI's legs are balanced to
+// 0.2 % now), so total THD dropped without the clipping changing much: a "did it break
+// up?" bar written against total THD was partly measuring a defect. Odd-only cannot be
+// inflated that way.
+double thdOdd(const std::vector<float>& o, double f0, double fs) {
+    const size_t n = o.size(), w = n / 2, st = n - w;
+    const double f1 = goertzelAmp(o, st, w, f0, fs);
+    double hh = 0.0;
+    for (int k = 3; k <= 7; k += 2) {
+        const double a = goertzelAmp(o, st, w, k * f0, fs);
+        hh += a * a;
+    }
+    return std::sqrt(hh) / (f1 + 1e-12);
+}
+
 // Analytic |H(jω)| of the FenderToneStack netlist, derived from the SAME netlist
 // via a complex nodal solve (caps = jωC). Independent of the runtime discretization.
 double fenderToneH(double f, double bass, double mid, double treble, double rs) {
@@ -517,6 +537,13 @@ void testHeadroomSagStability(double fs) {
         for (float v : out) pk = std::max(pk, std::fabs(static_cast<double>(v)));
         return std::pair<double, double>{thd(out, 110.0, fs), pk};
     };
+    auto thdOddAt = [&](float vol, float in) {
+        auto a = compAmp(vol);
+        auto sig = sine(110.0, in, 0.4, fs);
+        std::vector<float> out(sig.size(), 0.0f);
+        a->process(sig.data(), out.data(), static_cast<int>(sig.size()));
+        return thdOdd(out, 110.0, fs);
+    };
 
     // Clean-headroom bar: volume 0.5, a hot single-coil DI (0.1) stays CLEAN.
     const auto clean = thdAt(0.5f, 0.10f);
@@ -526,13 +553,45 @@ void testHeadroomSagStability(double fs) {
                  t3 = thdAt(0.5f, 0.30f).first, t4 = thdAt(0.5f, 0.50f).first;
     assert(t2 > t1 && t3 > t2 && t4 > t3 && "THD not monotonic with input at volume 0.5");
     // Real breakup at max volume + hot input, and it is MUCH dirtier than clean.
+    //
+    // The 0.25 total-THD bar became 0.18, plus a NEW odd-harmonic bar (2026-07-29, docs
+    // §42) — a re-derivation, not a loosening, and the reason is measured. Total THD at
+    // this operating point was 39.99 % before finding 7 and is 21.42 % after, but the
+    // drop is almost entirely EVEN harmonics: even 21.81 % -> 9.92 %, odd 33.52 % ->
+    // 18.98 %. The even part was the phase inverter's leg-gain imbalance leaking through
+    // the push-pull's cancellation (the PI's legs went from balanced-between-two-dead-legs
+    // to genuinely balanced, 0.998), so ~12 points of the old 40 % was a DEFECT being
+    // counted as breakup. The amp still clips hard — 19 % of odd-harmonic energy, at a
+    // 0.898 peak, i.e. full power — and it is still 6.3× dirtier than its clean bar.
+    // Asserting the odd component directly is the property that cannot be faked by an
+    // unbalanced inverter, and it holds on the PRE-fix circuit too (33.5 % > 15 %).
     const auto cranked = thdAt(1.0f, 0.50f);
-    assert(cranked.first > 0.25 && "max volume / hot input did not reach real breakup (>25%)");
+    const double crankedOdd = thdOddAt(1.0f, 0.50f);
+    assert(cranked.first > 0.18 && "max volume / hot input did not reach real breakup (>18%)");
+    assert(crankedOdd > 0.15 &&
+           "max volume did not CLIP: odd-harmonic THD under 15 % (a push-pull's own "
+           "symmetric clipping is what breakup is; even harmonics only measure imbalance)");
     assert(cranked.first > clean.first * 6.0 && "cranked not dramatically dirtier than clean (headroom)");
     // Full-scale calibration: fully cranked ≈ 0.9 peak, inside full scale.
     assert(cranked.second > 0.7 && cranked.second <= 1.0 && "cranked peak not in the ~0.9 window");
 
     // LIGHT sag, SMALLER than the JCM800's. Same hard burst into both amps.
+    //
+    // The burst is 2.0 V at the PI grid trim's noon (DRIVE 1.0 -> ×2, so 4 V at the
+    // grid), not the 45 V it was before 2026-07-29 (docs §42). Same reason §23 retuned
+    // the cathode-bias and TOP CUT probes: 45 V × 2 = 90 V at the grid is ~30× the
+    // inverter's clipping onset, a level chosen when both inverters were 5.7 dB deaf,
+    // and there the metric stops measuring the rail. MEASURED at 90 V after the tail
+    // fix: the JCM's rail droops MORE than the Twin's (57.4 V vs 50.5 V, as the two
+    // supply impedances say it should) while the envelope ratio says the opposite
+    // (JCM 2.26 dB vs Twin 2.63 dB) — because both outputs are hard against their
+    // clipping ceiling at attack AND at settle, so the ratio measures the ceiling.
+    // At 4 V at the grid the metric tracks the rail again (Twin droop 13.4 V / 1.16 dB,
+    // JCM 37.3 V / 1.96 dB, AC30 1.6 V / 6.03 dB — the AC30's "sag" is its cathode-bias
+    // saturator, audit finding 4) and the burst is still LOUD: the JCM's attack peak is
+    // 0.74 of full scale. The ordering and both windows hold on the PRE-fix circuit at
+    // this probe as well (Twin 1.03 < JCM 1.96 < AC30 5.74), which is the check that
+    // this is a fixed reference and not a fudge. Bounds unchanged.
     auto sagDepth = [&](auto& amp) {
         amp.setParameter(std::decay_t<decltype(amp)>::PARAM_DRIVE, 1.0f);
         const double f0 = 400.0;
@@ -540,7 +599,7 @@ void testHeadroomSagStability(double fs) {
                   nt = static_cast<int>(0.25 * fs), n = nsil + nb + nt;
         std::vector<float> in(static_cast<size_t>(n), 0.0f), out(static_cast<size_t>(n), 0.0f);
         for (int i = 0; i < nb; ++i)
-            in[static_cast<size_t>(nsil + i)] = static_cast<float>(45.0 * std::sin(kTwoPi * f0 * i / fs));
+            in[static_cast<size_t>(nsil + i)] = static_cast<float>(2.0 * std::sin(kTwoPi * f0 * i / fs));
         amp.process(in.data(), out.data(), n);
         for (float v : out) assert(std::isfinite(v) && "non-finite in the sag burst");
         const int per = static_cast<int>(fs / f0);
@@ -601,11 +660,23 @@ void testAliasing(double fs) {
         return measureAliasing(out, fs, f0).worstAliasDb;
     };
     const double a1 = aliasAt(1), a2 = aliasAt(2), a4 = aliasAt(4), a8 = aliasAt(8);
-    assert(a2 < a1 - 8.0 && "2x not >=8 dB better than 1x");
+    // "Oversampling is doing something" is asserted on the SHIPPED factor, 1x -> 4x, not
+    // on the unshipped 2x (2026-07-29, docs §42). The old bar was `a2 < a1 - 8.0`, and it
+    // is not a fixed property of the resampler: 1x aliasing is a function of how much the
+    // amp DISTORTS, so anything that cleans the amp up shrinks the 1x -> 2x gap. Finding 7
+    // cleaned this amp up a lot (the corrected phase inverter is 16-28 dB cleaner open
+    // loop, and the composed amp's cranked THD went 40 % -> 21 %), which took 1x from
+    // −20.8 to −29.6 dB at 48 kHz and the 1x -> 2x delta from 14.9 to 7.1 dB while the
+    // SHIPPED 4x floor stayed at −76 dB. Measured 1x -> 4x: 49.8 / 56.5 / 50.0 dB before,
+    // 46.1 / 46.4 / 48.5 dB after, at 44.1 / 48 / 96 kHz — so a 40 dB bar holds on both
+    // circuits with margin and catches a broken oversampler far harder than 8 dB at 2x.
+    assert(a4 < a1 - 40.0 && "shipped 4x not >=40 dB better than 1x (oversampler not working)");
+    assert(a2 < a1 - 5.0 && "2x not even 5 dB better than 1x");
     assert(a4 < -60.0 && "shipped 4x worst-alias not >=60 dB below fundamental (M2 bar)");
     assert(a8 < a4 + 4.0 && "8x materially better than 4x (4x not at the floor)");
-    std::printf("  [ok] aliasing @ %.0f Hz (max vol): 1x=%.1f 2x=%.1f 4x=%.1f 8x=%.1f dB (M2 −60 bar)\n",
-                fs, a1, a2, a4, a8);
+    std::printf("  [ok] aliasing @ %.0f Hz (max vol): 1x=%.1f 2x=%.1f 4x=%.1f 8x=%.1f dB "
+                "(1x→4x %.1f dB > 40; M2 −60 bar)\n",
+                fs, a1, a2, a4, a8, a1 - a4);
 }
 
 // Known defects this binary exercises under XFAIL. Printed by --xfail-ledger, which ctest

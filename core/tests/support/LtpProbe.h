@@ -126,7 +126,7 @@ inline void assertLtpSane(const LtpMeasurement& m, const char* amp) {
 //
 // Balance bar: 0.90. A real long-tailed pair with a proper tail reference and plate loads
 // that compensate the finite tail impedance lands within a few per cent; the Twin measures
-// 0.946 and the AC30 0.912, so 0.90 is not an aspiration.
+// 0.998 and the AC30 0.912, so 0.90 is not an aspiration.
 //
 // Each `*Decl` is NULLABLE and that is the whole point: pass `nullptr` for a target this
 // amp MEETS and it becomes a hard `assert` — a real, load-bearing assertion that goes red
@@ -145,7 +145,7 @@ inline void assertLtpSane(const LtpMeasurement& m, const char* amp) {
 //
 //   amp     plate %B+           Ip/triode              leg balance
 //   JCM800  80.0/81.6 ASSERTED  0.680/0.763 ASSERTED   0.703 XFAIL 8
-//   Twin    81.0/78.8 ASSERTED  0.780/0.612 ASSERTED   0.946 ASSERTED
+//   Twin    80.7/79.6 ASSERTED  0.792/0.703 ASSERTED   0.998 ASSERTED
 //   AC30    79.3/78.5 ASSERTED  0.622/0.587 ASSERTED   0.912 ASSERTED
 //
 // Eight of the nine targets are now hard assertions. The one remaining XFAIL is the
