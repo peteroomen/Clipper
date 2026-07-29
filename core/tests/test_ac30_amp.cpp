@@ -34,13 +34,12 @@ namespace {
 constexpr double kTwoPi = 6.283185307179586;
 
 // --- known-bad properties (2026-07-24 audit) --------------------------------------
-constexpr clipper::test::XfailDecl kXfAc30PiBalance{
-    "finding7-ac30-pi-leg-balance",
-    "2026-07-24 audit finding 7",
-    "the AC30 PI's two anti-phase legs are gain-balanced within 10 % — the 2.2 k tail that "
-    "buys the correct DC point destroys the long-tail property (7:1 CMRR, ratio 0.550)",
-    "the LtpInverter tailRef fix (finding 7): tail reference instead of Rtail, so a proper "
-    "10 k tail can deliver BOTH the operating point and the balance"};
+// NONE since 2026-07-29 (finding 7, docs §42). `finding7-ac30-pi-leg-balance` — "the
+// 2.2 k tail that buys the correct DC point destroys the long-tail property (7:1 CMRR,
+// ratio 0.550)" — XPASSed the moment `LtpInverter::Config::tailRef` let the tail go back
+// to a proper 10 kΩ (to −10 V), and was deleted in the same slice. Measured after: legs
+// ×27.56/×25.13, ratio 0.912, at 79.3/78.5 % of B+ and 0.622/0.587 mA per triode, i.e.
+// the operating point §23 established AND the balance, at once.
 using clipper::dsp::Ac30Amp;
 using clipper::dsp::Ac30PowerAmp;
 using clipper::dsp::Ac30Preamp;
@@ -214,18 +213,19 @@ void testOperatingPoints(double fs) {
     // starved phase inverter shipped through (docs §23 second amendment) — the test that
     // should have caught it passed both before and after the fix.
     //
-    // The AC30 is the one amp that MEETS the plate-fraction and standing-current targets,
-    // so both are ASSERTED FOR REAL here. It meets them only because Rtail was cut to
-    // 2.2 kΩ, and that is exactly what wrecks its LEG BALANCE (0.550) — a two-terminal
-    // tail cannot deliver both. So the balance is the XFAIL, and the two it passes are
-    // hard assertions: together they pin the trade-off, so a future "fix" that restores
-    // balance by re-starving the inverter cannot pass. See finding 7.
+    // 2026-07-29 (finding 7): ALL THREE targets are asserted for real. The AC30 always met
+    // the plate-fraction and standing-current targets, but only because Rtail had been cut
+    // to 2.2 kΩ — which is exactly what wrecked its LEG BALANCE (0.550), because a
+    // two-terminal tail cannot deliver both. With the tail reference it can: 10 kΩ to
+    // −10 V gives 79.3/78.5 % of B+, 0.622/0.587 mA and a 0.912 ratio. The three
+    // assertions together still pin the trade-off — a future "fix" that restores balance
+    // by re-starving the inverter, or buys current by shortening the tail again, fails.
     const auto ltpM = clipper::test::measureLtp(pa.inverter(), fs);
     clipper::test::assertLtpSane(ltpM, "AC30");
     clipper::test::assertLtpTargets(ltpM, fs, "AC30",
                                     /*plate fraction: holds, assert for real*/ nullptr,
                                     /*standing current: holds, assert for real*/ nullptr,
-                                    &kXfAc30PiBalance);
+                                    /*leg balance: holds, assert for real*/ nullptr);
 
     std::printf("  [ok] DC op points @ %.0f Hz: V1 Va=%.1f Vk=%.2f Iq=%.2fmA; EL84 Iq=%.2f mA/tube "
                 "(analytic %.2f), Vk=%.2f (analytic %.2f), rail=%.1f (%.1f), screen=%.1f, Pdiss=%.1f W\n",
@@ -724,14 +724,18 @@ void testAliasing(double fs) {
 
 // Known defects this binary exercises under XFAIL. Printed by --xfail-ledger, which ctest
 // surfaces as ***Skipped in its default summary (see core/CMakeLists.txt).
-const clipper::test::XfailDecl kLedger[] = {kXfAc30PiBalance};
+// EMPTY since 2026-07-29 (finding 7): `finding7-ac30-pi-leg-balance` XPASSed once the
+// tail became a 10 kΩ resistor to a −10 V reference instead of 2.2 kΩ to ground, and was
+// deleted. This suite now has no known-bad property. `--xfail-ledger` still answers (with
+// a count of zero); the ctest ledger entry was removed in core/CMakeLists.txt.
+const clipper::test::XfailDecl* const kLedger = nullptr;
+constexpr std::size_t kLedgerCount = 0;
 
 }  // namespace
 
 int main(int argc, char** argv) {
     clipper::test::requireAssertsLive();
-    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
-                                                 sizeof kLedger / sizeof kLedger[0],
+    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger, kLedgerCount,
                                                  "clipper_ac30_tests");
     if (ledger >= 0) return ledger;
 

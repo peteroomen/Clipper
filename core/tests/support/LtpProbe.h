@@ -71,7 +71,10 @@ inline LtpMeasurement measureLtp(const clipper::dsp::LtpInverter& shipped, doubl
     m.ip1 = (cfg.bPlus - m.va1) / cfg.Ra1;
     m.ip2 = (cfg.bPlus - m.va2) / cfg.Ra2;
     m.ipSolver = shipped.quiescentCurrent1();
-    m.iTail = shipped.quiescentTail() / cfg.Rtail;
+    // The tail returns to cfg.tailRef, not to ground (finding 7): the current through
+    // Rtail is (Vk − tailRef)/Rtail. Reading it as Vk/Rtail was correct only while every
+    // amp had tailRef = 0, and would UNDER-report the tail current on all three amps now.
+    m.iTail = (shipped.quiescentTail() - cfg.tailRef) / cfg.Rtail;
 
     // Small-signal leg gains, from the SHIPPED configuration. Grid 2 is held at its
     // quiescent 0 (single-ended drive, the way every one of the three amps drives it).
@@ -121,21 +124,34 @@ inline void assertLtpSane(const LtpMeasurement& m, const char* amp) {
 // through `expectXfail`, so an amp that meets it passes for real and an amp that does not
 // prints its real measured number and is recorded against its audit finding.
 //
-// Balance bar: 0.90. A real long-tailed pair with a proper tail reference lands within a
-// couple of per cent; the shipped Twin measures 0.990, so 0.90 is not an aspiration.
+// Balance bar: 0.90. A real long-tailed pair with a proper tail reference and plate loads
+// that compensate the finite tail impedance lands within a few per cent; the Twin measures
+// 0.946 and the AC30 0.912, so 0.90 is not an aspiration.
 //
 // Each `*Decl` is NULLABLE and that is the whole point: pass `nullptr` for a target this
 // amp MEETS and it becomes a hard `assert` — a real, load-bearing assertion that goes red
 // if the amp ever regresses. Pass a declaration for a target this amp VIOLATES and it
-// becomes a printed XFAIL against that finding. As checked out at 9923af7:
+// becomes a printed XFAIL against that finding.
 //
-//   amp     plate %B+        Ip/triode        leg balance
+// As checked out at 9923af7 (the ground-referenced tail, before finding 7):
+//
+//   amp     plate %B+        Ip/triode         leg balance
 //   JCM800  94.7 % XFAIL 7   0.179 mA XFAIL 7  0.607 XFAIL 8
 //   Twin    94.3 % XFAIL 7   0.232 mA XFAIL 7  0.990 ASSERTED
 //   AC30    82.4 % ASSERTED  0.529 mA ASSERTED 0.550 XFAIL 7
 //
-// So every amp carries at least one hard assertion here, and no target is XFAILed on all
-// three amps — the bars are demonstrably reachable by the shipped code.
+// After finding 7 (2026-07-29 — `LtpInverter::Config::tailRef`, docs §42; every number
+// below is identical at 44.1 / 48 / 96 kHz, the LTP being memoryless):
+//
+//   amp     plate %B+           Ip/triode              leg balance
+//   JCM800  80.0/81.6 ASSERTED  0.680/0.763 ASSERTED   0.703 XFAIL 8
+//   Twin    81.0/78.8 ASSERTED  0.780/0.612 ASSERTED   0.946 ASSERTED
+//   AC30    79.3/78.5 ASSERTED  0.622/0.587 ASSERTED   0.912 ASSERTED
+//
+// Eight of the nine targets are now hard assertions. The one remaining XFAIL is the
+// JCM800's leg balance, which is audit finding 8 (Ra2 = 82 kΩ compensates the finite tail
+// impedance the wrong way) and NOT a tail problem: the tail fix moved it 0.607 -> 0.703,
+// and the Twin/AC30 show the bar is reachable once the plate pair compensates.
 inline void assertLtpTargets(const LtpMeasurement& m, double fs, const char* amp,
                              const XfailDecl* plateDecl, const XfailDecl* currentDecl,
                              const XfailDecl* balanceDecl) {

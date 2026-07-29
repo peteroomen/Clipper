@@ -221,8 +221,10 @@ if(NOT EMSCRIPTEN)
     target_include_directories(clipper_twin_tests PRIVATE tools)
     clipper_add_test_flags(clipper_twin_tests)
     add_test(NAME clipper_twin_tests COMMAND clipper_twin_tests)
-    # XFAILs: audit finding 7 (the Twin PI idles at 94 % of B+ on 0.23 mA/triode).
-    clipper_add_xfail_ledger(clipper_twin_tests)
+    # NO XFAILs since 2026-07-29 (finding 7, docs §42): the Twin PI's plate-fraction and
+    # standing-current XFAILs XPASSed once the tail got a reference and were deleted, so
+    # there is no ledger entry to register. `clipper_twin_tests --xfail-ledger` still
+    # answers, with a count of zero.
 
     # --- OptoTremolo (AB763 optical tremolo) ----------------------------------
     # New 2026-07-25 (test/assert-real-properties). The audit found OptoTremolo had no
@@ -261,9 +263,9 @@ if(NOT EMSCRIPTEN)
     target_include_directories(clipper_ac30_tests PRIVATE tools)
     clipper_add_test_flags(clipper_ac30_tests)
     add_test(NAME clipper_ac30_tests COMMAND clipper_ac30_tests)
-    # XFAILs: audit finding 7 (the 2.2 k tail that fixes the AC30's DC point wrecks its
-    # leg balance — a two-terminal tail cannot deliver both).
-    clipper_add_xfail_ledger(clipper_ac30_tests)
+    # NO XFAILs since 2026-07-29 (finding 7, docs §42): the AC30's leg-balance XFAIL
+    # XPASSed once the tail became 10 kΩ to a −10 V reference instead of 2.2 kΩ to ground,
+    # and was deleted. `clipper_ac30_tests --xfail-ledger` still answers, count zero.
 
     # --- M11: Player Expectations Suite ---------------------------------------
     # Tests the PLAYER'S expectations, not the circuit (docs §26): universal gear

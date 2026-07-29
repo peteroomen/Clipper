@@ -237,16 +237,12 @@ void testPushPull(double fs) {
 // core/tests/support/LtpProbe.h and shared by all three amps, so the JCM, Twin and
 // AC30 tests cannot drift apart on what "a healthy phase inverter" means.
 // ---------------------------------------------------------------------------
-constexpr clipper::test::XfailDecl kXfPiPlate{
-    "finding7-jcm-pi-plate-fraction",
-    "2026-07-24 audit finding 7",
-    "the JCM800 PI plates idle at 70-85 % of B+ (a real long tail), not parked near cutoff",
-    "the LtpInverter tailRef fix (finding 7) — fixes all three amps at once"};
-constexpr clipper::test::XfailDecl kXfPiCurrent{
-    "finding7-jcm-pi-standing-current",
-    "2026-07-24 audit finding 7",
-    "each JCM800 PI triode idles at 0.5-0.9 mA (docs/DEVELOPMENT.md target)",
-    "the LtpInverter tailRef fix (finding 7)"};
+// 2026-07-29 (finding 7, docs §42): `finding7-jcm-pi-plate-fraction` and
+// `finding7-jcm-pi-standing-current` XPASSed once `LtpInverter::Config::tailRef` landed
+// and were DELETED in the same slice — both are hard assertions below. Measured after:
+// Va 272.0/277.4 V (80.0 / 81.6 % of B+), 0.680/0.763 mA per triode, against 94.7 % and
+// 0.179 mA before. The leg balance is NOT fixed by the tail and stays XFAILed: it is
+// finding 8's plate pair, and it moved 0.607 -> 0.703.
 constexpr clipper::test::XfailDecl kXfPiBalance{
     "finding8-jcm-pi-leg-balance",
     "2026-07-24 audit finding 8",
@@ -260,8 +256,12 @@ void testPhaseInverter(double fs) {
     pa.setOversampling(4);
     const auto m = clipper::test::measureLtp(pa.inverter(), fs);
     clipper::test::assertLtpSane(m, "JCM800");
-    // All three targets XFAIL on the JCM800 (findings 7 and 8).
-    clipper::test::assertLtpTargets(m, fs, "JCM800", &kXfPiPlate, &kXfPiCurrent, &kXfPiBalance);
+    // Plate fraction and standing current HOLD since the tailRef fix (finding 7) and are
+    // asserted for real; the leg balance is still finding 8's (the 82 k plate load).
+    clipper::test::assertLtpTargets(m, fs, "JCM800",
+                                    /*plate fraction: holds, assert for real*/ nullptr,
+                                    /*standing current: holds, assert for real*/ nullptr,
+                                    &kXfPiBalance);
     clipper::test::printLtp(m, "JCM800", fs);
 }
 
@@ -315,6 +315,24 @@ void testFeedbackAndPresence(double fs) {
     p1.setParameter(Jcm800PowerAmp::PARAM_PRESENCE, 1.0f);
     const double r1 = powerAmpAt(p1, f4, amp, fs) / amp;
 
+    // OPEN-LOOP gain at 4 kHz — the A the shelf formula below needs. Measured, not
+    // extrapolated from the 1 kHz figure, so the OT's own HF rolloff is included.
+    //
+    // 2026-07-29 (finding 7, docs §42): this used to substitute r0 — the CLOSED-loop
+    // 4 kHz gain — for A, which is off by exactly the factor (1+βA) the formula is
+    // about. The error is proportional to the loop gain, so it hid while the starved
+    // phase inverter kept βA at 0.47 (prediction 1.04 dB low, inside the 1.5 dB bound
+    // by 0.46 dB) and surfaced the moment the PI was fixed and βA reached 0.95
+    // (prediction 2.43 dB low). Measured with the open-loop A the agreement is 0.35 dB
+    // on the OLD circuit and 0.79 dB on the NEW one — the BOUND IS UNCHANGED at 1.5 dB;
+    // it is the reference that was wrong. The header (line ~105) always said the
+    // formula wants A "MEASURED open-loop".
+    Jcm800PowerAmp pOpen;
+    pOpen.prepare(fs, 128); pOpen.setOversampling(4);
+    pOpen.setFeedbackEnabled(false);
+    pOpen.setParameter(Jcm800PowerAmp::PARAM_PRESENCE, 0.0f);
+    const double rOpen = powerAmpAt(pOpen, f4, amp, fs) / amp;
+
     // SIGN: presence lifts the highs.
     assert(r1 > r0 && "PRESENCE SIGN INVERTED: presence=1 did not raise 4 kHz vs presence=0");
     // MAGNITUDE: analytic one-pole shelf. At 4 kHz the shaped HF feedback for p=1 is
@@ -322,7 +340,7 @@ void testFeedbackAndPresence(double fs) {
     const double wc = f4 / Jcm800PowerAmp::kPresenceHz;
     const double reL = 1.0 / (1.0 + wc * wc), imL = -wc / (1.0 + wc * wc);
     const double bA = Jcm800PowerAmp::kFeedbackBeta *
-                      (r0 * Jcm800PowerAmp::kFullScaleSecV);  // βA_real at 4 kHz (p=0)
+                      (rOpen * Jcm800PowerAmp::kFullScaleSecV);  // βA_real at 4 kHz, OPEN loop
     const double num = 1.0 + bA;  // |1+βA| (Leff=1 at p=0)
     const double denRe = 1.0 + bA * reL, denIm = bA * imL;
     const double predShelfDb = toDb(num / std::sqrt(denRe * denRe + denIm * denIm));
@@ -555,8 +573,7 @@ void testComposedFullScale(double fs) {
 
 // Known defects this binary exercises under XFAIL. Printed by --xfail-ledger, which
 // ctest surfaces as ***Skipped in its default summary (see core/CMakeLists.txt).
-const clipper::test::XfailDecl kLedger[] = {kXfPushPull, kXfPiPlate, kXfPiCurrent,
-                                            kXfPiBalance};
+const clipper::test::XfailDecl kLedger[] = {kXfPushPull, kXfPiBalance};
 
 }  // namespace
 

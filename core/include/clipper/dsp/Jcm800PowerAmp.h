@@ -21,16 +21,21 @@
 // SAME Koren 12AX7 device law (TriodeStage::korenPlateCurrent) — no new device fit.
 //
 //   V3A grid ← input (master-volume drive)      Ra1 = 100 k  ┐ asymmetric plate
-//   V3B grid ← global feedback (NFB + presence)  Ra2 =  82 k  ┘ loads balance the
-//   shared cathodes → Rtail = 10 k to ground (the "long tail")   two output legs
+//   V3B grid ← global feedback (NFB + presence)  Ra2 =  82 k  ┘ loads, meant to
+//   shared cathodes → Rtail = 10 k (the "long tail") to a −12 V  balance the two
+//   reference, NOT to ground — see LtpInverter below and docs §42     output legs
 //   B+_PI ≈ 340 V (post-dropping-resistor node, below the main rail)
 //
 // The tail resistor makes the joined cathodes a soft current source: the two plate
 // currents swing ANTI-PHASE, so Va1 and Va2 are the two out-of-phase drives for the
 // EL34 grids. As drive rises, ONE triode is steered to cutoff while the other takes
 // the whole tail current → the PI's own asymmetric SOFT CLIP, an audible part of the
-// cranked-Marshall sound (the 100k/82k imbalance is deliberate — it evens the two
-// legs' large-signal gain). Solved per (oversampled) sample as a 3×3 nodal Newton
+// cranked-Marshall sound. The 100k/82k imbalance is INTENDED to even the two legs'
+// large-signal gain, and measurably does not: the pair idles at ×29.7/×20.9, a leg
+// ratio of 0.703 against the 0.90 bar (audit finding 8 — 82 k compensates the finite
+// tail impedance in the wrong direction; the Twin's 100k/142k reaches 0.946). Finding
+// 7's tail reference improved it from 0.607 but the plate pair is a separate slice.
+// Solved per (oversampled) sample as a 3×3 nodal Newton
 // (unknowns Va1, Va2, Vk_tail; grids are driven voltages) with an analytic Jacobian
 // from the Koren derivatives. PI grid-current blocking is DEFERRED (documented
 // simplification): the dominant PI clip is the tail-steering cutoff, which the LTP
@@ -168,6 +173,24 @@ double el34PlateBase(double Vg1k, double Vg2, const El34Params& p);
 // LtpInverter — 12AX7 long-tailed-pair phase inverter (Koren device law).
 // Per-sample 3×3 nodal Newton (Va1, Va2, Vk_tail); grids are driven voltages.
 // Public + introspectable so the tests validate its DC point and anti-phase gain.
+//
+// THE TAIL IS A THREE-TERMINAL NETWORK (2026-07-29, audit finding 7, docs §42).
+// A real long-tailed pair returns its tail through a LARGE resistor to a NEGATIVE
+// (or, in a cathodyne-derived layout, otherwise elevated) reference — that is the
+// whole trick: the tail resistance sets the common-mode rejection and the tail
+// REFERENCE sets the standing current, independently. Modelling the tail as two
+// terminals (Rtail straight to ground) collapses the two into one number, so the
+// only way to reach a textbook 0.5–0.9 mA/triode is to shrink Rtail until the pair
+// is no longer long-tailed — which is exactly what the AC30 did (Rtail 2.2 k, leg
+// ratio 0.550) and why the JCM800 and Twin idled at ~94 % of B+ near cutoff.
+//
+// `tailRef` is that reference node's voltage: the tail current is (Vk − tailRef)/Rtail.
+// tailRef = 0 is the old ground-referenced behaviour, bit-for-bit. A negative value
+// is the model equivalent of the real circuit's negative tail return (a bias supply
+// on the JCM/Twin, the shared cathode network's elevated reference on the AC30) —
+// it is a MODEL PARAMETER standing in for that network, not a parts-bin voltage,
+// and it is calibrated per amp to land the documented operating point (0.5–0.9 mA
+// per triode, plates at 70–85 % of B+) with Rtail at its real, long value.
 // ---------------------------------------------------------------------------
 class LtpInverter {
 public:
@@ -175,7 +198,11 @@ public:
         double bPlus = 340.0;   // PI plate supply (V)
         double Ra1 = 100.0e3;   // V3A plate load (Ω)
         double Ra2 = 82.0e3;    // V3B plate load (Ω) — asymmetric for balance
-        double Rtail = 10.0e3;  // shared tail resistor to ground (Ω)
+        double Rtail = 10.0e3;  // shared tail resistor (Ω) — to `tailRef`, not ground
+        // Tail return reference (V). The tail current is (Vk − tailRef)/Rtail, so this
+        // sets the standing current while Rtail keeps setting the common-mode rejection.
+        // 0.0 = tail straight to ground (the pre-finding-7 two-terminal model).
+        double tailRef = 0.0;
         TriodeStage::KorenParams tube{};  // 12AX7
     };
 

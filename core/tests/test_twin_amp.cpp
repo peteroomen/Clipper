@@ -36,16 +36,12 @@ namespace {
 constexpr double kTwoPi = 6.283185307179586;
 
 // --- known-bad properties (2026-07-24 audit) --------------------------------------
-constexpr clipper::test::XfailDecl kXfTwinPiPlate{
-    "finding7-twin-pi-plate-fraction",
-    "2026-07-24 audit finding 7",
-    "the Twin PI plates idle at 70-85 % of B+ (a real long tail), not parked near cutoff",
-    "the LtpInverter tailRef fix (finding 7) — fixes all three amps at once"};
-constexpr clipper::test::XfailDecl kXfTwinPiCurrent{
-    "finding7-twin-pi-standing-current",
-    "2026-07-24 audit finding 7",
-    "each Twin PI triode idles at 0.5-0.9 mA (docs/DEVELOPMENT.md target)",
-    "the LtpInverter tailRef fix (finding 7)"};
+// 2026-07-29 (finding 7, docs §42): `finding7-twin-pi-plate-fraction` and
+// `finding7-twin-pi-standing-current` XPASSed once `LtpInverter::Config::tailRef` landed
+// (Rtail 22k -> 10k to a −7 V reference) and were DELETED in the same slice — all three
+// PI targets are hard assertions below. Measured after: Va 332.0/323.1 V (81.0 / 78.8 %
+// of B+), 0.780/0.612 mA per triode, leg ratio 0.946; before: 94.3 % of B+, 0.232 mA,
+// ratio 0.990 between two nearly-cut-off legs. This suite has NO XFAILs left.
 // NOTE: the OptoTremolo's SPEED-dependent depth collapse / level sag (audit Medium/DSP)
 // is pinned in the new core/tests/test_opto_tremolo.cpp, which also drives it through the
 // composed TwinAmp — the path no render in this file exercises, because every Twin render
@@ -210,13 +206,20 @@ void testOperatingPoints(double fs) {
     // triode from Ohm's law on the plate load, and the measured leg-gain ratio — see
     // core/tests/support/LtpProbe.h, shared with the JCM800 and AC30 suites.
     //
-    // The Twin's LEG BALANCE is ASSERTED FOR REAL (it measures 0.990 — but only because
-    // Ra2 = 142 kΩ, a resistor that exists in no AB763; see audit finding 7's note on the
-    // header/code contradiction). Its plate fraction and standing current XFAIL: the pair
-    // idles at 94 % of B+ drawing 0.23 mA/triode, i.e. parked near cutoff (finding 7).
+    // 2026-07-29 (finding 7): ALL THREE targets are asserted for real. The plate fraction
+    // and standing current used to XFAIL — the pair idled at 94 % of B+ drawing
+    // 0.23 mA/triode, parked near cutoff, because the tail returned to ground and 22 kΩ
+    // was the only thing setting the current. With Rtail = 10 kΩ to a −7 V reference it
+    // idles at 81.0/78.8 % of B+, 0.780/0.612 mA, ratio 0.946. The balance was already a
+    // hard assertion and stayed green through the change — the 100k/142k plate pair is
+    // what compensates the finite tail impedance (measured: matched 100k/100k gives
+    // 0.718 at the same operating point, so the audit's "142 k is an artifact of the
+    // starved tail" reading does not survive measurement; see TwinPowerAmp.cpp).
     const auto ltpM = clipper::test::measureLtp(pa.inverter(), fs);
     clipper::test::assertLtpSane(ltpM, "Twin");
-    clipper::test::assertLtpTargets(ltpM, fs, "Twin", &kXfTwinPiPlate, &kXfTwinPiCurrent,
+    clipper::test::assertLtpTargets(ltpM, fs, "Twin",
+                                    /*plate fraction: holds, assert for real*/ nullptr,
+                                    /*standing current: holds, assert for real*/ nullptr,
                                     /*balance: holds, assert for real*/ nullptr);
 
     std::printf("  [ok] DC op points @ %.0f Hz: V1 Va=%.1f Vk=%.2f Iq=%.2fmA; 6L6 Iq=%.2f mA/tube "
@@ -607,14 +610,17 @@ void testAliasing(double fs) {
 
 // Known defects this binary exercises under XFAIL. Printed by --xfail-ledger, which ctest
 // surfaces as ***Skipped in its default summary (see core/CMakeLists.txt).
-const clipper::test::XfailDecl kLedger[] = {kXfTwinPiPlate, kXfTwinPiCurrent};
+// EMPTY since 2026-07-29 (finding 7): the Twin's two PI XFAILs XPASSed and were deleted,
+// and this suite now has no known-bad property. `--xfail-ledger` still answers (with a
+// count of zero); the ctest ledger entry was removed in core/CMakeLists.txt.
+const clipper::test::XfailDecl* const kLedger = nullptr;
+constexpr std::size_t kLedgerCount = 0;
 
 }  // namespace
 
 int main(int argc, char** argv) {
     clipper::test::requireAssertsLive();
-    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
-                                                 sizeof kLedger / sizeof kLedger[0],
+    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger, kLedgerCount,
                                                  "clipper_twin_tests");
     if (ledger >= 0) return ledger;
 

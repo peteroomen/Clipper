@@ -39,12 +39,31 @@ TwinPowerAmp::TwinPowerAmp() {
     // 12AT7 phase inverter: lower-mu, higher-current than the JCM's 12AX7 PI.
     c.tube.mu = 60.0; c.tube.ex = 1.35; c.tube.kg1 = 460.0;
     c.tube.kp = 300.0; c.tube.kvb = 300.0;
-    // BALANCED large-signal legs: a LONG tail (22k) plus an asymmetric plate-load
-    // pair (Ra1 100k input side, Ra2 142k feedback side) equalize the two anti-
-    // phase plate swings to within ~1% (measured ratio 1.007) — this cancellation
-    // is what keeps the push-pull's EVEN harmonics down, the key to a CLEAN power
-    // stage (an unbalanced PI leaks a strong 2nd harmonic even with matched tubes).
-    c.bPlus = 410.0; c.Ra1 = 100.0e3; c.Ra2 = 142.0e3; c.Rtail = 22.0e3;
+    // BALANCED large-signal legs: an asymmetric plate-load pair (Ra1 100k input side,
+    // Ra2 142k feedback side) compensates the finite tail impedance and equalizes the
+    // two anti-phase plate swings — this cancellation is what keeps the push-pull's
+    // EVEN harmonics down, the key to a CLEAN power stage (an unbalanced PI leaks a
+    // strong 2nd harmonic even with matched tubes).
+    //
+    // TAIL (2026-07-24 audit finding 7, docs §42): the AB763's shared tail is 10 k, and
+    // it returns to a NEGATIVE reference, not to ground. Modelled as ground (the old
+    // two-terminal tail) the only way to get any standing current at all was to stretch
+    // Rtail — 22 k here — and even then the pair idled at 0.232 mA/triode with its
+    // plates at 94.3 % of B+, near cutoff, at ×7.4/×7.5 per leg. The old ratio of 0.990
+    // was balance between two nearly-dead legs. Now Rtail = 10 k (the schematic value)
+    // to a calibrated tailRef:
+    //   tailRef = -7 V -> Va 332.0/323.1 V (81.0 / 78.8 % of B+), 0.780/0.612 mA per
+    //   triode, legs ×14.31/×13.54, ratio 0.946 (identical at 44.1/48/96 kHz).
+    // All three project targets (70-85 % of B+, 0.5-0.9 mA/triode, ratio >= 0.90) are
+    // met with margin and are HARD assertions in core/tests/test_twin_amp.cpp.
+    //
+    // Ra2 was NOT changed to 100 k. The audit read the 142 k as an artifact of the
+    // starved tail; measured with the tail fixed, matched 100k/100k loads give a leg
+    // ratio of 0.718, and no tailRef meeting the DC targets gets past 0.79 (the balance
+    // crossover is Ra2 ≈ 133 k). Unequal plate loads are how a finite-tail LTP is
+    // balanced. Re-examining the value belongs to finding 8, whose Ra2 sweep has to be
+    // re-taken now the tail reference exists.
+    c.bPlus = 410.0; c.Ra1 = 100.0e3; c.Ra2 = 142.0e3; c.Rtail = 10.0e3; c.tailRef = -7.0;
     ltp_.configure(c);
 }
 

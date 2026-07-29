@@ -18,8 +18,21 @@
 // LOWER-mu, higher-current triode than the 12AX7 the JCM PI uses). Parameter
 // source: a widely-circulated Koren 12AT7 fit (the modeling-community parameter
 // table in the Koren 1996 form): mu = 60, ex = 1.35, kg1 = 460, kp = 300,
-// kvb = 300. Balanced 100k/100k plate loads (Fender's PI is more symmetric than
-// the JCM's deliberate 100k/82k imbalance), 10k shared tail, B+_PI ≈ 410 V.
+// kvb = 300. GAIN-balanced anti-phase legs (the point of the AB763's more
+// symmetric PI, against the JCM's deliberate 100k/82k imbalance): a 10 k shared
+// tail returned to a −7 V reference, and a 100k/142k plate pair that compensates
+// the finite tail impedance. B+_PI ≈ 410 V.
+//
+// 2026-07-29 (finding 7): this comment used to say "balanced 100k/100k plate
+// loads" while the code shipped 100k/142k, and the audit read the 142 k as an
+// artifact compensating the starved 22 k tail. MEASURED, it is not: with the tail
+// fixed (10 k to −7 V) and matched 100k/100k loads the leg-gain ratio is 0.718,
+// and no tailRef that also meets the DC targets gets it past 0.79. Unequal plate
+// loads are how a finite-tail LTP is balanced; 142 k is this model's compensating
+// value (the balance crossover is Ra2 ≈ 133 k). The code is right, the comment was
+// wrong, and it is the comment that has been fixed. Whether 142 k is the RIGHT
+// compensation, or the model's leg-2 gain deficit is itself too large, belongs to
+// finding 8 (plate-load balance) with its sweep re-measured post-tailRef.
 //
 // ===========================================================================
 // 2. 6L6GC PUSH-PULL QUAD — Koren pentode
