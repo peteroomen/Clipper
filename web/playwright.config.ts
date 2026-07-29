@@ -32,12 +32,28 @@ export default defineConfig({
   timeout: 60_000,
   fullyParallel: false,
   workers: 1,
-  // Chromium's OfflineAudioContext can intermittently render silence once enough
-  // AudioContexts have been created in a single browser process (a known WebAudio
-  // engine flake, not a DSP fault — the offline-render proofs pass in isolation).
-  // A couple of retries makes the suite deterministic without masking a real
-  // break (a genuine failure loses all attempts).
-  retries: 2,
+  // A flake is a failure here. This was `retries: 2`, justified by a comment claiming
+  // the intermittent all-zero OfflineAudioContext render was an unfixable WebAudio
+  // engine quirk and that retries could not mask a real break. Both claims were wrong
+  // when measured (docs §41):
+  //
+  //  - The silence had a real, fixable cause — the AudioWorkletProcessor being
+  //    installed onto the offline RENDER thread races `startRendering()`. It is fixed by
+  //    `installOfflineRenderBarrier` in tests/support/render-guard.ts, which every spec
+  //    that renders audio now installs. Measured under a fixed 6-way CPU load on 4
+  //    cores, 5 full-suite runs each at `--retries=0`: 41 failures / 355 test-executions
+  //    (5/5 runs red) BEFORE, 0 / 355 (5/5 runs green) AFTER.
+  //  - "A genuine failure loses all attempts" is true only of a fault that reproduces on
+  //    EVERY run. Measured with a fault injected at 20 % per render into one
+  //    single-render test, 25 repetitions of each arm:
+  //        --retries=0  ->  5 failed / 20 passed, exit 1   (fault caught)
+  //        --retries=2  ->  0 failed, 6 flaky / 19 passed, exit 0   (suite GREEN)
+  //    Same fault, same rate: retries:2 masked it completely. That is the whole
+  //    argument — do not put this back to 2.
+  //
+  // If a residual flake ever forces this above 0, write the MEASURED rate here and use
+  // 1, never 2.
+  retries: 0,
   reporter: [['list']],
   use: {
     baseURL: `http://localhost:${PORT}`,

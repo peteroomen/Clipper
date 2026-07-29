@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 
+import { installRenderGuards } from './support/render-guard';
+
 // M9.4 JCM800 amp-model browser verification.
 //
 // Offline-render proofs (same discipline as audio.spec.ts / cab.spec.ts: a handful
@@ -18,6 +20,14 @@ const AMP_CAB = 5;
 const AMP_JCM_GAIN = 10;
 const AMP_JCM_PRESENCE = 11;
 const AMP_JCM_MASTER = 12;
+
+// Offline-render integrity, in one line for every render in this file (docs §41):
+// the render-thread barrier that stops the intermittent all-zero render, the guard that
+// makes a silent render fail by NAMING itself instead of failing a spectral comparison,
+// and the non-finite scan. See tests/support/render-guard.ts.
+test.beforeEach(async ({ page }) => {
+  await installRenderGuards(page);
+});
 
 // --- 1. Switching to the JCM800 changes the sound (its own distortion). ----------
 // The Clean 120 is a LINEAR platform; the JCM800 is a valve head that makes its own

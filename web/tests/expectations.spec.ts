@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 
+import { installRenderGuards } from './support/render-guard';
+
 // M11 "Player Expectations Suite" — the FIRST FIVE MINUTES simulated in the real
 // browser engine (docs §26). A new player loads the page, drops each dirt pedal
 // from the gear tray onto the rig, stomps it on at its opening defaults, plays a
@@ -43,6 +45,14 @@ const DIRT_PEDALS = [
 // "blows the mix apart" drift fails loudly.
 const PEDAL_RMS_DB = { lo: -32, hi: -4 };
 const AMP_RMS_DB = { lo: -42, hi: -6 };
+
+// Offline-render integrity for every render in this file — barrier + silence guard +
+// non-finite scan (docs §41). This spec asserts "audible, non-silent output at defaults",
+// so a silent render here would read as exactly the field bug it is meant to catch; the
+// guard makes the difference explicit. See tests/support/render-guard.ts.
+test.beforeEach(async ({ page }) => {
+  await installRenderGuards(page);
+});
 
 test.describe('M11 player expectations (first five minutes)', () => {
   // --- 1+2+3. Each dirt pedal, added at defaults onto the default rig. ----------

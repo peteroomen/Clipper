@@ -2,6 +2,8 @@ import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import { installRenderGuards } from './support/render-guard';
+
 // Cab expansion (Brit 4×12 + user IR upload) browser verification.
 //
 // Offline-render proofs come FIRST (same reason as audio.spec.ts: creating many
@@ -12,6 +14,13 @@ import { fileURLToPath } from 'node:url';
 const combWavBytes = Array.from(
   readFileSync(fileURLToPath(new URL('./fixtures/comb-ir.wav', import.meta.url)))
 );
+
+// Offline-render integrity for every render in this file — barrier + silence guard +
+// non-finite scan. Both offline proofs in this spec were in the measured baseline's
+// failure set (docs §41). See tests/support/render-guard.ts.
+test.beforeEach(async ({ page }) => {
+  await installRenderGuards(page);
+});
 
 // --- 1. Built-in swap changes the rendered spectrum: brit412 is darker up top. -
 test('cab select: brit412 renders darker highs than clean212', async ({ page }) => {

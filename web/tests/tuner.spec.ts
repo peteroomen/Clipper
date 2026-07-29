@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 
+import { installRenderGuards } from './support/render-guard';
+
 // M7 tuner tests.
 //
 // Two proofs, mirroring the milestone quality bar:
@@ -15,6 +17,15 @@ import { test, expect } from '@playwright/test';
 // ordering rule as the other suites.
 
 const SR = 48000;
+
+// Offline-render integrity for every render in this file — barrier + silence guard +
+// non-finite scan (docs §41). NOTE: this is the one spec with a render that is SUPPOSED
+// to be silent (the engaged tuner mutes the rig), and it opts out at the render site with
+// `window.allowSilentRender(ctx)` rather than the guard being weakened for everyone.
+// See tests/support/render-guard.ts.
+test.beforeEach(async ({ page }) => {
+  await installRenderGuards(page);
+});
 
 // ---- 2. MUTE (offline render) -------------------------------------------------
 
@@ -61,6 +72,15 @@ test('tuner: engaged tuner mutes the chain; disengaged passes audio', async ({ p
       const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
       osc.connect(node).connect(ctx.destination);
       osc.start();
+      // An ENGAGED tuner mutes the chain by design, so THIS render is meant to come back
+      // all-zero — the assertion below is `mutedRms < 1e-4`. Opt out of the silence guard
+      // explicitly, at the render site, so the intent is documented here instead of the
+      // guard being loosened for every other render in the suite (docs §41).
+      if (chainEngaged) {
+        (
+          window as unknown as { allowSilentRender: (c: OfflineAudioContext) => void }
+        ).allowSilentRender(ctx);
+      }
       const buf = await ctx.startRendering();
       return buf.getChannelData(0).slice();
     }

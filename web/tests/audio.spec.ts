@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-import { installNonFiniteOutputGuard } from './support/finite-output';
+import { installRenderGuards } from './support/render-guard';
 
 // M4 browser verification.
 //
@@ -27,8 +27,15 @@ const RENDER_SECONDS = 0.5;
 // covers every render in the file, present and future, in every channel, over every sample.
 // See tests/support/finite-output.ts for why it is a prototype patch and not a helper called
 // at each of the ~15 render sites.
+//
+// 2026-07-25 (test/web-render-silence-guard). Same line now also installs the offline-render
+// BARRIER — which is what stops the intermittent all-zero render this file suffered from —
+// and the SILENCE GUARD, so a render that comes back all-zero fails saying so instead of
+// failing a Goertzel comparison with `Received: 0` twenty lines later. Measured: this file
+// contributed 26 of the 41 failures in a 5-run baseline under load. See
+// tests/support/render-guard.ts and docs §41.
 test.beforeEach(async ({ page }) => {
-  await installNonFiniteOutputGuard(page);
+  await installRenderGuards(page);
 });
 
 test('RAT worklet: high distortion yields odd harmonics; LEVEL scales RMS', async ({ page }) => {
@@ -289,8 +296,22 @@ test('muff worklet: fuzz makes massive harmonics + a compressed sustain wall', a
           else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
         };
       });
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(() => resolve(), 6000);
+      await new Promise<void>((resolve, reject) => {
+        // REJECT on timeout, never resolve. This used to be `setTimeout(() => resolve(),
+        // 6000)`: a setup that timed out fell straight through and rendered an
+        // UNCONFIGURED graph, and the resulting silence was then reported as an audio
+        // failure ("Received: 0") rather than as the setup failure it was. Docs §41.
+        const t = setTimeout(
+          () =>
+            reject(
+              new Error(
+                'SETUP FAILED: the worklet never echoed `latency` within 6 s, so the ' +
+                  'bypass/chain/oversampling messages were NOT applied. Nothing below ' +
+                  'this point would have measured the intended rig.'
+              )
+            ),
+          6000
+        );
         node.port.onmessage = (e: MessageEvent) => {
           if (e.data?.type === 'latency') { clearTimeout(t); resolve(); }
         };
@@ -415,8 +436,22 @@ test('gold worklet: transparent at min gain, harmonics + touch response when pus
           else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
         };
       });
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(() => resolve(), 6000);
+      await new Promise<void>((resolve, reject) => {
+        // REJECT on timeout, never resolve. This used to be `setTimeout(() => resolve(),
+        // 6000)`: a setup that timed out fell straight through and rendered an
+        // UNCONFIGURED graph, and the resulting silence was then reported as an audio
+        // failure ("Received: 0") rather than as the setup failure it was. Docs §41.
+        const t = setTimeout(
+          () =>
+            reject(
+              new Error(
+                'SETUP FAILED: the worklet never echoed `latency` within 6 s, so the ' +
+                  'bypass/chain/oversampling messages were NOT applied. Nothing below ' +
+                  'this point would have measured the intended rig.'
+              )
+            ),
+          6000
+        );
         node.port.onmessage = (e: MessageEvent) => {
           if (e.data?.type === 'latency') { clearTimeout(t); resolve(); }
         };
@@ -954,8 +989,20 @@ test('phaser: engaged phaser sweeps a moving notch through a steady tone', async
           }
         };
       });
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(() => resolve(), 6000);
+      await new Promise<void>((resolve, reject) => {
+        // REJECT on timeout — see the note at the muff/gold render helpers above and
+        // docs §41. Resolving here rendered an unconfigured graph and blamed the audio.
+        const t = setTimeout(
+          () =>
+            reject(
+              new Error(
+                'SETUP FAILED: the worklet never echoed `latency` within 6 s, so the ' +
+                  'bypass/chain/oversampling messages were NOT applied — the phaser was ' +
+                  'never installed, so the notch measurement below is meaningless.'
+              )
+            ),
+          6000
+        );
         node.port.onmessage = (e: MessageEvent) => {
           if (e.data?.type === 'latency') {
             clearTimeout(t);

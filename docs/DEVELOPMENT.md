@@ -5717,20 +5717,29 @@ Not attempted here: the **tone-stack class** of test, which compares the discret
 an analytic `H(jω)` derived from the same netlist. Real (findings 5 and the JCM flatness are
 exactly that), but fixing it needs published response curves per amp — a research slice.
 
-**`web/playwright.config.ts:34` sets `retries: 2`**, so any fault appearing in under a third of
-runs is retried away. Not changed unilaterally in a test-integrity slice, but it is the last
-remaining way for a real fault to disappear silently, and it belongs in the next process
-slice. Recommendation: `retries: 0` locally and on PRs, keeping retries (if any) only for a
-nightly job, so a flaky test is a bug report rather than a shrug.
+**`web/playwright.config.ts` set `retries: 2`**, so any fault appearing in under a third of
+runs was retried away. Not changed unilaterally in a test-integrity slice; it belonged in the
+next process slice, with the recommendation `retries: 0` so a flaky test is a bug report
+rather than a shrug.
+
+> **RESOLVED 2026-07-25 — `retries: 0`, and the underlying fault is fixed. See §41.** The
+> silence was not a resource limit and was not unfixable: an `AudioWorkletProcessor` is
+> installed onto the offline **render thread** asynchronously, and the `ready`/`latency`
+> messages these specs await are posted from a *different* thread, so they never ordered
+> against the renderer. Every spec that renders audio now installs a real happens-before
+> barrier (`web/tests/support/render-guard.ts`). Measured under a fixed CPU load, 5
+> full-suite runs each at `--retries=0`: **41 failures / 355 test-executions (5/5 runs red)
+> → 0 / 355 (5/5 green)**. The claim in the old config comment that *"a genuine failure
+> loses all attempts"* was also measured and refuted — see §41's fault-injection table.
 
 This slice ran straight into it. The suite is green (66 passed, exit 0), but **four
 pre-existing tests needed a retry** — `'RAT worklet: high distortion yields odd harmonics'`,
 `'amp: treble knob changes 5 kHz content'`, `'reverb: 0 == dry; up leaves a decaying tail'`,
 and the phaser notch test. All four are `OfflineAudioContext` renders, and `audio.spec.ts`'s
-own header names the cause: *"Creating many live AudioContexts in one browser process can
-starve later OfflineAudioContext renders (they go silent)."* With `retries: 2` they are
-invisible; with `retries: 0` they would be four red tests describing a real, reproducible
-resource limit.
+own header named a cause that turned out to be wrong: *"Creating many live AudioContexts in
+one browser process can starve later OfflineAudioContext renders (they go silent)."* With
+`retries: 2` they are invisible; with `retries: 0` they would be four red tests. (§41 measured
+the real count under load at **15 distinct tests**, not four.)
 
 The same limit bit the rewritten **perf-smoke** tests, and it is worth recording how, because
 it is a trap for the next person. Each builds eight `OfflineAudioContext`s in sequence. Run
@@ -7155,3 +7164,196 @@ corrections into one constant is exactly how `kFullScaleSecV` ended up hiding tw
 factor-of-2 mistakes.
 
 **The WASM artifact was rebuilt** — `core/` changed.
+
+## 41. The Playwright suite's `retries: 2` — the intermittent all-zero offline render
+
+**Session:** 2026-07-25 · `test/web-render-silence-guard` · plan `docs/work/2026-07-25-web-render-silence-guard.md`
+**Closes:** the residual §29 left open — *"`web/playwright.config.ts:34` sets `retries: 2`, so any
+fault appearing in under a third of runs is retried away … the last remaining way for a real
+fault to disappear silently."*
+**Scope:** `web/tests/**` and `web/playwright.config.ts` only. **Zero application source
+changes** — nothing under `core/`, `web/worklet/`, `web/src/`, `native/` or
+`web/public/generated/`, and no WASM rebuild. No audio assertion was weakened.
+
+### The symptom, and how bad it actually was
+
+Offline renders through the worklet intermittently came back **all-zero**, and the tests then
+failed on whatever spectral comparison happened to be first — `expect(received).toBeGreaterThan(0.02)`
+/ `Received: 0`, or `Received: Infinity` from a `0/0` ratio. §29 recorded four such tests
+needing a retry and named `retries: 2` as the thing hiding them.
+
+Measured properly, it was much worse than four. Under a **fixed, reproducible CPU load** (six
+spinning shell loops on a 4-core machine — the load matters, the suite is nearly clean
+unloaded), **5 full-suite runs at `--retries=0`**:
+
+| run | failed | passed |
+|---|---|---|
+| 1 | 9 | 62 |
+| 2 | 7 | 64 |
+| 3 | 7 | 64 |
+| 4 | 9 | 62 |
+| 5 | 9 | 62 |
+| **total** | **41 / 355 test-executions (11.5 %)** | 5 of 5 runs RED |
+
+15 distinct tests were affected; the worst (`muff worklet: fuzz makes massive harmonics`)
+failed in **5 of 5** runs. Unloaded, the same suite passed 71/71 — which is exactly why this
+survived: it is invisible on an idle machine and retried away on a busy one.
+
+### Two hypotheses, both wrong — recorded because a walked-back theory is useful
+
+**(1) `OfflineAudioContext` accumulation / "nobody closes the contexts."** This is what the
+config comment asserted (*"once enough AudioContexts have been created in a single browser
+process"*), and it was also the orchestrating session's hypothesis: 37 context sites across
+the specs and zero `close()` calls. It is **false**:
+
+- a `new OfflineAudioContext` + `OscillatorNode` → `destination`, no worklet, rendered
+  correctly **16/16**;
+- a context that called `audioWorklet.addModule()` and then never instantiated the module,
+  **16/16**;
+- only the path that actually instantiates an `AudioWorkletNode` goes silent, and it does so
+  on the **first** context of a fresh page — no accumulation needed;
+- and `OfflineAudioContext.prototype.close` **does not exist** in this Chromium, so the
+  proposed fix was never callable in the first place.
+
+**(2) "A couple of retries makes the suite deterministic without masking a real break (a
+genuine failure loses all attempts)."** True only of a fault that reproduces on *every* run.
+See the fault-injection measurement below.
+
+### The real mechanism
+
+An `AudioWorkletProcessor` is installed onto the offline **render thread** asynchronously, and
+nothing observable from the main thread reports when that has happened. The `ready` and
+`latency` messages the specs already await are posted from the *AudioWorkletGlobalScope* —
+a **different thread** from the one that installs the processor into the render graph — so
+awaiting them orders against the worklet and **not** against the renderer. If
+`startRendering()` wins that race, Blink's handler has no processor and zeroes its output.
+
+Because an offline context renders the whole buffer in one uninterrupted pass, the pending
+install task can never land mid-render. That predicts an **all-or-nothing** signature, and
+that is what is observed: every failing render is *exactly* 0.0 everywhere, never partially
+correct.
+
+It also explains why the declick tests were the reliable ones — they all call `ctx.suspend(t)`
+mid-render, and the suspension is a yield point at which the pending install lands. Measured
+directly: with no barrier and a mid-render suspend at 0.25 s, renders came back at **half**
+the expected peak, the first 0.25 s silent and only the post-suspend remainder carrying audio.
+
+### The fix: `installOfflineRenderBarrier`
+
+Suspend at frame 0, call `startRendering()`, await the suspension, resume
+(`web/tests/support/render-guard.ts`). The suspension resolving is a genuine
+**happens-before** against the render thread: it proves the renderer has begun and has
+drained the tasks queued ahead of it. It is not a sleep, so it does not degrade under load —
+which matters, because every wall-clock barrier measured (`setTimeout(0)` ×1/×2/×4, a
+microtask drain, a `MessageChannel` hop, one `requestAnimationFrame`) was **insufficient**,
+and the two that did work (50 ms, two rAFs) worked only by buying time.
+
+It is **bit-transparent**: 0 differing samples out of 24 000 over 5 trials, against a render
+already made race-free by a long sleep in both arms — identical peak, identical max
+sample-to-sample delta, identical first-nonzero index. So it cannot perturb a declick or pop
+assertion. And it coexists with a test's own mid-render `suspend()` (8/8), because the two
+suspensions sit at different render quanta.
+
+### The guard: a silent render must name itself
+
+The barrier is the fix; `installSilentRenderGuard` is the more important half. Same
+prototype-patch shape as `finite-output.ts` and for the same reason — it covers **every**
+render in a spec, present and future, and a new render site cannot opt out by omission.
+A render whose peak is at or below −140 dBFS throws a message that says *the render produced
+silence, setup failed, do not interpret these numbers and do not relax the assertion*.
+
+The one render in the suite that is *supposed* to be silent — the engaged-tuner mute — opts
+out explicitly at the render site with `window.allowSilentRender(ctx)`, which documents the
+intent where it applies instead of weakening the guard for everyone.
+
+### Adoption: every spec that renders audio
+
+Before this slice, **none** of the specs used either guard — `finite-output.ts` was installed
+in `audio.spec.ts` alone, and each spec carries its own copy of a `render()` helper (37
+`new OfflineAudioContext` sites across the file set). Rather than edit 37 render sites,
+`installRenderGuards(page)` goes in one `test.beforeEach` per spec, so the whole file is
+covered including renders added later:
+
+| spec | renders audio | guards |
+|---|---|---|
+| `audio.spec.ts` | yes (~15 sites) | `installRenderGuards` (replaced the finite-only guard) |
+| `amp.spec.ts` | yes | `installRenderGuards` |
+| `cab.spec.ts` | yes | `installRenderGuards` |
+| `expectations.spec.ts` | yes | `installRenderGuards` |
+| `tuner.spec.ts` | yes (one deliberately silent) | `installRenderGuards` + `allowSilentRender` |
+| `assistant.spec.ts` | **no** `OfflineAudioContext` at all | none needed |
+
+### Resolve-on-timeout: three setup barriers that lied
+
+`audio.spec.ts` had three `await new Promise<void>((resolve) => { const t = setTimeout(() =>
+resolve(), 6000); … })` waits on the worklet's `latency` echo. **Resolving** on timeout means a
+timed-out setup falls straight through, renders a graph whose `bypass`/`chain`/`oversampling`
+messages were never applied, and then reports the result as an *audio* failure. All three now
+**reject** with a message naming the setup as the failure. (This is an independent defect from
+the render race — it cannot explain the silent renders, which reject correctly on the `ready`
+handshake.)
+
+### Measured: the guard has teeth
+
+Perturbation, per the project convention (and `touch` after both patch and restore): delete
+`osc.start()` from `audio.spec.ts`'s RAT render helper so the render is genuinely all-zero,
+then run the RAT test both ways.
+
+| arm | failure message |
+|---|---|
+| guard installed (shipped) | `SILENT RENDER: THE RENDER PRODUCED SILENCE — SETUP FAILED, this is not a DSP result. Peak across all 1 channel(s) was 0 (floor 1e-7) over 24000 samples at 48000 Hz; 0 channel(s) carried any signal.` … *"Do NOT interpret the numbers from this render, and do NOT relax the assertion that failed"* |
+| guard removed (pre-slice) | `expect(received).toBeGreaterThan(expected)` / `Expected: > 0.01` / `Received: 0` |
+
+The second is what the suite produced before this slice, and it reads like a DSP regression —
+it is what cost the real debugging time.
+
+### Measured: `retries: 2` masks an intermittent fault
+
+The claim under test is the old config comment's: *"A couple of retries makes the suite
+deterministic without masking a real break (a genuine failure loses all attempts)."*
+
+A fault was injected that zeroes the finished render with probability **0.2** — the real
+fault's exact signature — into one single-render test, run 25 times per arm:
+
+| arm | result | exit |
+|---|---|---|
+| `--retries=0` | **5 failed** / 20 passed | 1 — fault caught |
+| `--retries=2` | 0 failed, **6 flaky** / 19 passed | **0 — suite GREEN** |
+
+Same fault, same rate, opposite verdict. Six repetitions hit the fault and **every one of them
+was retried into a pass**. A fault has to reproduce on essentially every run for retries to
+report it; the interesting faults do not. `retries` is therefore **0**, and the numbers above
+live in the config comment so the next person cannot re-derive the old justification.
+
+### Measured: flake rate before → after
+
+Identical harness both times — six spinning shell loops on a 4-core machine, 5 full-suite
+runs, `--retries=0`, nothing else on the box:
+
+| | run 1 | run 2 | run 3 | run 4 | run 5 | failures / executions | red runs |
+|---|---|---|---|---|---|---|---|
+| **before** | 9 | 7 | 7 | 9 | 9 | **41 / 355 (11.5 %)** | **5 / 5** |
+| **after** | 0 | 0 | 0 | 0 | 0 | **0 / 355** | **0 / 5** |
+
+Unloaded, a further single run is 71/71 (and was before, too — which is the trap).
+
+### Left open
+
+- **`amp twin: the optical tremolo modulates the output envelope` has a second, different
+  fault.** In one baseline run it failed with `onCV` **0.019677767321650944** against
+  `offCV * 4 = 0.07871106928660378` — i.e. `onCV` *exactly* equals `offCV`, so the INTENSITY
+  0.0 and 0.8 renders were **bit-identical**. That is not silence (silence gives `envCV` 0);
+  it is the amp-model/param messages not reaching the render, the same shape as the
+  `voiceDiff` exactly-0 case recorded in §29. It did not recur in the 5 clean post-fix runs,
+  so the barrier may well have fixed it too — but the mechanism was never isolated, and if it
+  returns it needs its own measurement rather than a retry. Not fixed here.
+- **`web/tsconfig.json` excludes `tests`**, so `npm run build`'s `tsc --noEmit` does **not**
+  typecheck a single spec, and Playwright transpiles them with esbuild without typechecking.
+  A type error in a spec is invisible to the whole gate. The specs were typechecked by hand
+  for this slice (clean, apart from `cab.spec.ts`'s `node:fs`/`node:url` imports failing
+  because `@types/node` is not a dependency). Wiring a real test typecheck is its own slice.
+- The `addModule`-timeout retry loops in three `audio.spec.ts` render helpers (4 attempts on a
+  fresh context) address a *different* symptom — `addModule` hanging — and were left alone.
+- Unaddressed and unrelated: the worklet is still posting from `process()` and freeing on the
+  audio thread (§30's honest residual).
+
