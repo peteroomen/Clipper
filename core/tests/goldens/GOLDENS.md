@@ -43,6 +43,22 @@ All five: 2.0 s standard pluck, 16-bit mono 48 kHz.
 
 <!-- New entries go directly below this line, newest first. -->
 
+## 2026-07-30 — 4 golden(s) re-blessed
+
+- **Blessed by:** Claude
+- **On top of:** `e4b07a6` build: rebuild the WASM artifact for the finding-7 core changes
+
+| Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |
+| --- | --- | --- | --- | --- |
+| `rat_jcm800` | CHANGED | -1.77 dB | 1.80 dB @ 200 Hz | 11 |
+| `sd1_twin_reverb` | CHANGED | -4.89 dB | 5.00 dB @ 317 Hz | 13 |
+| `muff_twin` | CHANGED | -4.74 dB | 4.92 dB @ 800 Hz | 12 |
+| `ts_ac30` | CHANGED | +0.44 dB | 1.22 dB @ 800 Hz | 7 |
+| `clean120_chorus` | UNCHANGED | -0.00 dB | 0.11 dB @ 252 Hz | 7 |
+
+**Justification:** Audit finding 7 (docs §42, ADR 014): the PI tail reference. rat_jcm800 -1.77 dB and sd1_twin_reverb/muff_twin -4.9/-4.7 dB are the JCM/Twin spanning their real rated power for the first time (kFullScaleSecV re-derived on its own cranked-swing convention); ts_ac30 +0.44 dB is the AC30 PI balance fix (0.550 -> 0.912). clean120_chorus unchanged (scope check). Owner authorized blessing all four on 2026-07-30 with the per-band tables presented.
+
+
 ## 2026-07-25 — 1 golden(s) re-blessed
 
 - **Blessed by:** Claude
