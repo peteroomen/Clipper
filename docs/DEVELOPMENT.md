@@ -7954,3 +7954,82 @@ re-derived on the corrected circuit (clean window ~10× wider): −84 → **−7
 player bars (knob 0.14 = −25.9 dBFS / 10.7 %; perturbation lineage in the test comment).
 Golden `muff_twin` −3.06 dB RMS / 3.76 dB @ 4032 Hz (the un-blown-out default voice) —
 owner-blessed before merge; A2/A3 reference rows re-baselined.
+
+## 50. The GOLD gain gang re-derived — the schematic's law, not a linear pot
+
+*Date: 2026-07-31 (overnight) · Branch: `claude/gold-gang-law-6f557i` · field reports "warm, vowley, tinny… gainy at even 35+" and "still warm, and too saturated really" + the 2026-07-31 Klon research report*
+
+### 50.1 The defect: three approximations, all pushing the same direction
+
+The GOLD's §27 build modelled the dual-gang GAIN as a crossfade with a linear drive
+law. Against the published schematic (the ElectroSmash / Chowdhury reference the §27
+header itself names), all three laws were wrong, and every error added gain:
+
+1. **Drive law.** Shipped: `A = 1 + g·100k/1.5k` — linear, unity at 0, **67.7× at
+   max**, and **24.3× at the shipped 0.35 default**. Real: gang 1's lower half sits
+   in the drive op-amp's *ground leg*, so `A = 1 + 422k/((1−g)·100k + 17k)` =
+   **4.61× → 25.82×**, end-loaded (half the dB range in the last quarter-turn). The
+   shipped default was delivering the real pedal's **knob-0.99** drive — the owner's
+   "gainy at even 35+" was literally correct.
+2. **Drive-path input network.** The drive branch attenuates before the diodes see
+   anything: ~0.20× @ 220 Hz / 0.65× @ 1 kHz on the real topology. The model passed
+   0.90 @ 220 — its 106 Hz corner belongs to FF1, the always-on clean-bass path,
+   and had been mis-assigned to the drive branch. Now `kDrivePreScale = 0.65` + a
+   600 Hz one-pole HP, fit to the reference rows (|H|·pre = 0.22 @ 220 Hz vs the
+   reference 0.20, 0.56 @ 1 kHz vs 0.65).
+3. **The blend laws.** Shipped: clean fades 1.0 → 0.45 while clip rises 0 → 1 — a
+   true crossfade. Real: the knob changes **drive, not mix** — the clean feed is
+   ~constant (gang 2's divider) and the dirt path's summing weight is **fixed**
+   (`kClipBlendWeight = 0.65`, fit). The "clean fades out" folklore is only
+   relative to the growing dirt. One idealization kept deliberately: `clipBlend(0)
+   = 0` (a short fade-in below g = 0.15), preserving the model's documented
+   bit-exact-clean GAIN-0 contract — the real unit measures 0.2–3.9 % THD even at
+   min. That is a product contract here, not a physics claim, and the code comment
+   says so.
+
+The germanium clipper itself was measured **right** in the corrected topology (the
+§36 vindication continues): the "warm/vowley/tinny" reports trace to the drive law
+slamming the diodes at knob positions the real pedal keeps clean, not to the diodes.
+
+### 50.2 Measured (220 Hz; THD at 0.1 V / 0.3 V input)
+
+| GAIN | before | after | reference (real unit, research report) |
+|---|---|---|---|
+| 0.00 | 0.00 % (contract) | 0.00 % (contract) | 0.2–3.9 % |
+| 0.35 (default) | 19.2 / 13.0 % | **1.41 / 6.37 %** | mostly clean, a little grit |
+| 1.00 | 30.6 % | **15.3 / 15.2 %** | 15–25 % |
+
+Monotonic through the travel; drive-gain span asserted at both ends (`driveGainAt(0)
+≈ 4.6068`, `driveGainAt(1) ≈ 25.8235`). Block-A player rows re-baselined: defaults
+RMS −22.0 → −27.8 dBFS, default-rig delta +13.2 → +7.3 dB (A4 window re-centred
+3..23 → −3..17), THD sweep 0.0→23.4→30.6 → **0.0→2.3→15.3**, treble authority
+−25.9→−15.3 (same +10.6 dB span), hum default row −32.9 → −32.0 dB.
+
+### 50.3 Probe re-derivations (the §42.9 discipline)
+
+Two GOLD suite probes were sized to the old, too-hot drive and stopped reaching
+their own property once the drive path attenuated:
+
+- **Germanium knee** (`testGermaniumKnee`): the old probe (A = 7.7, 0.01–0.1 V)
+  no longer straddled the knee at all. Re-derived to max gain with a 0.025–0.25 V
+  sweep — the diode node sees ≈ 0.14–1.4 V, onset-to-deep, which is the straddle
+  the knee properties need. Bounds unchanged.
+- **Ge-vs-Si ceiling contrast** (`testDiodeLevelContrast`): the old rows (gain
+  0.10 at 0.3 V) never reached either ceiling post-fix — the comparison would have
+  read the linear path. Re-derived to 0.6 V at gain ≥ 0.35 (node 0.8–3.4 V, past
+  both knees).
+
+`testCrossfade` asserts the new flat clean feed and both ends of the gang law;
+`testAnalyticLaws` asserts the law symbolically (`1 + 422k/117k`, `1 + 422k/17k`).
+Perturbation: restoring the pre-§50 linear law fails at the gang-law assert
+("drive gain law drifted from A = 1 + 422k/((1-g)*100k + 17k)"), then the suite is
+green again on restore — recorded in the plan file.
+
+### 50.4 Scope
+
+No golden moved: GOLD is in no golden rig, and `--golden-report` on the branch shows
+exactly the three inherited stack deltas (§47 rat_jcm800, §48 sd1_twin_reverb, §49
+muff_twin) with ts_ac30/clean120_chorus UNCHANGED. The GAIN-0 path is bit-exact
+unchanged (transparency contract), so the web "transparent at min gain" spec is
+untouched by construction. Deliberate tone change at every other knob position,
+argued against the schematic law + the reference THD rows above.
