@@ -68,17 +68,21 @@ public:
     double lastOutputPeak() const { return power_.lastOutputPeak(); }
 
     // The preamp-volts → PI-grid-drive handoff. This is a PASSIVE path in the real
-    // amp — the channel volume wiper reaches the PI grid through a coupling cap, a
-    // grid stopper and the channel MIXING resistors — so it can only ever be ≤ 1.
-    // 0.67 == the two-channel mixing division (each channel's wiper through its own
-    // 1 M mixing resistor into the shared PI grid node): the top-boost channel keeps
-    // two thirds of its volts. It is much higher than the Twin's 0.16 / the JCM's
-    // 0.25 for a structural reason — those preamps put TWO gain stages (and the JCM
-    // four) ahead of their volume pot, so their wipers carry tens of volts and the
-    // handoff has to trim them back, while the AC30 top boost has a SINGLE stage into
-    // a stack that loses ~13 dB. Raised from 0.30 in the §23 second amendment (the
-    // "not enough gain/breakup" report): 0.30 was an arbitrary trim, not a divider.
-    static constexpr double kInterstageScale = 0.67;
+    // amp — the stack output reaches the PI grid through a coupling cap, a grid
+    // stopper and the channel MIXING resistors — so it can only ever be ≤ 1.
+    // Re-derived 2026-07-30 (docs §46, the §42.6 convention: staging from measured
+    // PI drive, normalization from cranked swing — never one constant absorbing
+    // both). The §23-era 0.67 was calibrated for a preamp with ONE gain stage into
+    // a −36 dB-notched stack; the completed top-boost channel (V1 → volume → V2 →
+    // CF → corrected stack) carries ~+47 dB more, and the honest passive-divider
+    // story changes with it: the wiper now sits mid-channel, and the stack's real
+    // ~−13 dB insertion loss plus the mixing network's division land the PI drive
+    // the §23 voicing bars ask for at kInterstageScale = 0.03, chosen by the §46
+    // parameter search jointly with the volume taper (clean 0.1 % at knob 0.35,
+    // onset ≈ 0.52, 10.8 % at 0.6, monotonic to full). Like the JCM/Twin values it
+    // is a model parameter standing in for the whole passive interstage network,
+    // calibrated to land the measured drive, not a single component's value.
+    static constexpr double kInterstageScale = 0.03;
 
 private:
     double sampleRate_ = 44100.0;

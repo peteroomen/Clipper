@@ -273,7 +273,13 @@ public:
     // would be √(30·8) = 15.5 V RMS at the secondary, but our OT/sag model delivers a
     // smaller absolute swing and every voice is normalized to its own cranked peak, so
     // the amps stay level-comparable to each other rather than to a wattmeter.
-    static constexpr double kFullScaleSecV = 10.0;
+    // Re-derived 2026-07-30 (docs §46, its own §42.6 convention — cranked swing only,
+    // on the SAME probe the product test and the sibling amps use: VOLUME 1.0, 0.5 V
+    // at 110 Hz): the completed preamp + re-staged interstage measured a cranked
+    // secondary peak of 10.97 V; 10.97 / 0.9 ≈ 12.2 puts fully-cranked at the ~0.9
+    // project window. (The 220 Hz hot-pickup probe then peaks ~0.63 — cranked defines
+    // full scale, not the hot-pickup level, per the convention.)
+    static constexpr double kFullScaleSecV = 12.2;
 
     static double otTurnsRatio() { return 31.623; }  // √(Raa/8) = √1000
     double feedbackBeta() const { return kFeedbackBeta; }  // always 0
