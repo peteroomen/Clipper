@@ -509,6 +509,12 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
             ampPrimaryKnobs_ = {&volume_, &bass_, &middle_, &treble_, &reverb_};
             ampModKnobs_ = {&modSpeed_, &modDepth_};
             modCaption_ = "Tremolo";
+            // The trem ON/OFF switch (docs §20 amendment — the field-requested switch;
+            // native parity 2026-07-30). Same shared chorusMode param the engine already
+            // maps to TwinAmp::PARAM_TREMOLO_ENABLE (index >= 1 == on, declick-bracketed).
+            showMode_ = true;
+            chorusMode_.setLabels({"Off", "On"});
+            chorusMode_.setAccent(ampAccent_);
             break;
         case 3:  // AC30 "Thirty" — copper. Vol Bass Treble Cut Reverb
             ampWordmark_ = "Thirty";
@@ -539,6 +545,10 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
             ampPrimaryKnobs_ = {&volume_, &bass_, &middle_, &treble_, &reverb_};
             ampModKnobs_ = {&modSpeed_, &modDepth_};
             modCaption_ = "Chorus";
+            // Restore the three chorus labels + accent — the Twin panel re-labels the
+            // shared switch to its two-state trem ON/OFF.
+            chorusMode_.setLabels({"Off", "Chorus", "Vibrato"});
+            chorusMode_.setAccent(ampAccent_);
             break;
     }
 
@@ -547,6 +557,10 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
     power_.setAccent(ampAccent_);
     bright_.setVisible(showBright_);
     chorusMode_.setVisible(showMode_);
+    // Re-labeling clamps the displayed index (Twin shows 2 states, Clean 120 three),
+    // and switching amps does not fire the param attachment — re-sync the display
+    // from the parameter so e.g. Vibrato (2) survives a Twin round-trip intact.
+    if (chorusModeAttach_) chorusModeAttach_->sendInitialUpdate();
 
     updateEnablement();
     resized();

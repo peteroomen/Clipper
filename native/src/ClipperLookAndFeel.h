@@ -326,8 +326,23 @@ private:
 class ModeSwitch : public juce::Component {
 public:
     ModeSwitch();
-    void setSelected(int idx) { selected_ = idx; repaint(); }
+    // Clamped to the label count: the shared chorusMode param can hold Vibrato (2)
+    // from a Clean 120 session while the Twin shows the two-state trem switch —
+    // index >= 1 is "on" engine-side (ClipperEngine.cpp), so displaying the last
+    // label is the correct reading, not a lie.
+    void setSelected(int idx) {
+        selected_ = juce::jlimit(0, labels_.size() - 1, idx);
+        repaint();
+    }
     int selected() const { return selected_; }
+    // The switch is shared between amp panels (Clean 120 chorus, Twin tremolo) —
+    // each panel sets its own labels and accent when it takes the switch over.
+    void setLabels(juce::StringArray labels) {
+        labels_ = std::move(labels);
+        selected_ = juce::jlimit(0, labels_.size() - 1, selected_);
+        repaint();
+    }
+    void setAccent(juce::Colour accent) { accent_ = accent; repaint(); }
     std::function<void(int)> onSelect;
 
     void paint(juce::Graphics&) override;

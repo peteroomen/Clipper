@@ -2502,6 +2502,15 @@ a unity escape hatch; the web envelope test renders switch-on (pumping, CV > 0.1
 vs switch-off at full intensity (flat, CV < 0.05); the identical-core Twin case runs
 trem ON so the throb stays covered end-to-end.
 
+**Native editor parity (2026-07-30,** `docs/work/2026-07-30-native-trem-switch.md`**):**
+the paragraph above said "native `ClipperEngine` mirrors it" — true of the engine, but
+the JUCE **editor** never grew the switch, so on native the only way to kill the throb
+was still INTENSITY = 0 (the exact failure the amendment fixed on web). The Twin panel
+now shows the shared `ModeSwitch` re-labeled Off/On (`showMode_`, labels + accent set
+per amp panel; Clean 120 restores Off/Chorus/Vibrato). Same `chorusMode` param, no new
+parameter, no DSP change; a Clean-120 "Vibrato" (index 2) displays as "On" on the Twin,
+which matches the engine's `>= 1` mapping.
+
 ## Built DSP artifacts are committed
 
 `web/public/generated/` (the Emscripten-built WASM engine + the worklet copy)
