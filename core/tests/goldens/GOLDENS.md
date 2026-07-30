@@ -43,6 +43,21 @@ All five: 2.0 s standard pluck, 16-bit mono 48 kHz.
 
 <!-- New entries go directly below this line, newest first. -->
 
+## 2026-07-31 — 2 golden(s) re-blessed
+
+- **Blessed by:** Claude
+- **On top of:** `e0b5081` feat: complete the AC30 top-boost channel — gain structure + stack (docs §46, ADR 015)
+
+| Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |
+| --- | --- | --- | --- | --- |
+| `ts_ac30` | CHANGED | -4.94 dB | 17.96 dB @ 800 Hz | 7 |
+| `rat_jcm800` | CHANGED | +0.14 dB | 0.26 dB @ 1008 Hz | 11 |
+| `sd1_twin_reverb` | UNCHANGED | +0.00 dB | 0.02 dB | 13 |
+| `muff_twin` | UNCHANGED | +0.00 dB | 0.00 dB | 13 |
+| `clean120_chorus` | UNCHANGED | -0.00 dB | 0.11 dB @ 252 Hz | 7 |
+
+**Justification:** The AC30 gain-structure slice (docs §46, ADR 015): the completed top-boost channel (missing V2 gain stage + cathode follower), the corrected tone stack (audit finding 5's series-Cb + wiper load, plus the in-slice-found slope-resistor placement), and the re-derived volume law. The +17.96 dB at 800 Hz IS the fix — the structural mid notch filling back in; the −4.94 dB broadband is the honest kFullScaleSecV re-derivation from the amp's real cranked swing (the finding-7 Twin precedent: honest level, un-compensated). Owner authorized blessing ts_ac30 on 2026-07-31 with this table presented. rat_jcm800's +0.14/0.26 is NOT this slice: it is the §45-documented finding-8 drift (inside the gates, deliberately left unblessed there) being absorbed at this bless so the golden matches the shipped render again.
+
 ## 2026-07-30 — 2 golden(s) re-blessed
 
 - **Blessed by:** Claude
