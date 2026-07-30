@@ -7759,3 +7759,105 @@ plus the coming 470 pF bright cap are the measured pair behind the owner's "gain
 too powerful / still flabby" report; the GAIN-taper question is deliberately deferred
 until both land and the owner re-tests at unity trim (docs §44 note on the trim-80
 discovery: the field reports were made at +16.8 dB input boost).
+
+## 46. The AC30 gain structure — the top-boost channel completed
+
+*Date: 2026-07-30 · Branch: `claude/amps-pedals-fixes-6f557i` · ADR 015 · Owner decisions: stack correction in-slice; VOLUME between V1 and V2*
+
+The slice the §42.8 ledger commissioned: five `finding7-ac30-*` XFAILs owned by "an AC30
+gain-structure slice (the missing top-boost gain stage + VOLUME re-taper)", plus audit
+finding 5 (the tone stack's structural mid notch), folded in by owner decision because
+they are one physical circuit. Field report driving it: "the vox isn't voxy at all —
+not jangly, duller than the Twin, and it doesn't break up with volume correctly."
+
+### 46.1 What was missing, what was wrong
+
+The §23 model was ONE triode into the tone stack into a volume multiplier. The real
+top-boost channel is V1 → the top-boost gain triode (V2) → a cathode follower driving
+the tone network → volume → PI. And the stack netlist carried THREE structural errors:
+
+1. **Cb stamped in parallel to ground** instead of in series with the bass rheostat —
+   audit finding 5's headline: a hardwired ~−36 dB mid hole no knob could dial.
+2. **No load on the wiper output** — finding 5's second item.
+3. **The slope resistor fed the treble pot's BOTTOM** (the "bass" node) instead of the
+   top — NOT in the audit; found by measurement in this slice when the corrected stack
+   was driven from the follower's low impedance and the treble knob measured 1.9 dB
+   *inverted*. With the R1∥Ct-split-to-opposite-ends arrangement, the slope resistor is
+   the lower-impedance path at HF, so the "bass" end of the pot was the brighter node.
+   R1 and Ct both belong on the pot top; the pot bottom connects only through the bass
+   branch, whose frequency-dependent shunt is what the bass knob actually controls.
+
+### 46.2 The build
+
+- `Ac30Preamp`: `STAGE_COUNT` 1 → 3 — V2 (canonical 100k/1.5k‖25µ warm stage, same as
+  V1) and a direct-coupled cathode follower (Rk 100 k, `gridBias` from V2's plate at
+  prepare, the `Jcm800Preamp` pattern). The stack's source impedance is the follower's
+  measured **226 Ω** (was V1's ~45 k plate). `latencySamples()` sums all three stages
+  (72 → 216 samples at 48 k; +3 ms — the known per-stage-oversampling cost, its
+  consolidation stays a roadmap item).
+- **VOLUME between V1 and V2** (owner decision — the historic top-boost-kit insertion
+  point): the knob sets how hard V2/CF/stack/PI are driven, so breakup TRACKS the knob.
+  Per-sample smoothed as before.
+- `TopBoostToneStack`: 6-node MNA (new N5 under the series Cb), the 500 k wiper load,
+  R1 to the pot top, and the bass rheostat behind a **square-law knob map** (the real
+  1 M bass pot is log; linear left the entire Vox "V" in the last 5 % of rotation).
+- Constants re-derived by measurement, each to its §42.6 convention:
+  `audioTaper` k **4 → 8** and `kInterstageScale` **0.67 → 0.03**, chosen JOINTLY by a
+  parameter search against the five voicing bars simultaneously (the k=8/s=0.03 row of
+  the search table: clean 0.1 % at knob 0.35, onset ≈ 0.52, 10.8 % at 0.6, monotonic to
+  80 % at full, h2 margin +4.6 dB); `kFullScaleSecV` **10.0 → 12.2** from the measured
+  cranked secondary swing (10.97 V) on the same product-probe convention as the JCM/Twin.
+
+### 46.3 Measured (48 kHz; hot pickup = 0.316 V, pluck = 0.1 V, 220 Hz)
+
+| Property | before (§42.8) | after |
+|---|---|---|
+| Breakup onset (5 % THD, hot) | VOL ≈ 0.7 (and flat) | **VOL ≈ 0.5–0.6, tracking the knob** |
+| THD at documented 0.6 hot | 3.80 % | **10.8 %** (Twin 3.0 % → 3.6×) |
+| Composed h2 at 0.6 | −33.0 dBc (< Twin) | **−19.8 dBc, +10.8 dB over the Twin** |
+| Clean bar (0.35, pluck) | — | **0.24 %** (chimey-clean) |
+| 880 Hz vs the 220 Hz–3 kHz band | −26 dB hole | **flat within 1.4 dB** |
+| Mid fullness vs the Twin (700 Hz rel own 3 kHz) | — | **+12.0 dB contrast** |
+| Treble knob authority @ 6 kHz | +4 dB (against V1's 45 k source) | **+8.3 dB (follower-driven, corrected netlist)** |
+| Cranked peak | 0.87 | **0.898/0.901** (re-derived full scale) |
+
+The five XFAILs XPASSed → deleted → their unchanged bars are hard assertions
+(`testChime`, `testBreakupOrdering`); the AC30 suite carries **zero** known-bad
+properties and its `--xfail-ledger` CMake registration is removed (repo XFAILs 15 → 10
+across 4 ledgers). The chime probe was re-derived to the composed amps per §42.9 — in a
+defect-free model both PIs are balanced and both push-pull stages rightly cancel their
+own evens, so the old power-section-only probe structurally cannot show class-A chime;
+the evens live in the single-ended V2 + cathode-bias bloom, which is where the probe
+now looks (the power-section figures stay printed as a PI-regression tell).
+`testCharacterGuard` was re-derived from "3 kHz rel 1 kHz beats the Twin" (its 1 kHz
+reference sat INSIDE the notch — a vacuous pass of the §42.8 trap class) to three
+measured properties: mid-fullness contrast vs the Twin, band flatness (the anti-notch
+bar), and mids-over-bass.
+
+### 46.4 Perturbations (touch after both edit and restore, per §29)
+
+- Full pre-§46 netlist restored (both runtime and analytic): suite RED at the stack's
+  own bars (gain-loss/discretization) before the character guard is even reached —
+  defense-in-depth noted in the guard's comment.
+- Volume taper back to k = 4: RED at the product clean bar (5 % exceeded at 0.35).
+- Parallel-Cb alone (with R1-top + load): produces a *different* wrong stack, caught by
+  the stack's midband-loss bar — recorded to show the notch needs the R1-split as an
+  accomplice; the full reversion is the historical regression.
+
+### 46.5 Knock-ons
+
+- `ts_ac30` golden: **−4.94 dB RMS, worst band +17.96 dB @ 800 Hz** — the notch filling
+  in, plus the honest re-normalization; owner-blessed (GOLDENS.md). Other four
+  byte-stable except `rat_jcm800`'s documented §45 +0.14 drift.
+- Web `amp.spec.ts` swap test: its "swap landed" detector asserted a > 20 % RMS change
+  across the clean120→AC30 swap — a LEVEL discriminator that lost its teeth when the
+  re-normalization landed the AC30's level near clean120's at that probe. Re-derived to
+  a harmonic-signature detector (h2+h3 rel f1; ~120× contrast) probed at volume 0.75
+  where the AC30 is honestly driven, with the no-pop ratio keeping its own calibrated
+  volume-0.4 probe. The drift-guard windows held without re-centring (AC30 row moved
+  −4.9 dB, well inside ±8).
+- CPU, interleaved same-machine A/B (two rounds each): AC30 **30.07/30.43 % →
+  46.54/47.15 %** of one 48 k stream (+55 % relative — the two extra per-stage
+  oversampled triode solves), still below the JCM800's 54.51/55.75 % in the same runs.
+  Latency +144 samples (preamp 72 → 216). Consolidating the preamp cascade into one
+  shared oversampling domain is the named follow-up for both numbers.

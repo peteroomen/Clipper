@@ -1038,36 +1038,46 @@ test('amp switch: ac30 renders a different tone than clean120, swap is click-fre
     // `* 2.0 + 0.05`) could not fail: 2026-07-25, test/assert-real-properties.
     const swapAt = 0.3;
     const seconds2 = 0.6;
-    const length2 = Math.floor(sampleRate * seconds2);
-    const ctx = new OfflineAudioContext(1, length2, sampleRate);
-    await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
-    const node = new AudioWorkletNode(ctx, 'clipper-processor', {
-      numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
-    });
-    await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
-      node.port.onmessage = (e: MessageEvent) => {
-        if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
-        else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
-      };
-    });
-    await new Promise<void>((resolve) => {
-      node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
-      node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
-      node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.4 });
-      node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: 0.0 }); // reverb off
-      node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 });   // cab on
-    });
-    ctx.suspend(swapAt).then(async () => {
-      node.port.postMessage({ type: 'ampModel', model: 3 }); // -> AC30, mid-note
-      await new Promise((r) => setTimeout(r, 50));
-      await ctx.resume();
-    });
-    const osc2 = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
-    const g2 = new GainNode(ctx, { gain: 0.3 });
-    osc2.connect(g2).connect(node).connect(ctx.destination);
-    osc2.start();
-    const live = (await ctx.startRendering()).getChannelData(0);
+    // Two swap renders, one per property (docs §46): the NO-POP ratio keeps its
+    // original volume-0.4 probe (its bar was calibrated there, and the declick's
+    // seam slew scales with the level delta being faded across), while the
+    // SWAP-LANDED detector reads the AC30's harmonic signature at volume 0.75 —
+    // post-§46 the AC30 is HONESTLY CLEAN at low volume, so the discriminating
+    // operating point is mid-breakup.
+    async function renderSwap(vol: number): Promise<Float32Array> {
+      const length2 = Math.floor(sampleRate * seconds2);
+      const ctx = new OfflineAudioContext(1, length2, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: vol });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: 0.0 }); // reverb off
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 });   // cab on
+      });
+      ctx.suspend(swapAt).then(async () => {
+        node.port.postMessage({ type: 'ampModel', model: 3 }); // -> AC30, mid-note
+        await new Promise((r) => setTimeout(r, 50));
+        await ctx.resume();
+      });
+      const osc2 = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g2 = new GainNode(ctx, { gain: 0.3 });
+      osc2.connect(g2).connect(node).connect(ctx.destination);
+      osc2.start();
+      return (await ctx.startRendering()).getChannelData(0);
+    }
+    const live = await renderSwap(0.4);
+    const liveHot = await renderSwap(0.75);
 
     function winDelta(d: Float32Array, t0: number, t1: number): number {
       const a = Math.max(1, Math.floor(t0 * sampleRate));
@@ -1085,13 +1095,29 @@ test('amp switch: ac30 renders a different tone than clean120, swap is click-fre
     const atSwap = winDelta(live, swapAt - 0.002, swapAt + 0.02);
     const away = Math.max(winDelta(live, 0.05, swapAt - 0.002),
                           winDelta(live, swapAt + 0.05, seconds2 - 0.01));
+    // Harmonic content (h2+h3 rel f1) inside a window — the level-insensitive "which
+    // voice is rendering" discriminator (see the assert note below).
+    function harmRatio(d: Float32Array, t0: number, t1: number): number {
+      const s0 = Math.floor(t0 * sampleRate), n = Math.floor((t1 - t0) * sampleRate);
+      const g = (f: number) => {
+        const w = (2 * Math.PI * f) / sampleRate, c = 2 * Math.cos(w);
+        let a = 0, b = 0;
+        for (let i = 0; i < n; i++) { const s = d[s0 + i] + c * a - b; b = a; a = s; }
+        const re = a - b * Math.cos(w), im = b * Math.sin(w);
+        return Math.sqrt(re * re + im * im);
+      };
+      const f1 = g(220);
+      return Math.hypot(g(440), g(660)) / (f1 + 1e-12);
+    }
     return {
       cleanRms: rms(clean), ac30Rms: rms(ac30),
       diff: maxAbsDiff(clean, ac30),
-      nan: anyNaN(ac30) || anyNaN(live),
+      nan: anyNaN(ac30) || anyNaN(live) || anyNaN(liveHot),
       swapRatio: atSwap / away,
       swapRmsBefore: winRms2(live, 0.1, swapAt - 0.01),
       swapRmsAfter: winRms2(live, swapAt + 0.05, seconds2 - 0.01),
+      harmBefore: harmRatio(liveHot, 0.1, swapAt - 0.01),
+      harmAfter: harmRatio(liveHot, swapAt + 0.05, seconds2 - 0.01),
     };
   });
 
@@ -1099,11 +1125,18 @@ test('amp switch: ac30 renders a different tone than clean120, swap is click-fre
   expect(result.ac30Rms).toBeGreaterThan(0.01);
   expect(result.diff).toBeGreaterThan(0.02); // audibly different voicing
   expect(result.nan).toBe(false);
-  // The swap really landed mid-render (signal both sides, and the level changed).
+  // The swap really landed mid-render: signal on both sides, and the POST-swap window
+  // carries the AC30's harmonic signature where the clean120 window does not.
+  // 2026-07-30 (docs §46): this used to assert a >20 % RMS change across the swap —
+  // a LEVEL discriminator, which lost its teeth when the AC30's honest re-
+  // normalization (kFullScaleSecV, §46) landed its level near clean120's at this
+  // probe. Voices differ by CONTENT, not coincidental loudness: the driven AC30 at
+  // this operating point is measurably dirty (h2+h3 rel f1, measured ≈ 0.60) where
+  // the solid-state clean is not (≈ 0.005) — a ~120× contrast no level shift fakes.
   expect(result.swapRmsBefore).toBeGreaterThan(0.005);
   expect(result.swapRmsAfter).toBeGreaterThan(0.005);
-  expect(Math.abs(result.swapRmsAfter - result.swapRmsBefore))
-    .toBeGreaterThan(result.swapRmsBefore * 0.2);
+  expect(result.harmAfter).toBeGreaterThan(0.1);
+  expect(result.harmAfter).toBeGreaterThan(result.harmBefore * 5);
   // NO POP. Measured 1.19 with the shipped declick, 5.12 with it deleted.
   expect(result.swapRatio).toBeLessThan(SWAP_SLEW_RATIO_BAR);
 });

@@ -1,28 +1,37 @@
-// Clipper — portable DSP core (M10.2).
+// Clipper — portable DSP core (M10.2; topology completed 2026-07-30, docs §46).
 //
-// Ac30Preamp: the Vox AC30 "TOP BOOST" channel preamp as a validated core module —
-// one 12AX7 common-cathode gain stage, the interactive TOP BOOST tone stack, then
-// the channel VOLUME pot:
+// Ac30Preamp: the Vox AC30 "TOP BOOST" channel preamp as a validated core module.
+// The full top-boost channel — TWO 12AX7 gain positions and the cathode follower
+// that drives the interactive tone network, with the channel VOLUME between them:
 //
 //   guitar in
 //     -> V1   common cathode, Ra 100k, Rk 1.5k || 25uF (bypassed, warm), B+ 300 V
-//     -> TOP BOOST tone stack (the interactive treble/bass "brilliance" network,
-//        driven from V1's PLATE — a HIGH-Z source, no cathode follower): slope 100k,
-//        treble pot 500k, bass pot 1M, caps 47 pF / 0.022 uF / 0.022 uF. Its
-//        SIGNATURE: a gain LOSS through the passive stack, NO mid control, and a
-//        STRONG treble/bass interaction (the wiper taps between a treble-cap-fed node
-//        and the bass network, so moving one knob shifts the other's response).
-//     -> VOLUME pot (audio taper) — on the AC30 the VOLUME knob IS the overdrive:
-//        it drives the (hot) power-amp phase inverter harder as it comes up.
+//     -> VOLUME (audio taper) — the historic top-boost-kit insertion point: the knob
+//        sets how hard V2 and everything after it is driven, so on the AC30 the
+//        VOLUME knob IS the overdrive, and breakup TRACKS the knob (docs §46; the
+//        owner chose this position over the literal AC30/6 post-stack order, which
+//        leaves V2's drive fixed — the Twin's §44 defect mirrored)
+//     -> V2   the TOP BOOST gain triode: common cathode, same canonical values as V1
+//        (Ra 100k, Rk 1.5k || 25uF, B+ 300 V) — the stage the original model was
+//        missing entirely (§23 ledgered it; §46 lands it)
+//     -> CF   direct-coupled cathode follower (Rk 100k), the low-Z driver the real
+//        top-boost network is fed from (rout ≈ 1/gm || Rk, ~230 Ω)
+//     -> TOP BOOST tone stack (the interactive treble/bass "brilliance" network):
+//        slope 100k, treble pot 500k, bass pot 1M, caps 47 pF / 0.022 uF / 0.022 uF,
+//        Cb IN SERIES with the bass rheostat and a 500 k load on the wiper output
+//        (both fixed by audit finding 5 — the parallel-Cb + unloaded-output netlist
+//        was a structural ~−36 dB mid hole no knob could dial out). SIGNATURE: a
+//        lossy, bright, INTERACTIVE network — the wiper taps between the treble-cap
+//        node and the bass network, so each knob shifts the other's response, and
+//        the mid scoop is now DIALABLE by the bass rheostat instead of hardwired.
 //
-// Contrast with the Marshall/Fender preamps: the AC30 top-boost channel is a SINGLE
-// gain stage feeding an interactive treble/bass network (not a 3-band FMV stack, not
-// a cascade of cold stages) — the chime and jangle come from that bright, lossy stack
-// plus the class-A power section, not from stacked preamp gain.
+// Contrast with the Marshall/Fender preamps: the top-boost channel's chime is the
+// bright lossy stack + the single-ended V2's even harmonics + the class-A power
+// section — not stacked cold-stage preamp gain (V2 is warm, not a JCM V1B).
 //
-// The one triode stage is the only preamp nonlinearity and antialiases itself with
-// the shared M2 Oversampler (the composed Ac30Amp measures the requirement, docs §23).
-// The tone stack and the volume network are strictly linear and run at the base rate.
+// The three triode stages are the preamp nonlinearity; each antialiases itself with
+// the shared M2 Oversampler (the composed Ac30Amp measures the requirement, docs
+// §23/§46). The tone stack and the volume are strictly linear at the base rate.
 //
 // Process API mirrors TwinPreamp: prepare(fs,maxBlock) / setParameter / process(mono,
 // in->out). Convention: 1.0f == 1.0 V. Platform-free C++17.
@@ -43,22 +52,30 @@ namespace clipper::dsp {
 // TopBoostToneStack — the Vox AC30 top-boost interactive treble/bass network,
 // nodal MNA with trapezoidal capacitor companions (same discipline as the Marshall
 // / Fender FMV stacks — the test derives H(jw) from THIS SAME netlist via a complex
-// nodal solve and compares). A faithful Vox top-boost topology with the canonical
-// component values; NO mid control (the AC30 top-boost has none).
+// nodal solve and compares; the topology itself is checked against the published
+// top-boost schematic, which is what the pre-§46 netlist failed). NO mid control
+// (the AC30 top-boost has none) — but the mid SCOOP is dialable via the bass leg.
 //
-// Netlist (nodes SRC, IN, N2, OUT, N4; GND). SRC is the driven plate source behind
-// its output impedance rs; the 0.022 uF INPUT coupling cap Cc sits in SERIES to IN
-// (a highpass — passes the chime, gently rolls the deep bass), which is why the
-// stack is bright and lossy:
+// Netlist (nodes SRC, IN, N2, OUT, N4, N5; GND). SRC is the driven source behind
+// its output impedance rs (the cathode follower, ~230 Ω, since §46); the 0.022 uF
+// INPUT coupling cap Cc sits in SERIES to IN:
 //   Cc  : SRC - IN                   (0.022 uF interstage coupling — series)
 //   Ct  : IN  - N2                   (47 pF treble cap — the "brilliance" bypass)
 //   R1  : IN  - N4                   (100k slope resistor)
 //   RT  : N2 -(1-t)RT- OUT -(t)RT- N4  (500k treble pot; wiper OUT = the output)
-//   RB  : N4 -(b)RB- GND             (1M bass pot as a rheostat to ground)
-//   Cb  : N4 - GND                   (0.022 uF bass cap across the bass pot)
+//   Cb  : N4 - N5                    (0.022 uF bass cap — IN SERIES with the
+//                                     rheostat, audit finding 5's first error: the
+//                                     pre-§46 netlist stamped it N4-GND in parallel,
+//                                     hardwiring a ~−36 dB mid hole)
+//   RB  : N5 -(b)RB- GND             (1M bass pot as a rheostat under Cb)
+//   RL  : OUT - GND                  (500k — the following volume-pot/grid-leak
+//                                     load, finding 5's second error: the pre-§46
+//                                     netlist left the wiper UNLOADED)
 // (t,b = treble,bass pot fractions in [0,1].) The wiper OUT tapping BETWEEN the
 // treble-cap-fed N2 and the bass network at N4 is the source of the strong treble
-// <-> bass interaction, the AC30 tone-control signature.
+// <-> bass interaction, the AC30 tone-control signature. The Cb+RB series branch is
+// a frequency-dependent shunt at N4: RB small → mids/highs at N4 shunted (the Vox
+// "V"), RB large → the branch lifts away and the mids fill in.
 //
 // KNOB SMOOTHING (2026-07-25, audit finding 6 — docs §35): the two pot fractions are
 // one-pole smoothed (~8 ms) per sample and the matrix inverse is re-derived at a
@@ -71,6 +88,7 @@ public:
     static constexpr double kRslope = 100.0e3;   // slope resistor (Ohm)
     static constexpr double kRT = 500.0e3;       // treble pot (Ohm)
     static constexpr double kRB = 1.0e6;         // bass pot (Ohm)
+    static constexpr double kRLoad = 500.0e3;    // wiper load (following pot/grid leak)
     static constexpr double kCt = 47.0e-12;      // treble cap (F) = 47 pF
     static constexpr double kCb = 22.0e-9;       // bass cap (F)   = 0.022 uF
     static constexpr double kCc = 22.0e-9;       // input coupling cap (F) = 0.022 uF
@@ -95,9 +113,9 @@ public:
     }
 
 private:
-    void rebuild();  // recompute the 5x5 conductance matrix + its inverse
+    void rebuild();  // recompute the 6x6 conductance matrix + its inverse
 
-    static constexpr int N = 5;  // nodes: SRC=0, IN=1, N2=2, OUT=3, N4=4
+    static constexpr int N = 6;  // nodes: SRC=0, IN=1, N2=2, OUT=3, N4=4, N5=5
     static constexpr double kKnobSmoothSeconds = 0.008;  // ~8 ms, as AmpModel
     static constexpr int kCtrlBlock = 32;  // matrix re-derivation interval, in samples
 
@@ -112,7 +130,7 @@ private:
     std::array<std::array<double, N>, N> Ginv_{};  // inverse of the node matrix
     double vC_ = 0.0, iC_ = 0.0;   // Cc  (SRC-IN)
     double vT_ = 0.0, iT_ = 0.0;   // Ct  (IN-N2)
-    double vB_ = 0.0, iB_ = 0.0;   // Cb  (N4-GND)
+    double vB_ = 0.0, iB_ = 0.0;   // Cb  (N4-N5, in series with the bass rheostat)
     bool dirty_ = true;
 };
 
@@ -128,7 +146,7 @@ public:
         PARAM_COUNT = 3,
     };
 
-    enum Stage : int { V1 = 0, STAGE_COUNT = 1 };
+    enum Stage : int { V1 = 0, V2 = 1, CF = 2, STAGE_COUNT = 3 };
 
     Ac30Preamp();
 
@@ -136,7 +154,12 @@ public:
     void setOversampling(int factor);
     int oversampling() const { return oversampling_; }
 
-    int latencySamples() const { return stage_[V1].latencySamples(); }
+    // All three serial per-stage oversampling round trips (docs §46 — was V1 only,
+    // which under-reported the moment V2/CF landed).
+    int latencySamples() const {
+        return stage_[V1].latencySamples() + stage_[V2].latencySamples() +
+               stage_[CF].latencySamples();
+    }
 
     void setParameter(int paramId, float value);
     void process(const float* in, float* out, int numFrames);

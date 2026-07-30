@@ -68,7 +68,7 @@ void TopBoostToneStack::setKnobs(double bass, double treble) {
 }
 
 void TopBoostToneStack::rebuild() {
-    enum { SRC = 0, IN = 1, N2 = 2, OUT = 3, N4 = 4 };
+    enum { SRC = 0, IN = 1, N2 = 2, OUT = 3, N4 = 4, N5 = 5 };
     std::array<std::array<double, N>, N> G{};
     auto stamp = [&](int a, int b, double g) {
         G[a][a] += g;
@@ -79,12 +79,27 @@ void TopBoostToneStack::rebuild() {
     const double gs = 1.0 / rs_;
     G[SRC][SRC] += gs;                                    // source conductance
     stamp(SRC, IN, geqC_);                               // series coupling cap Cc
-    stamp(IN, N2, geqT_);                                // treble cap Ct
-    stamp(IN, N4, 1.0 / kRslope);                        // slope resistor R1
+    // R1 and Ct BOTH feed the treble pot's TOP (N2) — R1 in series, Ct bypassing it
+    // for the top octaves. The pre-§46 netlist split them (Ct to the top, R1 to the
+    // BOTTOM), which fed the "bass" end of the pot through the lower-impedance path
+    // at HF and turned the treble knob upside down the moment the stack was driven
+    // from the follower's low impedance. Third structural error of finding 5's
+    // netlist, found by measurement in this slice (docs §46).
+    stamp(IN, N2, geqT_);                                // treble cap Ct (bypass)
+    stamp(IN, N2, 1.0 / kRslope);                        // slope resistor R1
     stamp(N2, OUT, 1.0 / clampR((1.0 - treble_) * kRT)); // treble pot upper
     stamp(OUT, N4, 1.0 / clampR(treble_ * kRT));         // treble pot lower
-    G[N4][N4] += 1.0 / clampR(bass_ * kRB);              // bass pot rheostat to gnd
-    G[N4][N4] += geqB_;                                  // bass cap Cb to gnd
+    // Finding 5's two named corrections (docs §46): Cb sits IN SERIES with the bass
+    // rheostat (N4 -> Cb -> N5 -> RB -> GND), and the wiper carries the following
+    // stage's 500 k load. The pot bottom (N4) connects ONLY through this branch, so
+    // the branch's HF/MF shunt is what the bass knob dials: rheostat LOW = the Vox
+    // "V" (mids/treble at the pot bottom shunted), rheostat HIGH = full. The real
+    // 1 M bass pot is LOG; the square law below is the standard log-pot
+    // approximation, spreading the V across the lower half of the knob instead of
+    // the last 5 % a linear map leaves it in (measured in-slice).
+    stamp(N4, N5, geqB_);                                // bass cap Cb (series)
+    G[N5][N5] += 1.0 / clampR(bass_ * bass_ * kRB);      // bass rheostat (log pot)
+    G[OUT][OUT] += 1.0 / kRLoad;                         // wiper load (finding 5)
 
     std::array<std::array<double, N>, N> A = G;
     std::array<std::array<double, N>, N> I{};
@@ -116,7 +131,7 @@ void TopBoostToneStack::rebuild() {
 
 void TopBoostToneStack::process(const float* in, float* out, int numFrames) {
     if (dirty_) rebuild();
-    enum { SRC = 0, IN = 1, N2 = 2, OUT = 3, N4 = 4 };
+    enum { SRC = 0, IN = 1, N2 = 2, OUT = 3, N4 = 4, N5 = 5 };
     const double gs = 1.0 / rs_;
     for (int n = 0; n < numFrames; ++n) {
         // Knob smoothing (audit finding 6) — see MarshallToneStack::process.
@@ -142,7 +157,8 @@ void TopBoostToneStack::process(const float* in, float* out, int numFrames) {
         b[IN] = -IeqC + IeqT;
         b[N2] = -IeqT;
         b[OUT] = 0.0;
-        b[N4] = IeqB;
+        b[N4] = IeqB;   // Cb companion current flows N4 -> N5 (series branch, §46)
+        b[N5] = -IeqB;
         std::array<double, N> v{};
         for (int r = 0; r < N; ++r) {
             double acc = 0.0;
@@ -151,7 +167,7 @@ void TopBoostToneStack::process(const float* in, float* out, int numFrames) {
         }
         const double vCn = v[SRC] - v[IN];
         const double vTn = v[IN] - v[N2];
-        const double vBn = v[N4];
+        const double vBn = v[N4] - v[N5];
         // Anti-denormal (Denormal.h). Six trapezoidal cap companions, all resting at
         // zero — including the vC_/iC_ pair for the 0.022 uF input coupling cap, which
         // the audit's list of unguarded states missed because the other two stacks have
@@ -177,7 +193,15 @@ void TopBoostToneStack::process(const float* in, float* out, int numFrames) {
 
 double Ac30Preamp::audioTaper(double x) {
     x = clampParam01(x);  // NaN-rejecting (ParamGuard.h)
-    constexpr double k = 4.0;  // ~12% at noon (a musical audio/log taper)
+    // Re-derived 2026-07-30 (docs §46) for the completed three-stage channel: with V2
+    // in the circuit the preamp carries ~+47 dB it never had, so the k = 4 law (~12 %
+    // at noon) parked the whole playable range in the bottom sixth of the knob. k = 8
+    // (~1.7 % at noon) was chosen by the in-slice parameter search against the five
+    // voicing bars simultaneously: clean 0.1 % at knob 0.35 / 0.1 V, breakup onset
+    // ≈ 0.52 at hot pickup, 10.8 % at the documented 0.6 (3.6× the Twin), monotonic
+    // to 80 % at full — the "VOLUME knob IS the overdrive" behaviour, on the knob
+    // positions §23 documents.
+    constexpr double k = 8.0;
     return (std::exp(k * x) - 1.0) / (std::exp(k) - 1.0);
 }
 
@@ -185,10 +209,23 @@ Ac30Preamp::Ac30Preamp() { configureStages(); }
 
 void Ac30Preamp::configureStages() {
     // V1: warm top-boost input stage. Ra 100k, Rk 1.5k bypassed by 25 uF, B+ 300 V.
-    // Rgl = the grid-leak of the tone-stack input network seen through the coupling.
     TriodeStage::Config& a = cfg_[V1];
     a = TriodeStage::Config{};
     a.bPlus = 300.0; a.Ra = 100.0e3; a.Rk = 1.5e3; a.Ck = 25.0e-6; a.Rgl = 1.0e6;
+
+    // V2: the top-boost gain triode the model was missing (docs §46) — the same
+    // canonical 12AX7 values as V1 (the published top-boost stage is another warm
+    // 100k/1.5k||25u position, NOT a JCM-style cold stage).
+    TriodeStage::Config& b = cfg_[V2];
+    b = TriodeStage::Config{};
+    b.bPlus = 300.0; b.Ra = 100.0e3; b.Rk = 1.5e3; b.Ck = 25.0e-6; b.Rgl = 1.0e6;
+
+    // CF: direct-coupled cathode follower driving the tone network at low impedance
+    // (the real top-boost wiring). gridBias set at prepare from V2's plate.
+    TriodeStage::Config& c = cfg_[CF];
+    c = TriodeStage::Config{};
+    c.topology = TriodeStage::Topology::CathodeFollower;
+    c.bPlus = 300.0; c.Ra = 0.0; c.Rk = 100.0e3; c.Ck = 0.0; c.gridBias = 0.0;
 }
 
 void Ac30Preamp::prepare(double sampleRate, int maxBlockSize) {
@@ -197,22 +234,33 @@ void Ac30Preamp::prepare(double sampleRate, int maxBlockSize) {
     buf_.assign(static_cast<size_t>(maxBlockSize_), 0.0f);
 
     configureStages();
-    stage_[V1].configure(cfg_[V1]);
-    stage_[V1].prepare(sampleRate_, maxBlockSize_);
-    stage_[V1].setOversampling(oversampling_);
+    // V1 and V2 first (their op points don't depend on the follower).
+    for (int s = V1; s <= V2; ++s) {
+        stage_[s].configure(cfg_[s]);
+        stage_[s].prepare(sampleRate_, maxBlockSize_);
+        stage_[s].setOversampling(oversampling_);
+    }
+    // Direct-coupled follower: its grid DC bias is V2's quiescent plate voltage
+    // (the Jcm800Preamp pattern).
+    cfg_[CF].gridBias = stage_[V2].quiescentPlateVoltage();
+    stage_[CF].configure(cfg_[CF]);
+    stage_[CF].prepare(sampleRate_, maxBlockSize_);
+    stage_[CF].setOversampling(oversampling_);
 
-    // Top-boost stack source impedance = V1 plate output impedance Ra||rp (a HIGH-Z
-    // plate source, no cathode follower). rp from the Koren small-signal at V1's
-    // operating point (central difference).
+    // Top-boost stack source impedance = the follower's output impedance
+    // 1/gm || Rk at its operating point (measured ~230 Ω — docs §46; the pre-§46
+    // model drove the stack from V1's ~45 k plate, which finding 5's analysis
+    // cleared as the notch's cause but is still ~200x off the real drive).
     {
-        const double Va = stage_[V1].quiescentPlateVoltage();
-        const double Vk = stage_[V1].quiescentCathodeVoltage();
-        const double Vgk = -Vk;  // grid at 0 V DC, cathode at Vk
-        const double h = 0.5;
-        const double ipHi = TriodeStage::korenPlateCurrent(Va + h, Vgk, cfg_[V1].tube);
-        const double ipLo = TriodeStage::korenPlateCurrent(Va - h, Vgk, cfg_[V1].tube);
-        const double rp = (2.0 * h) / std::max(ipHi - ipLo, 1e-12);
-        toneRs_ = 1.0 / (1.0 / cfg_[V1].Ra + 1.0 / rp);  // Ra || rp
+        const double Vk = stage_[CF].quiescentCathodeVoltage();
+        const double Vgk = cfg_[CF].gridBias - Vk;
+        const double Va = cfg_[CF].bPlus - Vk;
+        const double h = 1e-4;
+        const double gm = (TriodeStage::korenPlateCurrent(Va, Vgk + h, cfg_[CF].tube) -
+                           TriodeStage::korenPlateCurrent(Va, Vgk - h, cfg_[CF].tube)) /
+                          (2.0 * h);
+        const double invGm = 1.0 / std::max(gm, 1e-9);
+        toneRs_ = 1.0 / (1.0 / invGm + 1.0 / cfg_[CF].Rk);  // 1/gm || Rk
     }
 
     tone_.prepare(sampleRate_);
@@ -269,13 +317,20 @@ void Ac30Preamp::process(const float* in, float* out, int numFrames) {
         float* w = buf_.data();
         // V1 gain stage.
         stage_[V1].process(in + off, w, n);
-        for (int i = 0; i < n; ++i) w[i] = static_cast<float>(w[i] * kV1ToStack);
-        // Top-boost tone stack (interactive treble/bass, base rate).
+        // VOLUME sits BETWEEN V1 and the top-boost triode (docs §46 — the historic
+        // kit insertion point, owner-chosen over the literal post-stack order): the
+        // knob sets how hard V2/CF/stack/PI are driven, so breakup tracks it.
+        // Advanced PER SAMPLE (audit finding 6 — the amp's primary overdrive control).
+        for (int i = 0; i < n; ++i)
+            w[i] = static_cast<float>(static_cast<double>(w[i]) * volSm_.next());
+        // V2 top-boost gain triode, then the direct-coupled follower.
+        stage_[V2].process(w, w, n);
+        stage_[CF].process(w, w, n);
+        // Top-boost tone stack (interactive treble/bass, base rate), driven from the
+        // follower's low-Z output — the last element of the preamp.
         tone_.process(w, w, n);
-        // VOLUME, advanced PER SAMPLE (audit finding 6 — it used to be one constant
-        // per process() call, on the amp's primary overdrive control).
         for (int i = 0; i < n; ++i) {
-            const float o = static_cast<float>(static_cast<double>(w[i]) * volSm_.next());
+            const float o = w[i];
             out[off + i] = o;
             lastOutPeak_ = std::max(lastOutPeak_, std::fabs(static_cast<double>(o)));
         }

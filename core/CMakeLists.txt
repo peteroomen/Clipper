@@ -268,7 +268,6 @@ if(NOT EMSCRIPTEN)
     # deleted — but balancing the legs removed the even-harmonic leakage that §23's
     # breakup-ordering guard was measuring, so its four bars are ledgered here until an
     # AC30 gain-structure slice gives that voice the drive to earn them.
-    clipper_add_xfail_ledger(clipper_ac30_tests)
 
     # --- M11: Player Expectations Suite ---------------------------------------
     # Tests the PLAYER'S expectations, not the circuit (docs §26): universal gear
