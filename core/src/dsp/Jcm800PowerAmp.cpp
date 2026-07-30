@@ -181,9 +181,10 @@ Jcm800PowerAmp::Jcm800PowerAmp() {
     //   tailRef = -12 V -> Va 272.0/277.4 V (80.0 / 81.6 % of B+), 0.680/0.763 mA per
     //   triode, legs ×29.7/×20.9. Targets are 70-85 % of B+ and 0.5-0.9 mA/triode; the
     //   worst margin is 3.4 points of B+ and 0.137 mA.
-    // The LEG BALANCE is NOT fixed by this (0.607 -> 0.703, still short of 0.90): that is
-    // audit finding 8 — Ra2 = 82 k compensates the finite tail impedance the wrong way,
-    // and its sweep has to be re-measured now the tail is right. Not this slice.
+    // The LEG BALANCE was NOT fixed by the tail (0.607 -> 0.703): that was audit
+    // finding 8 — Ra2 = 82 k compensated the finite tail impedance the wrong way.
+    // Fixed 2026-07-30 (docs §45): the post-tailRef sweep put the balance optimum at
+    // Ra2 = 120 k (ratio 0.988) — see the Config::Ra2 comment for the sweep table.
     c.tailRef = -12.0;
     ltp_.configure(c);
 }
