@@ -567,10 +567,9 @@ void testMinKnobUsability(const std::vector<Gear>& gear) {
 //
 // REGRESSION FLOOR: ≥ 28 dB below the note. Measured (2026-07, 48 kHz):
 //   rat  min −36.0 / def −41.6 dB     sd1  min −33.1 / def −39.3 dB
-//   ts   min −33.1 / def −38.2 dB     muff min −62.0 / def −56.1 dB (min re-measured
-//        2026-07-30, docs §43: the deeper SUSTAIN taper floor leaves the clip stages
-//        near-linear at knob 0, so the hum is no longer compressed up toward the note
-//        — min-gain hum rejection IMPROVED 10.6 dB when the knob got its travel back)
+//   ts   min −33.1 / def −38.2 dB     muff min −50.7 / def −55.7 dB (re-measured
+//        2026-07-31, docs §49: the clip stages' series base resistors changed both
+//        rows — still 22+ dB inside the bar)
 //   gold min −30.1 / def −32.9 dB  ← the TIGHTEST, and necessarily so: at GAIN 0
 //        this pedal is a LINEAR buffer, so it can only PRESERVE the input's own
 //        −30 dB hum-to-note ratio (−30.1 measured == the physical ceiling for a
@@ -621,8 +620,9 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //
 // Measured (2026-07, 48 kHz, references for future failures):
 //   GAIN THD %:  rat 0.0→22.4→37.1   sd1 0.1→11.5→36.7   ts 0.1→5.7→31.9
-//                muff 1.9→38.4→147.7 (probes 0/0.6/1.0; probe-0 was 36.3 until the
-//                §43 taper-floor fix — the 0.6/1.0 probes are bit-identical to it)
+//                muff 2.6→34.9→38.5 (probes 0/0.6/1.0; the §49 series base resistors
+//                made the wall ARTICULATE — max fell 147.7 → 38.5 because the
+//                fundamental survives now — and the §43 floor re-derived −84 → −70)
 //                jcm800 0.2→10.8→48.5 (was 0.0→9.3→48.5 post-§45; the §47 bright
 //                cap tilts the drive spectrum into the clippers at low/mid gain —
 //                brighter drive, slightly more measured harmonic energy mid-knob)

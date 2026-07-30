@@ -121,6 +121,15 @@ public:
         double Cf = 470.0e-12; // feedback cap across Rf (F)
         EbersMoll bjt{};
         DiodePair diodes{};
+        // Finding 16 (bass half) / the max-sustain blowout — docs §49, ADR 009:
+        // the real coupling network's SERIES BASE RESISTOR. With Rs = 0 every code
+        // path reduces EXACTLY to the pre-§49 solver (bit-identical, verified), so
+        // the RAT/GOLD/SD/TS users are untouched. Rbg (base-to-ground bias R) is
+        // plumbed but UNUSED: adding it without DC-blocking the diode feedback
+        // branch parks the stage deeper in the knee (measured — see §49); the
+        // DC-blocked branch needs a 4th Newton node and is ADR 009's named follow-up.
+        double Rs = 0.0;       // series base resistor between Cin and the base (Ω)
+        double Rbg = 0.0;      // base-to-ground bias resistor (Ω); 0 = absent
     };
 
     BjtStage();

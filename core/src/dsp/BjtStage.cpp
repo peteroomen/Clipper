@@ -123,11 +123,13 @@ struct Sys {
     double gRc, gRf, gRe;
     double gCin, gCf;       // 0/0 for the DC solve (caps open)
     double vin, histCin, histCf;
+    double kSer = 1.0;      // 1/(1+gCin*Rs): series base resistor divider (§49)
+    double gRbg = 0.0;      // base-to-ground bias conductance (0 = absent)
 
     void eval(double Vb, double Vc, double Ve, double r[3], double J[3][3]) const {
         const EmEval e = emEval(Vb - Ve, Vb - Vc, cfg.bjt);
         const DiodeEval d = diodeEval(Vc - Vb, cfg.diodes);
-        r[0] = gCin * (vin - Vb) - histCin + (Vc - Vb) * gRf +
+        r[0] = kSer * (gCin * (vin - Vb) - histCin) - Vb * gRbg + (Vc - Vb) * gRf +
                gCf * (Vc - Vb) - histCf + d.Id - e.Ib;                // base KCL
         r[1] = (cfg.Vcc - Vc) * gRc + (Vb - Vc) * gRf +
                gCf * (Vb - Vc) + histCf - e.Ic - d.Id;                // collector KCL
@@ -143,7 +145,7 @@ struct Sys {
         const double dIe_dVb = e.gf * (1.0 + rF) - e.gr;
         const double dIe_dVc = e.gr;
         const double dIe_dVe = -e.gf * (1.0 + rF);
-        J[0][0] = -gCin - gRf - gCf - d.gd - dIb_dVb;
+        J[0][0] = -kSer * gCin - gRbg - gRf - gCf - d.gd - dIb_dVb;
         J[0][1] = gRf + gCf + d.gd - dIb_dVc;
         J[0][2] = -dIb_dVe;
         J[1][0] = gRf + gCf + d.gd - dIc_dVb;
@@ -346,7 +348,8 @@ void BjtStage::solveOperatingPoint() {
     double Vb = 0.85, Vc = 1.3, Ve = 0.28;  // guess near the cold Muff bias
     const Sys sys{cfg_, 1.0 / cfg_.Rc, 1.0 / cfg_.Rf, 1.0 / cfg_.Re,
                   0.0,  0.0,  // caps OPEN at DC
-                  0.0,  0.0, 0.0};
+                  0.0,  0.0, 0.0,
+                  1.0,  cfg_.Rbg > 0.0 ? 1.0 / cfg_.Rbg : 0.0};
     // tol = 0.0: the DC solve opts OUT of the residual early-out. It runs once at
     // prepare(), so there is no per-sample cost to remove, and its final iterate
     // seeds the quiescent point every render is referenced to — see dampedNewton.
@@ -394,9 +397,11 @@ void BjtStage::reset() {
 
 float BjtStage::processSample(float vinF) {
     const double vin = static_cast<double>(vinF);
+    const double kSer = 1.0 / (1.0 + gCin_ * cfg_.Rs);  // §49; Rs = 0 -> 1.0 exactly
     // Companion history currents (constant across this sample's iterations).
     const Sys sys{cfg_, 1.0 / cfg_.Rc, 1.0 / cfg_.Rf, 1.0 / cfg_.Re,
-                  gCin_, gCf_, vin, gCin_ * vCin_, gCf_ * vCf_};
+                  gCin_, gCf_, vin, gCin_ * vCin_, gCf_ * vCf_,
+                  kSer, cfg_.Rbg > 0.0 ? 1.0 / cfg_.Rbg : 0.0};
 
     double Vb = vb_, Vc = vc_, Ve = ve_;  // warm start
     const int iters = dampedNewton(sys, Vb, Vc, Ve, kMaxNewtonIter,
@@ -404,7 +409,9 @@ float BjtStage::processSample(float vinF) {
     lastMaxIters_ = std::max(lastMaxIters_, iters);
 
     vb_ = Vb; vc_ = Vc; ve_ = Ve;      // warm start for the next sample
-    vCin_ = vin - Vb;                   // update companion histories
+    // Series-Rs backward-Euler companion: vC += kSer*(vin - Vb - vC). Rs = 0 gives
+    // exactly the stock update vCin_ = vin - Vb (§49; verified bit-identical).
+    vCin_ = vCin_ + kSer * (vin - Vb - vCin_);  // update companion histories
     vCf_ = Vc - Vb;
 
     return static_cast<float>(Vc - vcQ_);  // collector AC (inverting output)
