@@ -43,6 +43,21 @@ All five: 2.0 s standard pluck, 16-bit mono 48 kHz.
 
 <!-- New entries go directly below this line, newest first. -->
 
+## 2026-07-30 — 2 golden(s) re-blessed
+
+- **Blessed by:** Claude
+- **On top of:** `4e8d338` fix: move the Twin VOLUME pot to the AB763 position — headroom back (docs §44)
+
+| Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |
+| --- | --- | --- | --- | --- |
+| `sd1_twin_reverb` | CHANGED | +2.18 dB | 5.00 dB @ 2540 Hz | 13 |
+| `muff_twin` | CHANGED | +5.85 dB | 4.82 dB @ 4032 Hz | 12 |
+| `rat_jcm800` | UNCHANGED | +0.00 dB | 0.00 dB | 11 |
+| `ts_ac30` | UNCHANGED | +0.00 dB | 0.00 dB | 7 |
+| `clean120_chorus` | UNCHANGED | -0.00 dB | 0.11 dB @ 252 Hz | 7 |
+
+**Justification:** The Twin VOLUME pot moved to the AB763 position (docs §44): it was after the V2 recovery stage, so V2's drive was volume-independent and the pedal-driven Twin rigs — exactly these two goldens — were being permanently compressed by V2 at their drive levels. Louder (+2.18/+5.85 dB) and brighter (worst bands at 2.5/4 kHz) is that compression removed, not a drift: the amp-alone level is unchanged to 0.08 dB at every knob position and VOL 1.0 is bit-identical by construction. rat_jcm800 and ts_ac30 are byte-identical (scope check). Owner authorized blessing both on 2026-07-30 with this table presented.
+
 ## 2026-07-30 — 4 golden(s) re-blessed
 
 - **Blessed by:** Claude
