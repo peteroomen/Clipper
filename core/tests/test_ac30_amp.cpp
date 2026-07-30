@@ -34,13 +34,16 @@ namespace {
 constexpr double kTwoPi = 6.283185307179586;
 
 // --- known-bad properties (2026-07-24 audit) --------------------------------------
-constexpr clipper::test::XfailDecl kXfAc30PiBalance{
-    "finding7-ac30-pi-leg-balance",
-    "2026-07-24 audit finding 7",
-    "the AC30 PI's two anti-phase legs are gain-balanced within 10 % — the 2.2 k tail that "
-    "buys the correct DC point destroys the long-tail property (7:1 CMRR, ratio 0.550)",
-    "the LtpInverter tailRef fix (finding 7): tail reference instead of Rtail, so a proper "
-    "10 k tail can deliver BOTH the operating point and the balance"};
+// `finding7-ac30-pi-leg-balance` — "the 2.2 k tail that buys the correct DC point destroys
+// the long-tail property (7:1 CMRR, ratio 0.550)" — XPASSed on 2026-07-29 the moment
+// `LtpInverter::Config::tailRef` let the tail go back to a proper 10 kΩ (to −10 V), and was
+// deleted in the same slice. Measured after: legs ×27.56/×25.13, ratio 0.912, at 79.3/78.5 %
+// of B+ and 0.622/0.587 mA per triode, i.e. the operating point §23 established AND the
+// balance, at once.
+// FOUR NEW XFAILs came out of that same fix (declared next to testBreakupOrdering, docs
+// §42): the even-harmonic leakage the 2:1 leg imbalance was producing WAS most of the §23
+// breakup-ordering measurement, so with the legs balanced the Vox measures 3.80 % where the
+// guard wants 8 % at VOLUME 0.6. The bars are unchanged and ledgered, not loosened.
 using clipper::dsp::Ac30Amp;
 using clipper::dsp::Ac30PowerAmp;
 using clipper::dsp::Ac30Preamp;
@@ -138,6 +141,33 @@ double powerAmpAt(Ac30PowerAmp& pa, double f, float amp, double fs) {
     return goertzelAmp(out, start, win, f, fs);
 }
 
+// The §23 breakup-ordering voicing, ledgered 2026-07-29 (docs §42): finding 7's tail
+// reference balanced the AC30's phase-inverter legs (0.550 -> 0.912), and the even
+// harmonics that imbalance was leaking WERE most of the Vox's measured mid-volume
+// "breakup". The property is still the right one; restoring it needs preamp gain the
+// passive interstage divider cannot supply. See the long note inside the test.
+constexpr clipper::test::XfailDecl kXfAc30Chime{
+    "finding7-ac30-chime", "2026-07-24 audit finding 7 (docs §42 fallout)",
+    "the AC30's 2nd harmonic sits >= 3 dB above the Twin's at matched moderate drive "
+    "(the class-A chime)",
+    "an AC30 gain-structure slice (the missing top-boost gain stage + VOLUME re-taper)"};
+constexpr clipper::test::XfailDecl kXfAc30BreakupOnset{
+    "finding7-ac30-breakup-onset", "2026-07-24 audit finding 7 (docs §42 fallout)",
+    "the AC30 reaches 5 % THD by VOLUME 0.65 at a hot-pickup level (§23 field report)",
+    "an AC30 gain-structure slice (the missing top-boost gain stage + VOLUME re-taper)"};
+constexpr clipper::test::XfailDecl kXfAc30BreakupVsTwin{
+    "finding7-ac30-breakup-vs-twin", "2026-07-24 audit finding 7 (docs §42 fallout)",
+    "the AC30's breakup onset is >= 0.2 of knob travel BELOW the Twin's",
+    "an AC30 gain-structure slice (the missing top-boost gain stage + VOLUME re-taper)"};
+constexpr clipper::test::XfailDecl kXfAc30MidThd{
+    "finding7-ac30-mid-thd", "2026-07-24 audit finding 7 (docs §42 fallout)",
+    "the AC30 measures >= 8 % THD at the documented mid-volume 0.6 / hot pickup",
+    "an AC30 gain-structure slice (the missing top-boost gain stage + VOLUME re-taper)"};
+constexpr clipper::test::XfailDecl kXfAc30MidVsTwin{
+    "finding7-ac30-mid-vs-twin", "2026-07-24 audit finding 7 (docs §42 fallout)",
+    "the AC30 is >= 1.8x dirtier than the Twin at the documented mid-volume",
+    "an AC30 gain-structure slice (the missing top-boost gain stage + VOLUME re-taper)"};
+
 // ---------------------------------------------------------------------------
 // Test 1 — DC operating points: preamp V1 self-bias load line; EL84 quiescent vs
 // the Koren + shared-cathode fixed point (±10 %); rail/screen; Pdiss < EL84 max.
@@ -214,18 +244,19 @@ void testOperatingPoints(double fs) {
     // starved phase inverter shipped through (docs §23 second amendment) — the test that
     // should have caught it passed both before and after the fix.
     //
-    // The AC30 is the one amp that MEETS the plate-fraction and standing-current targets,
-    // so both are ASSERTED FOR REAL here. It meets them only because Rtail was cut to
-    // 2.2 kΩ, and that is exactly what wrecks its LEG BALANCE (0.550) — a two-terminal
-    // tail cannot deliver both. So the balance is the XFAIL, and the two it passes are
-    // hard assertions: together they pin the trade-off, so a future "fix" that restores
-    // balance by re-starving the inverter cannot pass. See finding 7.
+    // 2026-07-29 (finding 7): ALL THREE targets are asserted for real. The AC30 always met
+    // the plate-fraction and standing-current targets, but only because Rtail had been cut
+    // to 2.2 kΩ — which is exactly what wrecked its LEG BALANCE (0.550), because a
+    // two-terminal tail cannot deliver both. With the tail reference it can: 10 kΩ to
+    // −10 V gives 79.3/78.5 % of B+, 0.622/0.587 mA and a 0.912 ratio. The three
+    // assertions together still pin the trade-off — a future "fix" that restores balance
+    // by re-starving the inverter, or buys current by shortening the tail again, fails.
     const auto ltpM = clipper::test::measureLtp(pa.inverter(), fs);
     clipper::test::assertLtpSane(ltpM, "AC30");
     clipper::test::assertLtpTargets(ltpM, fs, "AC30",
                                     /*plate fraction: holds, assert for real*/ nullptr,
                                     /*standing current: holds, assert for real*/ nullptr,
-                                    &kXfAc30PiBalance);
+                                    /*leg balance: holds, assert for real*/ nullptr);
 
     std::printf("  [ok] DC op points @ %.0f Hz: V1 Va=%.1f Vk=%.2f Iq=%.2fmA; EL84 Iq=%.2f mA/tube "
                 "(analytic %.2f), Vk=%.2f (analytic %.2f), rail=%.1f (%.1f), screen=%.1f, Pdiss=%.1f W\n",
@@ -349,7 +380,24 @@ void testCathodeBias(double fs) {
     // above ~0.22 V at the PI grid — the point where the EL84 grids start conducting
     // (7 V swing vs the −9.5 V self-bias), after which the coupling caps charge and the
     // bias shifts COLD instead. Both regimes are real; docs §23 tabulates the crossover.
-    auto drive = sine(300.0, 0.15f, 0.20, fs);
+    // 2026-07-29 (finding 7, docs §42): 0.15 V -> 0.125 V, for exactly the reason §23
+    // moved it from 8 V to 0.15 V in the first place — the probe has to sit where the
+    // bloom lives, and the tail reference moved that window again. (Note PARAM_DRIVE 1.0
+    // is the trim's noon = ×2, so the grid actually sees twice these numbers: the figures
+    // below are VOLTS AT THE GRID, i.e. 0.125 V here = 0.25 V at the grid, and §23's
+    // "0.15 V" was 0.30 V at the grid.) The AC30's legs went ×31.76/×17.46 (ratio 0.550)
+    // to ×27.56/×25.13 (0.912) — leg 1 weaker, leg 2 44 % stronger — and the grid-leak
+    // BLOCKING crossover moved from ~0.22 V up to ~0.40 V at the grid.
+    // MEASURED Vk rise / recovery τ vs volts AT THE GRID, 44.1 / 48 / 96 kHz:
+    //   0.10 V  +0.066/+0.072/+0.090 V   (bloom too small to assert: bar is +0.2)
+    //   0.20 V  +0.234/+0.253/+0.301 V   τ 1.63/1.50/1.00 ms
+    //   0.25 V  +0.336/+0.362/+0.428 V   τ 1.63/1.50/1.00 ms   <-- the probe
+    //   0.30 V  +0.361/+0.395/+0.475 V   τ 1.45/1.33/0.75 ms   (the OLD probe: the bloom
+    //                                     peak, but τ lands exactly ON the 0.3·Rk·Ck bound
+    //                                     at 96 kHz, which is what went red)
+    //   0.45 V  −0.306/−0.250/−0.135 V   (grid-leak blocking: the bias goes COLD)
+    // Both bounds are unchanged (+0.2 V of rise, τ within 0.3–3.0× of Rk·Ck = 2.5 ms).
+    auto drive = sine(300.0, 0.125f, 0.20, fs);
     std::vector<float> od(drive.size(), 0);
     pa.process(drive.data(), od.data(), static_cast<int>(drive.size()));
     const double vkDriven = pa.cathodeNow();
@@ -428,6 +476,26 @@ void testTopCut(double fs) {
 // window. Same hard burst / attack-vs-settle metric into all three power sections.
 // ---------------------------------------------------------------------------
 void testSag(double fs) {
+    // The burst is 2.0 V into the PI-grid trim at noon (DRIVE 1.0 -> ×2, i.e. 4 V at the
+    // grid), not the 45 V it was before 2026-07-29 (docs §42) — a PROBE re-derivation, in
+    // the spirit of §23's cathode-bias and TOP CUT probes, with every bound left alone.
+    // 45 V × 2 = 90 V at the grid is ~30× the inverter's clipping onset; it was chosen
+    // when two of the three inverters were 5.7 dB deaf, and at that level the envelope
+    // ratio measures the output CEILING instead of the rail. Measured after the tail fix:
+    // at 90 V the JCM's rail droops 57.4 V and the Twin's 50.5 V — the JCM sags harder,
+    // exactly as their supply impedances (150 Ω / 50 µF vs 80 Ω / 100 µF) predict — yet
+    // the metric reported Twin 2.63 > JCM 2.26 dB, because both outputs are pinned to
+    // their clipping ceiling at attack and at settle. At 4 V at the grid it tracks the
+    // rail again, and the burst is still hard (the JCM's attack peak is 0.74 of full
+    // scale, the AC30 clips):
+    //   probe (grid V)     Twin        JCM        AC30
+    //   4 V, pre-fix       1.03 dB     1.96 dB    5.74 dB   ordering + windows OK
+    //   4 V, post-fix      1.16 dB     1.95 dB    6.03 dB   ordering + windows OK
+    //   90 V, pre-fix      2.09        3.56       5.80      OK (ceiling-limited)
+    //   90 V, post-fix     2.63        2.26       5.89      INVERTED
+    // Holding on the PRE-fix circuit too is the check that this is a fixed reference and
+    // not a number chosen to pass. Rail droops at the 4 V probe: Twin 13.4 V, JCM 37.3 V,
+    // AC30 1.6 V (the AC30's "sag" is its static cathode-bias saturator — finding 4).
     auto sagDepth = [&](auto& amp) {
         amp.setParameter(std::decay_t<decltype(amp)>::PARAM_DRIVE, 1.0f);
         const double f0 = 400.0;
@@ -435,7 +503,7 @@ void testSag(double fs) {
                   nt = static_cast<int>(0.25 * fs), n = nsil + nb + nt;
         std::vector<float> in(static_cast<size_t>(n), 0.0f), out(static_cast<size_t>(n), 0.0f);
         for (int i = 0; i < nb; ++i)
-            in[static_cast<size_t>(nsil + i)] = static_cast<float>(45.0 * std::sin(kTwoPi * f0 * i / fs));
+            in[static_cast<size_t>(nsil + i)] = static_cast<float>(2.0 * std::sin(kTwoPi * f0 * i / fs));
         amp.process(in.data(), out.data(), n);
         for (float v : out) assert(std::isfinite(v) && "non-finite in the sag burst");
         const int per = static_cast<int>(fs / f0);
@@ -484,9 +552,25 @@ void testChime(double fs) {
     const auto twin = secondHarmDbc(tpa, 6.0f);
     const auto ac30 = secondHarmDbc(apa, 6.0f);
     // Matched-ish output (both in moderate breakup); AC30 shows MORE 2nd harmonic.
-    assert(ac30.first > twin.first + 3.0 &&
-           "AC30 2nd harmonic not prominently above the Twin's at moderate drive (chime absent)");
-    std::printf("  [ok] chime @ %.0f Hz: AC30 2nd %.1f dBc vs Twin %.1f dBc (out %.2f/%.2f) — the class-A chime\n",
+    //
+    // XFAILed 2026-07-29 (docs §42), bar UNCHANGED. This is the same fact as the breakup
+    // ledger below, measured a second way: the AC30's "class-A chime" in this model was
+    // its phase inverter's 2:1 LEG IMBALANCE leaking 2nd harmonic past the push-pull's
+    // cancellation, not the cathode bias. Finding 7's tail reference balanced the legs
+    // (0.550 -> 0.912) and the 2nd harmonic fell with it. Both sides of the comparison
+    // moved (level-matched, 220 Hz, 48 kHz):
+    //   AC30 2nd  −33.6 -> −49.1 dBc   (its imbalance went away)
+    //   Twin 2nd  −37.6 -> −27.9 dBc   (its NFB is injected single-endedly into the cold
+    //                                   grid, so a stronger loop leaks more common mode
+    //                                   through the finite tail — see TwinPowerAmp.cpp)
+    //   margin    +4.0 -> −21.2 dB     (bar > +3)
+    // Even with the Twin held at its old figure the margin would be −11.5 dB, so the AC30
+    // side dominates: this needs the AC30 gain-structure slice, not a tweak here.
+    clipper::test::expectXfail(ac30.first > twin.first + 3.0, kXfAc30Chime,
+                               "AC30 vs Twin 2nd-harmonic margin at 6 V of PI drive "
+                               "— bar > +3 dB");
+    std::printf("  [--] chime @ %.0f Hz: AC30 2nd %.1f dBc vs Twin %.1f dBc (out %.2f/%.2f) "
+                "— see the XFAIL ledger\n",
                 fs, ac30.first, twin.first, ac30.second, twin.second);
 }
 
@@ -673,26 +757,48 @@ void testBreakupOrdering(double fs) {
     };
     const double acOnset = onsetOf(ac30ThdAt);
     const double twOnset = onsetOf(twinThdAt);
-    assert(acOnset <= 0.65 &&
-           "BREAKUP ORDERING: the AC30 does not reach 5 % THD by VOLUME 0.6 at a hot-pickup "
-           "level — the class-A combo lost its early breakup (the original field report)");
-    assert(acOnset <= twOnset - 0.2 &&
-           "BREAKUP ORDERING: the AC30's breakup onset is not at least 0.2 of knob travel "
-           "BELOW the Twin's — the 30 W Vox must break up markedly earlier than the 85 W "
-           "blackface, not later");
-
     // (b) MID-KNOB THD MARGIN at the documented comparison point.
     const double acMid = ac30ThdAt(kMidVolume);
     const double twMid = twinThdAt(kMidVolume);
-    assert(acMid > 0.08 &&
-           "BREAKUP ORDERING: AC30 THD at VOLUME 0.6 / hot pickup is under 8 % — not audible "
-           "breakup (measured 10.8 %)");
-    assert(acMid > 1.8 * twMid &&
-           "BREAKUP ORDERING: the AC30 is not at least 1.8× dirtier than the Twin at the "
-           "documented mid-volume — the voicing has re-inverted (measured 2.2×)");
-    std::printf("  [ok] breakup ordering @ %.0f Hz (hot pickup −10 dBFS): onset AC30 vol %.1f < "
-                "Twin %.1f; at vol %.1f AC30 %.1f%% vs Twin %.1f%% (%.1f×) — the Vox breaks up "
-                "first, the blackface keeps its headroom\n",
+
+    // 2026-07-29 (docs §42): these four bars are UNCHANGED and now XFAIL. The §23
+    // voicing they pin is real and still wanted; what measurement showed is that the
+    // 10.75 % the AC30 used to produce at VOLUME 0.6 was 10.39 % EVEN harmonics —
+    // h2 at −19.76 dBc — leaking through the push-pull because the phase inverter's
+    // legs were mismatched 2:1 (leg ratio 0.550, audit finding 7). Finding 7's tail
+    // reference balanced them (0.912) and h2 collapsed to −33.03 dBc, so the same
+    // knob position measures 3.80 % — while the ODD harmonics, the section's own
+    // clipping, barely moved (2.77 % -> 3.06 %). The Vox did not get quieter (level
+    // +0.4 dB) and it did not stop clipping; the model simply stopped manufacturing
+    // 2nd harmonic from a defect that is now fixed.
+    //
+    //   VOLUME          0.4    0.5    0.6    0.7    0.8
+    //   THD before %   4.60   7.06  10.75  12.30  14.11    (even 4.55 / 6.90 / 10.39)
+    //   THD after  %   1.55   2.29   3.80   6.58  15.18    (even 1.42 / 1.77 /  2.25)
+    //   odd before %   0.65   1.53   2.77   5.52  11.63
+    //   odd after  %   0.62   1.45   3.06   6.23  15.10
+    //
+    // Restoring 8 % at VOLUME 0.6 therefore needs DRIVE, and the AC30 has none left to
+    // give: `Ac30Amp::kInterstageScale` is a PASSIVE divider (0.67, the two-channel
+    // mixing division — §23 derived it as such and a passive path cannot exceed 1.0),
+    // and §23 measured that transcribing the missing second ECC83 gain stage is +30 dB,
+    // which saturates the voice at its opening defaults. Restoring the imbalance instead
+    // would mean re-breaking the leg-balance assertion this same slice made hard. Both
+    // are their own slice, so the four bars are ledgered rather than loosened, exactly
+    // as CLAUDE.md's XFAIL ratchet requires — and an XPASS here is a hard failure, so
+    // whoever re-voices the AC30 cannot leave this stale.
+    clipper::test::expectXfail(acOnset <= 0.65, kXfAc30BreakupOnset,
+                               "AC30 breakup onset (first 0.1 VOLUME step at 5 % THD, hot "
+                               "pickup) — bar <= 0.65");
+    clipper::test::expectXfail(acOnset <= twOnset - 0.2, kXfAc30BreakupVsTwin,
+                               "AC30 onset must sit >= 0.2 of knob travel below the Twin's");
+    clipper::test::expectXfail(acMid > 0.08, kXfAc30MidThd,
+                               "AC30 THD at VOLUME 0.6 / hot pickup — bar > 8 %");
+    clipper::test::expectXfail(acMid > 1.8 * twMid, kXfAc30MidVsTwin,
+                               "AC30 at VOLUME 0.6 must be >= 1.8x dirtier than the Twin");
+    std::printf("  [--] breakup ordering @ %.0f Hz (hot pickup −10 dBFS): onset AC30 vol %.1f, "
+                "Twin %.1f; at vol %.1f AC30 %.2f%% vs Twin %.2f%% (%.2f×) — see the XFAIL "
+                "ledger above\n",
                 fs, acOnset, twOnset, kMidVolume, acMid * 100, twMid * 100, acMid / twMid);
 }
 
@@ -724,14 +830,23 @@ void testAliasing(double fs) {
 
 // Known defects this binary exercises under XFAIL. Printed by --xfail-ledger, which ctest
 // surfaces as ***Skipped in its default summary (see core/CMakeLists.txt).
-const clipper::test::XfailDecl kLedger[] = {kXfAc30PiBalance};
+// `finding7-ac30-pi-leg-balance` XPASSed on 2026-07-29 once the tail became a 10 kΩ
+// resistor to a −10 V reference instead of 2.2 kΩ to ground, and was deleted — its
+// property is a hard assertion now. The four entries below are the OTHER half of that
+// change: balancing the legs removed the even-harmonic leakage that §23's breakup-ordering
+// guard had been measuring, and restoring the voicing needs drive the passive interstage
+// divider cannot give (docs §42).
+const clipper::test::XfailDecl kLedgerArr[] = {kXfAc30Chime, kXfAc30BreakupOnset,
+                                               kXfAc30BreakupVsTwin, kXfAc30MidThd,
+                                               kXfAc30MidVsTwin};
+const clipper::test::XfailDecl* const kLedger = kLedgerArr;
+constexpr std::size_t kLedgerCount = sizeof kLedgerArr / sizeof kLedgerArr[0];
 
 }  // namespace
 
 int main(int argc, char** argv) {
     clipper::test::requireAssertsLive();
-    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
-                                                 sizeof kLedger / sizeof kLedger[0],
+    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger, kLedgerCount,
                                                  "clipper_ac30_tests");
     if (ledger >= 0) return ledger;
 

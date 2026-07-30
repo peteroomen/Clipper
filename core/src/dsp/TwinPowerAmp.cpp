@@ -39,12 +39,67 @@ TwinPowerAmp::TwinPowerAmp() {
     // 12AT7 phase inverter: lower-mu, higher-current than the JCM's 12AX7 PI.
     c.tube.mu = 60.0; c.tube.ex = 1.35; c.tube.kg1 = 460.0;
     c.tube.kp = 300.0; c.tube.kvb = 300.0;
-    // BALANCED large-signal legs: a LONG tail (22k) plus an asymmetric plate-load
-    // pair (Ra1 100k input side, Ra2 142k feedback side) equalize the two anti-
-    // phase plate swings to within ~1% (measured ratio 1.007) — this cancellation
-    // is what keeps the push-pull's EVEN harmonics down, the key to a CLEAN power
-    // stage (an unbalanced PI leaks a strong 2nd harmonic even with matched tubes).
-    c.bPlus = 410.0; c.Ra1 = 100.0e3; c.Ra2 = 142.0e3; c.Rtail = 22.0e3;
+    // BALANCED large-signal legs: an asymmetric plate-load pair (Ra1 100k input side,
+    // Ra2 119k feedback side) compensates the finite tail impedance and equalizes the
+    // two anti-phase plate swings — this cancellation is what keeps the push-pull's
+    // EVEN harmonics down, the key to a CLEAN power stage (an unbalanced PI leaks a
+    // strong 2nd harmonic even with matched tubes).
+    //
+    // TAIL (2026-07-24 audit finding 7, docs §42). A real long-tailed pair returns its
+    // tail through a LARGE resistor to a NEGATIVE reference: the resistor sets the
+    // COMMON-MODE REJECTION, the reference sets the standing current, and the two are
+    // independent. Modelled as two terminals (Rtail straight to ground) they collapse
+    // into one number, and this PI paid for its standing current with cutoff: 22 k to
+    // ground idled the pair at 0.232 mA/triode with its plates at 94.3 % of B+, at
+    // ×7.4/×7.5 per leg (the old "ratio 0.990" was balance between two nearly-dead legs).
+    //
+    // The tail stays LONG — Rtail = 22 k, the shipped value — and gains a reference:
+    //   Rtail 22 k, tailRef = -26 V -> Va 330.8/326.4 V (80.7 / 79.6 % of B+),
+    //   0.792/0.703 mA per triode, 1.494 mA tail, legs ×13.93/×13.90, ratio 0.9978
+    //   (identical at 44.1 / 48 / 96 kHz — the LTP solve is memoryless).
+    // All three project targets (70-85 % of B+, 0.5-0.9 mA/triode, ratio >= 0.90) are met
+    // and are HARD assertions in core/tests/test_twin_amp.cpp. tailRef = -26 V is the
+    // value that maximises the MINIMUM normalised margin to those three bounds (scored
+    // -20 V 0.15 · -22 V 0.29 · -24 V 0.44 · -26 V 0.54 · -28 V 0.32 · -30 V 0.10, each
+    // with Ra2 re-balanced), the same scoring the JCM's -12 V was chosen by.
+    //
+    // WHY THE TAIL IS NOT SHORTENED TO THE 10 k ON THE SCHEMATIC (docs §42, phase 2 —
+    // this is the one place this amp deliberately departs from a parts-bin value, and it
+    // is departed from BY MEASUREMENT). The audit and the slice plan both said to take
+    // Rtail 22 k -> 10 k. Measured, that costs 6.8 dB of tail impedance, i.e. 6.8 dB of
+    // common-mode rejection — and this amp injects its global NFB SINGLE-ENDEDLY into the
+    // cold grid, so half of the feedback signal IS common mode. What leaks through the
+    // tail arrives IN PHASE on both 6L6 grids, which is exactly the drive a push-pull
+    // pair cannot cancel, so it comes out as 2nd harmonic. Power section alone, 110 Hz,
+    // 0.5 V at the PI grid, h2 relative to the fundamental:
+    //   config                          open loop     closed loop
+    //   22 k to ground (starved)         -45.9 dBc     -47.3 dBc   (NFB reduces h2)
+    //   10 k / -7 V                      -61.9 dBc     -33.0 dBc   (NFB ADDS 24 dB)
+    //   22 k / -26 V (shipped)           -73.7 dBc     -39.9 dBc
+    // The corrected PI is 16-28 dB cleaner OPEN loop; with the loop closed the short
+    // tail throws all of that away and then some, and the composed amp's documented
+    // clean-headroom bar (< 4 % THD at VOLUME 0.5 / hot 0.10 V DI) went 2.96 % -> 4.5 %
+    // FAIL at 10 k, against 3.40 % PASS at 22 k. A model whose CMRR is set by one
+    // resistor has to keep that resistor long; the 10 k on the drawing sits above a
+    // 470 Ω-per-cathode network and a real negative return that this two-node tail does
+    // not represent.
+    //
+    // Ra2 was NOT changed to 100 k, which is what the audit proposed: measured with the
+    // tail fixed, matched 100k/100k loads give a leg ratio of 0.718, and no tailRef
+    // meeting the DC targets gets past 0.79. Unequal plate loads are how a finite-tail
+    // LTP is balanced — that is what this resistor is for.
+    //
+    // Ra2 WAS re-derived, 142 k -> 119 k (docs §42, phase 2). 142 k was fitted for
+    // balance against the OLD ground-referenced tail (§20 recorded the result: "measured
+    // swing ratio 1.007", i.e. balanced to ~1 %), so it is a constant fitted around the
+    // finding-7 defect, and it is un-fitted here in the same slice as the fix (the
+    // ADR 008 precedent). Re-derived BY MEASUREMENT against the corrected tail, to the
+    // SAME documented convention — legs balanced to ~1 % — with the DC windows held: at
+    // Rtail 22 k / tailRef -26 V the ratio peaks at Ra2 118k 0.9905 · 119k 0.9978 ·
+    // 120k 0.9949 · 125k 0.968, so 119 k is the balance optimum. (With the tail fixed the
+    // balance crossover moves BELOW 142 k, not above it: a longer effective tail needs
+    // less plate-load compensation, which is the same physics as the CMRR note above.)
+    c.bPlus = 410.0; c.Ra1 = 100.0e3; c.Ra2 = 119.0e3; c.Rtail = 22.0e3; c.tailRef = -26.0;
     ltp_.configure(c);
 }
 

@@ -17,14 +17,20 @@
 // 1. PHASE INVERTER — 12AX7 long-tailed pair (reuses LtpInverter)
 // ===========================================================================
 // The top-boost PI is a 12AX7 long-tailed pair — REUSE the M9.3 LtpInverter with
-// the M9.1 Koren 12AX7 device law (no new triode fit). Unlike the Twin's laser-
-// balanced PI (100k/142k tuned to ~1 %, which cancels even harmonics for a clean
+// the M9.1 Koren 12AX7 device law (no new triode fit). Unlike the Twin's closely
+// balanced PI (100k/142k, ratio 0.946, which cancels even harmonics for a clean
 // stage), the AC30 PI is a simpler, HOTTER design: a lower B+ node and a mildly
 // ASYMMETRIC plate pair (100k / 110k) so it (i) runs out of headroom EARLY — its
-// own asymmetric soft clip is part of the sound — and (ii) leaves a deliberate
-// residual EVEN-harmonic imbalance. That residual, together with the cathode-bias
-// common-mode dynamics below, is a source of the AC30's prominent 2nd harmonic
-// ("chime") — the opposite design intent from the Twin. Documented, not vibed.
+// own asymmetric soft clip is part of the sound — and (ii) leaves a residual
+// EVEN-harmonic imbalance (ratio 0.912 against the Twin's 0.946). That residual,
+// together with the cathode-bias common-mode dynamics below, is a source of the
+// AC30's prominent 2nd harmonic ("chime") — the opposite design intent from the
+// Twin. Documented, not vibed.
+//
+// The tail is 10 k to a −10 V reference (finding 7, docs §42). It used to be 2.2 k
+// straight to ground, which bought the right DC point at the cost of the long-tail
+// property itself (leg ratio 0.550, i.e. the "residual imbalance" above was not a
+// voicing choice but a 2:1 defect). Both are now true at once.
 //
 // ===========================================================================
 // 2. TOP CUT — the post-PI treble-cut control (INVERTED sense)

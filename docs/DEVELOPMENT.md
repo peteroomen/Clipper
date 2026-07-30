@@ -7155,3 +7155,383 @@ corrections into one constant is exactly how `kFullScaleSecV` ended up hiding tw
 factor-of-2 mistakes.
 
 **The WASM artifact was rebuilt** — `core/` changed.
+
+## 42. Audit finding 7 — the phase-inverter tail reference, and every constant that had been fitted around a starved inverter
+
+Finding 7: *"The phase-inverter model cannot express a real long tail; two of three amps idle
+near cutoff."* The fix itself is four lines of solver arithmetic. Everything else in this
+section is the fallout, because **three amps' worth of downstream calibration had been fitted
+against the defect** — and this is the section to read before re-deriving any valve-amp
+constant, because it is the largest single example of that pattern in the project.
+
+The slice shipped in two phases in one day: the circuit fix (`tailRef`, the per-amp
+calibration, the XFAIL ratchet), then the un-fitting (staging, normalization, the Twin's
+plate load, six test probes/bounds). They are written up together here.
+
+### 42.1 The defect
+
+`LtpInverter` modelled the long tail as **two terminals** — `Rtail` straight to ground — so
+one number had to set two independent things: the tail *resistance* is what rejects common
+mode, and the tail *reference* is what sets the standing current. A real long-tailed pair
+returns its tail through a large resistor to a **negative** reference, and gets both. Ours
+could only trade one for the other, and all three amps paid:
+
+| amp (before) | plate % of B+ | Ip / triode | leg gains | ratio |
+|---|---|---|---|---|
+| JCM800 (10 k to ground) | 94.7 / 95.4 ✗ | 0.179 / 0.191 mA ✗ | ×15.44 / ×9.37 | 0.607 ✗ |
+| Twin (22 k to ground) | 94.3 / 93.1 ✗ | 0.232 / 0.200 mA ✗ | ×7.43 / ×7.51 | 0.990 |
+| AC30 (2.2 k to ground) | 82.4 / 81.6 | 0.529 / 0.501 mA | ×31.76 / ×17.46 | 0.550 ✗ |
+
+Targets (`core/tests/support/LtpProbe.h`): 70–85 % of B+, 0.5–0.9 mA per triode, leg ratio
+≥ 0.90. Four of nine met. The AC30's ✓ column is the §23 second amendment, which bought the
+DC point by shrinking the tail until the pair was no longer long-tailed — the trade this
+model could not avoid. The Twin's "0.990" was balance between two nearly-cut-off legs.
+
+### 42.2 The fix
+
+`LtpInverter::Config` gains `double tailRef = 0.0` (volts). The tail residual becomes
+`k1.Ip + k2.Ip − (Vk − tailRef)/Rtail` in `prepare()` and the same with `gTail` in
+`processSample()`. The Jacobian is untouched (`∂/∂Vk` of the tail term is unchanged), and
+`tailRef = 0` is the old behaviour **bit-for-bit** — verified before any config changed:
+27/27 ctest and all five goldens digit-identical.
+
+Per-amp calibration, all rate-independent (the LTP solve is memoryless), each chosen to
+maximise the **minimum normalised margin** to the three targets:
+
+| amp | Rtail | tailRef | Ra2 | plate % B+ | Ip / triode | legs | ratio |
+|---|---|---|---|---|---|---|---|
+| JCM800 | 10 k (real 2204 part) | **−12 V** | 82 k (finding 8) | 80.0 / 81.6 ✓ | 0.680 / 0.763 ✓ | ×29.68 / ×20.86 | 0.703 ✗ (finding 8) |
+| Twin | **22 k** (kept long) | **−26 V** | 142 k → **119 k** | 80.7 / 79.6 ✓ | 0.792 / 0.703 ✓ | ×13.93 / ×13.90 | **0.998 ✓** |
+| AC30 | 2.2 k → **10 k** | **−10 V** | 110 k | 79.3 / 78.5 ✓ | 0.622 / 0.587 ✓ | ×27.56 / ×25.13 | **0.912 ✓** |
+
+**Eight of nine targets are hard assertions now** (was four). Five finding-7 XFAILs XPASSed
+and were deleted in the same slice. The one miss is the JCM's leg balance — audit finding 8,
+moved 0.607 → 0.703 by the tail fix but owned by the 82 kΩ plate load. Its push-pull
+even-harmonic cancellation is **unchanged at 8.1 dB**, confirming the tail was not that
+defect's cause.
+
+`LtpProbe`'s tail current was silently wrong the moment `tailRef ≠ 0` (`Vk/Rtail`
+under-reported the JCM's by 6×); it now reads `(Vk − tailRef)/Rtail` and cross-checks against
+Ip1+Ip2 exactly.
+
+### 42.3 The audit was wrong about the Twin's plate load, and measurement said so twice
+
+The audit (and the slice plan) said the Twin's 142 kΩ plate load "exists in no AB763 and was
+an artifact compensating the starved tail", and predicted ratio ≈ 1.0 from matched
+100k/100k loads once the tail was fixed. **Measured, with the tail fixed:**
+
+| Twin Ra2 (Rtail 10 k, tailRef −6 V) | 100 k | 110 k | 120 k | 130 k | 142 k | 150 k |
+|---|---|---|---|---|---|---|
+| leg ratio | **0.718** | 0.774 | 0.828 | 0.879 | 0.938 | 0.976 |
+
+Sweeping `tailRef` from 0 to −16 V at Ra2 = 100 k never passes 0.760, and Ra2 = 100 k needs
+`Rtail ≈ 47 k` *and* `tailRef ≈ −60 V` to reach 0.925 — not an AB763 either. **Unequal plate
+loads are how a finite-tail LTP is balanced**; that is the resistor's job, not a bug. Had the
+brief been followed here it would have turned a *green* assertion red (perturbation pass C
+below).
+
+But the **value** was still fitted around the defect — §20 recorded "measured swing ratio
+1.007" against the old 22 k-to-ground tail — so it was re-derived by measurement to the same
+documented convention (legs balanced to ~1 %), against the corrected tail:
+
+| Twin Ra2 (Rtail 22 k, tailRef −26 V) | 118 k | **119 k** | 120 k | 125 k | 130 k | 142 k |
+|---|---|---|---|---|---|---|
+| leg ratio | 0.9905 | **0.9978** | 0.9949 | 0.968 | 0.936 | 0.873 |
+
+With the tail fixed the balance crossover moves **below** 142 k, not above it: a longer
+effective tail needs less plate-load compensation.
+
+### 42.4 The Twin's tail deliberately does NOT go to the 10 k on the schematic
+
+The plan said take the Twin's `Rtail` 22 k → 10 k, "the AB763's documented shared tail", and
+the first phase did. It measures as a mistake, and the reason is worth generalising: **in a
+model whose only common-mode rejection is one resistor, that resistor cannot be shortened.**
+This amp injects its global NFB **single-endedly into the cold grid**, so half of the
+feedback signal is common mode; what leaks through a finite tail arrives **in phase** on both
+6L6 grids, which is precisely the drive a push-pull pair cannot cancel, and it comes out as
+2nd harmonic. Power section alone, 110 Hz, 0.5 V at the PI grid, h2 relative to the
+fundamental:
+
+| PI tail config | open loop | closed loop | Δ from closing the loop |
+|---|---|---|---|
+| 22 k to ground (the starved original) | −45.9 dBc | −47.3 dBc | −1.4 dB (NFB *reduces* h2, as it should) |
+| 10 k / −7 V | **−61.9 dBc** | **−33.0 dBc** | **+24 dB (the loop GENERATES h2)** |
+| 22 k / −26 V (shipped) | −73.7 dBc | −39.9 dBc | +15 dB |
+
+The corrected inverter is 16–28 dB cleaner *open loop*; the short tail threw all of it away
+and then some. Player-observable consequence, at the documented settings (VOLUME 0.5, hot
+0.10 V DI, 110 Hz — the Twin's clean-headroom bar, < 4 % THD):
+
+| Twin clean bar | THD |
+|---|---|
+| before finding 7 | 2.96 % |
+| 10 k tail, drive restored | **4.5 % FAIL** |
+| 22 k tail, drive restored (shipped) | **3.41 % PASS** |
+
+The 10 k on the drawing sits above a 470 Ω-per-cathode network and a real negative return
+that a two-node tail does not represent; 22 k is this model's stand-in for that network, and
+it is the value the amp already shipped. ADR 014 records the decision.
+
+### 42.5 The staging constants were absorbing the missing PI gain
+
+Fixing the inverter roughly doubled its leg gain (JCM ×15.44 → ×29.68, Twin ×7.43 → ×13.93 —
+both ≈ +5.7 dB), and the composed amps arrived **+3.4 to +5.7 dB hot, clipping past full
+scale** (JCM cranked peak 0.899 → 1.163, Twin 0.933 → 1.661). The AC30 sailed through
+(+0.4 dB) — because §23 had already re-derived *its* staging against a fixed inverter. That
+asymmetry is the whole diagnosis: `Jcm800Amp::kInterstageScale` and `TwinAmp::kInterstageScale`
+had been fitted around starved inverters. Un-fitted here, in the same slice as the fix, per
+the ADR 008 precedent.
+
+**Do not divide by the PI's gain ratio.** The global NFB absorbs about half of it. The
+quantity that has to be restored is the power section's **closed-loop** gain — normalized-out
+per volt at the PI grid, which in the linear region is proportional to the power-tube grid
+drive:
+
+| f0 (Hz) | 82 | 110 | 220 | 440 | 880 | 1760 | 3520 |
+|---|---|---|---|---|---|---|---|
+| JCM before | 0.1129 | 0.1208 | 0.1288 | 0.1321 | 0.1369 | 0.1460 | 0.1530 |
+| JCM after | 0.1890 | 0.1938 | 0.1980 | 0.2017 | 0.2116 | 0.2336 | 0.2566 |
+| **ratio** | 1.674 | 1.604 | 1.537 | 1.527 | 1.545 | 1.600 | 1.677 |
+| Twin before | 0.0761 | 0.0777 | 0.0792 | 0.0796 | 0.0797 | 0.0796 | 0.0792 |
+| Twin after | 0.1150 | 0.1163 | 0.1175 | 0.1179 | 0.1179 | 0.1179 | 0.1179 |
+| **ratio** | 1.511 | 1.497 | 1.484 | 1.480 | 1.480 | 1.481 | 1.488 |
+
+Mean over the guitar fundamental range (82–880 Hz): **JCM 1.577, Twin 1.490**. So
+
+- `Jcm800Amp::kInterstageScale` **0.25 → 0.16** (0.25/1.577 = 0.1585; 0.16 lands within 1 % of drive, +0.08 dB)
+- `TwinAmp::kInterstageScale` **0.16 → 0.107** (0.16/1.490 = 0.1074)
+
+The residual spread is the NFB loop's own frequency shaping and no broadband trim can remove
+it. Below clipping the amps' **drive** is now what it always was; what changed is the
+ceiling.
+
+### 42.6 …and the normalizations had to follow the swing, exactly as §23 said
+
+`kFullScaleSecV` is an output **normalization**: it cannot fix THD or breakup ordering, and it
+was measured to be nearly **insensitive to staging** at the cranked calibration point (the
+preamp is already delivering 100+ V there, so halving the trim leaves the power section just
+as saturated). What it must follow is the measured cranked swing — §23's rule, *"every voice
+is normalized to its own cranked peak so the voices stay level-comparable"*.
+
+And the cranked swing genuinely moved, because a starved inverter **could not drive the output
+tubes to full power**:
+
+| amp | cranked secondary peak before | after | rated full-power peak (√(P·8 Ω)) |
+|---|---|---|---|
+| JCM800 | 26 V · 0.899 = 23.4 V (34 W of 50 W) | 29.3 V (54 W) | 28.3 V |
+| Twin | 24 V · 0.933 = 22.4 V (31 W of 85 W) | 37.7 V (89 W) | 36.9 V |
+
+Both models now reach their rated power for the first time. Re-derived to the documented
+`~0.9` cranked peak:
+
+- `Jcm800PowerAmp::kFullScaleSecV` **26 → 33 V** — cranked peak 1.128 → **0.888–0.890** (44.1/48/96 kHz)
+- `TwinPowerAmp::kFullScaleSecV` **24 → 42 V** — cranked peak 1.571 → **0.898**
+
+**This is the only reason the two voices are quieter below clipping** — the JCM by ~2.0 dB,
+the Twin by ~4.9 dB. It is a re-referencing of full scale, not a loss of drive, and it is
+forced: any Twin normalization that keeps the cranked peak inside full scale costs at least
+20·log10(37.7/24) = 3.9 dB. The alternative was a cranked Twin clipping 66 % past full scale
+into the chain's output limiter.
+
+Each constant is tied to **its own** convention — the staging to the power-tube drive, the
+normalization to the cranked swing — deliberately, so neither absorbs the other's error. That
+is the `kFullScaleSecV` failure mode this project already paid for once.
+
+### 42.7 Measured: before → after, composed
+
+Sine 220 Hz, no cab, at the documented knob settings (the full table is
+`clipper-render`-reproducible; `kInterstageScale`-only rows omitted):
+
+| rig | in V pk | out RMS before | after | Δ dB | THD before → after |
+|---|---|---|---|---|---|
+| JCM800 (G .7 M .5) | 0.032 | −19.78 | −21.53 | −1.75 | 10.50 → 10.91 % |
+| JCM800 (G .7 M .5) | 0.100 | −16.28 | −17.00 | −0.72 | 29.43 → 33.43 % |
+| JCM800 (G .7 M .5) | 0.316 | −16.03 | −16.31 | −0.28 | 44.30 → 51.66 % |
+| JCM800 (G .2 M .3) | 0.316 | −29.89 | −32.05 | −2.16 | 6.93 → 6.54 % |
+| Twin (VOL .5) | 0.032 | −43.95 | −48.88 | −4.93 | 0.49 → 0.56 % |
+| Twin (VOL .5) | 0.316 | −24.10 | −28.97 | −4.87 | 4.94 → 5.63 % |
+| Twin (VOL 1.0) | 0.316 | −8.97 | −10.43 | −1.46 | 15.73 → 9.77 % |
+| AC30 (VOL .5) | 0.316 | −11.38 | −10.99 | +0.39 | 7.17 → **2.34 %** |
+| AC30 (VOL 1.0) | 0.316 | −9.67 | −9.91 | −0.24 | 23.28 → **30.69 %** |
+
+NFB, 1 kHz, small signal — both loops still negative and both still match `1/(1+βA_real)` to
+0.02 dB:
+
+| amp | reduction before | after | analytic |
+|---|---|---|---|
+| JCM800 | −3.41 dB | **−5.977 dB** | −5.995 |
+| Twin | −3.24 dB | **−5.24 dB** | −5.24 |
+| AC30 | 0 (β = 0, bit-exact open == closed) | 0 | — |
+
+⚠️ **The JCM's "meaningful loop" window (`> 2 dB && < 6 dB`) now passes at 5.977 dB — 0.023 dB
+of margin.** Untouched by phase 2 (it is a power-section property and staging is upstream).
+Nobody should move the JCM's phase inverter again — finding 8 moves `Ra2` — without watching
+that number.
+
+Goldens (`--golden-report`, nothing re-blessed — the gate is ±1.0 dB broadband, ≤ 1.5 dB per
+live band):
+
+| golden | phase 1 (circuit fix only) | phase 2 (constants un-fitted) | worst band |
+|---|---|---|---|
+| `rat_jcm800` | +4.39 dB | **−1.77 dB** | 1.80 dB @ 200 Hz |
+| `sd1_twin_reverb` | +3.43 dB | **−4.89 dB** | 5.00 dB @ 317 Hz |
+| `muff_twin` | +3.87 dB | **−4.74 dB** | 4.92 dB @ 800 Hz |
+| `ts_ac30` | +0.44 dB | **+0.44 dB** (AC30 untouched by phase 2) | 1.22 dB @ 800 Hz |
+| `clean120_chorus` | UNCHANGED −0.00 dB | **UNCHANGED −0.00 dB** | 0.11 dB — the scope check |
+
+The two Twin rigs' movement is now *the normalization*, essentially flat across the band
+(−4.87 to −5.00 dB per band), and the JCM's is a −1.8 dB level shift with a ~1.3 dB tilt.
+`clean120_chorus` sits at the gate's own quantisation floor, which is the proof the change is
+confined to the three valve voices. **The four moved goldens are NOT re-blessed** — that is
+the owner's call, with these tables.
+
+### 42.8 What the AC30 lost, and why it is ledgered rather than fixed
+
+The AC30's *level* barely moves through this change, but its **character does**, and this is
+the most important measured result in the section: **the Vox's mid-volume "breakup" and its
+"class-A chime" were both its phase inverter's 2:1 leg imbalance leaking 2nd harmonic past
+the push-pull's cancellation.** Balance the legs (0.550 → 0.912) and the even harmonics go
+with them, while the section's own clipping barely moves (220 Hz, hot 0.316 V pickup):
+
+| VOLUME | 0.4 | 0.5 | 0.6 | 0.7 | 0.8 |
+|---|---|---|---|---|---|
+| THD before % | 4.60 | 7.06 | **10.75** | 12.30 | 14.11 |
+| — of which even | 4.55 | 6.90 | 10.39 | 10.99 | 7.99 |
+| THD after % | 1.55 | 2.29 | **3.80** | 6.58 | 15.18 |
+| — of which even | 1.42 | 1.77 | 2.25 | 2.12 | 1.59 |
+| odd before % | 0.65 | 1.53 | 2.77 | 5.52 | 11.63 |
+| odd after % | 0.62 | 1.45 | **3.06** | 6.23 | 15.10 |
+
+h2 at VOLUME 0.6: **−19.76 → −33.03 dBc**. The odd (clipping) column is *unchanged to
+slightly higher*. So the §23 breakup-ordering guard and the chime guard were, in part,
+measuring a defect — and with the defect fixed they fail:
+
+| §23 guard | bar | before | after |
+|---|---|---|---|
+| AC30 breakup onset | ≤ 0.65 | 0.5 | **0.7** |
+| AC30 onset vs Twin's | ≤ twin − 0.2 | 0.5 ≤ 0.7 | **0.7 ≤ 0.3** |
+| AC30 THD at VOLUME 0.6 | > 8 % | 10.75 % | **3.80 %** |
+| AC30 vs Twin at 0.6 | > 1.8× | 2.19× | **0.63×** |
+| AC30 vs Twin 2nd harmonic (chime) | > +3 dB | +4.0 dB | **−21.2 dB** |
+
+**Restoring them needs DRIVE, and the AC30 has none left to give.**
+`Ac30Amp::kInterstageScale` is a *passive* divider (0.67 — §23 derived it as the two-channel
+mixing division, and a passive path cannot exceed 1.0), and §23 already measured that
+transcribing the missing second ECC83 gain stage is **+30…+35 dB**, which saturates the voice
+at its opening defaults. Restoring the imbalance instead would re-break the leg-balance
+assertion this slice just made hard. So all five bars are **ledgered as XFAILs with their
+bounds untouched** (`finding7-ac30-chime`, `-breakup-onset`, `-breakup-vs-twin`, `-mid-thd`,
+`-mid-vs-twin`), owned by an **AC30 gain-structure slice**. An XPASS is a hard failure, so
+whoever re-voices that amp cannot leave them stale. This is the largest open item this slice
+creates, and it is a *voicing* decision for the owner, not a bug to be quietly absorbed.
+
+### 42.9 Six test probes and bounds that had been calibrated against the defect
+
+Every one of these is a **probe or reference re-derivation with the physics named**, checked
+against the pre-fix circuit as well as the post-fix one (the §36 discipline: a fixed
+reference improves agreement on the old circuit too). No bound was loosened to go green; the
+one bound that was genuinely wrong is called out as such.
+
+1. **The presence-shelf reference** (`test_jcm800_power.cpp`) computed `βA` from the
+   **closed-loop** 4 kHz gain where the formula needs the **open-loop** A. Fixed by measuring
+   a feedback-disabled section; the 1.5 dB bound is untouched and agreement improves on both
+   circuits (before: 1.04 → 0.35 dB; after: 2.43 FAIL → 0.79 dB).
+2. **Power-compression monotonicity** asserted "incremental gain never rises" across drives
+   0.5–16 V. That held only because the starved inverter's own gain expansion was finished
+   below the first probe point (leg gain ×6.88/×7.24/×7.30 at 0.1/0.3/0.5 V — +6 %, all of it
+   under 0.5 V). With the inverter corrected the knee sits at ~2 V, inside the probe range,
+   and the stage now stiffens 3.6 % before compressing — which is real ("bloom"). Re-derived
+   as three measured bars, all holding on both circuits: RMS monotonic; expansion to the
+   peak-gain drive **< 1.10×** (1.000 before, 1.036 after); monotone compression past the
+   peak, **> 6 dB** to 16 V (12.04 dB before, 12.49 after).
+3. **The JCM's sag-recovery window**. The model contains **two** RCs after a burst: the
+   supply reservoir (Rsupply·Creservoir = 7.5 ms) and grid-blocking (Rg·Cc = 4.84 ms — a hard
+   burst charges the coupling caps, the grids sit cold, the tubes draw *less* than idle and
+   the rail climbs faster than its own RC). Before the fix the starved inverter never pushed
+   the grids into conduction at this probe: droop 31 V, recovery 7.71–8.44 ms ≈ the pure
+   supply RC, so a "±25 % of the supply RC" bound held. After: droop 50 V, recovery
+   **5.54–6.08 ms** — it moved from one modelled RC toward the other, and the old bound
+   clipped it at 96 kHz by 1.5 %. Re-derived to the property the model actually has: the
+   recovery lies **between the two RCs, ±25 %**.
+4. **The sag-ordering probe** (`test_ac30_amp.cpp` and `test_twin_amp.cpp`): 45 V at
+   `PARAM_DRIVE` noon = **90 V at the PI grid**, ~30× the inverter's clipping onset. At that
+   level the metric stops measuring the rail: after the fix the **JCM's rail droops MORE**
+   than the Twin's (57.4 V vs 50.5 V, as their supply impedances predict) while the envelope
+   ratio says the opposite (2.26 vs 2.63 dB), because both outputs are pinned to their
+   clipping ceiling at attack *and* at settle. Probe re-derived to **2.0 V** (4 V at the
+   grid — still hard: the JCM's attack peak is 0.74 of full scale), where the metric tracks
+   the rail (droop Twin 13.4 V / JCM 37.3 V / AC30 1.6 V) and the ordering and both windows
+   hold on **both** circuits: Twin 1.03 < JCM 1.96 < AC30 5.74 dB before, 1.16 < 1.95 < 6.03
+   after. Every bound unchanged.
+5. **The AC30's cathode-bias bloom probe**, retuned by §23 for exactly this reason once
+   already (8 V → 0.15 V), moved again: the AC30's legs went ×31.76/×17.46 → ×27.56/×25.13,
+   and the grid-conduction crossover with it (~0.22 V → ~0.40 V at the grid). At the old
+   probe the recovery τ landed exactly *on* the 0.3·Rk·Ck bound at 96 kHz. Probe 0.15 → 0.125
+   (0.25 V at the grid, where `PARAM_DRIVE` noon doubles it); both bounds untouched. The
+   measured table of bloom-vs-drive is in the test.
+6. **Two "oversampling works" bars** (`test_jcm800_power.cpp`, `test_twin_amp.cpp`) asserted
+   that **2×** beats **1×** by 8 dB. That is not a property of the resampler: the 1× figure
+   is a function of how much the stage distorts, so cleaning the stage up shrinks the gap
+   without touching anything that ships. The corrected inverter is much cleaner, so the JCM
+   power section's 1× went −21.8 → −29.7 dB and its 1×→2× delta 13.9 → 4.3 dB **while the
+   shipped 4× floor improved, −116.6 → −121.4 dB**. Re-derived onto the shipped factor:
+   1×→4× > 60 dB (power section: 94.9/101.5/83.7 before, 91.7/94.9/82.8 after) and > 40 dB
+   (composed Twin: 49.8/56.5/50.0 before, 46.1/46.4/48.5 after), plus the unchanged
+   −60 dB M2 bar and the unchanged "8× buys nothing" bar.
+
+**The Twin's cranked-breakup bar is the one *bound* that changed** (`> 25 %` → `> 18 %`), and
+it changed for the same reason as the AC30's ledger: total THD at that operating point was
+39.99 % before and 21.42 % after, but the drop is nearly all **even** harmonics (21.81 % →
+9.92 %) — the inverter's imbalance — while the **odd** (clipping) component is 33.52 % →
+18.98 %. So ~12 points of the old 40 % was a defect counted as breakup. The amp still clips
+hard at full power (peak 0.898) and is still 6.3× dirtier than its clean bar. A **new**
+assertion was added at the same time, which the old one lacked and which an unbalanced
+inverter cannot fake: **odd-harmonic THD > 15 %** (33.5 % before, 19.0 % after). ⚠️ The
+untouched `cranked > clean × 6` bar now passes at **6.27×** — 0.4 dB of margin; flagged, not
+adjusted.
+
+### 42.10 Still open after this slice
+
+- **The AC30's voicing** — five ledgered XFAILs (§42.8). Needs an AC30 gain-structure slice.
+- **Finding 8** — the JCM's `Ra2 = 82 k` (leg ratio 0.703) and its 8.1 dB of push-pull
+  cancellation, with the JCM's NFB margin at 5.977 of 6.0 dB to watch. The Twin's own plate
+  pair still needs 19 % more load on leg 2 than leg 1 to balance, which is a model question
+  of the same family.
+- **The Twin's closed-loop 2nd harmonic** is still ~7 dB above its pre-fix figure at matched
+  drive (−39.9 vs −47.3 dBc), because the single-ended NFB injection's common-mode component
+  is only rejected as well as one tail resistor rejects it. A differentially-referred
+  feedback injection, or a longer tail still, would recover it — measured trend, its own
+  slice.
+- **The four moved goldens** need an owner bless (§42.7). Nothing was re-blessed here.
+
+### 42.10.1 CPU
+
+Interleaved same-machine A/B (the pristine pre-finding-7 bench binary alternated with the
+phase-2 one, 3 rounds), % of one 48 kHz stream: **jcm800 52.39 → 52.86 (+0.9 %)**,
+**twin 35.25 → 35.47 (+0.6 %)**, **ac30 29.55 → 29.63 (+0.3 %)**. Base run-to-run spread is
+0.7–0.9 points, so all three are inside noise — no Newton-convergence cost at the new
+operating points, consistent with `clipper_tube_solver_tests` and `clipper_nan_guard_tests`
+passing unmodified. (Absolute columns are machine-dependent — do not quote them elsewhere.)
+
+### 42.11 Perturbation proofs (and two that did not fire, which is also information)
+
+Every patch and every restore followed by `touch` (§29's mtime trap). Transcripts:
+`perturbation.txt` (phase 1), `perturbation-p2.txt` + `final-p2.txt` (phase 2).
+
+| # | perturbation | expected | result |
+|---|---|---|---|
+| A | `tailRef` back to 0 on all three amps (phase 1) | the new hard PI assertions fail | **fired** — `LtpProbe.h:170` plate-fraction assert on all three suites |
+| B | AC30 back to `Rtail 2.2 k`, `tailRef 0` (the §23 workaround) | the newly-hard leg-balance assert fails | **fired** — `LtpProbe.h:194` |
+| C | Twin `Ra2` → 100 k with the tail correct (what the audit proposed) | balance assert fails | **fired** — `LtpProbe.h:194`; documented proof the audit's Twin proposal was wrong |
+| D | Twin staging starved (`kInterstageScale` 0.107 → 0.03) | the NEW odd-harmonic cranked-breakup bar fails | **fired** |
+| E | compression probe range truncated to 2 V (never reaches compression) | the > 6 dB compression bar fails | **fired** |
+| F | the rail integrator's reservoir doubled in the MODEL only (`gRes_ = 2·kCreservoir/T`, analytic RC unchanged) | the re-derived sag-recovery window fails | **fired** (11.6 ms vs a 9.375 ms ceiling) |
+| G | Twin + JCM supply character SWAPPED (`kRsupply` 80 → 300 and 150 → 20) | the re-derived 2 V sag probe catches the inverted ordering | **fired** |
+| H | Twin supply alone softened 3.75× (`kRsupply` 80 → 300) | ordering inverts? | **did NOT fire** — Twin sag 1.16 → 1.82 dB, still under the JCM's 1.96. The metric responds, the ordering is simply robust to that much |
+| I | JCM supply alone stiffened 7.5× (`kRsupply` 150 → 20) | ordering inverts? | **did NOT fire** — JCM sag 1.96 → 1.53, still above the Twin's 1.16 (its sag has a floor from grid blocking) |
+| J | `kCreservoir` doubled | recovery window fails? | **did NOT fire**, and correctly so: the test computes its analytic RC *from* that constant, so both sides scale (5.8 → 11.6 ms against a window that also doubled). That is what makes it a discretization check; F is the perturbation that has teeth |
+
+H, I and J are recorded rather than hidden because they bound what the two re-derived
+sag properties actually catch: the ordering survives a 7.5× change in one amp's supply
+impedance (it takes a swap of the two amps' character to break it), and the recovery window
+catches the model disagreeing with its own constants, not the constants themselves.

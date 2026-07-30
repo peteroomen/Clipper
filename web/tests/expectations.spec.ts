@@ -38,11 +38,17 @@ const DIRT_PEDALS = [
 //     (v1.1 item 6) gold −22.8 dBFS, peak 0.106 — the quietest of the dirt boxes at
 //     its defaults, as a mostly-clean blend should be; still 9 dB inside the window
 //   amp voices alone (pedal bypassed), −16.5 dBFS 220 Hz source:
-//     measured 2026-07: clean120 −21.7, jcm800 −14.5, twin −28.7, ac30 −26.5 dBFS
-// Windows are the measured spread ± ~8 dB — the next "no balls" (−20 dB) or
+//     measured 2026-07-30 (post finding 7, docs §42 — the PI tail reference plus the
+//     rated-power re-normalization it forced): clean120 −28.2, jcm800 −25.0,
+//     twin −42.8, ac30 −20.6 dBFS. The twin sits ~4.9 dB lower than before the fix
+//     because its normalization now spans the amp's real 85 W where it used to top
+//     out at 31 W — an OWNER-ACCEPTED level change (RAT/ADR-008 precedent: honest
+//     level, un-compensated; whole-lineup level staging is its own future slice),
+//     which is why this window was re-centred rather than the twin re-gained.
+// Windows are the measured spread ± ~8 dB — the next "no balls" or
 // "blows the mix apart" drift fails loudly.
 const PEDAL_RMS_DB = { lo: -32, hi: -4 };
-const AMP_RMS_DB = { lo: -42, hi: -6 };
+const AMP_RMS_DB = { lo: -51, hi: -12 };
 
 test.describe('M11 player expectations (first five minutes)', () => {
   // --- 1+2+3. Each dirt pedal, added at defaults onto the default rig. ----------

@@ -44,21 +44,35 @@ Ac30PowerAmp::Ac30PowerAmp() {
     // part of the chime (the opposite intent from the Twin's clean, matched PI).
     c.tube.mu = 100.0; c.tube.ex = 1.4; c.tube.kg1 = 1060.0;
     c.tube.kp = 600.0; c.tube.kvb = 300.0;
-    // Rtail = the OPERATING-POINT constant (M10.2 §23 second amendment — the "not
-    // enough gain/breakup" field report). Our LtpInverter is a TWO-TERMINAL tail:
-    // grids at 0 V DC, tail resistor straight to ground, so the standing current is
-    // set entirely by Rtail. With the original 22 k the pair self-biased at 83 µA per
-    // triode — plates parked at 291.7 V, i.e. 97 % of B+, essentially cut off — and
-    // measured only ×9.1 gain per leg. No real 12AX7 LTP idles there: a guitar-amp
-    // PI runs ~0.5–0.9 mA per triode with its plates at 70–85 % of B+ and ~×25–35 per
-    // leg (the real amps get there by returning the long tail to a negative reference
-    // our two-terminal tail cannot express, so the tail VALUE is that network's model
-    // equivalent, not a parts-bin resistor). 2.2 k lands the textbook point: 0.53 mA,
-    // plates 247.1/244.9 V (82 % of B+), gain ×32. This is what finally makes the
-    // header's "run HOT, clip early" TRUE rather than aspirational — the starved PI
-    // was the reason the VOLUME knob (which IS the AC30's overdrive) could not reach
-    // the EL84 grids. MEASURED before/after in docs §23.
-    c.bPlus = 300.0; c.Ra1 = 100.0e3; c.Ra2 = 110.0e3; c.Rtail = 2.2e3;
+    // TAIL — the OPERATING-POINT constants. History, because both halves matter:
+    //
+    // M10.2 §23 second amendment (the "not enough gain/breakup" field report). At the
+    // original Rtail = 22 k to ground the pair self-biased at 83 µA per triode — plates
+    // parked at 291.7 V, 97 % of B+, essentially cut off — and measured only ×9.1 per
+    // leg. No real 12AX7 LTP idles there: a guitar-amp PI runs ~0.5–0.9 mA per triode
+    // with plates at 70–85 % of B+ and ~×25–35 per leg. §23 hit that point by cutting
+    // Rtail to 2.2 k, which was the only knob a TWO-TERMINAL tail (resistor straight to
+    // ground) offered — and it worked: 0.53 mA, plates at 82 % of B+, ×32 on leg 1.
+    //
+    // But it bought the DC point by DESTROYING the long-tail property (2026-07-24 audit
+    // finding 7, docs §42): a 2.2 k tail is a low common-mode impedance, so leg 2 only
+    // managed ×17.5 against leg 1's ×31.8 — a leg-gain ratio of 0.550, which leaks the
+    // even harmonics the push-pull pair is supposed to cancel. That was an XFAIL.
+    //
+    // The real fix is the one the §23 comment named and could not reach: the tail
+    // returns to a NEGATIVE reference, not to ground. `LtpInverter::Config::tailRef`
+    // now expresses it, so Rtail goes back to a proper long 10 k and the reference sets
+    // the current. tailRef is the model equivalent of that bias network, calibrated by
+    // sweep (see docs §42), not a parts-bin voltage:
+    //   Rtail = 10 k, tailRef = -10 V -> Va 237.8/235.5 V (79.3 / 78.5 % of B+),
+    //   0.622/0.587 mA per triode, legs ×27.6/×25.1, ratio 0.912 (worst of the three
+    //   test rates). All three project targets met with margin, all three now HARD
+    //   assertions in core/tests/test_ac30_amp.cpp.
+    // The operating point is deliberately kept close to §23's (0.53 mA, 82 % of B+) so
+    // the voicing that amendment established survives; what changes is that leg 2 comes
+    // up from ×17.5 to ×25.1, so the pair drives the EL84 grids harder and more evenly.
+    // The plate pair stays the DELIBERATELY less-balanced 100k/110k of the header note.
+    c.bPlus = 300.0; c.Ra1 = 100.0e3; c.Ra2 = 110.0e3; c.Rtail = 10.0e3; c.tailRef = -10.0;
     ltp_.configure(c);
 }
 

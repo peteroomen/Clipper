@@ -90,7 +90,10 @@ void LtpInverter::prepare() {
         const TriodeEval k2 = triodeEval(Va2, Vgk2, cfg_.tube);
         const double r1 = (cfg_.bPlus - Va1) / cfg_.Ra1 - k1.Ip;
         const double r2 = (cfg_.bPlus - Va2) / cfg_.Ra2 - k2.Ip;
-        const double r3 = k1.Ip + k2.Ip - Vk / cfg_.Rtail;
+        // Tail current returns to `tailRef`, not ground (finding 7): the reference sets
+        // the standing current, Rtail keeps setting the common-mode rejection. ∂/∂Vk is
+        // unchanged (−1/Rtail), so the Jacobian below is untouched.
+        const double r3 = k1.Ip + k2.Ip - (Vk - cfg_.tailRef) / cfg_.Rtail;
         // Jacobian rows [Va1, Va2, Vk]; dVgk/dVk = -1.
         const double J[3][3] = {
             {-1.0 / cfg_.Ra1 - k1.dVa, 0.0, k1.dVgk},
@@ -136,7 +139,9 @@ void LtpInverter::processSample(double vg1, double vg2, double& va1, double& va2
         const TriodeEval k2 = triodeEval(Va2, Vgk2, cfg_.tube);
         const double r1 = (cfg_.bPlus - Va1) * gRa1 - k1.Ip;
         const double r2 = (cfg_.bPlus - Va2) * gRa2 - k2.Ip;
-        const double r3 = k1.Ip + k2.Ip - Vk * gTail;
+        // Tail returns to cfg_.tailRef (finding 7); ∂r3/∂Vk is still −gTail, so J22 below
+        // is unchanged.
+        const double r3 = k1.Ip + k2.Ip - (Vk - cfg_.tailRef) * gTail;
         // Jacobian sparsity is FIXED (each plate row couples only its own plate and
         // the shared tail; J01 == J10 == 0), so the 3x3 solves by direct elimination
         // instead of general Cramer with column copies (§25) — same solution:
@@ -168,6 +173,18 @@ void LtpInverter::processSample(double vg1, double vg2, double& va1, double& va2
 // ===========================================================================
 Jcm800PowerAmp::Jcm800PowerAmp() {
     LtpInverter::Config c;
+    // Tail reference (2026-07-24 audit finding 7, docs §42). Rtail stays at the 2204's
+    // real 10 k; what was missing is that the real tail does not return to ground. With
+    // a two-terminal tail this pair self-biased at 0.179 mA/triode with its plates at
+    // 94.7 % of B+ — parked near cutoff, ×15.4/×9.4 per leg. Calibrated by sweep (the
+    // only free parameter; Ra1/Ra2/B+ are the schematic's) to land mid-target:
+    //   tailRef = -12 V -> Va 272.0/277.4 V (80.0 / 81.6 % of B+), 0.680/0.763 mA per
+    //   triode, legs ×29.7/×20.9. Targets are 70-85 % of B+ and 0.5-0.9 mA/triode; the
+    //   worst margin is 3.4 points of B+ and 0.137 mA.
+    // The LEG BALANCE is NOT fixed by this (0.607 -> 0.703, still short of 0.90): that is
+    // audit finding 8 — Ra2 = 82 k compensates the finite tail impedance the wrong way,
+    // and its sweep has to be re-measured now the tail is right. Not this slice.
+    c.tailRef = -12.0;
     ltp_.configure(c);
 }
 
