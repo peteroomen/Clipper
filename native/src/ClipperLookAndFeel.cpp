@@ -1,4 +1,5 @@
 #include "ClipperLookAndFeel.h"
+#include "UiSound.h"
 
 namespace clipper::native {
 
@@ -19,6 +20,32 @@ juce::Path roundedRectPath(juce::Rectangle<float> r, float radius) {
 // skin drawing recipes
 // ===========================================================================
 namespace skin {
+
+const Scheme& darkIsland() {
+    // The pedal chassis pinning — exactly the constants above, gathered.
+    static const Scheme s{capTop,     capBot,   capEdgeTop, capEdgeBot, well,
+                          panelTop,   panelBot, ink,        inkDim,     inkFaint,
+                          shDark,     shDarker, shLight,    arcTrack};
+    return s;
+}
+
+const Scheme& lightBench() {
+    // tokens.css :root LIGHT values, verbatim — the context the web amp's
+    // controls actually resolve in (the dark pinning is .pedal-scoped).
+    static const Scheme s{
+        juce::Colour(0xffEFEDE8), juce::Colour(0xffD9D6CF),   // --cap 145deg
+        juce::Colour(0xffDDDAD3), juce::Colour(0xffEFEDE8),   // --cap-edge 145deg
+        juce::Colour(0xffD6D3CC),                             // --well
+        juce::Colour(0xffEAE8E3), juce::Colour(0xffDFDCD6),   // --panel-grad 160deg
+        juce::Colour(0xff2B2C2E), juce::Colour(0xff71736F),   // --ink / --ink-dim
+        juce::Colour(0xff9B9D98),                             // --ink-faint
+        juce::Colour(0xd9A39D92),  // --sh-dark   rgba(163,157,146,.85)
+        juce::Colour(0x8c8C867A),  // --sh-darker rgba(140,134,122,.55)
+        juce::Colour(0xf2FFFFFF),  // --sh-light  rgba(255,255,255,.95)
+        juce::Colour(0x14000000)   // --arc-track rgba(0,0,0,.08)
+    };
+    return s;
+}
 
 void fillDiagGradient(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour from,
                       juce::Colour to) {
@@ -53,44 +80,96 @@ void drawChassisCard(juce::Graphics& g, juce::Rectangle<float> r, float radius) 
                1.2f);
 }
 
-void drawWell(juce::Graphics& g, juce::Rectangle<float> r, float radius) {
+void drawBenchCard(juce::Graphics& g, juce::Rectangle<float> r, float radius) {
     auto path = roundedRectPath(r, radius);
-    g.setColour(well);
+    // The web .raised dual box-shadow: 10px 10px 24px sh-dark + -10 -10 22 sh-light.
+    const Scheme& s = lightBench();
+    juce::DropShadow(s.shDark.withMultipliedAlpha(0.75f), 16, {7, 7}).drawForPath(g, path);
+    juce::DropShadow(s.shLight.withMultipliedAlpha(0.85f), 15, {-7, -7}).drawForPath(g, path);
+    {
+        juce::Graphics::ScopedSaveState ss(g);
+        g.reduceClipRegion(path);
+        fillDiagGradient(g, r, s.panelTop, s.panelBot);
+    }
+    // inset 0 1px 0 sh-light — the top rim catching the bench light.
+    g.setColour(s.shLight.withMultipliedAlpha(0.8f));
+    g.drawLine(r.getX() + radius, r.getY() + 1.0f, r.getRight() - radius, r.getY() + 1.0f,
+               1.2f);
+    // A hairline darker edge so the light card separates from the light bench.
+    g.setColour(s.shDarker.withMultipliedAlpha(0.55f));
+    g.strokePath(roundedRectPath(r.reduced(0.5f), radius), juce::PathStrokeType(1.0f));
+}
+
+void drawWell(juce::Graphics& g, juce::Rectangle<float> r, float radius, const Scheme& s) {
+    auto path = roundedRectPath(r, radius);
+    g.setColour(s.well);
     g.fillPath(path);
     // inset dark top-left, inset light bottom-right (the carved recess).
     {
         juce::Graphics::ScopedSaveState ss(g);
         g.reduceClipRegion(path);
-        g.setColour(shDarker);
+        g.setColour(s.shDarker);
         g.strokePath(roundedRectPath(r.translated(1.6f, 1.8f), radius),
                      juce::PathStrokeType(3.0f));
-        g.setColour(shLight);
+        g.setColour(s.shLight);
         g.strokePath(roundedRectPath(r.translated(-1.4f, -1.4f), radius),
                      juce::PathStrokeType(2.0f));
     }
 }
 
-void drawJewel(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour accent, bool on) {
+float glowSpread(float jewelDiameter) {
+    // The wide glow layer (box-shadow 0 0 16px) reaches ~13 px of visible halo past
+    // the web's 16 px jewel; scale with the diameter so a small LED keeps its
+    // proportions.
+    return jewelDiameter * 0.8f;
+}
+
+void drawJewel(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour accent, bool on,
+               const Scheme& s) {
     auto c = r.getCentre();
     float rad = juce::jmin(r.getWidth(), r.getHeight()) * 0.5f;
     if (on) {
-        // Outer glow (box-shadow 0 0 14px accent-glow).
-        for (int i = 4; i >= 1; --i) {
-            g.setColour(accent.withAlpha(0.16f));
-            float gr = rad + (float)i * rad * 0.55f;
-            g.fillEllipse(c.x - gr, c.y - gr, gr * 2.0f, gr * 2.0f);
-        }
-        // The lit jewel — a bright specular highlight to a deep core.
-        juce::ColourGradient grad(accent.brighter(0.9f), c.x - rad * 0.35f,
-                                  c.y - rad * 0.4f, accent.darker(0.7f), c.x + rad,
-                                  c.y + rad, true);
-        g.setGradientFill(grad);
+        // The web glow: box-shadow 0 0 16px accent-glow + 0 0 5px accent-glow,
+        // accent-glow ≈ accent at .5 alpha. Two SMOOTH radial gradients — the old
+        // four stacked discs compounded into visibly banded steps.
+        const juce::Colour glow = accent.withAlpha(0.5f);
+        auto layer = [&](float spread, float alphaScale) {
+            const float R = rad + spread;
+            // Soft from the jewel's EDGE outward — a blur halo, not a plateau.
+            juce::ColourGradient grad(glow.withMultipliedAlpha(alphaScale), c.x, c.y,
+                                      glow.withAlpha(0.0f), c.x + R, c.y, true);
+            grad.addColour(juce::jlimit(0.05, 0.95, (double)(rad / R) * 0.9),
+                           glow.withMultipliedAlpha(alphaScale * 0.55f));
+            g.setGradientFill(grad);
+            g.fillEllipse(c.x - R, c.y - R, R * 2.0f, R * 2.0f);
+        };
+        layer(glowSpread(rad * 2.0f), 0.75f);  // 0 0 16px
+        layer(rad * 0.62f, 0.8f);              // 0 0 5px
+        // The lit jewel — the web's radial-gradient(circle at 35% 30%, <hot>,
+        // accent 55%, <deep rim>): a near-white hot spot up-left, the accent
+        // mid-body, a deep rim.
+        juce::ColourGradient body(accent.interpolatedWith(juce::Colours::white, 0.78f),
+                                  c.x - rad * 0.30f, c.y - rad * 0.40f,
+                                  accent.darker(1.1f), c.x + rad * 0.9f,
+                                  c.y + rad * 0.9f, true);
+        body.addColour(0.55, accent);
+        g.setGradientFill(body);
         g.fillEllipse(c.x - rad, c.y - rad, rad * 2.0f, rad * 2.0f);
     } else {
-        // Recessed dark dot (color-mix accent 18% into the well).
-        g.setColour(well.interpolatedWith(accent, 0.18f));
+        // Recessed dark dot (color-mix accent 18% into the well) + the web's
+        // inset 2px 2px 4px sh-darker.
+        g.setColour(s.well.interpolatedWith(accent, 0.18f));
         g.fillEllipse(c.x - rad, c.y - rad, rad * 2.0f, rad * 2.0f);
-        g.setColour(shDarker);
+        {
+            juce::Graphics::ScopedSaveState ss(g);
+            juce::Path clip;
+            clip.addEllipse(c.x - rad, c.y - rad, rad * 2.0f, rad * 2.0f);
+            g.reduceClipRegion(clip);
+            g.setColour(s.shDarker);
+            g.drawEllipse(c.x - rad + 0.6f, c.y - rad + 0.8f, rad * 2.0f - 0.6f,
+                          rad * 2.0f - 0.6f, 1.6f);
+        }
+        g.setColour(s.shDarker);
         g.drawEllipse(c.x - rad + 0.5f, c.y - rad + 0.5f, rad * 2.0f - 1.0f,
                       rad * 2.0f - 1.0f, 1.0f);
     }
@@ -317,25 +396,34 @@ void ClipperLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int w
     auto accent = s.findColour(juce::Slider::rotarySliderFillColourId);
     const bool dim = !s.isEnabled();
     if (dim) accent = accent.withAlpha(0.30f);
+    // Which token context this dial resolves in (NeuKnob::setScheme). Web parity:
+    // amp knobs are LIGHT porcelain, pedal knobs the pinned-dark chassis.
+    const skin::Scheme& sc = s.getProperties().getWithDefault("clipperLightScheme", false)
+                                 ? skin::lightBench()
+                                 : skin::darkIsland();
 
-    // --- body cast shadow (6px 6px 14 dark / -5 -5 12 light dual) ---
+    // --- body cast shadows: the web's DUAL 6px 6px 14 sh-dark + -5 -5 12 sh-light.
+    // The light counter-shadow is what makes the body read as RAISED — it was
+    // missing entirely before this pass (visible on the porcelain amp knobs,
+    // subtle-but-present on the dark chassis, exactly like the CSS).
     {
         juce::Path bp;
         bp.addEllipse(centre.x - bodyR, centre.y - bodyR, bodyR * 2.0f, bodyR * 2.0f);
-        juce::DropShadow(skin::shDark, (int)(bodyR * 0.55f), {3, 4}).drawForPath(g, bp);
+        juce::DropShadow(sc.shDark, (int)(bodyR * 0.55f), {3, 4}).drawForPath(g, bp);
+        juce::DropShadow(sc.shLight, (int)(bodyR * 0.48f), {-3, -3}).drawForPath(g, bp);
     }
-    // --- body (--cap-edge 145deg: #1E2126 → #2C3036) ---
+    // --- body (--cap-edge 145deg) ---
     {
         juce::Rectangle<float> br(centre.x - bodyR, centre.y - bodyR, bodyR * 2.0f,
                                   bodyR * 2.0f);
-        g.setGradientFill(juce::ColourGradient(skin::capEdgeTop, br.getTopLeft(),
-                                               skin::capEdgeBot, br.getBottomRight(),
+        g.setGradientFill(juce::ColourGradient(sc.capEdgeTop, br.getTopLeft(),
+                                               sc.capEdgeBot, br.getBottomRight(),
                                                false));
         g.fillEllipse(br);
     }
-    // --- knurled skirt (repeating conic dark ticks, opacity ~.35) ---
+    // --- knurled skirt (repeating-conic 2.5deg/9deg dark ticks, opacity .35) ---
     {
-        g.setColour(skin::shDark.withAlpha(0.35f));
+        g.setColour(sc.shDark.withMultipliedAlpha(0.35f));
         const int teeth = 40;
         const float rOut = bodyR * 0.99f;
         const float rIn = bodyR * 0.86f;
@@ -346,17 +434,24 @@ void ClipperLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int w
                        centre.y + sa * rOut, 1.4f);
         }
     }
-    // --- cap dome (--cap 145deg: #2E3238 → #212429) + rim highlights ---
+    // --- cap dome (--cap 145deg) — the web cap has BOTH inset rims AND its own
+    // cast shadow onto the skirt (2px 3px 6px sh-darker), which is the depth cue
+    // that separates cap from knurl.
     const float capR = bodyR * 0.80f;
     {
         juce::Rectangle<float> cr(centre.x - capR, centre.y - capR, capR * 2.0f,
                                   capR * 2.0f);
-        g.setGradientFill(juce::ColourGradient(skin::capTop, cr.getTopLeft(), skin::capBot,
+        {
+            juce::Path cp;
+            cp.addEllipse(cr);
+            juce::DropShadow(sc.shDarker, 5, {2, 3}).drawForPath(g, cp);
+        }
+        g.setGradientFill(juce::ColourGradient(sc.capTop, cr.getTopLeft(), sc.capBot,
                                                cr.getBottomRight(), false));
         g.fillEllipse(cr);
-        g.setColour(juce::Colour(0x18FFFFFF));  // inset light top-left rim
+        g.setColour(sc.shLight.withMultipliedAlpha(0.35f));  // inset light TL rim
         g.drawEllipse(cr.reduced(0.6f).translated(-0.4f, -0.4f), 1.1f);
-        g.setColour(skin::shDarker);  // inset dark bottom-right
+        g.setColour(sc.shDarker);  // inset dark bottom-right
         g.drawEllipse(cr.reduced(0.6f).translated(0.6f, 0.8f), 1.0f);
     }
     // --- ink pointer ---
@@ -364,7 +459,7 @@ void ClipperLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int w
         juce::Path ptr;
         float pw = juce::jmax(2.4f, bodyR * 0.10f);
         ptr.addRoundedRectangle(-pw * 0.5f, -capR * 0.92f, pw, capR * 0.52f, pw * 0.5f);
-        g.setColour(skin::ink.withAlpha(dim ? 0.4f : 0.85f));
+        g.setColour(sc.ink.withAlpha(dim ? 0.4f : 0.85f));
         g.fillPath(ptr, juce::AffineTransform::rotation(angle).translated(centre));
     }
     // --- the floating value ARC (track + accent fill) ---
@@ -372,7 +467,7 @@ void ClipperLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int w
         const float thick = juce::jmax(2.6f, side * 0.055f);
         juce::Path track;
         track.addCentredArc(centre.x, centre.y, arcR, arcR, 0.0f, kArcStart, kArcEnd, true);
-        g.setColour(skin::arcTrack);
+        g.setColour(sc.arcTrack);
         g.strokePath(track, juce::PathStrokeType(thick, juce::PathStrokeType::curved,
                                                  juce::PathStrokeType::rounded));
         if (sliderPos > 0.0008f) {
@@ -481,8 +576,29 @@ NeuKnob::NeuKnob() {
     valueLabel_.setInterceptsMouseClicks(false, false);
     addAndMakeVisible(valueLabel_);
 
-    slider_.onValueChange = [this] { refreshReadout(); };
+    slider_.onValueChange = [this] {
+        refreshReadout();
+        // The web's knob detent tick (Knob.tsx TICK_DETENT): a quiet click each
+        // time the value moves 0.04 from the last ticked value — but only while
+        // the USER is turning it (a host/preset update must stay silent).
+        const double v = slider_.getValue();
+        if (slider_.isMouseButtonDown() &&
+            std::abs(v - lastTickValue_) >= uisound::kTickDetent) {
+            lastTickValue_ = v;
+            uisound::tick();
+        }
+    };
+    scheme_ = &skin::darkIsland();
     refreshReadout();
+    lastTickValue_ = slider_.getValue();
+}
+
+void NeuKnob::setScheme(const skin::Scheme& s) {
+    scheme_ = &s;
+    slider_.getProperties().set("clipperLightScheme", &s == &skin::lightBench());
+    nameLabel_.setColour(juce::Label::textColourId,
+                         dimmed_ ? s.inkDim.withAlpha(0.5f) : s.inkDim);
+    repaint();
 }
 
 void NeuKnob::setName(const juce::String& n) {
@@ -499,10 +615,11 @@ void NeuKnob::setAccent(juce::Colour c) {
 void NeuKnob::setDimmed(bool d) {
     dimmed_ = d;
     slider_.setEnabled(!d);  // the LnF dims the arc + pointer for a disabled slider
+    const skin::Scheme& sc = scheme_ ? *scheme_ : skin::darkIsland();
     valueLabel_.setColour(juce::Label::textColourId,
                           d ? accent_.withAlpha(0.45f) : accent_);
     nameLabel_.setColour(juce::Label::textColourId,
-                         d ? skin::inkDim.withAlpha(0.5f) : skin::inkDim);
+                         d ? sc.inkDim.withAlpha(0.5f) : sc.inkDim);
     repaint();
 }
 
@@ -531,7 +648,12 @@ void Footswitch::mouseDown(const juce::MouseEvent&) {
     pressed_ = true;
     repaint();
     startTimer(130);
+    uisound::thunk(true);  // the web's onPointerDown thunk
     if (onClick) onClick();
+}
+
+void Footswitch::mouseUp(const juce::MouseEvent&) {
+    uisound::thunk(false);  // the release half of the web's stomp sound
 }
 
 void Footswitch::timerCallback() {
@@ -565,9 +687,13 @@ void Footswitch::paintRound(juce::Graphics& g, juce::Rectangle<float> r) {
 
     juce::Path sp;
     sp.addEllipse(stomp);
-    // 8px 8px 18px --sh-dark (raised) collapsing to 3/3/8 while pressed.
+    // 8px 8px 18px sh-dark + -7 -7 16 sh-light (raised) collapsing to 3/3/8 + -3/-3/7
+    // while pressed — the web .fsw dual shadow, light counter included.
     juce::DropShadow(skin::shDark, pressed_ ? 8 : 16, pressed_ ? juce::Point<int>{3, 3}
                                                                : juce::Point<int>{5, 6})
+        .drawForPath(g, sp);
+    juce::DropShadow(skin::shLight, pressed_ ? 7 : 14, pressed_ ? juce::Point<int>{-3, -3}
+                                                                : juce::Point<int>{-5, -5})
         .drawForPath(g, sp);
     g.setGradientFill(juce::ColourGradient(skin::capEdgeTop, stomp.getTopLeft(),
                                            skin::capEdgeBot, stomp.getBottomRight(), false));
@@ -707,6 +833,7 @@ void ChipButton::mouseDown(const juce::MouseEvent&) {
     held_ = true;
     dragged_ = false;
     repaint();
+    uisound::thunk(true);
 }
 
 void ChipButton::mouseDrag(const juce::MouseEvent& e) {
@@ -723,6 +850,7 @@ void ChipButton::mouseUp(const juce::MouseEvent&) {
     dragged_ = false;
     repaint();
     if (!enabled_) return;
+    uisound::thunk(false);
     if (wasDragged) {
         if (onDragEnd) onDragEnd();
     } else if (onClick) {
@@ -752,89 +880,199 @@ void ChipButton::paint(juce::Graphics& g) {
 }
 
 // ===========================================================================
-// LeverToggle (carved slot + sliding cap lever)
+// LeverToggle (carved slot + sliding cap lever) — the web .toggle/.t-slot/.t-lever
+// recipe verbatim, in the LIGHT scheme (amp.css resolves light), with the 160 ms
+// overshoot slide (transition: top .16s cubic-bezier(.34,1.56,.64,1)).
 // ===========================================================================
+namespace {
+// easeOutBack ≈ cubic-bezier(.34,1.56,.64,1): overshoots ~10 % then settles.
+float easeOutBack(float t) {
+    const float c1 = 1.70158f, c3 = c1 + 1.0f;
+    const float u = t - 1.0f;
+    return 1.0f + c3 * u * u * u + c1 * u * u;
+}
+constexpr int kLeverAnimMs = 160;
+}  // namespace
+
 LeverToggle::LeverToggle() {}
 
+void LeverToggle::setOn(bool o) {
+    if (!everSet_ || on_ == o) {
+        // First sync from the APVTS (or a no-op): SNAP — a window opening on a
+        // saved session must not play the slide.
+        everSet_ = true;
+        on_ = o;
+        leverPos_ = o ? 1.0f : 0.0f;
+        repaint();
+        return;
+    }
+    on_ = o;
+    animFrom_ = leverPos_;
+    animStartMs_ = juce::Time::getMillisecondCounterHiRes();
+    animating_ = true;
+    startTimerHz(60);
+}
+
+void LeverToggle::timerCallback() {
+    const float t = juce::jlimit(
+        0.0f, 1.0f,
+        (float)((juce::Time::getMillisecondCounterHiRes() - animStartMs_) / kLeverAnimMs));
+    const float target = on_ ? 1.0f : 0.0f;
+    leverPos_ = animFrom_ + (target - animFrom_) * easeOutBack(t);
+    if (t >= 1.0f) {
+        leverPos_ = target;
+        animating_ = false;
+        stopTimer();
+    }
+    repaint();
+}
+
 void LeverToggle::mouseDown(const juce::MouseEvent&) {
+    uisound::thunk(true);
     if (onClick) onClick();
+}
+
+void LeverToggle::mouseUp(const juce::MouseEvent&) {
+    uisound::thunk(false);
 }
 
 void LeverToggle::paint(juce::Graphics& g) {
+    const skin::Scheme& sc = skin::lightBench();
     auto r = getLocalBounds().toFloat();
+    // .t-slot: 30x54, radius 15, a carved well (inset 4/4/9 darker + -3/-3/7 light).
     const float slotW = 30.0f, slotH = 54.0f;
     juce::Rectangle<float> slot(r.getCentreX() - slotW * 0.5f, r.getY(), slotW, slotH);
-    skin::drawWell(g, slot, 15.0f);
-    // lever cap (top when off, bottom when on; lit accent when on).
-    auto lever = juce::Rectangle<float>(slot.getX() + 4.0f, slot.getY() + (on_ ? 26.0f : 4.0f),
-                                        slotW - 8.0f, 24.0f);
-    if (on_) {
-        g.setGradientFill(juce::ColourGradient(accent_.interpolatedWith(skin::ground, 0.4f),
-                                               lever.getTopLeft(),
-                                               accent_.interpolatedWith(juce::Colours::black,
-                                                                        0.15f),
-                                               lever.getBottomRight(), false));
+    skin::drawWell(g, slot, 15.0f, sc);
+    // .t-lever: inset 4 px each side, 24 px tall, top 4 (off) → 26 (on), animated.
+    // The lever casts 2px 3px 6px sh-dark and carries an inset top light rim.
+    const float leverY = slot.getY() + 4.0f + leverPos_ * 22.0f;
+    auto lever = juce::Rectangle<float>(slot.getX() + 4.0f, leverY, slotW - 8.0f, 24.0f);
+    {
+        juce::Path lp = roundedRectPath(lever, 12.0f);
+        juce::DropShadow(sc.shDark, 5, {2, 3}).drawForPath(g, lp);
+    }
+    // The lit gradient only once the lever has crossed halfway, like the web's
+    // class flip (the colour switches while the slide is in flight).
+    if (leverPos_ > 0.5f) {
+        g.setGradientFill(juce::ColourGradient(
+            accent_.interpolatedWith(skin::ground, 0.40f), lever.getTopLeft(),
+            accent_.interpolatedWith(juce::Colours::black, 0.15f), lever.getBottomRight(),
+            false));
     } else {
-        g.setGradientFill(juce::ColourGradient(skin::capTop, lever.getTopLeft(), skin::capBot,
+        g.setGradientFill(juce::ColourGradient(sc.capTop, lever.getTopLeft(), sc.capBot,
                                                lever.getBottomRight(), false));
     }
     g.fillRoundedRectangle(lever, 12.0f);
-    g.setColour(juce::Colour(0x18FFFFFF));
-    g.drawRoundedRectangle(lever.reduced(0.5f), 12.0f, 1.0f);
-    // caption.
-    g.setColour(skin::inkDim);
+    g.setColour(sc.shLight.withMultipliedAlpha(0.7f));  // inset 0 1px 1px sh-light
+    g.drawLine(lever.getX() + 6.0f, lever.getY() + 1.0f, lever.getRight() - 6.0f,
+               lever.getY() + 1.0f, 1.0f);
+    // caption (.toggle .k-name — ink-dim, mono small caps).
+    g.setColour(sc.inkDim);
     g.setFont(skin::monoFont(9.5f));
-    g.drawText(caption_.toUpperCase(), r.withTop(slot.getBottom() + 3.0f),
-               juce::Justification::centred);
+    g.drawText(caption_.toUpperCase(), r.withTop(slot.getBottom() + 5.0f),
+               juce::Justification::centredTop);
 }
 
 // ===========================================================================
-// PowerControl (jewel + rocker)
+// PowerControl (jewel + rocker) — the web .power/.jewel/.rocker recipe verbatim,
+// LIGHT scheme. The jewel band reserves glowSpread() head-room on every side so
+// the lit halo renders ROUND instead of clipped square at the component edge
+// (the 2026-07-31 "draw order" report), and the rocker gets its full 46x64.
 // ===========================================================================
+namespace {
+constexpr float kJewelD = 16.0f;       // .jewel 16px
+constexpr float kRockerW = 46.0f;      // .rocker 46x64, radius 12
+constexpr float kRockerH = 64.0f;
+constexpr float kPowerCaptionH = 16.0f;
+constexpr float kPowerGap = 9.0f;      // .power gap: 9px
+}  // namespace
+
 PowerControl::PowerControl() {}
 
+int PowerControl::preferredHeight() {
+    return (int)std::ceil(skin::glowSpread(kJewelD) + kJewelD + kPowerGap + kRockerH +
+                          4.0f + kPowerCaptionH);
+}
+
 void PowerControl::mouseDown(const juce::MouseEvent&) {
+    uisound::thunk(true);
     if (onClick) onClick();
 }
 
+void PowerControl::mouseUp(const juce::MouseEvent&) {
+    uisound::thunk(false);
+}
+
 void PowerControl::paint(juce::Graphics& g) {
+    const skin::Scheme& sc = skin::lightBench();
     auto r = getLocalBounds().toFloat();
-    const float jewelD = 15.0f;
-    auto jewel = juce::Rectangle<float>(r.getCentreX() - jewelD * 0.5f, r.getY(), jewelD,
-                                        jewelD);
-    // The jewel is drawn LAST (see below): the rocker's DropShadow reaches back over
-    // this band and used to paint out the lit halo — the "lights are covered over"
-    // bug. The rocker also gets a wider gap so the shadow starts clear of the glow.
-    auto rockArea = r.withTrimmedTop(jewelD + 14.0f).withTrimmedBottom(16.0f);
-    float rw = 44.0f, rh = juce::jmin(60.0f, rockArea.getHeight());
-    juce::Rectangle<float> rocker(rockArea.getCentreX() - rw * 0.5f, rockArea.getY(), rw, rh);
-    juce::Path rp = roundedRectPath(rocker, 11.0f);
-    juce::DropShadow(skin::shDark, 8, {3, 3}).drawForPath(g, rp);
-    skin::fillDiagGradient(g, rocker, skin::capEdgeTop, skin::capEdgeBot);
-    // two rocker halves; the pressed half is recessed.
-    auto top = rocker.withHeight(rocker.getHeight() * 0.5f).reduced(6.0f, 5.0f);
-    auto bot = top.translated(0, rocker.getHeight() * 0.5f);
+    // The jewel band: glow head-room ABOVE the jewel (sides are covered by the
+    // component being wider than the rocker). Everything below follows from it.
+    const float glowPad = skin::glowSpread(kJewelD);
+    auto jewel = juce::Rectangle<float>(r.getCentreX() - kJewelD * 0.5f,
+                                        r.getY() + glowPad, kJewelD, kJewelD);
+
+    const float rockerY = jewel.getBottom() + kPowerGap;
+    juce::Rectangle<float> rocker(r.getCentreX() - kRockerW * 0.5f, rockerY, kRockerW,
+                                  juce::jmin(kRockerH, r.getBottom() - kPowerCaptionH -
+                                                           4.0f - rockerY));
+    juce::Path rp = roundedRectPath(rocker, 12.0f);
+    // .rocker dual shadow: 5px 5px 12px sh-dark + -4 -4 10 sh-light.
+    juce::DropShadow(sc.shDark, 9, {3, 3}).drawForPath(g, rp);
+    juce::DropShadow(sc.shLight, 8, {-3, -3}).drawForPath(g, rp);
+    {
+        juce::Graphics::ScopedSaveState ss(g);
+        g.reduceClipRegion(rp);
+        skin::fillDiagGradient(g, rocker, sc.capEdgeTop, sc.capEdgeBot);
+    }
+    // Two rocker halves (::before top / ::after bottom): left/right 6, height 24,
+    // radius 8. The RAISED half is --cap with an inset light-top/dark-bottom pair;
+    // the PRESSED half is --well with an inset 3/3/6 darker. When on, the TOP is
+    // pressed in.
+    const float halfH = juce::jmin(24.0f, rocker.getHeight() * 0.5f - 8.0f);
+    auto top = juce::Rectangle<float>(rocker.getX() + 6.0f, rocker.getY() + 6.0f,
+                                      rocker.getWidth() - 12.0f, halfH);
+    auto bot = juce::Rectangle<float>(rocker.getX() + 6.0f,
+                                      rocker.getBottom() - 6.0f - halfH,
+                                      rocker.getWidth() - 12.0f, halfH);
     auto drawHalf = [&](juce::Rectangle<float> h, bool raised) {
         if (raised) {
-            g.setGradientFill(juce::ColourGradient(skin::capTop, h.getTopLeft(), skin::capBot,
+            g.setGradientFill(juce::ColourGradient(sc.capTop, h.getTopLeft(), sc.capBot,
                                                    h.getBottomRight(), false));
+            g.fillRoundedRectangle(h, 8.0f);
+            g.setColour(sc.shLight.withMultipliedAlpha(0.65f));  // inset 1px 2px 3px light
+            g.drawLine(h.getX() + 5.0f, h.getY() + 1.2f, h.getRight() - 5.0f,
+                       h.getY() + 1.2f, 1.2f);
+            g.setColour(sc.shDarker);  // inset -1 -2 4 darker (bottom lip)
+            g.drawLine(h.getX() + 5.0f, h.getBottom() - 1.0f, h.getRight() - 5.0f,
+                       h.getBottom() - 1.0f, 1.0f);
         } else {
-            g.setColour(skin::well);
+            g.setColour(sc.well);
+            g.fillRoundedRectangle(h, 8.0f);
+            juce::Graphics::ScopedSaveState ss(g);
+            g.reduceClipRegion(roundedRectPath(h, 8.0f));
+            g.setColour(sc.shDarker);  // inset 3px 3px 6px darker
+            g.strokePath(roundedRectPath(h.translated(1.4f, 1.6f), 8.0f),
+                         juce::PathStrokeType(2.6f));
         }
-        g.fillRoundedRectangle(h, 7.0f);
     };
-    drawHalf(top, !on_);  // when on, the TOP is pressed in (down)
+    drawHalf(top, !on_);
     drawHalf(bot, on_);
-    g.setColour(skin::inkFaint);
-    g.setFont(skin::monoFont(9.5f));
-    g.drawText("POWER", r.withTop(r.getBottom() - 14.0f), juce::Justification::centred);
 
-    // The jewel goes on LAST, over the rocker's cast shadow — never under it.
-    skin::drawJewel(g, jewel, accent_, on_);
+    g.setColour(sc.inkFaint);
+    g.setFont(skin::monoFont(9.5f));
+    g.drawText("POWER", r.withTop(r.getBottom() - kPowerCaptionH),
+               juce::Justification::centredTop);
+
+    // The jewel goes on LAST, over both rocker shadows — never under them.
+    skin::drawJewel(g, jewel, accent_, on_, sc);
 }
 
 // ===========================================================================
-// ModeSwitch (3 stacked carved segments)
+// ModeSwitch — the web .mode-switch: each .mode-opt is its OWN carved well
+// (inset 3/3/7 darker + -3/-3/6 light), stacked flush; only the stack's outer
+// corners round (12px). The ACTIVE segment is RAISED and lit (accent gradient +
+// 2px 3px 6px cast + inset top light) — the inverse of its neighbours.
 // ===========================================================================
 ModeSwitch::ModeSwitch() {}
 
@@ -842,37 +1080,64 @@ void ModeSwitch::mouseDown(const juce::MouseEvent& e) {
     auto r = getLocalBounds().withTrimmedBottom(16);
     int segH = r.getHeight() / labels_.size();
     int idx = juce::jlimit(0, labels_.size() - 1, (e.y - r.getY()) / juce::jmax(1, segH));
+    uisound::thunk(true);
     if (onSelect) onSelect(idx);
 }
 
+void ModeSwitch::mouseUp(const juce::MouseEvent&) {
+    uisound::thunk(false);
+}
+
 void ModeSwitch::paint(juce::Graphics& g) {
+    const skin::Scheme& sc = skin::lightBench();
     auto full = getLocalBounds().toFloat();
     auto r = full.withTrimmedBottom(16.0f);
-    skin::drawWell(g, r, 12.0f);
-    int n = labels_.size();
-    float segH = r.getHeight() / (float)n;
+    const int n = labels_.size();
+    const float segH = r.getHeight() / (float)n;
+    const float rad = 12.0f;
+
     for (int i = 0; i < n; ++i) {
-        auto seg = juce::Rectangle<float>(r.getX(), r.getY() + segH * i, r.getWidth(), segH)
-                       .reduced(3.0f, 2.0f);
-        bool on = (i == selected_);
+        auto seg = juce::Rectangle<float>(r.getX(), r.getY() + segH * i, r.getWidth(),
+                                          segH - (i < n - 1 ? 1.0f : 0.0f));
+        // Outer corners only: first segment rounds its top pair, last its bottom.
+        juce::Path sp;
+        sp.addRoundedRectangle(seg.getX(), seg.getY(), seg.getWidth(), seg.getHeight(),
+                               rad, rad, i == 0, i == 0, i == n - 1, i == n - 1);
+        const bool on = (i == selected_);
         if (on) {
-            g.setGradientFill(juce::ColourGradient(accent_.interpolatedWith(skin::ground,
-                                                                            0.45f),
-                                                   seg.getTopLeft(),
-                                                   accent_.interpolatedWith(juce::Colours::black,
-                                                                            0.18f),
-                                                   seg.getBottomRight(), false));
-            g.fillRoundedRectangle(seg, 7.0f);
-            g.setColour(skin::ink);
+            // .mode-opt.on — raised + lit.
+            juce::DropShadow(sc.shDark, 5, {2, 3}).drawForPath(g, sp);
+            juce::Graphics::ScopedSaveState ss(g);
+            g.reduceClipRegion(sp);
+            juce::ColourGradient grad(accent_.interpolatedWith(skin::ground, 0.45f),
+                                      seg.getTopLeft(),
+                                      accent_.interpolatedWith(juce::Colours::black, 0.18f),
+                                      seg.getBottomRight(), false);
+            g.setGradientFill(grad);
+            g.fillPath(sp);
+            g.setColour(sc.shLight.withMultipliedAlpha(0.7f));  // inset 0 1px 1px light
+            g.drawLine(seg.getX() + 6.0f, seg.getY() + 1.0f, seg.getRight() - 6.0f,
+                       seg.getY() + 1.0f, 1.0f);
         } else {
-            g.setColour(skin::inkDim);
+            // .mode-opt — a carved well of its own.
+            g.setColour(sc.well);
+            g.fillPath(sp);
+            juce::Graphics::ScopedSaveState ss(g);
+            g.reduceClipRegion(sp);
+            g.setColour(sc.shDarker);
+            g.strokePath(roundedRectPath(seg.translated(1.4f, 1.6f), rad),
+                         juce::PathStrokeType(2.8f));
+            g.setColour(sc.shLight.withMultipliedAlpha(0.8f));
+            g.strokePath(roundedRectPath(seg.translated(-1.2f, -1.2f), rad),
+                         juce::PathStrokeType(2.0f));
         }
+        g.setColour(on ? sc.ink : sc.inkDim);
         g.setFont(skin::monoFont(11.0f));
         g.drawText(labels_[i], seg, juce::Justification::centred);
     }
-    g.setColour(skin::inkDim);
+    g.setColour(sc.inkDim);
     g.setFont(skin::monoFont(9.5f));
-    g.drawText("MODE", full.withTop(r.getBottom() + 2.0f), juce::Justification::centred);
+    g.drawText("MODE", full.withTop(r.getBottom() + 4.0f), juce::Justification::centredTop);
 }
 
 }  // namespace clipper::native
