@@ -40,22 +40,23 @@
 // THE ARCHITECTURE THAT MAKES THIS PEDAL WHAT IT IS. The buffered signal splits
 // two ways and is re-summed:
 //
-//     out_sum = kSumGain * ( cleanBlend(g) * x  +  clipBlend(g) * clip(A(g)*HP(x)) )
+//     out_sum = kSumGain * ( cleanBlend * x  +  clipBlend(g) * clip(A(g)·pre·HP(x)) )
 //
-//   * BOTH weights come from ONE dual-ganged GAIN pot, so a single knob
-//     CROSS-FADES a full-bandwidth clean signal against a clipped one. At GAIN 0
-//     the clipped half is switched out entirely and the pedal is a clean buffer /
-//     boost (this is why it measures transparent and why players run it always-on);
-//     as the knob comes up the clipped half rises while the clean half only falls
-//     part-way, so the dirt arrives THROUGH a clean core instead of replacing it.
-//     Pot: dual-ganged 100 kOhm (kGainPotOhms).
-//       cleanBlend(g) = 1 - kCleanTilt*g   (1.00 -> 0.55: the clean core NEVER
-//                                           leaves — approximation of the real
-//                                           network's second wiper law)
-//       clipBlend(g)  = g                  (linear wiper on the clipped signal)
-//   * A(g) — the drive amp. Non-inverting stage whose feedback leg is the OTHER
-//     gang: A = 1 + g*P/R_g with P = 100 kOhm, R_g = 1.5 kOhm, so
-//       A(0) = 1.0  ... A(1) = 1 + 100e3/1.5e3 = 67.67x = +36.6 dB.
+//   * The dual-ganged GAIN pot works the way the real one does (re-derived
+//     2026-07-31, docs §50, against the published schematic): the knob changes the
+//     drive amp's GAIN, not the mix. The clean feed stays ~constant (gang 2's
+//     divider — the "clean fades out" folklore is only relative to the growing
+//     dirt), the dirt path's summing weight is FIXED, and the dirt arrives THROUGH
+//     the clean core because the drive rises end-loaded while the clean holds.
+//     At GAIN 0 the clipped half is switched fully out (a kept product contract —
+//     the real unit measures 0.2-3.9 % even at min; ours is bit-exact clean).
+//       cleanBlendAt(g) = 1.0                       (flat)
+//       clipBlendAt(g)  = kClipBlendWeight past a short fade-in from 0
+//   * A(g) — the drive amp, gang 1 in its ground leg:
+//       A = 1 + 422k/((1-g)·100k + 17k) = 4.61x ... 25.82x (+13.3 ... +28.2 dB),
+//     END-LOADED (half the dB range in the last quarter-turn). The pre-§50 law
+//     (1 + g·100k/1.5k, to 67.7x linear) put the real knob-0.99 drive at the 0.35
+//     default — docs §50 has the full model-vs-real table.
 //     Note the minimum is EXACTLY unity — unlike the TS family (which grinds even
 //     at DRIVE 0), this pedal has an honestly clean setting.
 //   * HP(x) — the drive path is high-passed BEFORE the clipper:
@@ -107,7 +108,9 @@
 // ---------------------------------------------------------------------------
 // Output buffer + OUTPUT pot (identity linear map, the house convention) + the
 // output coupling cap's DC block at kOutHpHz (~8 Hz). The pot is the pedal's
-// makeup gain: at GAIN 0 / OUTPUT 1 the box is a unity clean buffer.
+// makeup gain. NOTE (docs §50 correction): at GAIN 0 the box is a clean buffer
+// whose UNITY sits at OUTPUT 0.5 — kSumGain = 2.0 means OUTPUT 1 is +6.02 dB
+// (measured; test_gold_model asserts it). §27 documents the same.
 //
 // M2 — antialiasing. ONLY section 2 (the nonlinearity) is oversampled: the clean
 // half, the drive high-pass, the amp, the op-amp model, the WDF clipper and the
@@ -138,13 +141,35 @@ constexpr double kTwoPi = 6.283185307179586;
 // --- Section 1: input buffer ---
 constexpr double kInputHpHz = 7.2;  // 1/(2*pi*1M*0.022uF) — input coupling cap
 
-// --- Section 2: the ganged gain section ---
-constexpr double kGainPotOhms = 100.0e3;  // dual-ganged GAIN pot
-constexpr double kDriveRgOhms = 1.5e3;    // the drive amp's to-ground leg
-// cleanBlend(g) = 1 - kCleanTilt*g. The clean core never leaves the mix (0.45 at
-// max) — the audible reason the pedal keeps note definition when pushed.
-constexpr double kCleanTilt = 0.55;
-constexpr double kDriveHpHz = 106.1;  // 1/(2*pi*15k*0.1uF) — lows skip the clipper
+// --- Section 2: the ganged gain section (re-derived 2026-07-31, docs §50) -----------
+// The real dual-gang law, from the published schematic (the Chowdhury/ElectroSmash
+// values — the reference §27 names): gang 1's lower half sits in the drive op-amp's
+// ground leg, so A(g) = 1 + Rf / ((1-g)·pot + Rleg+Rstop) = 1 + 422k/((1-g)·100k+17k)
+// = 4.61x (g=0) -> 25.82x (g=1), END-LOADED — half the dB range lives in the last
+// quarter-turn. The pre-§50 law (1 + g·pot/1.5k, up to 67.7x LINEAR) delivered the
+// real pedal's knob-0.99 drive at the shipped 0.35 default — the owner's "gainy at
+// even 35+" was literally correct, and 19 % THD sat where the docs promised
+// "mostly-clean with a little grit". The germanium itself was measured RIGHT in the
+// corrected topology (the §36 vindication continues) — the law was the bug.
+constexpr double kGainPotOhms = 100.0e3;   // dual-ganged GAIN pot
+constexpr double kDriveRfOhms = 422.0e3;   // drive op-amp feedback (R12)
+constexpr double kDriveRlegOhms = 17.0e3;  // ground-leg fixed part (15k + 2k stop)
+// cleanBlend: the real gang-2 divider holds the clean feed nearly CONSTANT (the
+// "clean fades out" folklore is only relative to the growing dirt) — flat, per the
+// nodal analysis of the published network.
+// clipBlend: the summing weight of the dirt path is FIXED in the real circuit (the
+// knob changes DRIVE, not mix); a short fade-in below g ~ 0.15 keeps this model's
+// documented GAIN-0 contract (clipBlend(0) = 0 -> the crossfade switches the clipped
+// half fully OUT, an idealization the real unit doesn't share — it measures 0.2-3.9 %
+// even at min. Kept deliberately: bit-exact-clean at zero is a product contract here).
+constexpr double kClipBlendWeight = 0.65;  // fixed dirt summing weight (fit, §50)
+constexpr double kClipBlendFadeTo = 0.15;  // linear fade-in span keeping clip(0)=0
+// The drive path's INPUT network attenuates before the diodes see anything: measured
+// on the real topology ~0.20x @220 Hz / 0.65x @1 kHz (the model previously passed
+// 0.90 @220 — its 106 Hz corner belonged to FF1, the always-on clean-bass path, not
+// the drive branch). One pole + a scale fit to the reference rows (±3 dB, g <= .75):
+constexpr double kDrivePreScale = 0.65;
+constexpr double kDriveHpHz = 600.0;  // drive-branch HP (was 106.1, mis-assigned; fit: |H|·pre at 220 Hz = 0.22 vs the reference 0.20, at 1 kHz 0.56 vs 0.65)
 constexpr double kSumGain = 2.0;      // the summing amp's non-inverting gain (1 + R/R)
 constexpr double kRailVolts = 8.6;    // charge-pump rails (+/-9 V minus dropout)
 
@@ -199,12 +224,19 @@ float toneKnobToTilt(float knob) {
 // The three ganged maps. All three clamp through ParamGuard (NaN -> 0), so even a
 // direct call from a test or the plugin cannot hand a NaN gain to the smoothers.
 double GoldModel::driveGainAt(double knob) {
-    return 1.0 + clampParam01(knob) * kGainPotOhms / kDriveRgOhms;
+    const double g = clampParam01(knob);
+    return 1.0 + kDriveRfOhms / ((1.0 - g) * kGainPotOhms + kDriveRlegOhms);
 }
 double GoldModel::cleanBlendAt(double knob) {
-    return 1.0 - kCleanTilt * clampParam01(knob);
+    (void)clampParam01(knob);  // NaN-reject for API parity; the clean feed is flat
+    return 1.0;
 }
-double GoldModel::clipBlendAt(double knob) { return clampParam01(knob); }
+double GoldModel::clipBlendAt(double knob) {
+    const double g = clampParam01(knob);
+    // Fixed dirt weight with the short fade-in that preserves clipBlend(0) = 0.
+    return g >= kClipBlendFadeTo ? kClipBlendWeight
+                                 : kClipBlendWeight * (g / kClipBlendFadeTo);
+}
 
 struct GoldModel::Impl {
     double sampleRate = 44100.0;
@@ -398,9 +430,10 @@ void GoldModel::processChunk(const float* in, float* out, int numFrames) {
     const float hc = d.driveHpCoef;
     for (int i = 0; i < osN; ++i) {
         const float x = w[i];
-        // Drive-path high-pass: the lows never reach the clipper.
+        // Drive-path input network (§50): the real branch ATTENUATES before the
+        // diodes see anything — kDrivePreScale + the (re-assigned) HP corner.
         d.driveHpState = flushDenormal(d.driveHpState + hc * (x - d.driveHpState));
-        float u = A * (x - d.driveHpState);
+        float u = A * static_cast<float>(kDrivePreScale) * (x - d.driveHpState);
         if (!d.idealOpAmp) u = d.opAmp.processSample(u);  // GBW + slew
         // Germanium diode pair (WDF root); output is the clipping-node voltage.
         d.Vs.setVoltage(static_cast<double>(u));

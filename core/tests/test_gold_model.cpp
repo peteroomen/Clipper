@@ -181,13 +181,20 @@ void testCrossfade(double fs) {
     assert(th[4] > 0.10 && "max GAIN does not saturate (>10% THD)");
     assert(share[0] < 1e-4 && "clipped path audible at GAIN 0");
     assert(share[4] > 0.5 && "clipped path does not dominate at max GAIN");
-    // The clean core survives: at max GAIN the clean half alone still accounts for
-    // a meaningful fraction of the output (analytic cleanBlend(1) = 0.45).
-    assert(std::fabs(GoldModel::cleanBlendAt(1.0) - 0.45) < 1e-9 &&
-           "clean blend law drifted from the documented 1 - 0.55*g");
+    // §50: the clean core doesn't just survive — per the real gang-2 divider it
+    // stays FLAT (the "clean fades out" folklore is only relative to the dirt).
+    assert(std::fabs(GoldModel::cleanBlendAt(1.0) - 1.0) < 1e-9 &&
+           GoldModel::cleanBlendAt(0.3) == GoldModel::cleanBlendAt(0.9) &&
+           "clean blend law drifted from the §50 flat clean feed");
+    // §50: the schematic gang-1 law, asserted at both ends (the perturbation that
+    // restores the pre-§50 linear 1 + 66.7g law fails BOTH):
+    assert(std::fabs(GoldModel::driveGainAt(0.0) - 4.6068) < 1e-3 &&
+           std::fabs(GoldModel::driveGainAt(1.0) - 25.8235) < 1e-3 &&
+           "drive gain law drifted from A = 1 + 422k/((1-g)*100k + 17k)");
     std::printf(
         "  [ok] ganged crossfade @ %.0f Hz: THD %.2f%% -> %.2f%% -> %.2f%% -> %.2f%% -> "
-        "%.2f%%; clipped share %.2f -> %.2f -> %.2f -> %.2f -> %.2f (clean core 1.00 -> 0.45)\n",
+        "%.2f%%; clipped share %.2f -> %.2f -> %.2f -> %.2f -> %.2f (clean feed flat, "
+        "A 4.61x -> 25.82x)\n",
         fs, th[0] * 100, th[1] * 100, th[2] * 100, th[3] * 100, th[4] * 100, share[0],
         share[1], share[2], share[3], share[4]);
 }
@@ -202,11 +209,15 @@ void testCrossfade(double fs) {
 //       silicon curve stays near-clean and then takes off.
 void testGermaniumKnee(double fs) {
     const double f0 = 220.0;
-    // Probed in the region where the knee IS the story: a low GAIN (A = 7.7) and a
-    // 20 dB input sweep straddling the germanium knee. Both diodes are slammed flat
-    // at high gain, where the knee no longer distinguishes them.
-    const Params base{0.10f, 0.5f, 0.7f};
-    const float lo = 0.01f, hi = 0.10f;  // 20 dB input sweep
+    // Probed in the region where the knee IS the story: a 20 dB input sweep whose
+    // diode-node drive straddles the germanium knee. §50 RE-DERIVED PROBE: the
+    // drive path now attenuates before the diodes (kDrivePreScale + the 600 Hz
+    // corner ≈ 0.22x at 220 Hz), so the old probe (A = 7.7, 0.01–0.1 V) no longer
+    // reached the knee at all. At max gain (A = 25.82) the node sees
+    // 25.82·0.22·(0.025..0.25 V) ≈ 0.14..1.4 V — onset-to-deep across the sweep,
+    // which is the straddle the two properties below need.
+    const Params base{1.0f, 0.5f, 0.7f};
+    const float lo = 0.025f, hi = 0.25f;  // 20 dB input sweep
     auto thdAt = [&](float amp, int diode) {
         return thd(render(sine(f0, amp, 1.0, fs), base, fs, 4, diode), f0, fs);
     };
@@ -262,9 +273,14 @@ void testGermaniumKnee(double fs) {
 void testDiodeLevelContrast(double fs) {
     const double f0 = 220.0;
     std::printf("  [--] Ge-vs-Si ceiling contrast @ %.0f Hz (clean half OUT):\n", fs);
-    for (float g : {0.10f, 0.35f, 0.60f, 1.00f}) {
+    // §50 probe re-derivation: the drive path now attenuates (~0.22x at 220 Hz) and
+    // A tops at 25.8x, so the old rows (gain 0.10 at 0.3 V) never reached EITHER
+    // ceiling — the comparison read the linear path, not the clippers. The property
+    // is the CEILINGS ("well past both knees" above), so the probe must get there:
+    // 0.6 V at gain >= 0.35 puts the node at 0.8-3.4 V, past both.
+    for (float g : {0.35f, 0.60f, 1.00f}) {
         const Params p{g, 0.5f, 0.7f};
-        const auto in = sine(f0, 0.3f, 0.6, fs);
+        const auto in = sine(f0, 0.6f, 0.6, fs);
         const double ge = tailRms(render(in, p, fs, 4, GoldModel::DIODE_GERMANIUM, false), fs);
         const double si = tailRms(render(in, p, fs, 4, GoldModel::DIODE_SILICON, false), fs);
         assert(ge > 1e-4 && si > 1e-4 && "a diode option produced no output");
@@ -345,9 +361,9 @@ void testHeadroomAndOutput(double fs) {
 
 // --- Test 7: analytic laws (the ganged pot, measured against the formulas). ---
 void testAnalyticLaws(double fs) {
-    // Drive-amp gain law 1 + g*100k/1.5k.
-    assert(std::fabs(GoldModel::driveGainAt(0.0) - 1.0) < 1e-9);
-    assert(std::fabs(GoldModel::driveGainAt(1.0) - (1.0 + 100.0e3 / 1.5e3)) < 1e-6);
+    // Drive-amp gain law (§50, the schematic): A = 1 + 422k/((1-g)*100k + 17k).
+    assert(std::fabs(GoldModel::driveGainAt(0.0) - (1.0 + 422.0e3 / 117.0e3)) < 1e-6);
+    assert(std::fabs(GoldModel::driveGainAt(1.0) - (1.0 + 422.0e3 / 17.0e3)) < 1e-6);
     // Measured small-signal gain at GAIN 0 == the summing amp alone (x2 = +6 dB)
     // at OUTPUT wide open; at OUTPUT noon it is exactly unity (tested above).
     const double g0 = gainDbAt(1000.0, {0.0f, 0.5f, 1.0f}, fs);
