@@ -7698,3 +7698,64 @@ No re-taper of the VOLUME law (the knob's travel was never the complaint — its
 *authority* was), no constant re-derivation, no touch of the power section. The Twin
 comparison rows inside the AC30 XFAIL bars now describe a healthier Twin; the AC30
 slice re-measures them when it lands.
+
+## 45. Audit finding 8 — Ra2, the JCM800 PI's plate pair, re-measured with an honest tail
+
+*Date: 2026-07-30 · Branch: `claude/amps-pedals-fixes-6f557i` · Slice 3 of the field-report round*
+
+Finding 8 said the 2204's "asymmetric for balance" plate pair (100 k/82 k) does not
+balance this model's legs. §42's tail reference improved the ratio 0.607 → 0.703 and
+explicitly deferred the plate pair; this slice is the deferred re-measure and fix.
+
+### 45.1 The sweep, and the value
+
+Post-tailRef sweep (scratch replica of `Jcm800PowerAmp`, digit-identical to shipped at
+82 k): 82 k → 0.703, 100 k (the audit's guess) → 0.841, 110 k → 0.915, **120 k →
+0.988**, 130 k → 0.944. `Ra2 = 120 k` shipped. DC operating points stay inside the
+project windows (plates 76–78 % of B+, 0.72–0.76 mA/triode). Like `tailRef`, this is a
+model parameter calibrated to land the real circuit's *measured property* (balanced
+anti-phase legs) rather than a parts-bin value — the real 82 k balances the real
+circuit, whose tail return and parasitics this three-node model does not reproduce.
+
+### 45.2 Measured effects
+
+- **Leg balance** ×27.58/×27.24 = **0.988** (bar ≥ 0.90) — `finding8-jcm-pi-leg-balance`
+  XPASSed and is DELETED; the balance is the hard assertion in `LtpProbe.h` now.
+  Perturbation: Ra2 back to 82 k fails it at 0.703.
+- **Push-pull even-harmonic cancellation improved but is NOT fixed: 8.1 → 12.7 dB**
+  under the single-ended EL34 baseline (bar ≥ 20; the Twin gets ~30).
+  `finding8-jcm-even-harmonic-cancel` therefore STAYS XFAILed, re-owned honestly: a
+  balanced small-signal divider is necessary but not sufficient, and the remaining
+  even content survives matched leg gains — candidate mechanisms (unmeasured): the
+  PI legs' unequal *output impedances* driving the EL34 grids, the single-ended NFB
+  injection's common-mode half, large-signal leg divergence. Its own investigation;
+  do NOT chase it by re-detuning Ra2.
+- **Full-amp THD floor** (220 Hz, 0.1 V, MASTER 0.5): GAIN 0.2 3.59 → 2.71 %, GAIN 0.3
+  6.59 → 5.07 %, GAIN 0.5 13.2 → 10.7 % (diagnosis harness). The A3 reference row
+  moved 0.0→11.1→46.5 to **0.0→9.3→48.5** — two points of even-harmonic hair off the
+  mid-gain floor, slightly harder PI drive at max. Output level +0.2–0.3 dB.
+- **NFB window re-derived** (`test_jcm800_power.cpp`): the loop deepened 5.98 →
+  **6.37 dB measured vs 6.35 analytic** — the `1/(1+β·A_real)` identity holds within
+  0.02 dB, so the old < 6.0 ceiling (calibrated against the 82 k pair) was moved to
+  < 8.0 with the derivation in the comment: the window guards token (< 2 dB) and
+  runaway (> 8 dB; a doubled β measures ~10) loops, the identity guards the value.
+- **Composed 48 k alias floor re-derived**: the balanced pair swings harder per grid
+  volt, so the max-GAIN/max-MASTER compound IMD floor at 48 k moved −58 → measured
+  **−54.7 dB** (44.1 k −65.5, 96 k −64.5, all still M2-clean). Bar −55 → −52, same
+  ~3 dB margin structure, with the escape hatch named in the comment (oversample the
+  PI if it drifts further, don't lower the bar again). The aliasing printf now runs
+  *before* its asserts so failures carry their numbers.
+- **Golden `rat_jcm800`: +0.14 dB RMS, worst band 0.26 dB @ 1008 Hz** — inside the
+  ±1.0/±1.5 gates, so the suite is green with NO re-bless; the drift is recorded here
+  instead. The other four goldens unchanged (scope check).
+
+### 45.3 What the player hears
+
+Low-gain (GAIN 0.2–0.3) is noticeably less hairy — the ~99 %-even-harmonic dirt the
+unbalanced pair leaked at *every* level is down ~4.6 dB at the power section — and
+palm-mute fundamentals carry less 2nd-harmonic low-mid mud (the 180–220 Hz content the
+chug diagnosis measured). The cranked ceiling is slightly *more* saturated. This slice
+plus the coming 470 pF bright cap are the measured pair behind the owner's "gain way
+too powerful / still flabby" report; the GAIN-taper question is deliberately deferred
+until both land and the owner re-tests at unity trim (docs §44 note on the trim-80
+discovery: the field reports were made at +16.8 dB input boost).

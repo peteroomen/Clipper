@@ -197,7 +197,15 @@ public:
     struct Config {
         double bPlus = 340.0;   // PI plate supply (V)
         double Ra1 = 100.0e3;   // V3A plate load (Ω)
-        double Ra2 = 82.0e3;    // V3B plate load (Ω) — asymmetric for balance
+        // V3B plate load (Ω) — asymmetric to balance the legs. The 2204's own pair is
+        // 100 k/82 k, but that pairing balances the REAL circuit, whose tail return and
+        // parasitics differ from this three-node model; here it measured 0.703 (audit
+        // finding 8). Post-tailRef sweep (docs §45): 82 k → 0.703, 100 k → 0.841,
+        // 110 k → 0.915, **120 k → 0.988** (the optimum), 130 k → 0.944. DC stays in
+        // the project windows (plates 76–78 % of B+, 0.72–0.76 mA/triode). 120 k is a
+        // model-parameter calibration to land the real circuit's MEASURED property
+        // (balanced legs → even-harmonic cancellation), same doctrine as tailRef below.
+        double Ra2 = 120.0e3;
         double Rtail = 10.0e3;  // shared tail resistor (Ω) — to `tailRef`, not ground
         // Tail return reference (V). The tail current is (Vk − tailRef)/Rtail, so this
         // sets the standing current while Rtail keeps setting the common-mode rejection.
