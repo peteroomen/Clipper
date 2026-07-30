@@ -287,8 +287,50 @@ void Jcm800Preamp::reset() {
     tone_.reset();
     gainSm_.reset();
     masterSm_.reset();
+    // Bright-cap shelf state (docs §47): both rest at zero; stale-mark the wiper so
+    // the first process() rebuilds the coefficients.
+    bcX1_ = bcY1_ = 0.0;
+    bcCtr_ = 0;
+    bcW_ = -1.0;
     lastV1bGridPeak_ = 0.0;
     lastOutPeak_ = 0.0;
+}
+
+// The GAIN network's bright-cap shelf (docs §47): the exact 2-node solve of
+//   V1A (via coupling) -> Rs = 470 k -> pot top -> [Ru = (1-w)·1M || 470 pF] ->
+//   wiper (out, high-Z into V1B's grid) -> Rl = w·1M -> ground
+// as H(s) = (n0 + n1·s)/(d0 + d1·s):
+//   n0 = Rl, n1 = C·Ru·Rl, d0 = Rl+Rs+Ru, d1 = C·Ru·(Rl+Rs)
+//   H(0)   = Rl/(Rl+Rs+Ru) = kGainDivider·w  (EXACTLY the pre-§47 scalar -> settled
+//            levels unchanged; the goldens' movement is spectral, not level)
+//   H(inf) = Rl/(Rl+Rs)  -> the HF tilt: +8.0 dB over DC at w = 0.119 (GAIN 0.5),
+//            +5.7 dB at w = 0.288 (GAIN 0.7); zero at 1/(2π·C·Ru) ≈ 385 Hz at noon.
+// NOTE this is the full network, NOT the pot-only law (HF -> 1/w, +18 dB at noon)
+// the 2026-07-30 diagnosis quoted — the series 470 k loads the shorted-cap divider
+// and roughly halves the tilt in dB. Bilinear at 2·fs (no prewarp — the shelf's
+// corners sit far below Nyquist/4 at every wiper).
+void Jcm800Preamp::rebuildBrightCap(double wiper) {
+    if (wiper == bcW_) return;
+    bcW_ = wiper;
+    // Wiper at the top: the cap bridges a ~0 Ω segment, the network collapses to the
+    // DC divider and the bilinear pole would sit AT z = -1 (marginal). The plain
+    // scalar path is exact there — and it is what makes GAIN 1.0 bit-identical to
+    // the pre-§47 render.
+    if (wiper >= 0.9995) {
+        bcBypass_ = true;
+        return;
+    }
+    bcBypass_ = false;
+    const double Rl = std::max(wiper, 1.0e-4) * kGainPotOhms;
+    const double Ru = (1.0 - wiper) * kGainPotOhms;
+    const double Rs = kGainSeriesOhms;
+    const double n0 = Rl, n1 = kBrightCapF * Ru * Rl;
+    const double d0 = Rl + Rs + Ru, d1 = kBrightCapF * Ru * (Rl + Rs);
+    const double k2 = 2.0 * sampleRate_;
+    const double den = d0 + d1 * k2;
+    bcB0_ = (n0 + n1 * k2) / den;
+    bcB1_ = (n0 - n1 * k2) / den;
+    bcA1_ = (d0 - d1 * k2) / den;
 }
 
 void Jcm800Preamp::setOversampling(int factor) {
@@ -331,10 +373,30 @@ void Jcm800Preamp::process(const float* in, float* out, int numFrames) {
         float* w = buf_.data();
         // V1A
         stage_[V1A].process(in + off, w, n);
-        // GAIN network: V1A plate AC * (series divider * audio-taper wiper), the wiper
-        // scale advanced PER SAMPLE (finding 6 — it used to be one constant per block).
+        // GAIN network (docs §47): the series 470 k + 1 M pot + the 2204's 470 pF
+        // BRIGHT CAP (top lug -> wiper), applied as a one-pole/one-zero shelf whose
+        // coefficients follow the smoothed wiper at a 32-sample control rate
+        // (rebuildBrightCap early-outs when the wiper is parked). DC gain is EXACTLY
+        // the old scalar, so settled levels are unchanged; what the cap adds is the
+        // real amp's HF tilt into V1B — less relative sub-200 Hz into the clippers
+        // at mid gain, the "flabby chugs" fix. Advanced PER SAMPLE (finding 6).
         for (int i = 0; i < n; ++i) {
-            w[i] = static_cast<float>(w[i] * gainSm_.next());
+            const double s = gainSm_.next();
+            if (bcCtr_ == 0) rebuildBrightCap(s / kGainDivider);
+            if (++bcCtr_ >= kBcCtrlBlock) bcCtr_ = 0;
+            const double x = static_cast<double>(w[i]);
+            double y;
+            if (bcBypass_) {
+                y = x * s;  // the exact pre-§47 multiply (see rebuildBrightCap)
+                bcX1_ = x;
+                bcY1_ = y;  // seed continuity for a later shelf entry
+            } else {
+                y = bcB0_ * x + bcB1_ * bcX1_ - bcA1_ * bcY1_;
+                bcX1_ = x;
+                // Anti-denormal (docs §33): rests at zero on silence.
+                bcY1_ = flushDenormal(y);
+            }
+            w[i] = static_cast<float>(y);
             lastV1bGridPeak_ = std::max(lastV1bGridPeak_,
                                         std::fabs(static_cast<double>(w[i])));
         }

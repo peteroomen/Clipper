@@ -623,9 +623,9 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //   GAIN THD %:  rat 0.0→22.4→37.1   sd1 0.1→11.5→36.7   ts 0.1→5.7→31.9
 //                muff 1.9→38.4→147.7 (probes 0/0.6/1.0; probe-0 was 36.3 until the
 //                §43 taper-floor fix — the 0.6/1.0 probes are bit-identical to it)
-//                jcm800 0.0→9.3→48.5 (was 0.0→11.1→46.5 until finding 8/docs §45:
-//                balancing the PI legs removed ~2 points of even-harmonic floor at
-//                mid gain and drives the pair slightly harder at max)
+//                jcm800 0.2→10.8→48.5 (was 0.0→9.3→48.5 post-§45; the §47 bright
+//                cap tilts the drive spectrum into the clippers at low/mid gain —
+//                brighter drive, slightly more measured harmonic energy mid-knob)
 //                gold 0.0→23.4→30.6 (0.0 % at GAIN 0 is the crossfade: the clipped
 //                half is switched OUT, not merely quiet)
 //   LEVEL dBFS (0/0.5/1): rat −240→−15.6→−9.6   sd1 −240→−12.8→−6.8
