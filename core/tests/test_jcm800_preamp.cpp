@@ -254,7 +254,7 @@ void testChainGain(double fs) {
     // |H(jw)| from the SAME nodal solve the runtime uses: H = (n0+jwn1)/(d0+jwd1),
     // H(0) = kGainDivider·wiper (the old scalar), H(inf) = Rl/(Rl+Rs).
     const double gainScale = [&] {
-        const double wiper = Jcm800Preamp::audioTaper(gainKnob);
+        const double wiper = Jcm800Preamp::gainTaper(gainKnob);  // GAIN law (§51)
         const double Rl = std::max(wiper, 1.0e-4) * Jcm800Preamp::kGainPotOhms;
         const double Ru = (1.0 - wiper) * Jcm800Preamp::kGainPotOhms;
         const double Rs = Jcm800Preamp::kGainSeriesOhms;
@@ -487,7 +487,7 @@ void testBrightCap(double fs) {
     };
     auto analyticTilt = [&](float g) {
         auto H = [&](double f) {
-            const double wiper = Jcm800Preamp::audioTaper(g);
+            const double wiper = Jcm800Preamp::gainTaper(g);  // GAIN law (§51)
             const double Rl = std::max(wiper, 1.0e-4) * Jcm800Preamp::kGainPotOhms;
             const double Ru = (1.0 - wiper) * Jcm800Preamp::kGainPotOhms;
             const double Rs = Jcm800Preamp::kGainSeriesOhms;
