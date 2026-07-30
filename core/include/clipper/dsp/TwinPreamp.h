@@ -2,7 +2,8 @@
 //
 // TwinPreamp: the Fender blackface AB763 (Twin-style) VIBRATO-CHANNEL preamp as a
 // validated core module. Two 12AX7 common-cathode stages around the Fender TMB
-// tone stack, then the channel VOLUME pot:
+// tone stack, with the channel VOLUME pot between the stack and the recovery
+// stage — the AB763 order:
 //
 //   guitar in
 //     -> V1   common cathode, Ra 100k, Rk 1.5k || 25uF (bypassed, warm) — the
@@ -13,9 +14,16 @@
 //             PLATE (a HIGH source impedance ~ Ra||rp — no cathode follower, so
 //             it LOADS differently than the Marshall stack's follower-driven
 //             low-Z source). The Fender values give the signature DEEP MID SCOOP.
+//     -> VOLUME pot (1M, audio taper) + BRIGHT treble-bleed (cap across the pot)
 //     -> V2   recovery common cathode, Ra 100k, Rk 1.5k || 25uF (bypassed)
-//     -> VOLUME pot (1M, audio taper) + BRIGHT treble-bleed
 //   B+ ~ 410 V throughout (the AB763 runs a higher rail than the JCM's 320 V).
+//
+// The pot position is LOAD-BEARING for headroom (docs §44): this model shipped
+// with VOLUME after V2, so V2's drive was volume-independent and at hot pickup
+// level the amp carried a ~4.4 % THD floor the knob could not remove — "breakup
+// at 50". In the real AB763 the volume sits at V2's grid, so turning it down
+// unloads every following stage; measured onset moved VOL 0.37 → 0.73 with
+// loudness unchanged (≤ 0.1 dB per position, VOL 1.0 bit-identical).
 //
 // Contrast with the Marshall 2204 preamp (Jcm800Preamp): the Twin has only two
 // gain stages (no cold 3rd stage, no cathode follower), both warmly biased

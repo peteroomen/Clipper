@@ -7624,3 +7624,68 @@ the idle-conducting bias is itself right is a research slice needing an external
 reference), the bass defect (`finding16-muff-almost-no-bass`, ADR 009), and the
 ±20 V slam ledger (`muff-slam-exhausts-newton-cap`, §34) — the taper change does not
 touch the solver.
+
+## 44. The Twin's VOLUME pot position — headroom recovered from the AB763 order
+
+*Date: 2026-07-30 · Branch: `claude/amps-pedals-fixes-6f557i` · Field report: "breakup at 50 on the twin means not enough headroom"*
+
+Slice 2 of the field-report round. The model applied the channel VOLUME **after** the
+V2 recovery stage, so V2's drive was volume-independent: at hot pickup level
+(0.316 V) the amp carried a **~4.4 % THD floor the knob could not remove** — measured
+identical V2 drive at VOL 0.1 and VOL 0.5, and a stage decomposition put the
+distortion in V2 (60.9 V peak, 4.2 %, all even) with V1 and the stack clean. In the
+real AB763 the channel volume sits **between the tone stack and V2's grid**, so
+turning it down unloads every following stage — that pot position is where a
+blackface's headroom physically comes from.
+
+### 44.1 The fix
+
+`TwinPreamp::process` now applies the per-sample VOLUME + BRIGHT treble-bleed loop
+between `tone_.process` and `stage_[V2].process`; V2 is the last element of the
+preamp. The bright bleed moves with the pot because the cap physically sits
+across it. Smoothing unchanged (finding 6 discipline); no constants re-derived — at
+VOL 1.0 the pot is unity and bright contributes zero, so the fully-open chain is
+**bit-identical** by construction (verified: identical RMS/THD to the digit at
+VOL 1.0 in the same-harness A/B).
+
+### 44.2 Measured (220 Hz, 48 kHz, same harness both sides)
+
+0.316 V hot pickup, THD % by VOLUME — before → after:
+
+| VOL | 0.1 | 0.3 | 0.5 | 0.7 | 0.8 | 0.9 | 1.0 |
+|---|---|---|---|---|---|---|---|
+| before | 4.14 | 4.51 | 5.32 | 6.90 | 7.96 | 9.01 | 9.62 |
+| after | **1.42** | **1.50** | **2.18** | **4.23** | 5.85 | 7.79 | 9.62 |
+
+Breakup onset (5 %) moves from **VOL ≈ 0.45 to ≈ 0.75**. RMS is matched to
+**≤ 0.08 dB at every knob position** (≤ 0.01 dB at pluck level) — this is a headroom
+change, not a level change. At pluck level (0.1 V) the amp now sits at 0.45–0.69 %
+through VOL 0.5 (was 1.29–1.67 %). At 110 Hz the pre-fix floor is even uglier —
+8.5–13 % everywhere, 10.56 % at VOL 0.5 — which is the number the new test bar quotes.
+
+### 44.3 Knock-ons, all measured
+
+- `testProduct`'s clean bar improved 3.41 % → **1.17 %** (its 4 % bar unchanged — it
+  simply stopped being tight). Cranked figures (21.4 % total / 19.0 % odd / 0.898
+  peak) **unchanged**, because VOL 1.0 is an identity.
+- **New perturbation-proven bars** in `test_twin_amp.cpp` (`testHeadroomSagStability`):
+  hot pickup at VOL 0.5 < 5 % (measured 3.48 % at its 110 Hz probe) and VOL 0.9 both
+  > 5 % and > 2× the mid-volume figure (measured 10.4 %). Moving the volume loop back
+  after V2 fails the mid bar at 10.56 % — 2× over.
+- The five `finding7-ac30-*` XFAILs still XFAIL (confirmed; the Twin comparisons got
+  *harder*, which is the expected direction — the AC30 slice owns them).
+- The web amp-level drift guard passed **without** re-centring (Playwright 71/71):
+  the guard probes at a level where RMS moved ≤ 0.08 dB.
+- Goldens: `sd1_twin_reverb` **+2.18 dB RMS (worst band +5.00 dB @ 2540 Hz)** and
+  `muff_twin` **+5.85 dB (+4.82 @ 4032 Hz)** — the two pedal-driven Twin rigs. The
+  pedals drive the Twin far past 0.316 V, so pre-fix V2 was a hard compressor on
+  those rigs; the new renders are louder and brighter because that compression was
+  the defect. `rat_jcm800` / `ts_ac30` **UNCHANGED at 0.00 dB** and `clean120_chorus`
+  at 0.11 dB (the scope check). Re-blessed with owner authorization (see GOLDENS.md).
+
+### 44.4 What this deliberately does not do
+
+No re-taper of the VOLUME law (the knob's travel was never the complaint — its
+*authority* was), no constant re-derivation, no touch of the power section. The Twin
+comparison rows inside the AC30 XFAIL bars now describe a healthier Twin; the AC30
+slice re-measures them when it lands.
