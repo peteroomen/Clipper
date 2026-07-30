@@ -222,14 +222,18 @@ docs/work/2026-07-29-pi-tail-reference.md   this file
 - **The Twin's residual closed-loop 2nd harmonic** — ~7 dB above its pre-fix figure at
   matched drive, because the single-ended NFB injection's common-mode half is only rejected
   as well as one tail resistor rejects it.
-- **The WASM artifact has NOT been rebuilt** and the web/native front ends were not touched
-  (out of scope for these two phases; `core/` changed, so `bash scripts/build-wasm.sh` is
-  required before this can land).
-- Not run: web build/tests, node suites, electron (core-only session).
+- ~~The WASM artifact has NOT been rebuilt~~ **Closed 2026-07-30:** the artifact was
+  rebuilt and committed (e4b07a6), all gates run (core ctest 26/26 post-bless, web
+  build + Playwright, node suites, electron — all green).
+- **Owner decisions, 2026-07-30:** all four goldens BLESSED (GOLDENS.md entry, per-band
+  tables presented first) · AC30 character goes to a future **gain-structure slice**
+  (the five XFAILs stay as the ledger) · the Twin's honest −4.9 dB level ACCEPTED
+  un-compensated (RAT precedent) and the web amp-level drift guard re-centred on the
+  new measured levels (clean120 −28.2, jcm800 −25.0, twin −42.8, ac30 −20.6 dBFS;
+  window −42..−6 → −51..−12).
 
 ## Status
 
 - [ ] In progress
-- [ ] Complete
-- [x] Partial — see deferred (core work complete and measured; golden bless, WASM rebuild
-      and the AC30 voicing follow-up are outstanding)
+- [x] Complete
+- [ ] Partial — see deferred
