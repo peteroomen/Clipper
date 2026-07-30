@@ -65,14 +65,31 @@ constexpr double kInputDrive = 0.5;
 // full-range attenuator into the first clipper. ~6× puts several volts into Q2 at
 // max for a healthy wall while Q1 stays clean.
 constexpr double kClipDriveMax = 6.0;
-// SUSTAIN taper: an honest audio (decibel-linear, ≈ log) pot, floor..max. A real
-// Big-Muff SUSTAIN is a 100 kA (audio) pot wired as a full-range input attenuator;
-// at minimum it nearly grounds the clipper input. We model that as a decibel-linear
-// law susGain(knob) = kClipDriveMax · 10^((kSustainFloorDb/20)·(1−knob)); knob 0 →
-// −54 dB below max (≈0.012, a near-off "escape hatch" that is quiet but not silent —
-// a real pot leaks), knob 1 → kClipDriveMax. The pre-fix taper was LINEAR with a
-// hot 0.06 (−24 dB) floor, so min sustain still slammed the clippers.
+// SUSTAIN taper: an audio pot wired as a full-range input attenuator (a real
+// Big-Muff SUSTAIN is a 100 kA pot; at minimum it nearly grounds the clipper input).
+// PIECEWISE decibel-linear, with the break at the shipped default (0.6):
+//   knob ≥ 0.6: kClipDriveMax · 10^((kSustainFloorDb/20)·(1−knob)) — the pre-2026-07-30
+//               law VERBATIM, so the default and everything above it is bit-identical
+//               by construction (the muff_twin golden renders at 0.6).
+//   knob < 0.6: decibel-linear from kSustainMinDb (knob 0) up to the −21.6 dB the
+//               upper law gives at the break.
+// Why the −54 dB floor had to deepen (docs §43, field report 2026-07-30): the clip
+// stages' clean window ends at ~1–3 mV at the base (the diodes conduct at idle —
+// BjtStage.h), so a −54 dB floor still put ~11.5 mV of a 0.1 V pluck into Q2 at
+// knob ZERO — 4–10× past clean. Measured: the whole travel moved output < 2.2 dB
+// and THD never dropped below 27 %; knob 0.14 was the HOTTEST point of the sweep
+// (Q2/Q3's gain-expansion hump, +6.7 dB at ~30 mV, parks exactly there). At −84 dB
+// the bottom of the knob is a tame, dynamic fuzz (measured 1.9 % THD / −41.5 dBFS at
+// knob 0, 14.2 % / −26.0 at 0.14, 220 Hz 0.1 V input, 48 kHz) and still leaks — a
+// real pot's escape hatch, deeper. (−80 measured 3.5 % / 20.5 %: the 0.14 figure sat
+// above the ~15 % real-Muff sustain-1-2 feel the field report asked for; −84 is the
+// value chosen by that measurement.)
+// A real audio pot is two resistive segments meeting mid-rotation, so a slope break
+// is truer to the part than a single exponent; landing it on the default is what
+// keeps the golden untouched.
 constexpr double kSustainFloorDb = -54.0;
+constexpr double kSustainMinDb = -84.0;
+constexpr double kSustainBreak = 0.6;
 // Output trim: the recovery stage (Q4) collector AC is a few volts; scale so the default
 // (SUSTAIN 0.6 / VOLUME 0.6) peaks ~1.0 V, then VOLUME (0..1) rides on top.
 //
@@ -98,9 +115,14 @@ constexpr double kVolumePotOhms = 100.0e3;
 constexpr double kOutCouplingHz = 1.0 / (kTwoPi * kVolumePotOhms * kOutCouplingF);
 
 // The SUSTAIN audio taper: knob (0..1) -> drive multiplier into Q2 (floor..max).
+// Piecewise in dB with the break at the shipped default — see the constant block above.
 double sustainDrive(float knob01) {
     const double k = static_cast<double>(clampParam01(knob01));
-    return kClipDriveMax * std::pow(10.0, (kSustainFloorDb / 20.0) * (1.0 - k));
+    if (k >= kSustainBreak)
+        return kClipDriveMax * std::pow(10.0, (kSustainFloorDb / 20.0) * (1.0 - k));
+    const double dbAtBreak = kSustainFloorDb * (1.0 - kSustainBreak);
+    const double db = kSustainMinDb + (dbAtBreak - kSustainMinDb) * (k / kSustainBreak);
+    return kClipDriveMax * std::pow(10.0, db / 20.0);
 }
 }  // namespace
 
