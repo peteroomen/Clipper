@@ -7861,3 +7861,53 @@ bar), and mids-over-bass.
   oversampled triode solves), still below the JCM800's 54.51/55.75 % in the same runs.
   Latency +144 samples (preamp 72 → 216). Consolidating the preamp cascade into one
   shared oversampling domain is the named follow-up for both numbers.
+
+## 47. The JCM800 gain-pot bright cap — the 470 pF the model never had
+
+*Date: 2026-07-30 (overnight) · Branch: `claude/jcm-bright-cap-6f557i` · Slice 4 of the field-report round*
+
+The "flabby chugs" diagnosis (2026-07-30) ruled out sag dynamics (measured tight: 0.17–0.35 dB
+burst compression, zero chug-to-chug drift) and the coupling corners (they match the 2204
+schematic), and landed on a missing component: the real 2204 has a **470 pF bright cap across
+the gain pot** (top lug → wiper), and the model's gain network was a frequency-flat scalar. At
+mid gain the model therefore fed the clipping stages substantially more relative sub-200 Hz
+than the real amp — full-bandwidth low-frequency clipping is the flabby-chug signature, and it
+was gain-dependent, matching the report.
+
+### 47.1 The network, solved exactly
+
+Source → Rs = 470 k → pot top → [Ru = (1−w)·1M ∥ 470 pF] → wiper (out, high-Z into V1B) →
+Rl = w·1M → ground:
+
+    H(s) = (n0 + n1·s)/(d0 + d1·s),  n0 = Rl, n1 = C·Ru·Rl,
+                                     d0 = Rl+Rs+Ru, d1 = C·Ru·(Rl+Rs)
+    H(0) = Rl/(Rl+Rs+Ru) = kGainDivider·w   ← EXACTLY the pre-§47 scalar
+    H(∞) = Rl/(Rl+Rs);  zero at 1/(2π·C·Ru) ≈ 385 Hz at noon
+
+Settled levels are therefore **unchanged by construction** — the change is purely spectral.
+**Correction of the diagnosis figure:** the agent's +10–18 dB tilt came from a pot-only law
+(HF → 1/w); the series 470 k loads the shorted-cap divider and roughly halves the tilt in dB.
+The honest, shipped numbers: **+8.0 dB at GAIN 0.5, +5.7 dB at GAIN 0.7, → 0 fully open**.
+
+### 47.2 Implementation
+
+One-pole/one-zero bilinear in `Jcm800Preamp`'s per-sample gain loop; coefficients re-derived at
+a 32-sample control rate from the smoothed wiper (`rebuildBrightCap` early-outs when parked —
+finding-6 discipline), state denormal-guarded (rests at zero) and cleared in `reset()`. At
+wiper ≥ 0.9995 the bilinear pole would sit at z = −1 (the network collapses to the DC divider),
+so the code takes the exact pre-§47 scalar path — which doubles as the GAIN 1.0 bit-identity
+guarantee (verified: identical render hash against the pre-slice build).
+
+### 47.3 Measured
+
+- Preamp drive tilt into V1B (5 kHz vs 110 Hz, rel GAIN 1.0 so the tone stack cancels):
+  **7.8 dB at gain 0.5 (analytic 7.5), 5.6 at 0.7 (analytic 5.5)**, 0.0 at 1.0 (bit-identical
+  hash). Asserted by the new perturbation-proven `testBrightCap` (kBrightCapF = 0 fails the
+  ≥ 4 dB bar outright); the chain-gain analytic test now carries the same nodal |H(f)|.
+- The single-tone full-amp response barely moves (the power stage compresses single tones
+  toward the same ceiling) — the fix lives in the drive spectrum into the clippers, which is
+  where chug tightness is made.
+- Golden `rat_jcm800`: **−0.44 dB RMS, worst band 6.73 dB @ 1008 Hz** — a real spectral
+  re-voice of the RAT→JCM rig (it renders at GAIN 0.7). Outside the ±1.5 dB band gate, so the
+  bless is the owner's; until authorized the branch's core CI job is red at the golden gate by
+  design (the finding-15 precedent). Other four goldens byte-stable (scope check).

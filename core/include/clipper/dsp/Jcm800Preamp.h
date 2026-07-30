@@ -199,8 +199,16 @@ public:
     // Interstage scalars for the CURRENT knob settings (analytic-gain tests). These
     // report the smoothers' TARGETS — i.e. the steady-state scale the knobs ask for,
     // which is what an analytic small-signal prediction has to be compared against.
-    double gainInterstageScale() const;   // V1A out -> V1B grid drive (GAIN net)
+    double gainInterstageScale() const;   // V1A out -> V1B grid drive (GAIN net), DC
+    // The gain network's real parts (docs §47): V1A's coupling feeds kGainSeriesOhms
+    // into the 1M gain pot, and the 2204's 470 pF BRIGHT CAP bridges the pot's top
+    // lug to the wiper. kGainDivider is the network's DC series loss with the pot
+    // fully up — 1M / (1M + 470k) — and doubles as the exact DC gain factor
+    // (H(0) = wiper · kGainDivider for any wiper, from the nodal solve below).
     static constexpr double kGainDivider = 0.68;  // 1M / (1M + 470k) series loss
+    static constexpr double kGainSeriesOhms = 470.0e3;
+    static constexpr double kGainPotOhms = 1.0e6;
+    static constexpr double kBrightCapF = 470.0e-12;
     double masterScale() const;           // tone-stack out -> output (MASTER)
     // Audio taper law for the GAIN / MASTER pots: (e^{k x} - 1)/(e^k - 1), k = 4
     // (~12% at noon). Exposed so tests reproduce it.
@@ -238,6 +246,16 @@ private:
     // These carry the POST-taper linear scale (not the knob), so the audio taper's
     // exp() stays out of the sample loop — same trade AmpModel makes for its volume.
     OnePoleSmootherD gainSm_, masterSm_;
+    // Bright-cap shelf state (docs §47): one-pole/one-zero bilinear of the exact
+    // series-R + pot + 470 pF network, coefficients re-derived at kBcCtrlBlock while
+    // the GAIN smoother moves. bcY1_ rests at ZERO -> flushDenormal (docs §33).
+    static constexpr int kBcCtrlBlock = 32;
+    double bcB0_ = 0.0, bcB1_ = 0.0, bcA1_ = 0.0;  // y = b0 x + b1 x1 - a1 y1
+    double bcX1_ = 0.0, bcY1_ = 0.0;
+    double bcW_ = -1.0;  // wiper the coefficients were built from (-1 = stale)
+    int bcCtr_ = 0;
+    bool bcBypass_ = false;
+    void rebuildBrightCap(double wiper);
     bool primed_ = false;
     double bass_ = 0.5, mid_ = 0.5, treble_ = 0.5;
     double followerGridBias_ = 0.0;

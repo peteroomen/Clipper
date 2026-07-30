@@ -249,8 +249,21 @@ void testChainGain(double fs) {
     const double Vkf = pre.stageQuiescentCathode(Jcm800Preamp::V2B);
     const SmallSignal sf = smallSignal(kBplus - Vkf, pre.followerGridBias() - Vkf);
     const double gFol = sf.gm * 100.0e3 / (1.0 + sf.gm * 100.0e3);
-    // Interstage: GAIN network (series divider x audio-taper wiper), B ~ unity.
-    const double gainScale = pre.gainInterstageScale();
+    // Interstage: the GAIN network — since docs §47 a frequency-dependent divider
+    // (series 470 k + 1 M pot + the 2204's 470 pF bright cap, top lug -> wiper).
+    // |H(jw)| from the SAME nodal solve the runtime uses: H = (n0+jwn1)/(d0+jwd1),
+    // H(0) = kGainDivider·wiper (the old scalar), H(inf) = Rl/(Rl+Rs).
+    const double gainScale = [&] {
+        const double wiper = Jcm800Preamp::audioTaper(gainKnob);
+        const double Rl = std::max(wiper, 1.0e-4) * Jcm800Preamp::kGainPotOhms;
+        const double Ru = (1.0 - wiper) * Jcm800Preamp::kGainPotOhms;
+        const double Rs = Jcm800Preamp::kGainSeriesOhms;
+        const double C = Jcm800Preamp::kBrightCapF;
+        const double w = 2.0 * M_PI * f;
+        const std::complex<double> num(Rl, w * C * Ru * Rl);
+        const std::complex<double> den(Rl + Rs + Ru, w * C * Ru * (Rl + Rs));
+        return std::abs(num / den);
+    }();
     const double htone = std::abs(toneAnalytic(f, 0.5, 0.5, 0.5, pre.followerSourceImpedance()));
     const double master = pre.masterScale();
 
@@ -448,12 +461,67 @@ void testAliasing(double fs, bool strict) {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// The 470 pF bright-cap shelf (docs §47): the gain network's HF tilt at mid gain
+// matches the analytic H of the real parts, and vanishes fully open. Measured as a
+// RATIO OF RATIOS — (5 kHz / 110 Hz) at GAIN 0.5 over the same at GAIN 1.0 — so the
+// tone stack, follower and triode responses cancel and only the gain network's
+// frequency dependence is left. Perturbation-proven: kBrightCapF = 0 (or the old
+// flat-scalar loop) measures ~0 dB of tilt and fails the >= 4 dB bar outright.
+// ---------------------------------------------------------------------------
+void testBrightCap(double fs) {
+    auto respDb = [&](float gainKnob, double f) {
+        Jcm800Preamp pre;
+        pre.prepare(fs, 128);
+        pre.setOversampling(4);
+        pre.setParameter(Jcm800Preamp::PARAM_GAIN, gainKnob);
+        pre.setParameter(Jcm800Preamp::PARAM_BASS, 0.5f);
+        pre.setParameter(Jcm800Preamp::PARAM_MID, 0.5f);
+        pre.setParameter(Jcm800Preamp::PARAM_TREBLE, 0.6f);
+        const float amp = 0.002f;
+        return toDb(chainAmpAt(pre, f, amp, fs) / amp);
+    };
+    auto tiltAt = [&](float g) {
+        return (respDb(g, 5000.0) - respDb(g, 110.0)) -
+               (respDb(1.0f, 5000.0) - respDb(1.0f, 110.0));
+    };
+    auto analyticTilt = [&](float g) {
+        auto H = [&](double f) {
+            const double wiper = Jcm800Preamp::audioTaper(g);
+            const double Rl = std::max(wiper, 1.0e-4) * Jcm800Preamp::kGainPotOhms;
+            const double Ru = (1.0 - wiper) * Jcm800Preamp::kGainPotOhms;
+            const double Rs = Jcm800Preamp::kGainSeriesOhms;
+            const double C = Jcm800Preamp::kBrightCapF;
+            const double w = 2.0 * M_PI * f;
+            const std::complex<double> num(Rl, w * C * Ru * Rl);
+            const std::complex<double> den(Rl + Rs + Ru, w * C * Ru * (Rl + Rs));
+            return std::abs(num / den);
+        };
+        return toDb(H(5000.0)) - toDb(H(110.0));
+    };
+    const double t05 = tiltAt(0.5f), a05 = analyticTilt(0.5f);
+    const double t07 = tiltAt(0.7f), a07 = analyticTilt(0.7f);
+    std::printf("  [ok] bright cap @ %.0f Hz: gain-network HF tilt (5k vs 110, rel GAIN 1.0) "
+                "gain .5 = %.1f dB (analytic %.1f), gain .7 = %.1f dB (analytic %.1f)\n",
+                fs, t05, a05, t07, a07);
+    std::fflush(stdout);
+    assert(std::fabs(t05 - a05) < 2.0 && std::fabs(t07 - a07) < 2.0 &&
+           "bright-cap tilt off the analytic H of the real parts by > 2 dB");
+    assert(t05 > 4.0 &&
+           "bright-cap tilt at mid gain under 4 dB — the 470 pF network is gone "
+           "(flat scalar again? docs §47)");
+    assert(t05 > t07 &&
+           "bright-cap tilt does not GROW as the gain knob comes down — wrong law");
+}
+
 int main() {
     clipper::test::requireAssertsLive();
     std::printf("Running clipper::dsp::Jcm800Preamp (M9.2) tests...\n");
     testOperatingPoints(44100.0);
     testOperatingPoints(96000.0);
     testChainGain(44100.0);
+    testBrightCap(44100.0);
+    testBrightCap(48000.0);
     testChainGain(96000.0);
     testToneStack(44100.0);
     testToneStack(96000.0);
