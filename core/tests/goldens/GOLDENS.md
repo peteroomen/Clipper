@@ -43,6 +43,51 @@ All five: 2.0 s standard pluck, 16-bit mono 48 kHz.
 
 <!-- New entries go directly below this line, newest first. -->
 
+## 2026-07-31 — 1 golden(s) re-blessed
+
+- **Blessed by:** Claude
+- **On top of:** `8809984` fix: the Muff clip stages' series base resistors — finding 16's bass half (docs §49)
+
+| Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |
+| --- | --- | --- | --- | --- |
+| `muff_twin` | CHANGED | -3.06 dB | 3.76 dB @ 4032 Hz | 13 |
+| `rat_jcm800` | UNCHANGED | +0.00 dB | 0.00 dB @ 4032 Hz | 11 |
+| `sd1_twin_reverb` | UNCHANGED | +0.00 dB | 0.02 dB @ 3200 Hz | 12 |
+| `ts_ac30` | UNCHANGED | +0.00 dB | 0.00 dB @ 2016 Hz | 8 |
+| `clean120_chorus` | UNCHANGED | -0.00 dB | 0.11 dB @ 252 Hz | 7 |
+
+**Justification:** The Muff clip stages' series base resistors (docs §49, finding 16's bass half): without the schematic's 10 k series base resistance the feedback diodes could not form their limiting divider, so the stages blew past the ±0.6 V clamp and preferentially amplified each other's distortion products over the note. The -3.06 dB RMS / 3.76 dB @ 4032 Hz is the un-blown-out default voice: less high-band hash (the 470 pF Miller cap finally forms its ~1.2 kHz anti-harshness rolloff against the new base impedance) and the honest level of a stage that now clips where the circuit says it should. At max sustain the audible change is much larger (150 → 40 % THD at unchanged level — the wall became articulate); the default-knob golden moves modestly because the default was only partially blown out. The other four goldens are byte-identical (Rs = 0 reduces exactly to the stock solver, hash-verified — RAT/GOLD/SD/TS untouched). Owner authorized blessing on 2026-07-31 with this table presented; same hand-run ritual as the entries below (no /dev/tty in this environment — table measured via --golden-report against the previous goldens before writing).
+
+## 2026-07-31 — 1 golden(s) re-blessed
+
+- **Blessed by:** Claude
+- **On top of:** `d6a2ea2` fix: halve the spring reverb's wet trim — the "twice as strong" report (docs §48)
+
+| Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |
+| --- | --- | --- | --- | --- |
+| `sd1_twin_reverb` | CHANGED | -0.83 dB | 6.02 dB @ 504 Hz | 13 |
+| `rat_jcm800` | UNCHANGED | +0.00 dB | 0.00 dB @ 4032 Hz | 11 |
+| `muff_twin` | UNCHANGED | +0.00 dB | 0.00 dB @ 5080 Hz | 13 |
+| `ts_ac30` | UNCHANGED | +0.00 dB | 0.00 dB @ 2016 Hz | 8 |
+| `clean120_chorus` | UNCHANGED | -0.00 dB | 0.11 dB @ 252 Hz | 7 |
+
+**Justification:** The spring reverb wet trim halved (docs §48): the owner's field report "the spring reverb is about twice as strong" measured true — wet reached parity with dry at knob 0.40 and sat +6.5 dB OVER it at 0.60 — and was answered with exactly -6 dB (kWetGain 3.0 → 1.5, knob law untouched, parity now ≈ 0.60). sd1_twin_reverb is the only golden rendering reverb (its rig sets 0.25); the -0.83 dB RMS / 6.02 dB @ 504 Hz is the wet component stepping back to the intended balance, concentrated in the spring's low-mid dwell. Every other rig renders reverb 0 and is byte-identical (scope check). Owner authorized blessing on 2026-07-31 with this table presented; same hand-run ritual as the rat_jcm800 entry below (no /dev/tty in this environment — table measured via --golden-report against the previous goldens before writing).
+
+## 2026-07-31 — 1 golden(s) re-blessed
+
+- **Blessed by:** Claude
+- **On top of:** `0b81c0e` feat: the JCM800 gain-pot bright cap — the 470 pF the model never had (docs §47)
+
+| Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |
+| --- | --- | --- | --- | --- |
+| `rat_jcm800` | CHANGED | -0.44 dB | 6.73 dB @ 1008 Hz | 11 |
+| `sd1_twin_reverb` | UNCHANGED | +0.00 dB | 0.02 dB @ 317 Hz | 13 |
+| `muff_twin` | UNCHANGED | +0.00 dB | 0.00 dB @ 5080 Hz | 13 |
+| `ts_ac30` | UNCHANGED | +0.00 dB | 0.00 dB @ 2016 Hz | 8 |
+| `clean120_chorus` | UNCHANGED | -0.00 dB | 0.11 dB @ 252 Hz | 7 |
+
+**Justification:** The JCM800 gain-pot bright cap (docs §47): the 2204's 470 pF top-lug-to-wiper cap now exists, tilting the drive spectrum into V1B by the measured +7.8 dB at GAIN 0.5 / +5.6 dB at 0.7 (analytic 7.5/5.5). rat_jcm800's -0.44 dB RMS / 6.73 dB @ 1008 Hz is the mid-gain drive path getting the brightness the real amp has; GAIN 1.0 is bit-identical by construction and settled levels are unchanged (H(0) equals the pre-fix scalar). The other four goldens are UNCHANGED — byte-identical rewrites (scope check). Owner authorized blessing on 2026-07-31 with this table presented; the script's /dev/tty confirmation is unavailable in this environment, so its gates were satisfied by hand on that authorization: clean tree, the table above measured against the previous goldens via --golden-report before writing, justification recorded here.
+
 ## 2026-07-31 — 2 golden(s) re-blessed
 
 - **Blessed by:** Claude
