@@ -43,6 +43,21 @@ All five: 2.0 s standard pluck, 16-bit mono 48 kHz.
 
 <!-- New entries go directly below this line, newest first. -->
 
+## 2026-07-31 — 1 golden(s) re-blessed
+
+- **Blessed by:** Claude
+- **On top of:** `0b81c0e` feat: the JCM800 gain-pot bright cap — the 470 pF the model never had (docs §47)
+
+| Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |
+| --- | --- | --- | --- | --- |
+| `rat_jcm800` | CHANGED | -0.44 dB | 6.73 dB @ 1008 Hz | 11 |
+| `sd1_twin_reverb` | UNCHANGED | +0.00 dB | 0.02 dB @ 317 Hz | 13 |
+| `muff_twin` | UNCHANGED | +0.00 dB | 0.00 dB @ 5080 Hz | 13 |
+| `ts_ac30` | UNCHANGED | +0.00 dB | 0.00 dB @ 2016 Hz | 8 |
+| `clean120_chorus` | UNCHANGED | -0.00 dB | 0.11 dB @ 252 Hz | 7 |
+
+**Justification:** The JCM800 gain-pot bright cap (docs §47): the 2204's 470 pF top-lug-to-wiper cap now exists, tilting the drive spectrum into V1B by the measured +7.8 dB at GAIN 0.5 / +5.6 dB at 0.7 (analytic 7.5/5.5). rat_jcm800's -0.44 dB RMS / 6.73 dB @ 1008 Hz is the mid-gain drive path getting the brightness the real amp has; GAIN 1.0 is bit-identical by construction and settled levels are unchanged (H(0) equals the pre-fix scalar). The other four goldens are UNCHANGED — byte-identical rewrites (scope check). Owner authorized blessing on 2026-07-31 with this table presented; the script's /dev/tty confirmation is unavailable in this environment, so its gates were satisfied by hand on that authorization: clean tree, the table above measured against the previous goldens via --golden-report before writing, justification recorded here.
+
 ## 2026-07-31 — 2 golden(s) re-blessed
 
 - **Blessed by:** Claude
