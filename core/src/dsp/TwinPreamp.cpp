@@ -304,12 +304,20 @@ void TwinPreamp::process(const float* in, float* out, int numFrames) {
         for (int i = 0; i < n; ++i) w[i] = static_cast<float>(w[i] * kV1ToStack);
         // Fender TMB tone stack (pre-gain, base rate).
         tone_.process(w, w, n);
-        // V2 recovery stage.
-        stage_[V2].process(w, w, n);
         // VOLUME + BRIGHT treble-bleed, both advanced PER SAMPLE (audit finding 6 —
         // vScale used to be one constant per process() call). The bright treble-bleed
         // gain rises as volume falls (cap around the pot); switch off == amount 0, and
         // the `> 0.0` guard then skips the filter exactly as it always has.
+        //
+        // POSITION (docs §44, field report 2026-07-30): the pot sits HERE, between the
+        // tone stack and V2's grid — the AB763 order — not after V2 where this model
+        // had it. Post-V2, V2's drive was volume-independent: at hot pickup level the
+        // amp carried a ~4.4 % THD floor the knob could not remove (measured identical
+        // V2 drive at VOL 0.1 and 0.5), which is why the player heard "breakup at 50 —
+        // not enough headroom". Pre-V2, turning down unloads every following stage:
+        // measured onset (5 % THD, 0.316 V in) VOL 0.37 → 0.73 with RMS matched to
+        // ≤ 0.1 dB per position and VOL 1.0 bit-identical (vScale = 1, bright = 0).
+        // The bright bleed moves with the pot because the cap physically sits across it.
         for (int i = 0; i < n; ++i) {
             const double vScale = volSm_.next();
             const double brightExtra = brightSm_.next() * kBrightMax * (1.0 - vScale);
@@ -324,10 +332,12 @@ void TwinPreamp::process(const float* in, float* out, int numFrames) {
                 const double hp = x - lp;
                 x += brightExtra * hp;
             }
-            const float o = static_cast<float>(x);
-            out[off + i] = o;
-            lastOutPeak_ = std::max(lastOutPeak_, std::fabs(static_cast<double>(o)));
+            w[i] = static_cast<float>(x);
         }
+        // V2 recovery stage — now the LAST element, driven through the pot.
+        stage_[V2].process(w, out + off, n);
+        for (int i = 0; i < n; ++i)
+            lastOutPeak_ = std::max(lastOutPeak_, std::fabs(static_cast<double>(out[off + i])));
         off += n;
     }
 }

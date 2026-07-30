@@ -548,6 +548,27 @@ void testHeadroomSagStability(double fs) {
     // Clean-headroom bar: volume 0.5, a hot single-coil DI (0.1) stays CLEAN.
     const auto clean = thdAt(0.5f, 0.10f);
     assert(clean.first < 0.04 && "clean bar: THD at volume 0.5 / hot input not under 4%");
+    // The VOLUME pot sits BEFORE V2 — the AB763 order (docs §44, field report
+    // 2026-07-30 "breakup at 50 means not enough headroom"). Pre-fix the model had it
+    // post-V2, so V2's drive was volume-independent: a HOT pickup (0.316 V) carried a
+    // ~4-5 % THD floor the knob could not remove (measured identical V2 drive at VOL
+    // 0.1 and 0.5). The player property: mid volume stays clean even at hot pickup
+    // level, while the top of the knob still reaches breakup — the knob genuinely
+    // governs V2's drive. Measured on THIS probe (110 Hz, 0.4 s): post-fix VOL 0.5 hot
+    // = 3.48 %, VOL 0.9 hot = 10.4 %; the PRE-fix topology measures 10.56 % at VOL 0.5
+    // (the floor, in one number) and fails the 5 % bar 2x over — perturbation-proven
+    // by moving the volume/bright loop back after stage_[V2] in TwinPreamp::process.
+    const auto hotMid = thdAt(0.5f, 0.316f);
+    const auto hotTop = thdAt(0.9f, 0.316f);
+    std::printf("  [ok] pot-position headroom: hot pickup THD vol 0.5 -> %.2f%%, vol 0.9 -> %.2f%%\n",
+                hotMid.first * 100.0, hotTop.first * 100.0);
+    fflush(stdout);
+    assert(hotMid.first < 0.05 &&
+           "HOT pickup at mid volume not clean (<5%) — the volume pot no longer "
+           "unloads V2 (is it back after the recovery stage? docs §44)");
+    assert(hotTop.first > 0.05 && hotTop.first > 2.0 * hotMid.first &&
+           "top of the VOLUME knob no longer reaches breakup past mid volume — the "
+           "knob lost its authority over V2's drive (docs §44)");
     // Monotonic THD growth with input at volume 0.5, all the way to breakup at max.
     const double t1 = thdAt(0.5f, 0.10f).first, t2 = thdAt(0.5f, 0.20f).first,
                  t3 = thdAt(0.5f, 0.30f).first, t4 = thdAt(0.5f, 0.50f).first;
