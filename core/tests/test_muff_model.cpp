@@ -50,16 +50,21 @@ using clipper::dsp::MuffToneStack;
 // bass defect stays measured, printed and named rather than quietly half-fixed.
 constexpr clipper::test::XfailDecl kXfMuffBass{
     "finding16-muff-almost-no-bass",
-    "2026-07-24 audit finding 16 (bass half)",
-    "the guitar's low E (82.4 Hz) sits within 6 dB of 1 kHz through the Muff (the two CLIP "
-    "stages drive their 100 nF coupling caps from an ideal source into a ~1.8 k base node, "
-    "putting each corner at 898 Hz — -18.2 dB each, so the low E lands ~41 dB down)",
-    "fix/muff-series-base-resistors: add the series base resistance the real coupling "
-    "networks have, once the ~1.8 k vs ~4 k base-node discrepancy is settled (ADR 009)"};
+    "2026-07-24 audit finding 16 (bass half, residual)",
+    "the guitar's low E (82.4 Hz) sits within 6 dB of 1 kHz through the Muff",
+    // 2026-07-31 (docs §49): the schematic 10 k series base resistors LANDED on the
+    // clip stages and moved the low E from −41 dB to −14.2 dB re 1 kHz — most of the
+    // bass is back, but still short of the −6 bar. The residual is the corner the
+    // resistor alone cannot finish: the base node's own impedance is still ~1.8 k
+    // against the real stage's ~4 k because the DC-COUPLED diode branch loads it
+    // (the real branch is blocked by a series 1 uF). Owned by ADR 009's follow-up:
+    "the DC-blocked diode feedback branch (4th Newton node) + the base-to-ground "
+    "bias resistor, which together let the schematic corners land (ADR 009)"};
 
-// Fixed on the base-resistor branch as a side effect, still broken here: a series
-// resistance ahead of the exponential base-emitter junction bounds the base-current step
-// and so lowers the stiffness the damped Newton must globalize against.
+// 2026-07-31 (docs §49): the series base resistors LANDED and the cap-exhaustion set
+// shrank 6 → 5 combinations with a different distribution — improved, not fixed, so
+// the ledger entry stays (its old note predicted the Rs branch would fix it outright;
+// measurement says the ±20 V slam at 1×/2× still finds the stiff corner).
 constexpr clipper::test::XfailDecl kXfSlamIterCap{
     "muff-slam-exhausts-newton-cap",
     "found 2026-07-25 by perf/muff-newton-earlyout (docs §34), no audit finding number",
@@ -302,12 +307,13 @@ void testSustainRange(double fs) {
     // now, not just an escape hatch. Pre-fix, the −54 dB taper floor left the whole
     // travel past the clip stages' ~1–3 mV clean window: knob 0.14 was the HOTTEST
     // point of the sweep (−4.7 dBFS / 43 % THD at a 0.1 V pluck) and the owner called
-    // it "way too gainy, even on sustain=14". With the piecewise taper (floor −84 dB,
-    // break pinned at the 0.6 default) knob 0.15 at a realistic 0.1 V pluck measures
-    // a tame fuzz: 16.1/16.1/16.2 % THD and 19.9 dB below the wall's RMS at
-    // 44.1/48/96 k. Bars leave margin but fail the old taper outright — perturbation-
-    // proven by kSustainMinDb = −54, which reproduces the old single-exponent law
-    // EXACTLY (both segments become the same dB-line), and measures ~43 % / ~3 dB here.
+    // it "way too gainy, even on sustain=14". §49 re-derivation: with the clip stages'
+    // series base resistors in (their clean window widened ~10×) the floor re-derived
+    // −84 → −70 against these same bars; knob 0.15 at a 0.1 V pluck measures
+    // 11.9/11.9/12.0 % THD and 20.3 dB below the wall at 44.1/48/96 k. Perturbation
+    // lineage: kSustainMinDb = −54 reproduces the pre-§43 single-exponent law exactly
+    // and fails the bars on the §43 circuit (~43 %/~3 dB) AND on the §49 circuit
+    // (~29 %/~2 dB — the level authority collapses either way).
     {
         const auto low = render(sine(f0, 0.1f, 1.0, fs), {0.15f, 0.5f, 0.6f}, fs);
         const auto wall = render(sine(f0, 0.1f, 1.0, fs), {1.0f, 0.5f, 0.6f}, fs);

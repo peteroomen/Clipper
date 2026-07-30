@@ -7926,3 +7926,31 @@ golden's 0.25 at −14.6 dB under the note. The equal-power squared knob law is 
 report is the honest derivation source; the full before/after table lives in the plan file
 and the constant's comment. Golden `sd1_twin_reverb` −0.83 dB RMS / 6.02 dB @ 504 Hz —
 owner-blessed (GOLDENS.md) before merge; every other rig renders reverb 0 and is byte-stable.
+
+## 49. The Muff clip stages' series base resistors — the blowout was the missing bass
+
+*Date: 2026-07-31 (overnight) · Branch: `claude/muff-series-rs-6f557i` · ADR 009's deferred half, minimal slice*
+
+The owner's max-sustain report ("so distorted I can basically hear nothing") and audit finding
+16's bass half are one defect: the clip stages' missing input network. Without the schematic's
+series base resistance the feedback diodes cannot form their limiting divider — at high drive
+the stage blows past the ±0.6 V clamp (collector dragged to 6.7 V, phase +30°), each stage
+preferentially amplifies the previous stage's distortion products over the note (fundamental
+partially CANCELLED at 110 Hz: 1177 % THD), and the 470 pF Miller cap has nothing to work
+against so the ~1.2 kHz anti-harshness rolloff never forms. Full diagnosis with the external
+references (ElectroSmash topology, the C6/C7 DC-block) in the 2026-07-30 research report;
+key figures reproduced in the plan file.
+
+`BjtStage::Config::Rs` carries the resistor through the solver (residual, Jacobian, DC solve,
+companion update) with **Rs = 0 reducing exactly to the stock solver** — verified bit-identical
+by render hash, so the RAT/GOLD/SD/TS users are untouched. Q2/Q3 get the schematic 10 k.
+Measured at max sustain, 0.1 V / 220 Hz: **150.5 → 39.8 % THD at an unchanged −4.6 dBFS** —
+the wall stayed a wall (input sweep spread 0.09 dB at SUSTAIN 0.7) and became articulate.
+Low E through the pedal: −41 → −14.2 dB re 1 kHz — most of the bass back; the residual is the
+DC-coupled diode branch still loading the base node (~1.8 k vs the real ~4 k), owned with the
+re-worded `finding16` XFAIL by ADR 009's DC-blocked-branch follow-up (a 4th Newton node).
+The slam ledger improved 6 → 5 cap-exhausting combos and stays. The §43 sustain floor was
+re-derived on the corrected circuit (clean window ~10× wider): −84 → **−70**, landing the same
+player bars (knob 0.14 = −25.9 dBFS / 10.7 %; perturbation lineage in the test comment).
+Golden `muff_twin` −3.06 dB RMS / 3.76 dB @ 4032 Hz (the un-blown-out default voice) —
+owner-blessed before merge; A2/A3 reference rows re-baselined.

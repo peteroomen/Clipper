@@ -20,9 +20,9 @@
 // output gain (a Muff makes far more than unity).
 //
 // The `dcBlock` in that path landed 2026-07-25 (audit finding 16, DC half — docs §37,
-// ADR 009); see kOutCouplingHz below. The series base resistors that fix the same
-// finding's BASS half are a separate slice — the Muff is still bass-shy here, measured
-// and named by the XFAIL kXfMuffBass.
+// ADR 009); see kOutCouplingHz below. The clip stages' SERIES BASE RESISTORS (the
+// finding's other half, and the max-sustain blowout's root cause) landed 2026-07-31 —
+// docs §49 and the Rs comment in configureStages().
 // ---------------------------------------------------------------------------
 
 #include "clipper/dsp/MuffModel.h"
@@ -86,9 +86,19 @@ constexpr double kClipDriveMax = 6.0;
 // value chosen by that measurement.)
 // A real audio pot is two resistive segments meeting mid-rotation, so a slope break
 // is truer to the part than a single exponent; landing it on the default is what
-// keeps the golden untouched.
+// kept the golden untouched in §43.
+// §49 RE-DERIVATION (2026-07-31): the clip stages gained their schematic 10 k series
+// base resistors (Config::Rs below), which widens their clean window ~10× — the −84 dB
+// floor §43 chose against the UNPROTECTED stages then left the knob bottom nearly
+// silent-clean. Re-derived against the SAME §43 player bars on the corrected circuit:
+// −54 collapses the level authority again (0.14 only 2 dB under the wall), −84 measures
+// 2.8 % at 0.14 (too polite), −70 lands it — knob 0.14 = −25.9 dBFS / 10.7 % THD (tame
+// fuzz), knob 0 = −38 dBFS / 2.6 % (the escape hatch), wall from ~0.4, max 39.8 %
+// (articulate — the fundamental survives now, see the Rs comment in configureStages).
+// The ≥ 0.6 upper law is unchanged; the golden moves ANYWAY because the clip stages
+// changed, so the §43 bit-pin no longer applies (bless held for the owner).
 constexpr double kSustainFloorDb = -54.0;
-constexpr double kSustainMinDb = -84.0;
+constexpr double kSustainMinDb = -70.0;
 constexpr double kSustainBreak = 0.6;
 // Output trim: the recovery stage (Q4) collector AC is a few volts; scale so the default
 // (SUSTAIN 0.6 / VOLUME 0.6) peaks ~1.0 V, then VOLUME (0..1) rides on top.
@@ -188,6 +198,21 @@ struct MuffModel::Impl {
         q4.configure(c4);
         BjtStage::Config clip = base;
         clip.diodes.present = true;  // Q2/Q3: the two clipping stages
+        // The schematic's 10 k SERIES BASE RESISTOR on each clip stage (docs §49,
+        // ADR 009 / audit finding 16's bass half — and, measured 2026-07-31, the
+        // max-sustain blowout's root cause). Without it the source drives the base
+        // node directly: the feedback diodes cannot form their limiting divider, the
+        // stage blows past the ±0.6 V clamp at high drive (collector dragged to
+        // 6.7 V, phase +30°), each stage preferentially amplifies the PREVIOUS
+        // stage's distortion over the note (THD > 100 %, the fundamental partially
+        // CANCELLED at 110 Hz), and the 470 pF Miller cap has no impedance to work
+        // against so the ~1.2 kHz anti-harshness low-pass never forms. With Rs the
+        // clamp self-limits (output pinned ~0.65 V at ANY drive), max-sustain THD
+        // measures 152 -> 41 % at 220 Hz and 1177 -> 54 % at 110 Hz, the wall
+        // compresses flat and monotonically, and Newton converges in fewer
+        // iterations. Q1/Q4 keep Rs = 0: their networks are part of ADR 009's
+        // DC-blocked-diode follow-up, not this slice.
+        clip.Rs = 10.0e3;
         BjtStage::Config c2 = clip;
         BjtStage::Config c3 = clip;
         q2.configure(c2);
