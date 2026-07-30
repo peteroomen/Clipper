@@ -7927,6 +7927,34 @@ report is the honest derivation source; the full before/after table lives in the
 and the constant's comment. Golden `sd1_twin_reverb` −0.83 dB RMS / 6.02 dB @ 504 Hz —
 owner-blessed (GOLDENS.md) before merge; every other rig renders reverb 0 and is byte-stable.
 
+### §48 amendment — "the top half is too strong to ever use" is the instrument, not the model
+
+*Date: 2026-07-31 · Branch: `claude/reverb-coaching-6f557i` · docs + prompt only, zero DSP change*
+
+Follow-up report after the trim above landed: the top half of the reverb knob is still
+"too strong to ever use." The owner commissioned research before touching `kWetGain` a
+second time, and it came back saying the knob is behaving like the real amp. On a blackface
+Fender the usable range **is** the bottom third: real owners run reverb **1-2.5 out of 10**,
+past **3-4** it takes off into Dick Dale surf territory, and there is a whole **dwell-mod
+industry** (tank swaps, dwell/mix pot mods) for players who want the top of the dial to do
+something else. Against that, our measured parity point — wet reaching parity with dry at
+knob **~0.60** — is if anything **polite**: a real Twin is drenched by ~0.35.
+
+**Decision (owner, 2026-07-31): keep the authentic law. No DSP change.** `kWetGain = 1.5`,
+the squared equal-power knob law and the bit-exact dry at 0 all stand exactly as §48 left
+them, and no golden moves. Re-tapering to make the top half "usable" would be modeling a
+modded amp while claiming a stock one, and it would put a second taste constant on top of
+the one the field report already calibrated.
+
+The fix moved to the **assistant** instead: the coach now says where the knob is usable
+(15-35 for classic spring presence, ~40+ as deliberate surf/drip), and says that this
+matches real Twin behavior rather than apologizing for it. The text is appended to the
+Twin's `reverb` bullet in the **stable** `SYSTEM_PROMPT` block of
+`web/src/assistant/prompt.ts` — no new tool, no volatile rig-state change, so the
+`cache_control` prefix is undisturbed — and it closes by noting that the same spring model
+backs the reverb knob on all four heads. Plan file:
+`docs/work/2026-07-31-reverb-coaching.md`.
+
 ## 49. The Muff clip stages' series base resistors — the blowout was the missing bass
 
 *Date: 2026-07-31 (overnight) · Branch: `claude/muff-series-rs-6f557i` · ADR 009's deferred half, minimal slice*
