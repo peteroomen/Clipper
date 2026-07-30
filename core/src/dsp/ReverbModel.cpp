@@ -123,7 +123,16 @@ constexpr double kBandLpHz = 5200.0;
 constexpr double kFilterQ = 0.7071067811865476;  // Butterworth
 
 // Overall wet trim so a full-wet mix sits musically against the dry.
-constexpr float kWetGain = 3.0f;
+// Re-calibrated 2026-07-31 (docs §48, owner field report at unity input trim:
+// "the reverb is still about twice as strong as I'd expect" on the Twin). Measured
+// with the old 3.0, on a decaying 220 Hz note through the composed TwinAmp: the wet
+// reached PARITY with the dry at knob 0.40 and sat +6.5 dB OVER it at 0.60 — a
+// drowned mix by mid-knob. "About twice as strong" is −6 dB of wet: 3.0 → 1.5 moves
+// dry/wet parity to ~0.60 and leaves knob 0.25 (the sd1_twin_reverb golden's
+// setting) at −14.6 dB under the note — present, springy, under the guitar. The
+// knob LAW (equal-power, squared taper) is untouched: 0 stays bit-exact dry and the
+// full-wet endpoint is simply 6 dB lower.
+constexpr float kWetGain = 1.5f;
 
 // Anti-denormal offset injected at each spring's loop input (see header note).
 constexpr float kAntiDenormal = 1e-20f;
