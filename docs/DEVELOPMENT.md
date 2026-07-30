@@ -7535,3 +7535,92 @@ H, I and J are recorded rather than hidden because they bound what the two re-de
 sag properties actually catch: the ordering survives a 7.5× change in one amp's supply
 impedance (it takes a swap of the two amps' character to break it), and the recovery window
 catches the model disagreeing with its own constants, not the constants themselves.
+
+## 43. The Muff SUSTAIN taper floor — the knob had no authority below its default
+
+*Date: 2026-07-30 · Branch: `claude/amps-pedals-fixes-6f557i` · Field report: "way too gainy, even on sustain=14 it's pretty powerful"*
+
+The owner's post-v1.1 testing round reported the pedal "way too gainy, even on
+sustain=14". The report said "the rat", but measurement said otherwise: the RAT at
+DISTORTION 0.14 is digitally clean (0.0 % THD) and 25 dB below its default level; the
+**Muff** at SUSTAIN 0.14 was the **hottest point of its entire sweep** — −4.7 dBFS,
+~1 V peak, 43 % THD at a realistic 0.1 V 220 Hz pluck. 'Sustain' is the Muff's gain
+knob; the two pedals had been conflated in the report, and the measurement settles it.
+
+### 43.1 The defect
+
+Across the whole SUSTAIN travel (TONE 0.5, VOLUME 0.6, 0.1 V input) the output moved
+less than 2.2 dB and THD never dropped below 27 % — the knob had **no authority**. The
+§24 field fix had made the pot a true full-range attenuator with a −54 dB floor
+(`kSustainFloorDb`), which was deep enough to stop the hum blowout it was fixing, but
+not deep enough for the clip stages: their clean window ends at **~1–3 mV at the base**
+(the diodes conduct at idle — documented canon, `BjtStage.h`), and −54 dB below the
+6× max drive still delivers ~11.5 mV of a 0.1 V pluck into Q2 at knob **zero** —
+4–10× past clean. Q3 then sits in its 30 % THD region and Q4 is re-slammed to its
+ceiling, which is why the output level barely moved: every knob position ended at the
+same wall. Knob ≈ 0.14 was the worst spot because Q2/Q3's gain-*expansion* hump
+(+6.7 dB at ~30 mV input — the cold-bias transfer steepens before it saturates) parks
+exactly there at realistic input.
+
+### 43.2 The fix — a piecewise taper with the break pinned at the default
+
+`sustainDrive()` is now piecewise decibel-linear (`MuffModel.cpp`):
+
+- **knob ≥ 0.6** (`kSustainBreak`): the previous law **verbatim** —
+  `kClipDriveMax · 10^((−54/20)·(1−k))`. Same expression, same constants, same
+  floating-point result: the shipped default and everything above it is **bit-identical
+  by construction**, so the `muff_twin` golden, the sustain-wall tests and the hum
+  bars at default drive cannot move. Verified at suite level: A1 defaults, A2 default,
+  A3 probes 0.6/1.0 and the golden report all identical to `main` to the digit.
+- **knob < 0.6**: decibel-linear from `kSustainMinDb = −84` (knob 0) to the −21.6 dB
+  the upper law gives at the break.
+
+A real audio pot is manufactured as two resistive segments meeting mid-rotation, so a
+slope break is truer to the part than a single exponent; landing the break on the
+default is what pins the golden. Setting `kSustainMinDb = −54` reproduces the old
+single-exponent law *exactly* (both segments collapse onto the same dB line), which
+makes the perturbation proof a one-constant flip.
+
+−84 was chosen by measurement, not taste math: −80 left knob 0.14 at 20.5 % THD,
+above the ~15 % "real Muff at sustain 1–2" feel the report asked for; −84 measures
+14.2 %. Deeper floors start threatening the A1 audibility floor (−70 dBFS) at the
+knob-0 escape hatch, which still leaks by design (−41.5 dBFS at 0.1 V — a real pot's
+wiper never quite grounds).
+
+### 43.3 Measured results (48 kHz, 220 Hz, TONE 0.5 / VOLUME 0.6)
+
+0.1 V pluck (single-coil), before → after:
+
+| knob | RMS dBFS | THD % |
+|---|---|---|
+| 0.00 | −6.2 → **−41.5** | 36.4 → **1.9** |
+| 0.14 | −4.7 → **−26.0** | 42.8 → **14.2** |
+| 0.30 | −5.1 → −5.9 | 27.1 → 38.0 |
+| 0.60 (default) | −6.1 → −6.1 (bit-identical) | 38.6 → 38.6 |
+| 1.00 | −4.8 → −4.8 (bit-identical) | 150.5 → 150.5 |
+
+At 0.316 V (hot pickup) the bottom of the knob keeps ~40 % THD — that is **Q1**
+clipping (0.158 V at its base against its ~0.05 V clean limit), upstream of the pot,
+which no taper can or should remove: a hot humbucker into a fuzz front end clips.
+
+Knock-on measurements, both improvements: A2 hum torture at min gain improved
+−51.4 → **−62.0 dB** (the near-linear low end no longer compresses hum up toward the
+note); A1 `sustain=0` moved from −17.6 dBFS (audibly still a fuzz, the defect in one
+number) to −45.5 dBFS (quiet-but-present, 24.5 dB above the −70 audibility floor).
+
+### 43.4 Tests
+
+`testSustainRange` (`test_muff_model.cpp`) now pins the player property: SUSTAIN 0.15
+at a 0.1 V pluck must measure **< 20 % THD** and sit **≥ 15 dB below the wall's RMS**
+(measured 16.1 % / 19.9 dB at all three rates). Perturbation-proven: flipping
+`kSustainMinDb` to −54 (the exact old law) fails the THD bar at 43 % — `touch` after
+both patch and restore, per §29. The A2/A3 reference tables in
+`test_player_expectations.cpp` are re-baselined for the two Muff rows the fix moved;
+the 0.6/1.0 probes and every other gear row are untouched. Goldens: **zero moved**
+(`muff_twin` reports Δ 0.00 dB) — this slice needs no blessing.
+
+Out of scope, still owned elsewhere: the ~2 mV clip-stage headroom question (whether
+the idle-conducting bias is itself right is a research slice needing an external
+reference), the bass defect (`finding16-muff-almost-no-bass`, ADR 009), and the
+±20 V slam ledger (`muff-slam-exhausts-newton-cap`, §34) — the taper change does not
+touch the solver.

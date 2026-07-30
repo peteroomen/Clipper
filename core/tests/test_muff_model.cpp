@@ -298,6 +298,31 @@ void testSustainRange(double fs) {
     assert(tMax > 0.30 && "max-SUSTAIN THD not fuzz-large (>30%)");
     // Min sustain is a GENUINE escape: clearly less saturated than the wall.
     assert(tLo < 0.6 && tLo < 0.5 * tMax && "SUSTAIN=0 did not shed the wall");
+    // 2026-07-30 (docs §43, field report): the BOTTOM of the knob is a player property
+    // now, not just an escape hatch. Pre-fix, the −54 dB taper floor left the whole
+    // travel past the clip stages' ~1–3 mV clean window: knob 0.14 was the HOTTEST
+    // point of the sweep (−4.7 dBFS / 43 % THD at a 0.1 V pluck) and the owner called
+    // it "way too gainy, even on sustain=14". With the piecewise taper (floor −84 dB,
+    // break pinned at the 0.6 default) knob 0.15 at a realistic 0.1 V pluck measures
+    // a tame fuzz: 16.1/16.1/16.2 % THD and 19.9 dB below the wall's RMS at
+    // 44.1/48/96 k. Bars leave margin but fail the old taper outright — perturbation-
+    // proven by kSustainMinDb = −54, which reproduces the old single-exponent law
+    // EXACTLY (both segments become the same dB-line), and measures ~43 % / ~3 dB here.
+    {
+        const auto low = render(sine(f0, 0.1f, 1.0, fs), {0.15f, 0.5f, 0.6f}, fs);
+        const auto wall = render(sine(f0, 0.1f, 1.0, fs), {1.0f, 0.5f, 0.6f}, fs);
+        const double tLow15 = thd(low, f0, fs);
+        const double dropDb =
+            20.0 * std::log10(tailRms(wall, fs) / (tailRms(low, fs) + 1e-30));
+        std::printf("  [ok] SUSTAIN 0.15 @ 0.1 V: THD %.1f%%, %.1f dB below the wall\n",
+                    tLow15 * 100.0, dropDb);
+        assert(tLow15 < 0.20 &&
+               "SUSTAIN 0.15 at a 0.1 V pluck is not a tame fuzz (<20% THD) — the low "
+               "half of the knob lost its authority again (docs §43)");
+        assert(dropDb > 15.0 &&
+               "SUSTAIN 0.15 is not >=15 dB quieter than the wall — the taper floor "
+               "is too hot again (docs §43)");
+    }
     std::printf(
         "  [ok] SUSTAIN THD range @ %.0f Hz: min 0.0 -> %.1f%%, default 0.6 -> %.1f%%, "
         "max 1.0 -> %.1f%% (RISES — min sustain sheds the wall)\n",

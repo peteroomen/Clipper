@@ -567,7 +567,10 @@ void testMinKnobUsability(const std::vector<Gear>& gear) {
 //
 // REGRESSION FLOOR: ≥ 28 dB below the note. Measured (2026-07, 48 kHz):
 //   rat  min −36.0 / def −41.6 dB     sd1  min −33.1 / def −39.3 dB
-//   ts   min −33.1 / def −38.2 dB     muff min −51.1 / def −55.8 dB
+//   ts   min −33.1 / def −38.2 dB     muff min −62.0 / def −56.1 dB (min re-measured
+//        2026-07-30, docs §43: the deeper SUSTAIN taper floor leaves the clip stages
+//        near-linear at knob 0, so the hum is no longer compressed up toward the note
+//        — min-gain hum rejection IMPROVED 10.6 dB when the knob got its travel back)
 //   gold min −30.1 / def −32.9 dB  ← the TIGHTEST, and necessarily so: at GAIN 0
 //        this pedal is a LINEAR buffer, so it can only PRESERVE the input's own
 //        −30 dB hum-to-note ratio (−30.1 measured == the physical ceiling for a
@@ -618,7 +621,9 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //
 // Measured (2026-07, 48 kHz, references for future failures):
 //   GAIN THD %:  rat 0.0→22.4→37.1   sd1 0.1→11.5→36.7   ts 0.1→5.7→31.9
-//                muff 36.2→38.3→147.3 (probes 0/0.6/1.0)   jcm800 0.0→11.1→46.5
+//                muff 1.9→38.4→147.7 (probes 0/0.6/1.0; probe-0 was 36.3 until the
+//                §43 taper-floor fix — the 0.6/1.0 probes are bit-identical to it)
+//                jcm800 0.0→11.1→46.5
 //                gold 0.0→23.4→30.6 (0.0 % at GAIN 0 is the crossfade: the clipped
 //                half is switched OUT, not merely quiet)
 //   LEVEL dBFS (0/0.5/1): rat −240→−15.6→−9.6   sd1 −240→−12.8→−6.8
