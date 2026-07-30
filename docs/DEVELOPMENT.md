@@ -7911,3 +7911,18 @@ guarantee (verified: identical render hash against the pre-slice build).
   re-voice of the RAT→JCM rig (it renders at GAIN 0.7). Outside the ±1.5 dB band gate, so the
   bless is the owner's; until authorized the branch's core CI job is red at the golden gate by
   design (the finding-15 precedent). Other four goldens byte-stable (scope check).
+
+## 48. The spring reverb's wet trim — the field report, measured and halved
+
+*Date: 2026-07-31 (overnight) · Branch: `claude/twin-reverb-6f557i`*
+
+Owner, at unity input trim: "the reverb is still about twice as strong as I'd expect, at
+least on the twin sixty five." Measured on a decaying 220 Hz note through the composed
+TwinAmp: with `kWetGain = 3.0` the wet reached PARITY with the dry at knob **0.40** and sat
+**+6.5 dB over** the note at 0.60 — a drowned mix by mid-knob. "About twice as strong" is
+−6 dB of wet: **kWetGain 3.0 → 1.5** moves parity to ~0.60 and leaves the `sd1_twin_reverb`
+golden's 0.25 at −14.6 dB under the note. The equal-power squared knob law is untouched
+(0 stays bit-exact dry). The constant was a documented taste trim, so the owner's calibrated
+report is the honest derivation source; the full before/after table lives in the plan file
+and the constant's comment. Golden `sd1_twin_reverb` −0.83 dB RMS / 6.02 dB @ 504 Hz —
+owner-blessed (GOLDENS.md) before merge; every other rig renders reverb 0 and is byte-stable.
