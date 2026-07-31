@@ -138,7 +138,7 @@ public:
     // from 3 bits when the GOLD pedal made the board six deep: 3-bit slots would
     // still have fitted six types, but only just, and a seventh would have silently
     // aliased. Four bits keeps a whole spare type per slot and still fits a single
-    // uint32 — so the publish stays ONE relaxed atomic store, never a lock. M13.1's
+    // uint64 — so the publish stays ONE relaxed atomic store, never a lock. M13.1's
     // compressor is that seventh type, and it fits the 4-bit slots unchanged, which
     // is exactly the headroom the widening was for.
     std::vector<int> chainOrder() const;
@@ -212,7 +212,7 @@ private:
     int lastReportedLatency_ = -1;
 
     // Packed board snapshot for the audio thread (see chainOrder above).
-    std::atomic<juce::uint32> packedChain_{0};
+    std::atomic<juce::uint64> packedChain_{0};
     std::atomic<int> chainVersion_{0};
 
     // Cab-picker presentation state (message thread only).
