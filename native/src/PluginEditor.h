@@ -171,6 +171,9 @@ private:
     void reorderUnderPointer(int contentX);  // the live-reorder rule, given a content x
     void paintBoardContent(juce::Graphics&); // the rail + the cables between cards
     void showTrayMenu();      // the gear tray's "add a pedal" popup
+    void showCabMenu();       // the amp card's cab/IR picker popup
+    void chooseIrFile();      // the async FileChooser behind "Load IR…"
+    void refreshCab();        // pull the chip label + note back off the processor
     void updateAmpFace();     // rebuild the visible amp control set for the voice
     void updateEnablement();  // dim bypassed sections' knobs
     void layoutAmpCard(juce::Rectangle<int>);
@@ -212,6 +215,17 @@ private:
         presenceAttach_, masterAttach_, gainAttach_, reverbAttach_, modSpeedAttach_,
         modDepthAttach_;
     LeverToggle bright_, cab_;
+    // THE CAB / IR PICKER. A chip under the Cab lever, opening a popup with the two
+    // built-ins, the loaded custom IR (if any) and "Load IR…". Not a ComboBox: the
+    // custom entry needs an async FileChooser that can be cancelled, which a
+    // parameter-attached combo cannot express without lying about its selection in
+    // between. Same chip + popup idiom the gear tray uses.
+    ChipButton cabChip_;
+    std::unique_ptr<juce::FileChooser> irChooser_;
+    juce::Rectangle<int> cabChipCaption_, cabNoteBox_;
+    juce::String cabNote_;
+    int cabVersion_ = -1;
+
     PowerControl power_;
     ModeSwitch chorusMode_;
     std::unique_ptr<ParamAttach> brightAttach_, cabAttach_, ampOnAttach_, chorusModeAttach_,

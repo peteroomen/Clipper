@@ -20,6 +20,7 @@
 // It sets a few parameters purely so the screenshots read richly; nothing here
 // affects the shipped plugin.
 
+#include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <vector>
@@ -44,6 +45,26 @@ bool writeSnapshot(clipper::native::ClipperAudioProcessorEditor& ed, const juce:
 }
 
 int failures = 0;
+
+// A tiny valid .wav so the CUSTOM-IR scenes photograph the real path (decode ->
+// mono-ise -> resample -> cap -> engine) rather than a faked label.
+bool writeTestIr(const juce::File& f) {
+    f.deleteFile();
+    juce::AudioBuffer<float> buf(1, 512);
+    buf.clear();
+    float* d = buf.getWritePointer(0);
+    d[0] = 1.0f;
+    d[64] = -0.5f;
+    d[191] = 0.25f;
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::FileOutputStream> os(f.createOutputStream());
+    if (os == nullptr) return false;
+    std::unique_ptr<juce::AudioFormatWriter> w(
+        wav.createWriterFor(os.get(), 48000.0, 1, 16, {}, 0));
+    if (w == nullptr) return false;
+    os.release();
+    return w->writeFromAudioSampleBuffer(buf, 0, 512);
+}
 
 void shoot(clipper::native::ClipperAudioProcessorEditor& ed, const juce::File& dir,
            const char* file, const char* label) {
@@ -258,6 +279,71 @@ int main(int argc, char** argv) {
                       .toRawUTF8());
         }
         editor->setThemeMode(clipper::native::skin::ThemeMode::Light, /*persist=*/false);
+    }
+
+    // ---- 5. the CAB / IR PICKER, in BOTH themes (2026-07-31) -----------------
+    // The chip sits under the Cab lever on the amp card and says which cabinet is in
+    // the room. Four states are worth photographing: both built-ins, a loaded custom
+    // IR (the label becomes the file name), and the missing-file FALLBACK, whose
+    // note under the chip is the whole error surface — there is no dialog.
+    {
+        using clipper::native::skin::ThemeMode;
+        proc.setChainOrder({PEDAL_RAT});
+        editor->setSize(1360, 640);
+        setParam(proc.apvts, pid::ampModel, 2.0f);  // the Twin: Bright + Cab + Power
+        setParam(proc.apvts, pid::chorusMode, 1.0f);
+
+        const juce::File irDir =
+            juce::File::getSpecialLocation(juce::File::tempDirectory)
+                .getChildFile("clipper_cab_snapshot");
+        irDir.createDirectory();
+        const juce::File ir = irDir.getChildFile("Greenback 4x12 A.wav");
+        if (!writeTestIr(ir)) {
+            std::printf("FAILED to write the snapshot IR fixture\n");
+            ++failures;
+        }
+
+        const struct { ThemeMode mode; const char* tag; } themes2[] = {
+            {ThemeMode::Light, "light"}, {ThemeMode::Dark, "dark"}};
+        for (const auto& t : themes2) {
+            editor->setThemeMode(t.mode, /*persist=*/false);
+
+            proc.setCabChoice(clipper::native::CAB_CLEAN212);
+            shoot(*editor, outDir,
+                  (juce::String("native_cab_clean212_") + t.tag + ".png").toRawUTF8(),
+                  (juce::String("cab picker: Clean 2x12 - ") + t.tag + " theme").toRawUTF8());
+
+            proc.setCabChoice(clipper::native::CAB_BRIT412);
+            shoot(*editor, outDir,
+                  (juce::String("native_cab_brit412_") + t.tag + ".png").toRawUTF8(),
+                  (juce::String("cab picker: Brit 4x12 - ") + t.tag + " theme").toRawUTF8());
+
+            proc.loadCustomIrFile(ir);
+            shoot(*editor, outDir,
+                  (juce::String("native_cab_custom_") + t.tag + ".png").toRawUTF8(),
+                  (juce::String("cab picker: a loaded custom IR - ") + t.tag + " theme")
+                      .toRawUTF8());
+
+            // Pull the file out from under the session and re-apply: the fallback
+            // note is what a player sees when a drive is not mounted.
+            ir.deleteFile();
+            proc.setCabChoice(clipper::native::CAB_CUSTOM);
+            shoot(*editor, outDir,
+                  (juce::String("native_cab_missing_") + t.tag + ".png").toRawUTF8(),
+                  (juce::String("cab picker: missing IR -> Clean 2x12 + note - ") + t.tag +
+                   " theme").toRawUTF8());
+            writeTestIr(ir);  // put it back for the next theme's pass
+        }
+        // The MINIMUM window with the Twin's modulation row: the tightest place the
+        // chip has to live, because the divider line is directly beneath it.
+        editor->setThemeMode(ThemeMode::Light, /*persist=*/false);
+        proc.loadCustomIrFile(ir);
+        editor->setSize(1040, 560);
+        shoot(*editor, outDir, "native_cab_small_window.png",
+              "cab picker at the 1040x560 minimum - chip clear of the tremolo divider");
+        editor->setSize(1360, 640);
+
+        irDir.deleteRecursively();
     }
 
     editor = nullptr;
