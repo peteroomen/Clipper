@@ -236,8 +236,13 @@ jobs:
       - name: Configure
         run: cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
 
+      # EVERY test named in the ctest filter below must be built here. A registered
+      # test that is not built reports "Not Run" and ctest exits 8 — the same failure
+      # that hid behind continue-on-error for months (see the comment above). That is
+      # exactly how clipper_cab_state landed red: PR #35 added it to the filter and
+      # not to this list.
       - name: Build console tests
-        run: cmake --build native/build -j --target clipper_identical_test clipper_chain_edit_test
+        run: cmake --build native/build -j --target clipper_identical_test clipper_chain_edit_test clipper_cab_state_test
 
       # The native CMakeLists pulls the core in, so native/build registers ALL 26
       # core ctest entries alongside the two native ones. We only BUILD the native
