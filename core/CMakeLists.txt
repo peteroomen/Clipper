@@ -315,7 +315,14 @@ if(NOT EMSCRIPTEN)
     target_include_directories(clipper_orange_tests PRIVATE tools)
     clipper_add_test_flags(clipper_orange_tests)
     add_test(NAME clipper_orange_tests COMMAND clipper_orange_tests)
-    # No XFAIL ledger: the voice ships with zero known-bad properties.
+    # ONE known-bad property, opened by the 2026-07-31 schematic correction (docs §57):
+    # `orange-schematic-alias-44k1`. The composed OR120 at maximum volume holds a −73.0 dB
+    # alias floor at 48 kHz / 4× and only −50.8 dB at 44.1 kHz, against the −56 dB bar the
+    # first release shipped. It moves 11 dB going to 8×, so it is genuine foldover rather
+    # than the rail-clipping signature docs §54 describes, and it is NOT the new resonant
+    # H.F. Boost network (measured identical at boost 0 / 0.5 / 1.0). Owned by an OR120
+    # oversampling slice — one shared OS domain around the whole cascade — never a lower bar.
+    clipper_add_xfail_ledger(clipper_orange_tests)
 
     # --- M11: Player Expectations Suite ---------------------------------------
     # Tests the PLAYER'S expectations, not the circuit (docs §26): universal gear
