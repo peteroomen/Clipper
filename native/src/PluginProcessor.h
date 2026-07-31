@@ -49,6 +49,12 @@ inline constexpr const char* goldOn      = "goldOn";
 inline constexpr const char* goldGain    = "goldGain";
 inline constexpr const char* goldTreble  = "goldTreble";
 inline constexpr const char* goldLevel   = "goldLevel";
+// M13.1: the "Squash" OTA compressor. TWO knobs only — the shared slot-1 has no
+// meaning for a compressor, and exposing an inert host parameter would be lying
+// about what the pedal does (the phaser precedent).
+inline constexpr const char* compOn      = "compOn";
+inline constexpr const char* compSustain = "compSustain";
+inline constexpr const char* compLevel   = "compLevel";
 // Post-v1.1 — the "Weeper" wah / envelope filter, the board's first FILTER pedal
 // (docs §58). POSITION is the treadle (heel->toe) and is an ordinary automatable
 // parameter; SENSE at 0 is exactly that manual pedal and above 0 hands the same
@@ -78,6 +84,8 @@ inline constexpr const char* ampModel    = "ampModel";
 inline constexpr const char* jcmGain     = "jcmGain";
 inline constexpr const char* jcmMaster   = "jcmMaster";
 inline constexpr const char* jcmPresence = "jcmPresence";
+// M10.3 Orange OR120 F.A.C. — a 0..1 knob the core snaps to six detents.
+inline constexpr const char* orangeFac   = "orangeFac";
 inline constexpr const char* oversampling = "oversampling";
 }  // namespace pid
 
@@ -130,7 +138,9 @@ public:
     // from 3 bits when the GOLD pedal made the board six deep: 3-bit slots would
     // still have fitted six types, but only just, and a seventh would have silently
     // aliased. Four bits keeps a whole spare type per slot and still fits a single
-    // uint32 — so the publish stays ONE relaxed atomic store, never a lock.
+    // uint64 — so the publish stays ONE relaxed atomic store, never a lock. M13.1's
+    // compressor is that seventh type, and it fits the 4-bit slots unchanged, which
+    // is exactly the headroom the widening was for.
     std::vector<int> chainOrder() const;
     void setChainOrder(const std::vector<int>& types);
     // Bumped on every board change (including a host state load), so the editor can
@@ -202,7 +212,7 @@ private:
     int lastReportedLatency_ = -1;
 
     // Packed board snapshot for the audio thread (see chainOrder above).
-    std::atomic<juce::uint32> packedChain_{0};
+    std::atomic<juce::uint64> packedChain_{0};
     std::atomic<int> chainVersion_{0};
 
     // Cab-picker presentation state (message thread only).

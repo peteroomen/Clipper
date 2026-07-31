@@ -325,6 +325,17 @@ independent slices that can interleave anywhere:
   in the docs §15 modal-synthesis house style — do NOT commit a captured
   third-party IR (provenance + licensing, and it breaks the pattern that every
   cab in this project is generated). Owner: *"I'm an orange man."*
+  *(SHIPPED 2026-07-31 as the OR120 "Overdrive", amp voice 4 + an `orange412`
+  cab — docs §57. The power machinery IS reused; the voice is the CIRCUIT
+  differences: a CATHODYNE phase inverter DC-coupled to its driver (leg balance
+  1.000000 by topology, against the LTP's fitted 0.988), a JAMES/passive-Baxandall
+  BASS+TREBLE stack, the six-position F.A.C. rotary, global NFB into the driver's
+  CATHODE with HF DRIVE in the loop, and NO MASTER VOLUME. The acceptance bar was
+  "measurably not a re-skinned JCM800": mid-notch metric at noon **+2.32 dB vs the
+  FMV's −6.03**, an 8.35 dB network contrast and 6.24 dB on the composed amps.
+  All five goldens unchanged; nothing blessed. Research honesty note: no schematic
+  was reachable from the build container — see §57.1 for what is sourced and what
+  is reconstruction.)*
 - **M10.4 — Mesa Dual Rectifier** *(L)* — 5+ cascaded stages with heavy
   interstage voicing, loose/tight modes, graphic-EQ charm (5 biquads).
   **Rectifier, not Mark series** — the ask is grunge and 90s metal
@@ -541,9 +552,21 @@ keeps these slices small:
    parameter** (drive it from a DAW expression pedal / automation lane) **plus an
    AUTO mode** where an envelope follower sweeps the same filter — one primitive,
    Cry Baby and Mu-Tron III territory together. Owner-chosen 2026-07-31.
+   *(✅ SHIPPED 2026-07-31 as the "Weeper" — docs §58, ADR 018. The sweep law is
+   DERIVED from component values and cross-checked against CCRMA's fit to three
+   MEASURED GCB-95 units: 2250.79 Hz computed vs 2216.06 measured, 1.57 % apart by
+   two independent routes, leaving the pot taper as the single fitted parameter.
+   2.32 octaves; peak 17.90–17.91 dB with 0.010 dB of spread across the whole
+   travel. SENSE 0 is bit-identical to a build that never had the envelope mode.)*
 2. **M13.2 — Dyna Comp / Ross compressor** *(M)* — CA3080 OTA, two knobs
    (SUSTAIN + LEVEL). The squishy pedal compressor: country chicken-pickin',
    funk, the always-on sustain trick. Its envelope detector is the noise gate's.
+   *(✅ SHIPPED 2026-07-31 as "Squash" — docs §59, ADR 019. FEED-BACK topology
+   settled from the netlist and then proved at 216:1 against feed-forward's 3.3:1
+   on identical code; control current 199.85 µA idle / 16.54 settled against an
+   independent SPICE run's ~192 / ~16. SUSTAIN moves 25.33 dB of gain against
+   0.28 dB of output — "not a threshold", as a number. Noise, transient loss and
+   phase inversion are measured and asserted in the direction that KEEPS them.)*
 3. **M13.3 — Optical compressor (LA-2A style)** *(S–M after 13.2)* — the second
    half of the owner's "the first two types". Electro-optical attenuator,
    program-dependent release. Follows the **SD-1 / TS precedent**: a shared,

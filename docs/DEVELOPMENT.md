@@ -9618,6 +9618,426 @@ brighter over that same pair — the 495 Hz pole did not move, the signal reachi
 every other pedal and every amp. `kDrivePreScale` and `kDriveHpHz` are **deleted** — there
 is nothing left for them to stand in for.
 
+## 57. M10.3 — the Orange OR120 "Overdrive": the MID-FORWARD head (the fifth amp voice)
+
+The early-70s Orange OR120 joins the lineup as amp voice **4** (`orange`), together with a
+synthesised Orange-style 4×12 cab (`orange412`). It is EL34 push-pull like the JCM800 and
+**reuses that amp's power machinery wholesale** — the Koren EL34 fit, the per-tube
+plate-load Newton, the grid-coupling/blocking solve, the OT bandwidth pair and the
+rail/screen sag integrator (§18). No new device model was fitted for this voice.
+
+Everything that makes it an Orange is therefore a **circuit** difference, and the slice's
+own acceptance bar was that those differences must be **measurable against the JCM800**,
+not asserted. §57.4 is that bar.
+
+### 57.1 Research — what is sourced, and what is NOT
+
+**Read this before changing any constant in `OrangePreamp.h` / `OrangePowerAmp.h`.**
+
+There was no OR120 material in this repository at all (one line in `ROADMAP.md`), and
+**no host outside the search tool was reachable from the container this slice ran in** —
+`WebFetch` returned HTTP 403 for *every* URL attempted, including `example.com`, and a
+direct `curl` reported `CONNECT tunnel failed, response 403` / "Host not in allowlist" for
+`prowessamplifiers.com`, `orangefieldguide.com`, `schematicheaven.net`,
+`forum.orangeamps.com` and `en.wikipedia.org` alike. So the research channel was **web
+search result summaries only**, and no schematic was ever read.
+
+**Sourced (topology and one component value):**
+
+| Fact | Source (via search) |
+| --- | --- |
+| 4× EL34, ~120 W, **fixed bias**, **solid-state bridge rectifier** ("four diodes in the classic diamond configuration ... instead of a GZ34") | Equipboard OR120 entry; oldamps.weebly.com OR120 service page |
+| **2× ECC83 preamp**; the gain/volume pot sits **between the first tube's two gain stages**; the second tube's first triode is a further gain stage | MusicRadar "How to get classic Orange OR120 tones"; Orange Amps forum |
+| That second gain stage is **DC-COUPLED to a CATHODYNE (split-load) phase inverter** — "in old Oranges like the OR120 the phase inverter is a cathodyne type ... the other triode in the 'phase inverter' tube is used as another gain stage prior to the phase inverter" | Orange Amps forum t=44023 / t=55722; marshallforum.com "The Orange Sound" |
+| The cathodyne is the biggest sonic differentiator: "the cathodyne into EL34 output tubes is key to the Orange sound, and it distorts differently than the long-tail pair of most other guitar amps ... stiffer, punchier, fuzzier"; and "the James/Baxandall tone controls of the Orange make a difference vs the Marshall, **but not as much as the phase inverters**" | marshallforum.com; diyaudio "Orange and Other Amp Design Features" |
+| The tone stack is a **James / passive-Baxandall** BASS + TREBLE network with **no mid control**, flat at noon, and "mostly leaves the midrange alone"; cutting both controls gives a "fake mid boost" | dub.greboguru.org "Orange tone stacks"; MusicRadar; PedalPCB "Tone Stacks Part 2 — James & Baxandall" |
+| **F.A.C.** = Frequency Analysing Control, a **six-position rotary** of **series coupling caps** that "adds in a series of capacitors", taking away **bass and gain** as it climbs; range roughly "**330 p to .047**" | Orange Amps forum t=1801 / t=4729 / t=1090; MusicRadar |
+| **The early ('72/'74) treble cap is 1500 pF**, against **330 pF** post-'74 — "the biggest tonal difference in the earlier circuits is that 1500 pf cap on the treble side"; the early treble knob "acts on a wider range of frequencies, and when you turn the treble up, you hear high mids coming up with it" | Orange Amps forum t=56058 ("OR120 tone stack differences") |
+| Global NFB returns to **the top of the cathode resistor of the tube BEFORE the phase inverter**, and "the feedback tap is connected to the presence control" (**HF DRIVE**) | Orange Amps forum t=39764 ("Feedback tap?") |
+| Typical James-network fixed resistors are **R1 = R3 = 100 k**; the design example puts the bass/mid transition at ~500 Hz and the mid/treble transition at ~1 kHz | ampbooks.com "James Tone Stack — Analysis" |
+
+**NOT sourced — every one of these is a documented reconstruction:**
+
+* Any plate/cathode resistor, bypass cap, coupling cap or grid leak in the preamp.
+* The James network's `R1`/`R3`/`RB`/`RT`/`C1`/`C3` (only `C2` = 1500 pF is sourced) and
+  the **pot values**.
+* The F.A.C. ladder BETWEEN its two sourced end points (47 n and 330 p).
+* Every power-supply number: B+, the bias voltage, the reservoir/screen values, the OT's
+  `Raa` and its LF/HF corners, the NFB divider resistors, the HF DRIVE corner.
+* The driver's 300 k plate load and the cathodyne's 180 k split loads.
+
+The unsourced values were chosen against **physical constraints, not a tone target**: every
+triode lands in the project's documented 0.5–0.9 mA window, the EL34s sit under their 25 W
+plate rating, the amp reaches its **rated 120 W**, and the tone network exhibits the
+**defining property its own sources state** (a James stack is flat at noon). That last one
+is the only "fitting" in the slice and it is fitting to a *published property of the
+topology*, not to a sound. **Do not re-tune any of them toward a tone; find the
+schematic.** A future session with network access should transcribe the '72 preamp and
+power schematics from Prowess Amplifiers and re-derive.
+
+### 57.2 The preamp — `OrangePreamp`
+
+```
+guitar in
+  -> V1A  12AX7, Ra 100k, Rk 820 || 25uF (FULLY bypassed)
+  -> 0.022uF coupling + 470k series + 1M VOLUME pot   (the ONLY gain control)
+  -> V1B  12AX7, Ra 100k, Rk 820 || 25uF
+  -> F.A.C. series cap (6 positions)
+  -> JAMES stack (BASS + TREBLE, no MID)  -> the power section
+B+ ~ 320 V.
+```
+
+The James network and the F.A.C. cap are **one MNA** (7 nodes, trapezoidal capacitor
+companions, the same numerical shape as `MarshallToneStack`, §14) so the two cannot
+desynchronize:
+
+```
+Rs*  : source - IN      (* V1B's PLATE impedance — there is no cathode follower)
+Cfac : IN  - F          (F.A.C. rotary: 47n / 22n / 10n / 4n7 / 1n5 / 330p)
+R1   : F   - A          100k          C2 : F - T    1500 pF  (SOURCED)
+RB   : A -((1-b)RB)- OUT -((b)RB)- B  1 M           RT : T -((1-t)RT)- OUT -((t)RT)- U   250k
+C1   : A   - B          470 pF        C3 : U - GND  470 pF
+R3   : B   - GND        100k          RL : OUT - GND  1 M
+```
+
+Two **parallel** branches summing at the shared wiper node is the whole mechanism. C1
+shorts the bass pot out above its corner (so BASS acts only below it); C2 blocks the treble
+branch below its corner (so TREBLE acts only above it). Neither branch touches the middle —
+which is exactly why the mids survive.
+
+Measured **discretization** check against the netlist's own complex nodal solve, five knob
+combinations × 82 Hz…6 kHz: worst |error| **0.243 dB at 48 kHz, 0.291 dB at 44.1 kHz**
+(both at 6 kHz, i.e. bilinear frequency warping). Note the standing §29 limitation — an
+analytic reference derived from the same netlist validates the discretization and *cannot*
+catch a wrong topology. What validates the topology here is §57.4.
+
+Measured **preamp DC** (both rates identical):
+
+| stage | Va (plate-cathode) | Vk | Ip (solver) | Ip (Ohm's law) | plate as % of B+ |
+| --- | --- | --- | --- | --- | --- |
+| V1A | 185.68 V | 1.101 V | 1.3432 mA | 1.3322 mA | 58.4 % |
+| V1B | 185.65 V | 1.102 V | 1.3435 mA | 1.3325 mA | 58.4 % |
+
+V1B's plate impedance into the stack (Ra ∥ rp) measures **30 235 Ω** — a real high-Z source,
+where the JCM's stack is driven from a 371 Ω cathode follower. That difference is part of
+the response and is fed into the MNA rather than assumed away.
+
+**Deliberate absences, each with a measurable consequence:** no bright cap across the volume
+pot (the 2204's 470 pF one tilts drive into its second stage by +6–8 dB at mid travel, §47);
+no cold-biased second stage (the 2204's 10 k unbypassed V1B); no mid control; no master.
+
+### 57.3 The power section — `OrangePowerAmp`
+
+```
+driver V2A  (Ra 300k, Rk 1k5, B+ 320)   <- global NFB into the CATHODE through Rfb 27k
+   | DC-COUPLED (the driver plate node IS the cathodyne grid node)
+cathodyne V2B (Ra = Rk = 180k, B+ 400)  -> plate = B+ - Vk, cathode = Vk
+   |
+4x EL34, fixed bias -48 V, Raa 1.7k, solid-state bridge supply
+   -> OT (45 Hz / 14 kHz)  -> NFB, shaped by HF DRIVE (2.2 kHz)
+```
+
+Because the driver and the split load share a node, they are solved **together** as one 3×3
+nodal Newton in (Vpd, Vkd, Vkc) — the same shape as the LTP's, a different circuit.
+
+Measured **power-section DC**:
+
+| node | value |
+| --- | --- |
+| driver plate / cathode / current | 131.87 V / 0.891 V / **0.6271 mA** |
+| cathodyne cathode / plate / current | 132.74 V / 267.26 V / **0.7374 mA** |
+| cathodyne Vgk (DC-coupled, so a real bias not a 0 V AC coupling) | **−0.865 V** |
+| EL34 rail / screen | 499.73 V / 493.36 V |
+| EL34 Ip / Ig2 per tube | **33.31 mA** / 3.38 mA |
+| EL34 plate dissipation | **16.64 W = 67 % of the 25 W rating** |
+
+**What the cathodyne gives for free, measured:**
+
+| property | Orange cathodyne | JCM800 LTP |
+| --- | --- | --- |
+| leg balance (min/max leg gain) | **1.000000** — *topological* | 0.988, and it took audit finding 8 + a resistor sweep to get there (§45) |
+| leg phase | exactly anti-phase | anti-phase |
+| driver gain / split-load gain | −57.244 / **+0.9763** | n/a (the LTP amplifies) |
+| plate + cathode node sum | **400.00 V ≡ B+c**, exactly | n/a |
+| compliance clip | Vk pins at **0.00 / 200.00 V** (idle 132.74) → **−132.7 / +67.3 V**, i.e. **asymmetric by construction** | tail-steering cutoff |
+
+The split load cannot amplify, which is *why* the driver carries a 300 k plate load. Its
+clip is a compliance limit reached asymmetrically — the "fuzzier" Orange clip — and it falls
+out of the solve rather than being shaped.
+
+**Global feedback** returns to the driver's cathode, so the loop encloses the driver **and**
+the inverter (the 2204's loop starts at the PI's second grid and encloses only the PI).
+Measured loop depth **7.81 dB** (open-loop 0.01085 → closed-loop 0.00441 at 440 Hz), against
+a divider ratio Rkd/(Rkd+Rfb) = 0.0526. Raising the cathode lowers Vgk, so a positive
+secondary opposes a positive grid signal — that is what pins the injection sign, and the
+test asserts closed < open rather than trusting the comment.
+
+**HF DRIVE** is the presence control in that loop: measured tilt (5 kHz relative to 220 Hz)
+**−1.63 dB at HF DRIVE 0 → +5.17 dB at 1.0**, i.e. **+6.80 dB** of lift across the control,
+and it moves the *tilt*, not the level (220 Hz moves 0.03 dB).
+
+**The supply is deliberately stiff.** The rectifier is a solid-state bridge, so `kRsupply` is
+**70 Ω** behind a 100 µF reservoir against the 2204's 150 Ω / 50 µF — double the tubes
+pulling through half the impedance. This amp's compression is the cathodyne and the EL34
+grids, not the rail.
+
+`kFullScaleSecV = 50.7` is **derived**, not chosen: cranked (VOLUME 1.0, 0.50 V peak in,
+220 Hz) the secondary reaches **45.65 V peak = 130.2 W into 8 Ω**, so the model genuinely
+makes its rated 120 W, and 45.65 / 0.90 = 50.7 puts the cranked peak at a measured **0.9004**
+— the §23 convention every voice is normalized to. The NFB tap reads the real secondary
+volts, never the normalized output, so the loop gain is independent of it.
+
+### 57.4 THE BAR — measurably not a re-skinned JCM800
+
+The metric is scale-free so the two stacks' different insertion losses cannot flatter
+either: **the minimum response across 300–800 Hz relative to the mean of the 100 Hz and
+4 kHz responses**, at noon. Negative = a mid SCOOP, positive = a mid BUMP.
+
+**(a) the tone networks, from their own netlists**
+
+| | Orange James | Marshall FMV |
+| --- | --- | --- |
+| mid-notch metric @ noon | **+2.32 dB** (a BUMP) | **−6.03 dB** (a SCOOP) |
+| **contrast** | | **8.35 dB** |
+
+dB relative to each network's own 1 kHz:
+
+| f | James | FMV |
+| --- | --- | --- |
+| 82 Hz | −3.00 | +9.55 |
+| 220 Hz | −1.05 | +6.79 |
+| 440 Hz | +0.11 | +3.61 |
+| 660 Hz | **+0.27** | +1.47 |
+| 1 kHz | 0.00 | 0.00 |
+| 2.2 kHz | −1.53 | +2.44 |
+| 5 kHz | −3.08 | +4.28 |
+
+The FMV peaks at **both ends** and dips in the middle; the James peaks **in the middle**.
+
+**(b) the composed amps, rendered** — both at tone knobs noon, a clean level, same input,
+same metric (deliberately *not* "dB re 1 kHz": the FMV's own notch minimum sits at ~1 kHz,
+so normalizing there would hide the very thing being measured):
+
+| f | Orange (dB re its 660 Hz) | JCM (dB re its 660 Hz) |
+| --- | --- | --- |
+| 110 Hz | −3.28 | −2.91 |
+| 220 Hz | −1.61 | −2.47 |
+| 330 Hz | −0.74 | −1.66 |
+| 440 Hz | −0.31 | −0.90 |
+| 660 Hz | 0.00 | 0.00 |
+| 1 kHz | +0.02 | +1.15 |
+| 2.2 kHz | −0.37 | +6.82 |
+| 4.4 kHz | −0.52 | +9.78 |
+
+| | Orange | JCM |
+| --- | --- | --- |
+| composed mid-notch | **+1.15 dB** | **−5.09 dB** |
+| **contrast** | | **6.24 dB** |
+
+Bars shipped: the FMV must measure < −3.0 and the James > +1.0 (two separate signs, asserted
+separately, so a change moving both together could not hide), network contrast > **6.0**
+(measured 8.35), composed contrast > **4.0** (measured 6.24), with the margins recorded
+rather than snugged — a future component-value correction inside either stack is allowed to
+move them.
+
+### 57.5 No master volume — breakup tracks the VOLUME knob (the §46 convention)
+
+Composed amp, 0.15 V peak / 220 Hz (the §51 unity-trim probe), tone knobs noon, F.A.C. 0.2:
+
+| VOLUME | THD | RMS |
+| --- | --- | --- |
+| 0.10 | 0.48 % | −29.22 dBFS |
+| 0.20 | 1.36 % | −21.17 |
+| 0.30 | 2.96 % | −15.40 |
+| 0.40 | 4.11 % | −10.56 |
+| **0.50** | **7.86 %** | −7.74 |
+| 0.60 | 17.08 % | −7.29 |
+| 0.70 | 23.15 % | −7.05 |
+| 0.85 | 35.11 % | −7.12 |
+| 1.00 | 47.29 % | −7.34 |
+
+≥5 % THD onset at **VOLUME 0.50**; clean end 0.76 %, cranked end 47.29 %. Both THD and RMS
+are monotonic in the knob. The RMS column flattening above 0.5 while THD keeps climbing is
+the power section compressing — which is the point of an amp with no master.
+
+### 57.6 The F.A.C. — a real high-pass that walks
+
+Composed amp at VOLUME 0.3, low E (82 Hz) and 1 kHz:
+
+| position | cap | low E | 1 kHz | tilt |
+| --- | --- | --- | --- | --- |
+| 1 | 47 nF | −18.18 dB | −14.27 dB | +3.90 dB |
+| 2 | 22 nF | −18.39 | −14.37 | +4.02 |
+| 3 | 10 nF | −18.91 | −14.58 | +4.34 |
+| 4 | 4.7 nF | −20.10 | −15.02 | +5.09 |
+| 5 | 1.5 nF | −24.58 | −16.73 | +7.84 |
+| 6 | 330 pF | −35.39 | −23.16 | +12.23 |
+
+Every click to the right takes low end away and never adds any, the 1 kHz-to-low-E tilt only
+grows, and the whole switch spans **17.21 dB** of low E — a switch, not a nuance. Both the
+monotonicity and the span are asserted.
+
+### 57.7 Antialiasing, DC and the rest
+
+* **Alias floor**, the house composed probe (4186 Hz at 0.3 V into a fully cranked amp — the
+  same stimulus `test_jcm800_power.cpp` uses, so the two numbers are comparable):
+
+  | factor | 48 kHz | 44.1 kHz |
+  | --- | --- | --- |
+  | 1× | −10.2 dB | −11.3 dB |
+  | 2× | −11.1 | −11.9 |
+  | **4× (shipped)** | **−67.1** | **−59.2** |
+  | 8× | −68.2 | −59.4 |
+
+  4× clears the M2 −60 dB bar at 48 k and sits just under it at 44.1 k, on a *composed* amp
+  at maximum volume, where the JCM's identical probe measures −54.7 dB and carries a −52 bar
+  (§45). Bar shipped: **−56**, 3 dB under the worse rate, plus "4× must beat 1× by ≥ 12 dB"
+  — that second clause is what would catch an oversampler that stopped working, which an
+  absolute bar on a compound floor cannot.
+* **DC offset ON SIGNAL** (§29 / `support/DcOffset.h`), VOLUME 0.7, 220 Hz: **0.126 % of
+  peak** with a clean input and **0.126 %** with +0.1 V of DC on the input — the coupling
+  caps and the OT's own LF corner hold, and the +0.1 V case is the one that makes the
+  assertion able to fail.
+* **reset() + ragged blocking**: a whole-buffer render vs the same render after `reset()` in
+  128-frame blocks differs by **0.000e+00**; every sample finite.
+* **Denormals** (§33, ADR 006): all eight James-stack capacitor companions rest at exactly
+  zero, and after being driven then silenced for 4 s `maxAbsRestingState()` measures
+  **exactly 0.0**. (The naive version of this test — a *never-driven* stack — measured
+  2.586e-11 and proved nothing; it now drives the network first and asserts it really was
+  excited.)
+
+### 57.8 The Orange 4×12 cab
+
+Synthesised in the §15 modal house style, exactly as `brit412` was — **no captured
+third-party IR is downloaded or committed**; every cab in this project is generated.
+Voicing: low cut 62 Hz (vs the Brit's 72), box modes moved down, **no 200 Hz chunk**, and a
+broad **+4 dB peak at 1.2 kHz** — the Orange bark, pointed the same way as the amp's stack
+rather than being a second, independent EQ opinion.
+
+Both IRs are peak-normalized to unity (M6.6), so **absolute** dB is the fair comparison:
+
+| f | Orange | Brit |
+| --- | --- | --- |
+| 60 Hz | −9.88 | −7.69 |
+| 100 Hz | −6.19 | −3.87 |
+| 200 Hz | −3.32 | −0.27 |
+| 500 Hz | −3.06 | −1.62 |
+| 1 kHz | −0.29 | −1.68 |
+| 1.2 kHz | −0.03 | −1.56 |
+| 3 kHz | −5.49 | −2.54 |
+| 8 kHz | −45.54 | −57.43 |
+
+| property | Orange | Brit |
+| --- | --- | --- |
+| −6 dB low corner (re its own 300 Hz) | **63.4 Hz** | 72.6 Hz |
+| 1.2 kHz minus 200 Hz | **+3.29 dB** | −1.29 dB |
+| spectral peak (M6.6) | 1.000000 | — |
+
+**An honesty correction the measurement forced.** The first version of this section claimed
+"more 60 Hz than the Brit" and the test asserted it re each cab's own 1 kHz — which the
+Orange **fails** (−9.88 vs −7.69 absolute at 60 Hz). The reason is that the bark IS the
+normalization peak, so everything else on the Orange sits lower. The claim was replaced by
+the one that is actually true and is a property of the box rather than of the voicing: its
+**−6 dB low corner reaches 9.2 Hz lower**. The bark difference (**+4.58 dB** more 1.2 kHz
+relative to 200 Hz) is the other load-bearing bar.
+
+### 57.9 Three things the measurements refuted
+
+1. **`kInterstageScale` does NOT set the breakup onset.** The plan assumed it would be swept
+   to land the onset in the §46 window. Measured across a 5× range (0.010 → 0.050) the onset
+   sat at **VOLUME 0.59 throughout** — down there the first thing to clip is the *preamp*
+   (two fully-bypassed 12AX7s with the volume pot between them), not the power section.
+   Choosing the constant "so the breakup lands at 0.5–0.6" would have been choosing it for a
+   reason that is not true. It was chosen instead by the §42 criterion — **the smallest
+   value at which a cranked OR120 genuinely reaches its rated 120 W**, which is 0.12 (130 W;
+   0.08 tops out at 99 W). The sweep table lives in `OrangeAmp.cpp`.
+2. **More input can mean LESS output.** The cranked-power column is non-monotonic at scale
+   0.20 and 0.40 (0.15 V in produces a *higher* peak than 0.50 V in). That is not noise: at
+   those drives grid conduction charges the EL34 coupling caps and shifts the bias toward
+   cutoff — the blocking mechanism §18 models — so past a point more input gives less output.
+   It is also why the criterion above is "reaches rated power", not "peaks highest".
+3. **The James stack's own defining property had to be the fitting target**, because no
+   schematic was reachable. Stated plainly in §57.1 rather than presented as a derivation.
+
+### 57.10 Test suite — `clipper_orange_tests`
+
+New ctest target (core ctest **25 → 26** entries; the 4 XFAIL ledgers are unchanged, and
+this suite registers **no ledger**: it ships with zero known-bad properties). Eleven blocks:
+DC operating points (Ohm's-law cross-check on every plate load), the cathodyne (anti-phase,
+balance, driver-vs-split-load gain separation, compliance), the James stack vs its own
+`H(jω)`, **the mid-forward bar**, breakup-tracks-VOLUME + monotonicity, the F.A.C. ladder,
+NFB depth + HF DRIVE tilt, aliasing, DC on signal, the cab, and reset/ragged-blocking +
+denormal rest.
+
+**Perturbation proofs** (patch one constant/topology, rebuild, confirm RED, restore, confirm
+GREEN — `touch` after *both* patch and restore, or make skips the rebuild and you measure
+stale code):
+
+| # | perturbation | result |
+| --- | --- | --- |
+| P1 | treble cap `kC2` 1500 pF → 47 nF | RED — `onset > 0.40 && onset <= 0.70` |
+| P2 | bass shunt cap `kC1` 470 pF → ~0 | RED — stack vs `H(jω)`, `worst < 0.35` |
+| P3 | cathodyne split loads made unequal (plate node 0.8·Vk) | RED — `ratio > 0.9999` |
+| P4 | F.A.C. ladder flattened (all six positions 47 nF) | RED — `drop > 10.0` |
+| P5 | global NFB sign flipped (positive feedback) | RED — THD monotonicity |
+| P6 | HF DRIVE disconnected | RED — `(hi1-lo1)-(hi0-lo0) > 0.75` |
+| P7 | the cab's 1.2 kHz bark removed | RED — `oBark > bBark + 2.0` |
+| P8 | bass branch disconnected (`kR1` 100 k → 100 M) | RED — the denormal rest assert |
+| P9 | treble shunt cap `kC3` 470 pF → 470 nF | RED — the denormal rest assert |
+| **P10** | **bass pot `kRB` 1 M → 10 k** | **RED — `orangeNotch > +1.0`, measured +0.58 (contrast 8.35 → 6.61)** |
+
+P10 is the one that proves **the bar itself** has teeth: collapse the bass branch's divider
+and the network's mid bump falls below the shipped bound. P8/P9 also go red but at an
+earlier gate (the tone stack stops settling), which is reported here rather than claimed as
+a mid-forward proof.
+
+### 57.11 Wiring — both fronts, in this slice
+
+* **C ABI**: voice **4** (`kAmpOrange`), cab built-in **2** (`kCabOrange412`), and ONE new
+  param id — `kAmpParamOrangeFac = 13`, because no other voice has a six-position switch and
+  reusing a knob slot would make a stale rig state silently mean something else. Everything
+  else is the house reuse pattern: VOLUME (0), BASS (1), TREBLE (3), REVERB (9), and
+  PRESENCE (11) → **HF DRIVE** (the same slot the AC30 takes as TOP CUT). The 'middle' slot
+  never reaches this voice.
+* **Web**: `params.ts` (`AMP_PARAM_ORANGE_FAC`, `AMP_MODEL_INDEX.orange`), `rig.ts`
+  (`AmpType`, `CabChoice`, the `fac` param + its 0.2 default + migration), `audio.ts`,
+  `Amp.tsx` (`OrangeFace` — VOLUME · BASS · TREBLE · F.A.C. · HF · REVERB, and **no**
+  master/mid/bright, which is as load-bearing as what it has), `Board.tsx`, `App.tsx`, the
+  `--accent-orange` token in all four theme blocks and its `amp.css` block.
+* **Worklet**: indices pass through opaquely; only the parity comments changed.
+* **Native**: `ClipperEngine` (voice 4, `Params::orangeFac`, routing, latency),
+  `PluginProcessor` (`pid::orangeFac`, the choice lists), `PluginEditor` (the panel case, a
+  `fac_` knob, the cab menu entry, `skin::AccentId::Orange` verbatim from `tokens.css`).
+* **Assistant**: `set_amp` gains `'orange'`, `set_cab` gains `'orange412'`, `set_param`
+  gains `'fac'`, and the stable `SYSTEM_PROMPT` block gains an OR120 section whose headline
+  is "there is NO MASTER VOLUME — the VOLUME knob is the whole amp".
+
+**One deliberate divergence, and it is a session-safety decision.** The native `CabChoice`
+enum already had `CAB_CUSTOM = 2`, and those values are stored in the APVTS `cabModel`
+choice parameter and in saved sessions. Inserting the Orange cab at 2 to match the C ABI
+would silently turn every saved session that says "Custom IR" into "Orange 4×12". So native
+appends **`CAB_ORANGE412 = 3`** and the engine maps the two spaces **in code**
+(`loadCurrentCabIntoPair`), never by assuming the integers agree. The popup-menu ids are a
+third space again (the Orange is menu id 5, because 1–4 were taken and 0 means "dismissed").
+
+### 57.12 Scope check
+
+**All five goldens UNCHANGED** (`rat_jcm800`, `sd1_twin_reverb`, `muff_twin`, `ts_ac30`,
+`clean120_chorus`: ±0.00 dB), so **nothing was blessed and nothing needed to be** — this is
+a new voice, and a new voice cannot move an existing rig's render. Core ctest 26/26 green.
+The native `identical_core_test` is green, which is the proof that the plugin's default
+state still renders bit-identically to a hand-built core chain.
+
+### 57.13 Named follow-ups
+
+* **The schematic.** Everything in §57.1's "not sourced" list.
+* **Cathodyne grid conduction** is not modelled (compliance clipping is). A real split load
+  does conduct at slam; the EL34 grids carry the blocking mechanism as on the 2204.
+* **OT core saturation** stays linear — the same documented deferral the other three amps
+  carry.
+* **The preamp's per-stage oversampling** costs the same stacked group delay §46 flagged for
+  the AC30; consolidating the two 12AX7 stages into one OS domain is the same slice for both.
+* **A native `orange412` snapshot scene** for the headless screenshot suite.
 ## 58. The first FILTER pedal — a GCB-95-style wah with a derived sweep law, and the same tank driven by an envelope
 
 The lineup's six pedals were all *dirt* (RAT / SD-1 / TS / Muff / GOLD) plus one
@@ -10206,3 +10626,407 @@ dispatch (so a wah routes to the RAT) takes the heel-band energy from 5.4e-04 to
    before AND after the dirt works on the web and not in the plugin — the
    pre-existing `kMaxChain` limitation, and this pedal is the first one where
    wanting two of them is a normal request.
+## 59. M13.1 — the "Squash" OTA compressor (the first DYNAMICS processor)
+
+The lineup's first pedal that is neither dirt nor modulation: an MXR Dyna Comp /
+Ross-style **CA3080 OTA compressor**, shipping as pedal type `comp`. Two knobs,
+because the real box has two — SUSTAIN and LEVEL. Files: shared
+`core/include/clipper/dsp/CompressorEngine.h` + `core/src/dsp/CompressorEngine.cpp`;
+thin `core/include/clipper/dsp/CompModel.h` + `core/src/dsp/CompModel.cpp`; tests
+`core/tests/test_comp_model.cpp` (`clipper_comp_tests`); C ABI `comp_*`;
+`--pedal comp` in the render CLI; a `squash` row in `clipper-bench`; worklet
+`comp` dispatch; `rig.ts` / `Pedal.tsx` / `pedal.css` / `tokens.css` / assistant;
+native `ClipperEngine` + APVTS + `PedalCard`. Trademark-safe throughout (no
+MXR / Dyna Comp / Ross text on any user surface; the wordmark is "Squash").
+
+**Built as a config-parameterized engine from the first line**, exactly as §21's
+`OverdriveEngine` serves both the SD-1 and the TS. The optical / LA-2A-style
+voice (M13.3) is a second config plus one `applyGainCell()` case; the noise gate
+(M13.6) is this same detector feeding a different `ControlMap`. The seam is
+written out in full in the `CompressorEngine.h` banner so the next slice does not
+have to guess where it is, and the decision — including its named risk, that a
+seam written before its second consumer exists can be the *wrong* seam — is
+recorded in **ADR 019**
+(`docs/decisions/019-compressor-engine-is-config-parameterized.md`).
+
+### 59.1 Research — what was reachable, and what was not
+
+**Reachable.** The primary source is a complete **LTspice transcription of the
+whole pedal**, published by Nick Chesney (cushychicken) alongside his write-up
+"Simulating the MXR Dyna Comp Compressor in LTSpice" (2020-11-02), and hosted on
+GitHub at `Cushychicken/ltspice-guitar-pedals` (`mxr-dyna-comp/mxr-dyna-comp.asc`)
+— which is why it was reachable at all (see the gap list below). His schematic is
+in turn traced from **R. G. Keen's Geofex archive** (`dynacomp.gif`). The `.asc`
+was parsed node by node from its `SYMBOL`/`WIRE`/`FLAG` records and the netlist
+reconstructed by hand; that reconstruction is what `CompModel.cpp` encodes, and
+every reference designator in that file follows the LTspice numbering.
+
+Component values were **cross-checked against an independent source**: the
+ElectroSmash "MXR Dyna Comp Analysis" component list, reached through search-result
+extracts (the site itself 403s here — see the gaps). Its designators differ but
+its values agree: the 500 kΩ sensitivity pot, the 50 kΩ output pot, the 2 kΩ
+trimmer, the 27 kΩ bias-setting resistor, the 150 kΩ pair, the 10 µF caps, the
+1 nF, the 1N914/1N4148 clamp diodes, the 2N3904s, the CA3080.
+
+Two further cross-checks that landed, both worth recording because they validate
+the *model*, not just the transcription:
+
+* **The bias rail.** `CompModel.cpp` computes it as `9 V · 27 k/(56 k + 27 k) =
+  2.9277 V`, from the divider. The schematic's own net for that node is named
+  `V3P0`. Nothing was assumed.
+* **The whole control loop, against an independent simulation.** Chesney's SPICE
+  run reports that with the sensitivity pot at 10 kΩ the bias current starts at
+  "just under 200 µA" and, on a 100 mV 1 kHz sine, "stabilizes at about 16 µA".
+  This model, at the SUSTAIN position that gives the same 37 kΩ total, measures
+  **199.85 µA idle and 16.54 µA settled**. That is a 4 % and 3 % agreement on a
+  number produced by the gain cell, the load, the phase splitter, the rectifier,
+  the envelope integrator and the control map all in series, from a simulator
+  this code has never seen. It is the strongest absolute check available for a
+  pedal with no published transfer curve.
+
+**Not reachable from this environment, recorded as gaps.** The proxy in this
+container permits **github.com only**; every other host returns 403 at the CONNECT
+stage, so `WebFetch` failed uniformly and `WebSearch` result extracts were the
+only other channel.
+
+* **Kröger & Zölzer / DAFx-11, "Analysis and Simulation of an Analog Guitar
+  Compressor"** — the state-space analysis of this exact pedal. `recherche.ircam.fr`
+  and `dafx.de` both 403. This is the biggest gap: it is the one source that would
+  have given an independent set of derived equations to check the gain cell and the
+  detector against.
+* **ElectroSmash's analysis page and the CA3080 datasheet / AN6668** — 403 direct;
+  used only through search extracts. The OTA laws below (`gm = Iabc/2Vt`,
+  `Iout = Iabc·tanh(Vd/2Vt)`) are therefore **derived from bipolar differential-pair
+  theory**, not quoted, though the extracts do confirm the qualitative statement
+  ("transconductance is directly proportional to the amplifier bias current").
+* **coda-effects.com** — 403, as CLAUDE.md already records.
+* **A published static compression curve or ratio for a real unit.** None found.
+  Every curve in §59.4 is this model's own; there is no absolute reference to
+  check the ratio against, and that is stated rather than papered over.
+* **The SUSTAIN pot's taper letter.** Not sourced anywhere. Shipped as a plain
+  linear rheostat; the measured consequence is in §59.4 and is reported, not fitted.
+* **Attack/release figures.** A review measurement ("attack fixed at 5 ms,
+  release ~1 second") was the only quantitative claim found, and it is a review,
+  not a manufacturer spec. Treated accordingly: it is used as a soft anchor with a
+  3–9 ms window, never as a fitting target.
+
+### 59.2 The three things the brief said must be modelled, not approximated
+
+**1. The CA3080 gain cell.** Not `gain = f(envelope)`. The cell is the bipolar
+differential pair it physically is:
+
+```
+    Iout = Iabc · tanh( Vd / (2·Vt) )        Vt = 25.85 mV
+    gm   = dIout/dVd |_0 = Iabc / (2·Vt)
+```
+
+`Iabc` is a real current computed from real node voltages (§59.3), and the tanh is
+the CA3080's own soft limit, which is a large part of why the pedal colours the
+tone. At the shipped SUSTAIN 0.5 idle, `Iabc` = 27.70 µA → `gm` = 535.7 µS.
+
+**2. The detector time constants — derived, because they ARE the pedal.** There is
+no attack knob and no release knob because there are no parts for them:
+
+| what | components | derived | measured |
+| --- | --- | --- | --- |
+| release | `R18·C9` = 150 kΩ × 10 µF | **1.500 s** | **1.496 s** (SUSTAIN 0.5), 1.448 s (1.0) |
+| attack | peak detector: `C7/C8` 10 nF into `R16/R17` 1 MΩ, clamped by `D1/D2`, driving `Q3/Q4`'s base | not a single RC — it is a *current-starved discharge* whose rate is set by how much base current the phase splitter can push through the clamp | **14 / 10 / 5 / 3 ms** at SUSTAIN 0.30 / 0.50 / 0.80 / 1.00 |
+| clamp settling | `C7·R16` = 10 nF × 1 MΩ | 10 ms | (the DC-restorer corner) |
+
+The attack is *not constant across the knob*, which falls out of the circuit
+rather than being designed: more idle gain puts the detector over its turn-on
+sooner. The published ~5 ms lands at SUSTAIN 0.80.
+
+**3. Feed-forward vs feed-back — settled from the netlist.** The detector taps
+`V_comp_out`, the phase splitter's emitter, which is **after** the gain cell.
+The Dyna Comp is therefore **FEED-BACK**. This is encoded as a config field with a
+measurement hook (`setDetectorTap`) rather than a comment, and
+`clipper_comp_tests` proves the claim is load-bearing: at SUSTAIN 1.0 over 26 dB
+of input, feed-back gives **216:1** and the same code tapping the cell's input
+gives **3.3:1**.
+
+That one fact explains the pedal's whole character. In a feed-back compressor the
+loop drives the OUTPUT to wherever the detector turns on, so the threshold is an
+absolute output level fixed by a base-emitter drop — it does not move for any
+knob, and above it the ratio is enormous.
+
+### 59.3 The circuit → the model, stage by stage
+
+```
+in -[C2 10n]-[R4 10k]- Q1 emitter follower -[C3 1u]-> CA3080 (-in)
+                                                          |
+    (+in) AC-terminated by R12 15k || C4 10n in series with C5 1u,
+    bridged to (-in) by the 2k offset TRIMMER  <-- THE input attenuator
+                                                          |
+                             Iout = Iabc·tanh(Vd/2Vt)     v
+                     R13 150k || C6 1n  (to the 2.93 V bias rail)
+                                                          |
+                                            Q2 phase splitter (R14 = R15 = 10k)
+                                             /                          \
+                              EMITTER = audio out              COLLECTOR (anti-phase)
+                                             \                          /
+                       [C7/C8 10n] -> nodes with [R16/R17 1M] to ground,
+                       [D1/D2 1N4148] clamping the NEGATIVE excursion,
+                       Q3/Q4 grounded-emitter, collectors on the envelope node
+                                                          |
+                                          C9 10u, R18 150k to +9 V
+                                                          |
+                              Q5 follower -> RV1 500k SUSTAIN rheostat -> R23 27k
+                                                          |
+                                                    Iabc (back to the OTA)
+out <- RV2 50k LEVEL <- R20 10k <- C10 50n <- (the same splitter emitter)
+```
+
+**The finding that is in no prose source: the OTA sees only ~12 % of the signal,
+and the network that does it is second order.** The 2 kΩ offset trimmer bridges
+the two OTA inputs while the non-inverting input is AC-terminated in 15 kΩ, so the
+*differential* drive is a divider, not the raw signal. Its transfer function is
+
+```
+  Zterm(s) = R8 || [ R12/(1 + s·R12·C4) + 1/(s·C5) ]
+  H(s)     = −Rtrim / (Rtrim + Zterm(s))
+```
+
+with **real, hugely separated roots** — zeros at 0.157 Hz and 1077 Hz, poles at
+9.29 Hz and 9105 Hz, `|H| → 1` at infinity and 0.002 at DC. `CompModel.cpp`
+computes those roots from the component values rather than pasting them in.
+
+This matters twice over:
+
+* **Tonally.** `|H_d|` RISES with frequency (0.118 at 100 Hz, 0.160 at 1 kHz,
+  0.492 at 5 kHz) while the 150 kΩ ∥ 1 nF load pole at **1210 Hz** FALLS. They
+  very nearly cancel: the composed small-signal response is flat within **1.74 dB
+  from 110 Hz to 5 kHz**. That is why a Dyna Comp reads as "not very bright"
+  without sounding filtered, and it is why neither network may be simplified away
+  without the other.
+* **Numerically.** A 9.29 Hz pole at the oversampled 192 kHz sits at radius
+  0.99970. Docs §56 measured exactly that shape emitting audible hiss out of a
+  `float` direct form, and §56.4b showed the house `flushDenormal` one-liner
+  cannot converge a direct form of order ≥ 2 *at all*. So the network ships as a
+  **cascade of two first-order sections in `double`** — the cure §56 named,
+  applied at the first opportunity rather than after the fact.
+
+**Everything else, and where each number comes from.** The 2N3904 card is ON
+Semi's SPICE model verbatim (`IS = 6.734f`, `BF = 416.4`, `ISE = 6.734f`,
+`NE = 1.259`); the 1N4148 is the project's own post-§36 card (`Is = 2.52 nA`,
+`n = 1.752`) — the ideality factor is **not** dropped back to 1.0 here either.
+The **Gummel-Poon low-current (ISE/NE) term is modelled deliberately**, and it is
+the one modelling choice in this slice that needed an argument: the detector
+transistors' base current is what loads the clamp network, so their hFE at ~0.2 mA
+is what sets the attack. With `betaF` alone a 2N3904 reports hFE = 416; with the
+ISE term the *same published card* yields **hFE = 106 at 0.23 mA**, which is the
+datasheet's own low-current figure, obtained with nothing fitted.
+
+The CA3080's Iabc pin is taken as **0.7 V** above the negative rail (one
+diode-connected mirror junction). Note for anyone comparing against the LTspice
+transcription: it substitutes an LM13700, whose bias node sits at ~1.3 V, moving
+the maximum control current by 8 %. The pedal has a CA3080.
+
+Two documented simplifications, both named rather than buried:
+
+1. **The discharge transistors' saturation** is a smooth `Vce/(Vce + 0.1)` factor
+   rather than Ebers-Moll's reverse term. It only ever acts when the envelope node
+   is already bottomed, and the measured worst-case discharge moves the node
+   0.01 V per sample, so it effectively never binds.
+2. **The supply compliance** is applied to the load node *after* its pole rather
+   than inside the RC. It uses the existing `AsymSoftClipper` (ADAA), and it is
+   genuinely asymmetric on a single supply: +5.07 V up, +1.93 V down around the
+   2.93 V rail.
+
+### 59.4 What SUSTAIN actually is — measured
+
+**It is not a threshold.** It is a rheostat in the control-current path, so it
+sets the gain cell's IDLE bias current, i.e. how much gain the loop has to give
+away before it settles. The threshold is a base-emitter drop and no knob is in
+front of it. Measured at 1 kHz, LEVEL 1.0, settled:
+
+| SUSTAIN | idle Iabc | small-signal gain | settled output peak above the knee |
+| --- | --- | --- | --- |
+| 0.00 | 14.63 µA | **+11.25 dB** | 0.383 V |
+| 0.30 | 20.41 µA | **+14.14 dB** | 0.386 V |
+| 0.50 | 27.70 µA | **+16.79 dB** | 0.390 V |
+| 0.80 | 59.89 µA | **+23.49 dB** | 0.396 V |
+| 1.00 | 270.5 µA | **+36.58 dB** | 0.400 V |
+
+**The gain column moves 25.33 dB. The output column moves 0.28 dB.** That pair of
+numbers is the whole answer, and it is what a `gain = f(env)` fake would get
+wrong. The 25.33 dB is the circuit's own span: `Iabc = 7.1 V/(R + 27 k)` over a
+500 kΩ rheostat is a 19.5× range = 25.8 dB, and `gm ∝ Iabc`.
+
+The static curve at SUSTAIN 0.50 (input dBV peak → output dBV peak):
+
+| in | −53.98 | −46.02 | −40.00 | −33.98 | −26.02 | −20.00 | −13.98 | −7.96 | −1.94 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| out | −37.19 | −29.23 | −23.21 | −17.20 | −9.54 | −8.39 | −8.17 | −8.14 | −8.22 |
+| gain | +16.79 | +16.79 | +16.79 | +16.78 | +16.48 | +11.61 | +5.81 | −0.18 | −6.28 |
+
+Slope below the knee **0.9992** (linear, to four figures). Ratio over the top
+18 dB of input **106:1**. The 3 dB-of-gain-reduction knee sits at **−20.0 dBV**.
+It is a limiter, not a gentle studio compressor, and that is correct for the
+circuit.
+
+**The knob law, reported not fitted.** With the pot as a plain linear rheostat
+(its taper letter could not be sourced), `Iabc = 7.1/(R + 27 k)` is strongly
+top-heavy: 12.24 dB of the 25.33 dB total lives in the last 20 % of travel. That
+is measured and left alone. If the owner wants it re-tapered, that is a §43-style
+owner decision with a stated design equation, not something to fit here.
+
+### 59.5 Sustain extension — the reason the pedal exists
+
+Level-matched, because "it lasts longer" only means something at equal loudness:
+a decaying 220 Hz note (0.30 V peak, τ = 0.7 s), the bypassed reference scaled so
+both envelopes agree 0.3 s in, then the time each stays within 20 dB of that point.
+
+| SUSTAIN | compressed holds | level-matched bypass | extension |
+| --- | --- | --- | --- |
+| 0.00 | 2.26 s | 1.90 s | **+0.36 s** (1.19×) |
+| 0.30 | 2.46 s | 1.90 s | **+0.56 s** (1.29×) |
+| 0.50 | 2.64 s | 1.90 s | **+0.74 s** (1.39×) |
+| 0.80 | 3.14 s | 1.90 s | **+1.24 s** (1.65×) |
+| 1.00 | 4.16 s | 1.90 s | **+2.26 s** (2.19×) |
+
+### 59.6 The honest expectations — REPORTED, not designed out
+
+A real Dyna Comp squashes the attack, hisses at full sensitivity and colours the
+tone at every setting. None of that was "fixed"; a better-behaved compressor would
+be a different pedal. Each is measured, and each is **asserted in the direction
+that says this is still a Dyna Comp**, so a future slice that quietly improves one
+turns the suite red and has to argue the change.
+
+**Attack-transient loss** (1 kHz burst, the first 50 ms vs settled):
+
+| SUSTAIN | 0.30 | 0.50 | 0.80 | 1.00 |
+| --- | --- | --- | --- | --- |
+| loss | **7.72 dB** | **10.00 dB** | **15.18 dB** | **20.00 dB** |
+
+**Noise.** This project synthesises no noise anywhere, so what is measured is the
+mechanism: the GAIN the pedal applies to whatever floor arrives. On a −84.75 dBFS
+input noise floor at LEVEL 1.0 — SUSTAIN 0.00 **+8.22 dB**, 0.50 **+13.76 dB**,
+1.00 **+33.56 dB**. Turning the knob up costs **25.34 dB** of noise gain, bought
+with the same turn as the compression. That is the pedal's famous hiss, stated as
+a number rather than simulated.
+
+**Tone colour**, small-signal, dB re 1 kHz (SUSTAIN 0.5):
+
+| Hz | 20 | 41 | 82 | 110 | 220 | 440 | 1000 | 2000 | 5000 | 10000 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| dB | −15.21 | −6.59 | **−2.42** | −1.57 | −0.65 | −0.32 | 0.00 | +0.17 | −0.58 | **−2.88** |
+
+The low end really is thinned — three high-passes sit between input and output
+(input 30.5 Hz, output 51.9 Hz, and the drive network's own 9.29 Hz pole), the
+smallest coupling cap in the path being 10 nF. Low E is down 2.42 dB and 20 Hz is
+down 15.21 dB. The top rolls off 2.88 dB by 10 kHz, which is the "keeps the white
+noise down" characterisation of the Ross/Dyna Comp family, measured.
+
+**And it inverts phase.** The signal drives the OTA's inverting input, so the
+pedal is phase-inverting, like the real one. Documented, not corrected.
+
+### 59.7 Hygiene, cost, and the numbers the conventions require
+
+| property | measured |
+| --- | --- |
+| aliasing, single 9 kHz tone at 0.3 V, SUSTAIN 1.0 | 1× **−7.61 dB** → 2× −28.99 → **4× −62.37** → 8× −97.73 |
+| DC offset ON SIGNAL (220 Hz 0.2 V, and with +0.1 V input offset) | 0.0000 % of peak both cases |
+| block-size invariance (128 vs ragged 100/37/256/1/411) | **exactly 0.0** |
+| rate independence (settled level, 44.1 / 48 / 88.2 / 96 kHz) | spread **0.014 dB** |
+| latency | 72 samples at 4× (the shared oversampler figure) |
+| `reset()` | re-parks at the cached quiescent point **exactly** (matches a fresh model to < 1e-9 V); one NaN poisons 245/256 samples, after `reset()` **0/48000** |
+| denormals | `maxAbsRestingState()` **exactly 0.0** after a silent tail; output exactly 0.0f |
+| knob zipper vs the signal's own slew | SUSTAIN **1.66×**, LEVEL **0.93×** |
+| CPU, 4× at 48 kHz | signal **8.24× realtime / 12.1 % of a stream**; silence 16.5× / 6.1 % |
+
+The aliasing measurement needed a correction worth recording, because the first
+attempt was wrong in an instructive way: a **two-tone** stimulus reported −25 dB
+flat across 1×…8×, which looked like a bad alias floor and was not aliasing at
+all. A compressor's gain is modulated by its own detector, so two tones fill the
+spectrum with legitimate intermodulation sidebands. The tell is exactly §54's:
+**a real alias floor moves with the oversampling factor.** With a single tone the
+envelope is constant and everything below the fundamental is fold-back — and the
+floor then moves 54.76 dB from 1× to 4×.
+
+**Silence is CHEAPER than signal** (6.1 % vs 12.1 %), which is the §33/§34 check:
+the detector's Newton solve early-outs on its residual at the parked node instead
+of burning its iteration budget, and the denormal policy is doing its job.
+
+The denormal scope rule (ADR 006) was applied by measurement, not by pattern:
+
+* **Guarded** — the six linear filter states (input and output coupling
+  high-passes, the two drive-network sections, the load pole). All rest at exactly
+  zero; `maxAbsRestingState()` covers exactly these and asserts 0.0.
+* **NOT guarded, envelope node** — rests at **8.9684 V at SUSTAIN 0 / 8.6353 V at
+  SUSTAIN 1.0**. A real DC operating point; it can never be subnormal.
+* **NOT guarded, the two clamp caps and their Newton warm starts** — and this one
+  is a finding rather than an application of the rule. Their *physical* rest is
+  −4.90e-272 V (the node's equilibrium against the clamp diode's own reverse
+  saturation current), which IS below the flush floor — but the **solver cannot
+  resolve it**: Newton exits at `kNewtonResidualTolA`, so the node floors at
+  `tol × (Rsrc + T/C)` ≈ **1.9e-11 V** and the cap settles inside that. Measured
+  after a 40 s silent tail: ~1e-11 V, not decaying. That is 297 decades above the
+  subnormal range, so a guard there would be unreachable code in the hottest loop
+  in the file — the exact thing §33 found was the wrong thing to ship. Comment,
+  not flush.
+
+### 59.8 A bug this slice made, and how it was caught
+
+The first implementation put the **collector** current in the clamp node's KCL.
+Only base current flows into that node; the collector current flows from the
+envelope cap to ground and never touches the base. The wrong version made the node
+~β times too stiff, which starved the discharge by two orders of magnitude, and
+the symptoms were: attack **500–650 ms** instead of 3–14 ms, the output never
+properly pinned (ratio 9:1 at SUSTAIN 1.0 instead of >100:1), and — the tell — the
+independent LTspice cross-check off by **3.6×** (58.4 µA settled against the
+reference sim's 16 µA) while the *idle* current agreed to 4 %. An error that
+shows up only under signal, and only against an outside number, is exactly what a
+self-consistent test suite cannot catch; this is the case for keeping an absolute
+reference in the loop.
+
+### 59.9 Perturbation proofs
+
+Every load-bearing bar was proven by reverting the thing it names in a scratch
+copy of the source, rebuilding (with `touch` after **both** patch and restore —
+docs §29's trap), and confirming the suite goes red. `git stash` was NOT used:
+CLAUDE.md records that stashes are repo-global across worktrees and have already
+caused one cross-agent collision.
+
+| # | perturbation | result | first assertion to fail |
+| --- | --- | --- | --- |
+| baseline | — | GREEN | — |
+| P1 | `detectorFromOutput = true → false` (feed-forward) | **RED** | `squashed < idle * 0.6` — the loop stops giving gain away |
+| P2 | `C6` 1 nF → 1 pF (the load pole deleted) | **RED** | `hi - lo < 3.0` — the core band stops being flat, 1.74 → 6.6 dB |
+| P3 | `C9` 10 µF → 1 µF (release 1.5 s → 0.15 s) | **RED** | `rel > 1.20 && rel < 1.80` |
+| P4 | `ISE = 0` (Gummel-Poon low-current term removed; hFE 106 → 416) | **RED** | `attackMs > 3.0 && attackMs < 9.0` — attack 5.00 → 2.00 ms |
+| P5 | `Rtrim` 2 kΩ → 2 Ω (the OTA input attenuator shorted) | **RED** | `pinSpread < 1.5` — the threshold stops being knob-independent |
+| restore | — | GREEN | — |
+
+P4 is worth a note: the first version of the suite **stayed green** under it,
+because the wide 0.5–30 ms attack window accepted both 5 ms and 2 ms. Rather than
+narrowing a bar around the perturbation, the fix was to add a bar against an
+**absolute reference** — the published ~5 ms figure, with a 3–9 ms window that
+reflects how weakly sourced that figure is (§59.1). The model measures 5.00 ms at
+SUSTAIN 0.80, dead centre, and P4 then fails at 2.00 ms.
+
+### 59.10 Integration and goldens
+
+One param shape, additive registries: `rig.ts` `PedalType` + gear tray +
+`COMP_KNOB_DEFAULTS` (SUSTAIN 0.5, LEVEL 0.4 — **0.4 measures unity**: a 0.15 V
+peak 220 Hz note comes out at 0.1565 V, +0.37 dB); worklet `comp` dispatch behind
+the `_comp` C-ABI prefix; `Pedal.tsx` FACES entry; `tokens.css` `--accent-comp`;
+native `PEDAL_COMP = 6` (appended, never inserted — those integers are the packed
+snapshot encoding, and the 4-bit slots §27's board widening bought are exactly the
+headroom this seventh type needed), three APVTS parameters, a `PedalCard` face and
+an `identical_core_test` case (`Squash -> Screamer -> Twin`). Assistant:
+`add_pedal` gains `'comp'`, and the coach gets a real block — including that
+SUSTAIN is not a threshold, that the pedal belongs FIRST in the chain (a
+compressor after a distortion has nothing left to do, since distortion is already
+a compressor, and will mostly raise the noise floor between notes), and the four
+honest expectations stated as facts rather than apologies.
+
+**Visual identity (doctrine §17).** Dark chassis both themes, **TEAL** accent, the
+'stack' anatomy with exactly **TWO** knobs over a round stomp — two knobs where
+every dirt box has three is the morphology cue. The real pedal is red; red is the
+RAT's accent here and two red boxes on one board is a usability bug, so the colour
+is chosen for distinguishability and the identity is carried by the face. Wordmark
+"Squash", model line `DYNAMICS Nº7 · SQUASH`. No trademarks.
+
+**Goldens: all five UNCHANGED at ±0.00 dB, and nothing was blessed.** The
+compressor is in no golden rig, and it touches no other model.

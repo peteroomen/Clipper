@@ -14,6 +14,7 @@
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/Jcm800Amp.h"
+#include "clipper/dsp/CompModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/OutputLimiter.h"
@@ -136,6 +137,14 @@ int main(int argc, char** argv) {
         m.setParameter(clipper::dsp::GoldModel::PARAM_TREBLE, 0.5f);
         m.setParameter(clipper::dsp::GoldModel::PARAM_OUTPUT, 0.7f);
         benchUnit("gold (clean-blend drive)", riff,
+                  [&](const float* i, float* o, int n) { m.process(i, o, n); });
+    }
+    if (want("comp")) {
+        clipper::dsp::CompModel m;
+        m.prepare(kSr, kBlock);
+        m.setParameter(clipper::dsp::CompModel::PARAM_SUSTAIN, 0.5f);
+        m.setParameter(clipper::dsp::CompModel::PARAM_LEVEL, 0.4f);
+        benchUnit("squash (OTA compressor)", riff,
                   [&](const float* i, float* o, int n) { m.process(i, o, n); });
     }
     if (want("phaser")) {

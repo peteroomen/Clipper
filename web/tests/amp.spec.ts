@@ -782,6 +782,9 @@ test('amp twin: a twin rig round-trips through JSON literally', async ({ page })
           volume: 0.55, bass: 0.5, middle: 0.55, treble: 0.6, bright: 1, cab: 1,
           speed: 0.7, depth: 0.6, chorusMode: 0, reverb: 0.35,
           gain: 0.5, presence: 0.5, master: 0.4,
+          // M10.3: the Orange's F.A.C. is a real AmpParams field, so it is part of
+          // the serialized shape for EVERY voice — the literal has to carry it.
+          fac: 0.2,
         },
       },
       oversampling: 4,
@@ -1215,6 +1218,7 @@ test('amp ac30: an ac30 rig round-trips through JSON literally', async ({ page }
           speed: 0.3, depth: 0.5, chorusMode: 0, reverb: 0.2,
           // presence is REUSED as the AC30's top CUT (a distinct value pins the round-trip).
           gain: 0.5, presence: 0.35, master: 0.4,
+          fac: 0.2,  // M10.3: part of the serialized shape for every voice
         },
       },
       oversampling: 4,
@@ -1385,4 +1389,173 @@ test('perf smoke: ac30 offline-render wall-time ratio is within a generous bound
   expect(perf.clean).toBeGreaterThan(1);
   expect(perf.ac30).toBeGreaterThan(1);
   expect(perf.ratio).toBeLessThan(150);
+});
+
+// ---------------------------------------------------------------------------
+// M10.3 — the Orange OR120 "Overdrive", amp voice 4 (docs §57).
+// ---------------------------------------------------------------------------
+
+// The WEB property worth asserting here is the DELIVERY PATH, not the voicing bar.
+// THE BAR — mid-forward vs the JCM800 — is a DSP property and lives in the core suite
+// (`clipper_orange_tests::testMidForwardVsJcm800`, docs §57.4), where it is measured
+// over 16 renders. It was tried here first and is deliberately NOT kept: the worklet
+// form needs six OfflineAudioContexts in one browser process, and this config's own
+// comment says Chromium can start rendering silence past a few of them — two
+// consecutive attempts measured contrast +5.92 dB and then −9.50 dB from identical
+// code. A bar that unstable is a coin flip, not a test.
+//
+// So what this asserts is that the OR120 is REACHABLE and DIFFERENT through the whole
+// web path: model index 4, its own F.A.C. param id 13, the cab. Two contexts.
+test('amp orange: voice 4 is reachable through the worklet and sounds unlike the JCM800', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.5;
+    // model: 1 = JCM800, 4 = Orange OR120 (AMP_MODEL_INDEX / clipper_c_api AmpModelId).
+    async function render(model: number, fac: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 1, value: 0.5 });   // bass
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 2, value: 0.5 });   // middle
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 3, value: 0.5 });   // treble
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: 0.0 });   // reverb off
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.5 });   // volume (Orange)
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 10, value: 0.5 });  // gain (JCM)
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 12, value: 0.4 });  // master (JCM)
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 11, value: 0.5 });  // presence / HF DRIVE
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 13, value: fac });  // F.A.C. (Orange)
+        node.port.postMessage({ type: 'ampModel', model });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 });     // cab on -> latency echo
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 82.41 });  // low E
+      const g = new GainNode(ctx, { gain: 0.15 });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+    function rms(d: Float32Array): number {
+      const s0 = Math.floor(d.length * 0.5);
+      let a = 0;
+      for (let i = s0; i < d.length; i++) a += d[i] * d[i];
+      return Math.sqrt(a / (d.length - s0));
+    }
+    function anyNaN(d: Float32Array): boolean {
+      for (let i = 0; i < d.length; i++) if (!Number.isFinite(d[i])) return true;
+      return false;
+    }
+    // Orange at F.A.C. position 1 (fattest) vs position 6 (thinnest). The two renders
+    // differ ONLY in param id 13, so a difference proves the new id reaches the core.
+    const fat = await render(4, 0.0);
+    const thin = await render(4, 1.0);
+    return {
+      fatRms: rms(fat), thinRms: rms(thin),
+      facDropDb: 20 * Math.log10((rms(fat) + 1e-12) / (rms(thin) + 1e-12)),
+      nan: anyNaN(fat) || anyNaN(thin),
+    };
+  });
+
+  // The voice actually makes sound…
+  expect(result.fatRms).toBeGreaterThan(0.005);
+  expect(result.nan).toBe(false);
+  // …and the F.A.C. is wired: on a low E, clicking the rotary from position 1 to
+  // position 6 has to take a large amount of level away. Measured 17.49 dB here
+  // (broadband RMS through the cab) against the core suite's 17.21 dB at the tone bin
+  // (docs §57.6) — the bar is a deliberately loose 6 dB because this is testing the
+  // WIRE (param id 13 reaching the core), not the filter.
+  expect(result.facDropDb).toBeGreaterThan(6);
+});
+
+// The OR120 rig shape round-trips literally — including its own `fac` field.
+test('amp orange: an orange rig round-trips through JSON literally', async ({ page }) => {
+  await page.goto('/');
+  const rt = await page.evaluate(() => {
+    const t = (window as any).__CLIPPER_TEST__;
+    const rig = {
+      input: { trim: 0.4 },
+      pedals: [
+        { id: 'rat-1', type: 'rat', engaged: true, params: { distortion: 0.3, filter: 0.5, level: 0.8 } },
+      ],
+      amp: {
+        type: 'orange',
+        engaged: true,
+        cabModel: 'orange412',
+        params: {
+          volume: 0.6, bass: 0.5, middle: 0.5, treble: 0.6, bright: 0, cab: 1,
+          speed: 0.3, depth: 0.5, chorusMode: 0, reverb: 0.15,
+          // presence is REUSED as the OR120's HF DRIVE; fac is its own field, and a
+          // distinct value from the 0.2 default is what pins the round-trip.
+          gain: 0.5, presence: 0.45, master: 0.4, fac: 0.6,
+        },
+      },
+      oversampling: 4,
+      source: 'test',
+    };
+    const back = t.deserializeRig(t.serializeRig(rig));
+    return { equal: JSON.stringify(rig) === JSON.stringify(back), back };
+  });
+  expect(rt.equal).toBe(true);
+  expect(rt.back.amp.type).toBe('orange');
+  expect(rt.back.amp.cabModel).toBe('orange412');
+  expect(rt.back.amp.params.fac).toBe(0.6);
+});
+
+// UI: the face swaps, F.A.C. and HF appear, and what the OR120 does NOT have stays gone.
+test('amp UI: selecting orange swaps to Overdrive (F.A.C. shown, middle/gain/master/bright hidden)', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByTestId('board-amp')).toBeVisible();
+  await expect(page.getByTestId('amp-name')).toContainText('Clean 120');
+
+  await page.getByTestId('amp-select').click();
+  await expect(page.getByTestId('amp-menu')).toBeVisible();
+  await page.getByTestId('amp-orange').click();
+
+  const amp = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().amp);
+  expect(amp.type).toBe('orange');
+  await expect(page.getByTestId('amp-name')).toContainText('Overdrive');
+  await expect(page.getByTestId('amp')).toHaveAttribute('data-amp-type', 'orange');
+  // Shown: Volume · Bass · Treble · F.A.C. · HF (bound to knob-presence) · Reverb.
+  await expect(page.getByTestId('knob-volume')).toBeVisible();
+  await expect(page.getByTestId('knob-bass')).toBeVisible();
+  await expect(page.getByTestId('knob-treble')).toBeVisible();
+  await expect(page.getByTestId('knob-fac')).toBeVisible();
+  await expect(page.getByTestId('knob-presence')).toBeVisible(); // the HF DRIVE knob
+  await expect(page.getByTestId('knob-presence')).toContainText('HF');
+  await expect(page.getByTestId('knob-reverb')).toBeVisible();
+  // Absent, and each absence is a circuit fact (docs §57): no mid (James stack), no
+  // master (VOLUME is the whole amp), no gain, no bright switch (HF DRIVE is it).
+  await expect(page.getByTestId('knob-middle')).toHaveCount(0);
+  await expect(page.getByTestId('knob-gain')).toHaveCount(0);
+  await expect(page.getByTestId('knob-master')).toHaveCount(0);
+  await expect(page.getByTestId('bright-toggle')).toHaveCount(0);
+  // A one-line hint suggested its own cab — but the cab was NOT auto-switched.
+  await expect(page.getByTestId('cab-note')).toContainText('Orange 4×12');
+  expect(amp.cabModel).toBe('clean212');
+
+  // …and the player can take the hint: the Orange 4x12 is in the cab list.
+  await page.getByTestId('amp-select').click();
+  await expect(page.getByTestId('amp-menu')).toBeVisible();
+  await page.getByTestId('cab-orange412').click();
+  const after = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().amp.cabModel);
+  expect(after).toBe('orange412');
 });

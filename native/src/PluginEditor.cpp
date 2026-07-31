@@ -52,6 +52,7 @@ constexpr int kCabNoteH = 26;
 constexpr int kCabChipMinW = 148;
 const juce::String kCabMenuClean = juce::String::fromUTF8("Clean 2\xc3\x97" "12");
 const juce::String kCabMenuBrit = juce::String::fromUTF8("Brit 4\xc3\x97" "12");
+const juce::String kCabMenuOrange = juce::String::fromUTF8("Orange 4\xc3\x97" "12");
 
 int preferredPedalWidth(int type) {
     const int knobs = (int)pedalFace(type).knobs.size();
@@ -177,8 +178,9 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     knob(reverb_, reverbAttach_, pid::reverb, "Reverb", skin::accent(skin::AccentId::Clean));
     knob(modSpeed_, modSpeedAttach_, pid::chorusSpeed, "Speed", skin::accent(skin::AccentId::Clean));
     knob(modDepth_, modDepthAttach_, pid::chorusDepth, "Depth", skin::accent(skin::AccentId::Clean));
+    knob(fac_, facAttach_, pid::orangeFac, "F.A.C.", skin::accent(skin::AccentId::Orange));
     for (NeuKnob* k : {&volume_, &bass_, &middle_, &treble_, &presence_, &master_, &gain_,
-                       &reverb_, &modSpeed_, &modDepth_})
+                       &reverb_, &modSpeed_, &modDepth_, &fac_})
         k->setScheme(skin::benchScheme());
 
     // Levers + power + chorus mode.
@@ -220,7 +222,8 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     };
 
     // ---- top-bar selectors ----------------------------------------------------
-    ampVoiceBox_.addItemList({"Clean 120", "Eight Hundred", "Twin Sixty-Five", "Thirty"}, 1);
+    ampVoiceBox_.addItemList(
+        {"Clean 120", "Eight Hundred", "Twin Sixty-Five", "Thirty", "Overdrive"}, 1);
     addAndMakeVisible(ampVoiceBox_);
     ampVoiceAttach_ = std::make_unique<ComboAttach>(proc_.apvts, pid::ampModel, ampVoiceBox_);
     oversampleBox_.addItemList({juce::String::fromUTF8("1×"), juce::String::fromUTF8("2×"),
@@ -368,6 +371,10 @@ void ClipperAudioProcessorEditor::showCabMenu() {
     m.addSectionHeader("Cabinet");
     m.addItem(1, kCabMenuClean, true, choice == CAB_CLEAN212);
     m.addItem(2, kCabMenuBrit, true, choice == CAB_BRIT412);
+    // M10.3. The MENU ids are 1-based popup ids, not CabChoice values (the popup
+    // reserves 0 for "dismissed"), so the Orange takes menu id 5 while its
+    // CabChoice is 3 — no arithmetic relationship, mapped in the callback.
+    m.addItem(5, kCabMenuOrange, true, choice == CAB_ORANGE412);
     if (custom.isNotEmpty())
         m.addItem(3, juce::String("Custom: ") + custom, true, choice == CAB_CUSTOM);
     m.addSeparator();
@@ -379,6 +386,7 @@ void ClipperAudioProcessorEditor::showCabMenu() {
                         if (result == 1) proc_.setCabChoice(CAB_CLEAN212);
                         else if (result == 2) proc_.setCabChoice(CAB_BRIT412);
                         else if (result == 3) proc_.setCabChoice(CAB_CUSTOM);
+                        else if (result == 5) proc_.setCabChoice(CAB_ORANGE412);
                         else if (result == 4) { chooseIrFile(); return; }
                         else return;
                         refreshCab();
@@ -613,11 +621,11 @@ void ClipperAudioProcessorEditor::updateAutoScroll() {
 
 void ClipperAudioProcessorEditor::updateAmpFace() {
     auto* mp = proc_.apvts.getParameter(pid::ampModel);
-    ampModel_ = juce::jlimit(0, 3, (int)(mp->convertFrom0to1(mp->getValue()) + 0.5f));
+    ampModel_ = juce::jlimit(0, 4, (int)(mp->convertFrom0to1(mp->getValue()) + 0.5f));
 
     // Hide the whole superset, then re-show per voice.
     for (NeuKnob* k : {&volume_, &bass_, &middle_, &treble_, &presence_, &master_, &gain_,
-                       &reverb_, &modSpeed_, &modDepth_})
+                       &reverb_, &modSpeed_, &modDepth_, &fac_})
         k->setVisible(false);
     ampPrimaryKnobs_.clear();
     ampModKnobs_.clear();
@@ -669,6 +677,23 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
             showMode_ = true;
             chorusMode_.setLabels({"Off", "On"});
             chorusMode_.setAccent(ampAccent_);
+            break;
+        case 4:  // Orange OR120 "Overdrive" — orange. Vol Bass Treble F.A.C. HF Reverb.
+            // What is ABSENT is the point (docs §57): no Master (VOLUME is the whole
+            // amp), no Mid (a James stack is bass + treble), no Bright (HF DRIVE is
+            // the brightness control, and it lives in the feedback loop).
+            ampWordmark_ = "Overdrive";
+            ampEyebrow_ = juce::String::fromUTF8("Head Nº5 · One-Twenty");
+            ampAccentId_ = skin::AccentId::Orange;
+            ampAccent_ = skin::accent(ampAccentId_);
+            showBright_ = false;
+            show(volume_, "Vol", ampAccent_);
+            show(bass_, "Bass", ampAccent_);
+            show(treble_, "Treble", ampAccent_);
+            show(fac_, "F.A.C.", ampAccent_);
+            show(presence_, "HF", ampAccent_);  // presence param reused as HF DRIVE
+            show(reverb_, "Reverb", ampAccent_);
+            ampPrimaryKnobs_ = {&volume_, &bass_, &treble_, &fac_, &presence_, &reverb_};
             break;
         case 3:  // AC30 "Thirty" — copper. Vol Bass Treble Cut Reverb
             ampWordmark_ = "Thirty";

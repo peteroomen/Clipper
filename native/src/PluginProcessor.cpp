@@ -1,5 +1,7 @@
 #include "PluginProcessor.h"
 
+#include <atomic>
+
 #include "CabIrFile.h"
 #include "PluginEditor.h"
 
@@ -9,9 +11,14 @@ namespace {
 // The cab/IR picker's choice parameter. Index order == clipper::native::CabChoice
 // == the C ABI's built-in indices == web/src/rig.ts CabChoice, so the same integer
 // means the same cab everywhere.
+// NOTE the ORDER: "Orange 4x12" is APPENDED last (index 3), not inserted next to
+// the other built-ins, because this array indexes a stored APVTS choice parameter
+// and inserting would re-point every saved session that says "Custom IR".
+// clipper::native::CabChoice carries the same reasoning.
 const juce::StringArray kCabChoices{juce::String::fromUTF8("Clean 2\xc3\x97" "12"),
                                     juce::String::fromUTF8("Brit 4\xc3\x97" "12"),
-                                    "Custom IR"};
+                                    "Custom IR",
+                                    juce::String::fromUTF8("Orange 4\xc3\x97" "12")};
 // The APVTS state child holding the custom IR's file path.
 const juce::Identifier kCabNode{"cab"};
 const juce::Identifier kCabCustomPath{"customIr"};
@@ -22,7 +29,8 @@ constexpr int kOversampleFactors[] = {1, 2, 4, 8};
 const juce::StringArray kChorusChoices{"Off", "Chorus", "Vibrato"};
 // M9.4/M10.1/M10.2 amp voice: choice index 0 == Clean 120, 1 == JCM800, 2 == Twin,
 // 3 == AC30 (matches Params::ampModel).
-const juce::StringArray kAmpModelChoices{"Clean 120", "JCM800", "Twin Sixty-Five", "AC30"};
+const juce::StringArray kAmpModelChoices{"Clean 120", "JCM800", "Twin Sixty-Five",
+                                        "AC30", "Overdrive 120"};
 
 // A plain 0..1 knob parameter (the core owns the taper law, so the host sees a
 // linear normalized position — identical to the web knobs).
@@ -37,24 +45,32 @@ std::unique_ptr<juce::AudioParameterFloat> knob(const char* id, const char* name
 const juce::Identifier kBoardNode{"board"};
 const juce::Identifier kBoardOrder{"order"};
 
-// Pack a chain into a uint32 the audio thread can read atomically: a 4-bit length
-// in bits 0..3, then kMaxChain 4-bit type slots above it. With six pedal types the
-// board is 4 + 6 × 4 = 28 bits — comfortably one lock-free word, with a spare type
-// value per slot and room for a seventh slot before this needs revisiting.
+// Pack a chain into a uint64 the audio thread can read atomically: a 4-bit length
+// in bits 0..3, then kMaxChain 4-bit type slots above it.
+//
+// This was a uint32 and its comment said there was "room for a seventh slot before
+// this needs revisiting". The EIGHTH pedal type (M13.1's compressor, landing
+// alongside §58's wah) is what crossed it: 4 × (8 + 1) = 36 bits, and the
+// static_assert below fired exactly as designed rather than letting a board
+// silently truncate. Widened to uint64, which is still ONE lock-free word on every
+// platform this ships to — asserted below rather than assumed, because a
+// non-lock-free atomic here would put a mutex on the audio thread.
 constexpr int kChainField = 4;                       // bits per length/type field
-constexpr juce::uint32 kChainMask = (1u << kChainField) - 1u;
+constexpr juce::uint64 kChainMask = (1ull << kChainField) - 1ull;
 static_assert(PEDAL_TYPE_COUNT <= (1 << kChainField),
               "a pedal type id no longer fits its packed field");
 static_assert(kMaxChain <= (1 << kChainField),
               "the chain length no longer fits its packed field");
-static_assert(kChainField * (kMaxChain + 1) <= 32,
-              "the packed chain no longer fits a lock-free uint32");
+static_assert(kChainField * (kMaxChain + 1) <= 64,
+              "the packed chain no longer fits a lock-free uint64");
+static_assert(std::atomic<juce::uint64>::is_always_lock_free,
+              "packedChain_ must be lock-free: the audio thread reads it");
 
-juce::uint32 packChain(const std::vector<int>& types) {
-    juce::uint32 v = static_cast<juce::uint32>(
+juce::uint64 packChain(const std::vector<int>& types) {
+    juce::uint64 v = static_cast<juce::uint64>(
         juce::jlimit<int>(0, kMaxChain, static_cast<int>(types.size())));
     for (int i = 0; i < static_cast<int>(types.size()) && i < kMaxChain; ++i) {
-        const juce::uint32 t = static_cast<juce::uint32>(
+        const juce::uint64 t = static_cast<juce::uint64>(
             juce::jlimit(0, PEDAL_TYPE_COUNT - 1, types[static_cast<size_t>(i)]));
         v |= t << (kChainField * (i + 1));
     }
@@ -145,6 +161,13 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::wahPosition, "Weeper Position", 0.35f));
     layout.add(knob(pid::wahSense, "Weeper Sense", 0.0f));
     layout.add(knob(pid::wahVoice, "Weeper Voice", 0.5f));
+    // M13.1 — the "Squash" OTA compressor. TWO knobs, because the pedal has two:
+    // SUSTAIN (which is NOT a threshold — it sets the OTA's idle bias current) and
+    // LEVEL. Defaults mirror the web's COMP_KNOB_DEFAULTS: 0.5 / 0.4, and 0.4
+    // measures unity at a normal playing level (docs §59).
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::compOn, 1}, "Squash On", true));
+    layout.add(knob(pid::compSustain, "Squash Sustain", 0.5f));
+    layout.add(knob(pid::compLevel, "Squash Level", 0.4f));
 
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::ampOn, 1}, "Amp Power", true));
     // M9.4 amp voice (default index 0 == Clean 120).
@@ -166,6 +189,10 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::jcmGain, "JCM Gain", 0.5f));
     layout.add(knob(pid::jcmMaster, "JCM Master", 0.4f));
     layout.add(knob(pid::jcmPresence, "JCM Presence", 0.5f));
+
+    // M10.3 Orange OR120-only knob. Default 0.2 == F.A.C. position 2 of 6, the same
+    // opening position the web's AMP_KNOB_DEFAULTS uses.
+    layout.add(knob(pid::orangeFac, "Orange F.A.C.", 0.2f));
 
     layout.add(std::make_unique<Choice>(juce::ParameterID{pid::chorusMode, 1},
                                         "Chorus Mode", kChorusChoices, 0));
@@ -288,7 +315,8 @@ bool ClipperAudioProcessor::loadCustomIrFile(const juce::File& file) {
 
 juce::String ClipperAudioProcessor::cabLabel() const {
     switch (cabChoice()) {
-        case CAB_BRIT412: return kCabChoices[CAB_BRIT412];
+        case CAB_BRIT412:   return kCabChoices[CAB_BRIT412];
+        case CAB_ORANGE412: return kCabChoices[CAB_ORANGE412];
         case CAB_CUSTOM:  return customIrLabel_.isNotEmpty() ? customIrLabel_
                                                              : juce::String("Custom IR");
         default:          return kCabChoices[CAB_CLEAN212];
@@ -398,11 +426,14 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.wahPosition = f(pid::wahPosition);
     p.wahSense = f(pid::wahSense);
     p.wahVoice = f(pid::wahVoice);
+    p.compOn = f(pid::compOn) >= 0.5f;
+    p.compSustain = f(pid::compSustain);
+    p.compLevel = f(pid::compLevel);
 
     // The board: unpack the lock-free snapshot the message thread published (never
     // touch the ValueTree here — this runs on the audio thread).
     {
-        const juce::uint32 v = packedChain_.load();
+        const juce::uint64 v = packedChain_.load();
         const int len = juce::jlimit(0, kMaxChain, static_cast<int>(v & kChainMask));
         p.chainLength = len;
         for (int i = 0; i < kMaxChain; ++i)
@@ -413,6 +444,7 @@ Params ClipperAudioProcessor::snapshotParams() const {
     }
     p.ampOn = f(pid::ampOn) >= 0.5f;
     p.ampModel = static_cast<int>(f(pid::ampModel));  // choice index == model id
+    p.orangeFac = f(pid::orangeFac);
     p.volume = f(pid::volume);
     p.bass = f(pid::bass);
     p.middle = f(pid::middle);

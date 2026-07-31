@@ -34,6 +34,12 @@ export type SourceKind = 'test' | 'live';
 // (distortion==Gain, filter==Treble, level==Output). Its architecture is the odd one
 // out: a PARALLEL clean/dirt blend cross-faded by a dual-ganged gain pot, with
 // germanium clippers — so at GAIN 0 it is a genuinely clean buffer/boost.
+// M13.1 adds 'comp' (the "Squash" OTA compressor — the first DYNAMICS pedal, and
+// the first that is not dirt): SAME three-slot shape/ABI, but only TWO of the
+// slots are real knobs — slot 0 (distortion) is SUSTAIN and slot 2 (level) is
+// LEVEL. Slot 1 is carried and unused, exactly as the phaser carries 1 and 2.
+// SUSTAIN is NOT a threshold: it sets the CA3080 gain cell's idle bias current,
+// so it buys compression, make-up gain and noise together.
 // Post-v1.1 adds 'wah' (the "Weeper" — the lineup's FIRST FILTER pedal, a
 // GCB-95-class Cry Baby): SAME three-knob shape/ABI, its slots reading as
 // POSITION / SENSE / VOICE (distortion==Position, filter==Sense, level==Voice).
@@ -41,7 +47,7 @@ export type SourceKind = 'test' | 'live';
 // at 0 is exactly that manual pedal and above 0 hands the SAME resonant tank to
 // an envelope follower (Mu-Tron-style auto-wah); VOICE is the documented "vocal
 // mod" — it changes the resonance's WIDTH only, not its centre. Docs §58.
-export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'phaser' | 'wah' | 'tuner';
+export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'phaser' | 'wah' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
@@ -54,28 +60,44 @@ export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'phaser' | 'wah
 // voice): VOLUME is the overdrive (crank it for the class-A grind), bass/treble drive
 // the top-boost stack, and the shared 'presence' param (id 11) is REUSED as the AC30's
 // top CUT control. Reuses existing knobs (no new AmpParams).
-export type AmpType = 'clean120' | 'jcm800' | 'twin' | 'ac30';
+// M10.3 adds 'orange' — an early-70s Orange OR120 "Overdrive" head (the
+// MID-FORWARD voice): a James/passive-Baxandall stack with BASS + TREBLE and no
+// mid, the six-position F.A.C. rotary (its own param, `fac`), NO master volume
+// (VOLUME is the whole amp — the power section is the overdrive), and the shared
+// 'presence' param (id 11) REUSED as its HF DRIVE. Docs §57.
+export type AmpType = 'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange';
 
 // Cab expansion: which speaker cabinet IR the amp runs. 'clean212' is the
 // built-in Clean 2x12 (the JC-120 platform), 'brit412' the darker/thicker Brit
 // 4x12 (pairs with a Marshall-style amp), and 'custom' a user-uploaded IR (its
 // samples live in a SEPARATE localStorage key, never in the rig/preset JSON —
 // see cab.ts; the rig only records the choice + a short label).
-export type CabChoice = 'clean212' | 'brit412' | 'custom';
+export type CabChoice = 'clean212' | 'brit412' | 'orange412' | 'custom';
 // The two BUILT-IN cabs offered in the amp menu (and the ones the assistant may
 // switch between). 'custom' is reached only via Upload IR, never listed here.
-export const AVAILABLE_CABS: readonly ('clean212' | 'brit412')[] = ['clean212', 'brit412'];
+export const AVAILABLE_CABS: readonly ('clean212' | 'brit412' | 'orange412')[] = [
+  'clean212',
+  'brit412',
+  'orange412',
+];
 // The worklet's built-in cab index (mirrors CabBuiltin in clipper_c_api.cpp).
-export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412', number> = {
+export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412' | 'orange412', number> = {
   clean212: 0,
   brit412: 1,
+  orange412: 2,
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'phaser', 'wah', 'tuner'];
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'phaser', 'wah', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
-export const AVAILABLE_AMP_TYPES: readonly AmpType[] = ['clean120', 'jcm800', 'twin', 'ac30'];
+export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
+  'clean120',
+  'jcm800',
+  'twin',
+  'ac30',
+  'orange',
+];
 
 export type ParamName = 'distortion' | 'filter' | 'level';
 export type AmpParamName =
@@ -92,7 +114,9 @@ export type AmpParamName =
   // M9.4 JCM800-only knobs (ignored by clean120).
   | 'gain'
   | 'presence'
-  | 'master';
+  | 'master'
+  // M10.3 Orange-only knob (ignored by every other voice).
+  | 'fac';
 
 export interface PedalParams {
   distortion: number; // 0..1 knob position
@@ -146,6 +170,9 @@ export interface AmpParams {
   gain: number; // 0..1 JCM preamp GAIN (drive)
   presence: number; // 0..1 JCM power-amp presence
   master: number; // 0..1 JCM MASTER volume
+  // M10.3 Orange OR120 F.A.C.: a 0..1 knob that the core rounds to one of SIX
+  // detents. Its own param rather than a reused slot — see params.ts.
+  fac: number;
 }
 
 export interface AmpState {
@@ -224,6 +251,17 @@ export const GOLD_KNOB_DEFAULTS: PedalParams = {
   level: 0.7,
 };
 
+// "Squash" compressor (M13.1) opening state. SUSTAIN 0.5 (mid travel — plenty of
+// squash without the top of the knob's noise), LEVEL 0.4, which measures UNITY:
+// a 0.15 V-peak 220 Hz note comes out at 0.157 V (+0.37 dB), so the pedal opens
+// as a level-neutral always-on rather than a boost. Slot 1 (filter) is carried
+// and unused. See docs §59.
+export const COMP_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.5,
+  filter: 0.5,
+  level: 0.4,
+};
+
 // Phaser ("Ninety", v1.1) opening state. ONE real knob: slot 0 (distortion) is
 // SPEED — opens at a slow/medium ~0.35 (a classic gentle sweep, ~0.7 Hz on the
 // log map). Slots 1/2 are carried but unused (fixed script-authentic depth, no
@@ -251,6 +289,7 @@ export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   ts: TS_KNOB_DEFAULTS,
   muff: MUFF_KNOB_DEFAULTS,
   gold: GOLD_KNOB_DEFAULTS,
+  comp: COMP_KNOB_DEFAULTS,
   phaser: PHASER_KNOB_DEFAULTS,
   wah: WAH_KNOB_DEFAULTS,
   // The tuner has no knobs; params are unused but keep the shared shape.
@@ -278,6 +317,9 @@ export const AMP_KNOB_DEFAULTS: AmpParams = {
   gain: 0.5,
   presence: 0.5,
   master: 0.4,
+  // M10.3: F.A.C. position 2 of 6 (knob 0.2) — the fat, usable setting an OR120
+  // spends most of its life on; clicking right thins it out.
+  fac: 0.2,
 };
 
 // Default input trim: unity (0 dB).
@@ -357,6 +399,7 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
     : p.type === 'ts' ? 'ts'
     : p.type === 'muff' ? 'muff'
     : p.type === 'gold' ? 'gold'
+    : p.type === 'comp' ? 'comp'
     : p.type === 'phaser' ? 'phaser'
     : p.type === 'wah' ? 'wah'
     : 'rat';
@@ -410,7 +453,9 @@ export function normalizeRig(raw: unknown): RigState {
   // custom IR data actually EXISTS is resolved at load time (App falls back to
   // clean212 with a note if it's missing) — the rig JSON alone can't know.
   const cabModel: CabChoice =
-    a.cabModel === 'brit412' || a.cabModel === 'custom' ? a.cabModel : 'clean212';
+    a.cabModel === 'brit412' || a.cabModel === 'orange412' || a.cabModel === 'custom'
+      ? a.cabModel
+      : 'clean212';
   const customCabLabel =
     typeof a.customCabLabel === 'string' ? a.customCabLabel : undefined;
 
@@ -421,6 +466,7 @@ export function normalizeRig(raw: unknown): RigState {
     a.type === 'jcm800' ? 'jcm800'
     : a.type === 'twin' ? 'twin'
     : a.type === 'ac30' ? 'ac30'
+    : a.type === 'orange' ? 'orange'
     : 'clean120';
 
   return {
@@ -451,6 +497,7 @@ export function normalizeRig(raw: unknown): RigState {
         gain: clamp01(ar.gain, d.amp.params.gain),
         presence: clamp01(ar.presence, d.amp.params.presence),
         master: clamp01(ar.master, d.amp.params.master),
+        fac: clamp01(ar.fac, d.amp.params.fac),
       },
     },
     oversampling,

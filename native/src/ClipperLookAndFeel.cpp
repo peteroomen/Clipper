@@ -118,6 +118,7 @@ juce::Colour accent(AccentId id) {
         // Gold takes the DARK token in BOTH themes — see the header: it only ever
         // paints on the pinned-dark chassis, where #8F6A22 measures ~2.8:1.
         case AccentId::Gold:   return juce::Colour(0xffD9B36B);
+        case AccentId::Comp:   return d ? juce::Colour(0xff3ECFC0) : juce::Colour(0xff17786F);
         // Wah "Weeper" (docs §58) — TEAL, --accent-wah. Light #17868F / dark
         // #3ED0DD, verbatim from tokens.css. Deliberately the furthest hue from
         // the six dirt/mod accents: this is the first pedal of a new family and
@@ -126,6 +127,10 @@ juce::Colour accent(AccentId id) {
         case AccentId::Jcm:    return d ? juce::Colour(0xffE8B84B) : juce::Colour(0xffA87A18);
         case AccentId::Twin:   return d ? juce::Colour(0xff7FB4E8) : juce::Colour(0xff4E7BA8);
         case AccentId::Ac30:   return d ? juce::Colour(0xffE08A4A) : juce::Colour(0xffB4612C);
+        // M10.3 Orange OR120 — the tolex wink. Verbatim from tokens.css
+        // (--accent-orange), and deliberately more saturated / less brown than
+        // Ac30's copper so the two amps never read as the same voice.
+        case AccentId::Orange: return d ? juce::Colour(0xffFF9A2E) : juce::Colour(0xffC85A00);
         case AccentId::Clean:  return d ? juce::Colour(0xffFF4A34) : juce::Colour(0xffF03B24);
     }
     return d ? juce::Colour(0xffFF4A34) : juce::Colour(0xffF03B24);

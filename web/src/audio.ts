@@ -14,6 +14,7 @@ import {
   AMP_PARAM_JCM_GAIN,
   AMP_PARAM_JCM_PRESENCE,
   AMP_PARAM_JCM_MASTER,
+  AMP_PARAM_ORANGE_FAC,
   AMP_MODEL_INDEX,
   WORKLET_URL,
   trimKnobToGain,
@@ -71,7 +72,7 @@ export interface StartOptions {
   inputTrim: number; // 0..1 knob position, rig-level pre-pedal input trim
   pedals: PedalInstance[]; // the ordered pedal chain (may be empty)
   amp: AmpParams; // amp knob positions (0..1)
-  ampType: AmpType; // which amp voice (clean120 | jcm800 | twin | ac30)
+  ampType: AmpType; // which amp voice (clean120 | jcm800 | twin | ac30 | orange)
   ampEngaged: boolean; // false = amp+cab bypassed
   cabModel: CabChoice; // which cab IR (built-in or 'custom')
   // Mono custom-cab samples + the rate they're stored at, when cabModel is
@@ -132,7 +133,7 @@ export interface Engine {
   setOversampling(factor: number): void;
   setAmpBypass(on: boolean): void; // amp power off = bypass
   // Cab expansion: swap the BUILT-IN cab IR (click-free in the worklet).
-  setCabBuiltin(which: 'clean212' | 'brit412'): void;
+  setCabBuiltin(which: 'clean212' | 'brit412' | 'orange412'): void;
   // Cab expansion: load a user IR (engine-rate mono samples). The buffer is
   // TRANSFERRED to the worklet; the core peak-normalizes it.
   loadCustomIr(samples: Float32Array): void;
@@ -317,6 +318,8 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   engine.setAmpParam(AMP_PARAM_JCM_GAIN, opts.amp.gain);
   engine.setAmpParam(AMP_PARAM_JCM_PRESENCE, opts.amp.presence);
   engine.setAmpParam(AMP_PARAM_JCM_MASTER, opts.amp.master);
+  // M10.3 Orange F.A.C. — its own id, sent every start for the same reason.
+  engine.setAmpParam(AMP_PARAM_ORANGE_FAC, opts.amp.fac);
   // Select the amp voice (default clean120 needs no swap, but sending is harmless
   // and keeps the worklet's model + reported latency in sync from sample 0). M10.1:
   // the twin is voice 2. The reverb/speed/depth already sent above reach it (the C
@@ -326,6 +329,10 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   // v1.1: the AC30 "top boost" is voice 3. It reuses the STABLE amp_* exports, so
   // volume/bass/treble/presence(=top cut)/reverb already sent above reach it.
   else if (opts.ampType === 'ac30') engine.setAmpModel('ac30');
+  // M10.3: the Orange OR120 is voice 4. It reuses volume/bass/treble/reverb and the
+  // presence slot as HF DRIVE, all sent above; F.A.C. is its own id and is sent
+  // with the JCM block below.
+  else if (opts.ampType === 'orange') engine.setAmpModel('orange');
   engine.setAmpBypass(!opts.ampEngaged);
 
   // Cab: the worklet's amp_create loads the Clean 2x12 by default. Apply the
@@ -333,6 +340,8 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   // else leave the default clean212 (App has already noted the fallback).
   if (opts.cabModel === 'brit412') {
     engine.setCabBuiltin('brit412');
+  } else if (opts.cabModel === 'orange412') {
+    engine.setCabBuiltin('orange412');
   } else if (opts.cabModel === 'custom' && opts.customIr && opts.customIr.samples.length) {
     // Resample the stored IR to THIS session's engine rate, then load a copy (the
     // transfer detaches the buffer, so never hand out the persisted samples).

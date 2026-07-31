@@ -35,7 +35,7 @@
 //      stage's prepare() re-solves its DC point and settles ~50 k silent samples
 //      per stage (~69 ms for a whole Jcm800Amp).
 //
-// Coverage: all six pedals (rat / sd / ts / muff / gold / phaser) and all four amp
+// Coverage: all seven pedals (rat / sd / ts / muff / gold / comp / phaser) and all four amp
 // voices (clean120 / jcm800 / twin / ac30), every parameter id of each, times
 // {NaN, +Inf, -Inf} — over both the C ABI and the direct C++ API.
 //
@@ -50,6 +50,7 @@
 
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/AmpModel.h"
+#include "clipper/dsp/CompModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/MuffModel.h"
@@ -86,6 +87,10 @@ void  ts_process(void*, const float*, float*, int);
 void* muff_create(float);   void muff_destroy(void*);
 void  muff_set_param(void*, int, float);
 void  muff_process(void*, const float*, float*, int);
+void* comp_create(float);   void comp_destroy(void*);
+void  comp_set_param(void*, int, float);
+void  comp_process(void*, const float*, float*, int);
+void  comp_reset(void*);
 void* gold_create(float);   void gold_destroy(void*);
 void  gold_set_param(void*, int, float);
 void  gold_process(void*, const float*, float*, int);
@@ -311,10 +316,11 @@ std::vector<UnitMaker> abiMakers() {
     const std::vector<int> three = {0, 1, 2};
     const std::vector<float> dirt = {0.6f, 0.5f, 0.6f};
     AbiReset ratR = nullptr, sdR = nullptr, tsR = nullptr, muffR = nullptr,
-             goldR = nullptr, phaserR = nullptr, ampR = nullptr;
+             goldR = nullptr, phaserR = nullptr, ampR = nullptr, compR = nullptr;
 #ifndef CLIPPER_NAN_TEST_NO_RESET
     ratR = rat_reset; sdR = sd_reset; tsR = ts_reset; muffR = muff_reset;
     goldR = gold_reset; phaserR = phaser_reset; ampR = amp_reset;
+    compR = comp_reset;
 #endif
     v.push_back([=] { return makeAbiUnit("rat_* (ABI)", rat_create, rat_destroy,
                                          rat_set_param, rat_process, ratR, three, dirt); });
@@ -326,6 +332,11 @@ std::vector<UnitMaker> abiMakers() {
                                          muff_set_param, muff_process, muffR, three, dirt); });
     v.push_back([=] { return makeAbiUnit("gold_* (ABI)", gold_create, gold_destroy,
                                          gold_set_param, gold_process, goldR, three, dirt); });
+    // M13.1: the compressor writes slots 0 and 2 only (slot 1 is unused), but the
+    // guard must still reject a NaN arriving on ANY slot, so all three are driven.
+    v.push_back([=] { return makeAbiUnit("comp_* (ABI)", comp_create, comp_destroy,
+                                         comp_set_param, comp_process, compR,
+                                         three, {0.5f, 0.5f, 0.4f}); });
     v.push_back([=] { return makeAbiUnit("phaser_* (ABI)", phaser_create, phaser_destroy,
                                          phaser_set_param, phaser_process, phaserR,
                                          three, {0.35f, 0.5f, 0.5f}); });
@@ -348,6 +359,8 @@ std::vector<UnitMaker> cppMakers() {
     v.push_back([=] { return makeCppUnit<TsModel>("TsModel (direct C++)", three, dirt, true); });
     v.push_back([=] { return makeCppUnit<MuffModel>("MuffModel (direct C++)", three, dirt, true); });
     v.push_back([=] { return makeCppUnit<GoldModel>("GoldModel (direct C++)", three, dirt, true); });
+    v.push_back([=] { return makeCppUnit<CompModel>("CompModel (direct C++)", three,
+                                                    {0.5f, 0.5f, 0.4f}, true); });
     v.push_back([] { return makeCleanAmpCppUnit(); });
     // Jcm800Amp: 0 gain, 1 master, 2 bass, 3 mid, 4 treble, 5 presence, 6 reverb.
     v.push_back([] {
