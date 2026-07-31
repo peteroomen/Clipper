@@ -1,5 +1,7 @@
 #include "PluginProcessor.h"
 
+#include <atomic>
+
 #include "CabIrFile.h"
 #include "PluginEditor.h"
 
@@ -43,24 +45,32 @@ std::unique_ptr<juce::AudioParameterFloat> knob(const char* id, const char* name
 const juce::Identifier kBoardNode{"board"};
 const juce::Identifier kBoardOrder{"order"};
 
-// Pack a chain into a uint32 the audio thread can read atomically: a 4-bit length
-// in bits 0..3, then kMaxChain 4-bit type slots above it. With six pedal types the
-// board is 4 + 6 × 4 = 28 bits — comfortably one lock-free word, with a spare type
-// value per slot and room for a seventh slot before this needs revisiting.
+// Pack a chain into a uint64 the audio thread can read atomically: a 4-bit length
+// in bits 0..3, then kMaxChain 4-bit type slots above it.
+//
+// This was a uint32 and its comment said there was "room for a seventh slot before
+// this needs revisiting". The EIGHTH pedal type (M13.1's compressor, landing
+// alongside §58's wah) is what crossed it: 4 × (8 + 1) = 36 bits, and the
+// static_assert below fired exactly as designed rather than letting a board
+// silently truncate. Widened to uint64, which is still ONE lock-free word on every
+// platform this ships to — asserted below rather than assumed, because a
+// non-lock-free atomic here would put a mutex on the audio thread.
 constexpr int kChainField = 4;                       // bits per length/type field
-constexpr juce::uint32 kChainMask = (1u << kChainField) - 1u;
+constexpr juce::uint64 kChainMask = (1ull << kChainField) - 1ull;
 static_assert(PEDAL_TYPE_COUNT <= (1 << kChainField),
               "a pedal type id no longer fits its packed field");
 static_assert(kMaxChain <= (1 << kChainField),
               "the chain length no longer fits its packed field");
-static_assert(kChainField * (kMaxChain + 1) <= 32,
-              "the packed chain no longer fits a lock-free uint32");
+static_assert(kChainField * (kMaxChain + 1) <= 64,
+              "the packed chain no longer fits a lock-free uint64");
+static_assert(std::atomic<juce::uint64>::is_always_lock_free,
+              "packedChain_ must be lock-free: the audio thread reads it");
 
-juce::uint32 packChain(const std::vector<int>& types) {
-    juce::uint32 v = static_cast<juce::uint32>(
+juce::uint64 packChain(const std::vector<int>& types) {
+    juce::uint64 v = static_cast<juce::uint64>(
         juce::jlimit<int>(0, kMaxChain, static_cast<int>(types.size())));
     for (int i = 0; i < static_cast<int>(types.size()) && i < kMaxChain; ++i) {
-        const juce::uint32 t = static_cast<juce::uint32>(
+        const juce::uint64 t = static_cast<juce::uint64>(
             juce::jlimit(0, PEDAL_TYPE_COUNT - 1, types[static_cast<size_t>(i)]));
         v |= t << (kChainField * (i + 1));
     }
@@ -151,6 +161,13 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::wahPosition, "Weeper Position", 0.35f));
     layout.add(knob(pid::wahSense, "Weeper Sense", 0.0f));
     layout.add(knob(pid::wahVoice, "Weeper Voice", 0.5f));
+    // M13.1 — the "Squash" OTA compressor. TWO knobs, because the pedal has two:
+    // SUSTAIN (which is NOT a threshold — it sets the OTA's idle bias current) and
+    // LEVEL. Defaults mirror the web's COMP_KNOB_DEFAULTS: 0.5 / 0.4, and 0.4
+    // measures unity at a normal playing level (docs §59).
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::compOn, 1}, "Squash On", true));
+    layout.add(knob(pid::compSustain, "Squash Sustain", 0.5f));
+    layout.add(knob(pid::compLevel, "Squash Level", 0.4f));
 
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::ampOn, 1}, "Amp Power", true));
     // M9.4 amp voice (default index 0 == Clean 120).
@@ -409,11 +426,14 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.wahPosition = f(pid::wahPosition);
     p.wahSense = f(pid::wahSense);
     p.wahVoice = f(pid::wahVoice);
+    p.compOn = f(pid::compOn) >= 0.5f;
+    p.compSustain = f(pid::compSustain);
+    p.compLevel = f(pid::compLevel);
 
     // The board: unpack the lock-free snapshot the message thread published (never
     // touch the ValueTree here — this runs on the audio thread).
     {
-        const juce::uint32 v = packedChain_.load();
+        const juce::uint64 v = packedChain_.load();
         const int len = juce::jlimit(0, kMaxChain, static_cast<int>(v & kChainMask));
         p.chainLength = len;
         for (int i = 0; i < kMaxChain; ++i)

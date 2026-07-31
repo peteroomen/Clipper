@@ -34,6 +34,12 @@ export type SourceKind = 'test' | 'live';
 // (distortion==Gain, filter==Treble, level==Output). Its architecture is the odd one
 // out: a PARALLEL clean/dirt blend cross-faded by a dual-ganged gain pot, with
 // germanium clippers — so at GAIN 0 it is a genuinely clean buffer/boost.
+// M13.1 adds 'comp' (the "Squash" OTA compressor — the first DYNAMICS pedal, and
+// the first that is not dirt): SAME three-slot shape/ABI, but only TWO of the
+// slots are real knobs — slot 0 (distortion) is SUSTAIN and slot 2 (level) is
+// LEVEL. Slot 1 is carried and unused, exactly as the phaser carries 1 and 2.
+// SUSTAIN is NOT a threshold: it sets the CA3080 gain cell's idle bias current,
+// so it buys compression, make-up gain and noise together.
 // Post-v1.1 adds 'wah' (the "Weeper" — the lineup's FIRST FILTER pedal, a
 // GCB-95-class Cry Baby): SAME three-knob shape/ABI, its slots reading as
 // POSITION / SENSE / VOICE (distortion==Position, filter==Sense, level==Voice).
@@ -41,7 +47,7 @@ export type SourceKind = 'test' | 'live';
 // at 0 is exactly that manual pedal and above 0 hands the SAME resonant tank to
 // an envelope follower (Mu-Tron-style auto-wah); VOICE is the documented "vocal
 // mod" — it changes the resonance's WIDTH only, not its centre. Docs §58.
-export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'phaser' | 'wah' | 'tuner';
+export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'phaser' | 'wah' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
@@ -82,7 +88,7 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412' | 'orange412', num
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'phaser', 'wah', 'tuner'];
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'phaser', 'wah', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
@@ -245,6 +251,17 @@ export const GOLD_KNOB_DEFAULTS: PedalParams = {
   level: 0.7,
 };
 
+// "Squash" compressor (M13.1) opening state. SUSTAIN 0.5 (mid travel — plenty of
+// squash without the top of the knob's noise), LEVEL 0.4, which measures UNITY:
+// a 0.15 V-peak 220 Hz note comes out at 0.157 V (+0.37 dB), so the pedal opens
+// as a level-neutral always-on rather than a boost. Slot 1 (filter) is carried
+// and unused. See docs §59.
+export const COMP_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.5,
+  filter: 0.5,
+  level: 0.4,
+};
+
 // Phaser ("Ninety", v1.1) opening state. ONE real knob: slot 0 (distortion) is
 // SPEED — opens at a slow/medium ~0.35 (a classic gentle sweep, ~0.7 Hz on the
 // log map). Slots 1/2 are carried but unused (fixed script-authentic depth, no
@@ -272,6 +289,7 @@ export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   ts: TS_KNOB_DEFAULTS,
   muff: MUFF_KNOB_DEFAULTS,
   gold: GOLD_KNOB_DEFAULTS,
+  comp: COMP_KNOB_DEFAULTS,
   phaser: PHASER_KNOB_DEFAULTS,
   wah: WAH_KNOB_DEFAULTS,
   // The tuner has no knobs; params are unused but keep the shared shape.
@@ -381,6 +399,7 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
     : p.type === 'ts' ? 'ts'
     : p.type === 'muff' ? 'muff'
     : p.type === 'gold' ? 'gold'
+    : p.type === 'comp' ? 'comp'
     : p.type === 'phaser' ? 'phaser'
     : p.type === 'wah' ? 'wah'
     : 'rat';

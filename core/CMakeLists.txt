@@ -90,6 +90,12 @@ add_library(clipper_dsp STATIC
     src/dsp/BjtStage.cpp
     src/dsp/MuffModel.cpp
     src/dsp/GoldModel.cpp
+    # M13.1 — the first DYNAMICS processor. CompressorEngine is the shared,
+    # config-parameterized engine (the optical voice M13.3 and the noise gate
+    # M13.6 are its named future consumers); CompModel is the Dyna Comp / Ross
+    # OTA voice as a config. Same shape as OverdriveEngine + SdModel/TsModel.
+    src/dsp/CompressorEngine.cpp
+    src/dsp/CompModel.cpp
     src/dsp/Ac30Preamp.cpp
     src/dsp/Ac30PowerAmp.cpp
     src/dsp/Ac30Amp.cpp
@@ -262,6 +268,19 @@ if(NOT EMSCRIPTEN)
     # with an empty decl list would report Passed instead of ***Skipped.
 
     # --- v1.1 item 6: GOLD overdrive (clean-blend + germanium WDF) tests -------
+    # --- M13.1: the OTA compressor (the first DYNAMICS processor) -------------
+    # Player-observable bars only: the static compression curve, attack/release
+    # from a step, sustain extension against a level-matched bypass, the
+    # feed-back-vs-feed-forward topology by measurement, and the two HONEST
+    # properties (transient loss, idle gain) asserted in the direction that says
+    # this is still a Dyna Comp. No XFAIL ledger: the suite has no known-bad
+    # property. Do not add one without a measured number.
+    add_executable(clipper_comp_tests tests/test_comp_model.cpp)
+    target_link_libraries(clipper_comp_tests PRIVATE clipper_dsp)
+    target_include_directories(clipper_comp_tests PRIVATE tests)
+    clipper_add_test_flags(clipper_comp_tests)
+    add_test(NAME clipper_comp_tests COMMAND clipper_comp_tests)
+
     add_executable(clipper_gold_tests tests/test_gold_model.cpp)
     target_link_libraries(clipper_gold_tests PRIVATE clipper_dsp)
     # Shares the tools/measure aliasing metric with the RAT/SD-1/TS/Muff tests.

@@ -23,7 +23,7 @@ constexpr float  kPi = 3.14159265358979323846f;
 // The stable serialization keys, indexed by PedalType.
 const char* const kPedalKeys[PEDAL_TYPE_COUNT] = {"rat",    "sd1",  "ts",
                                                   "muff",   "phaser", "gold",
-                                                  "wah"};
+                                                  "wah",   "comp"};
 constexpr int   kCabPartition = 128;  // == worklet render quantum / cab partition
 // Extra samples to HOLD the output at zero after a CAB swap, before the fade back
 // in. Mirrors CAB_SWAP_DEAD_SAMPLES in web/worklet/clipper-processor.js and exists
@@ -75,6 +75,7 @@ bool Params::pedalOn(int type) const {
         case PEDAL_PHASER: return phaserOn;
         case PEDAL_GOLD:   return goldOn;
         case PEDAL_WAH:    return wahOn;
+        case PEDAL_COMP:   return compOn;
         default:           return false;
     }
 }
@@ -119,6 +120,11 @@ void ClipperEngine::applyParamsToModels() {
     wah_.setParameter(clipper::dsp::WahModel::PARAM_POSITION, p.wahPosition);
     wah_.setParameter(clipper::dsp::WahModel::PARAM_SENSITIVITY, p.wahSense);
     wah_.setParameter(clipper::dsp::WahModel::PARAM_VOICE, p.wahVoice);
+    // "Squash" OTA compressor (M13.1) — the same positional slot ABI, but only
+    // slots 0 and 2 are real knobs (SUSTAIN / LEVEL). Slot 1 is not written at
+    // all: a compressor has no tone control and the model ignores it.
+    comp_.setParameter(clipper::dsp::CompModel::PARAM_SUSTAIN, p.compSustain);
+    comp_.setParameter(clipper::dsp::CompModel::PARAM_LEVEL, p.compLevel);
 
     // Amp tone stack + volume + bright, then the routed chorus params.
     amp_.setParameter(clipper::dsp::AmpModel::PARAM_VOLUME, p.volume);
@@ -222,6 +228,7 @@ void ClipperEngine::updateParams(const Params& p) {
     using clipper::dsp::AmpModel;
     using clipper::dsp::GoldModel;
     using clipper::dsp::WahModel;
+    using clipper::dsp::CompModel;
     using clipper::dsp::Jcm800Amp;
     using clipper::dsp::MuffModel;
     using clipper::dsp::PhaserModel;
@@ -251,6 +258,8 @@ void ClipperEngine::updateParams(const Params& p) {
     if (p.wahPosition != o.wahPosition) wah_.setParameter(WahModel::PARAM_POSITION, p.wahPosition);
     if (p.wahSense != o.wahSense)     wah_.setParameter(WahModel::PARAM_SENSITIVITY, p.wahSense);
     if (p.wahVoice != o.wahVoice)     wah_.setParameter(WahModel::PARAM_VOICE, p.wahVoice);
+    if (p.compSustain != o.compSustain) comp_.setParameter(CompModel::PARAM_SUSTAIN, p.compSustain);
+    if (p.compLevel != o.compLevel)   comp_.setParameter(CompModel::PARAM_LEVEL, p.compLevel);
 
     // Amp knobs + toggles. VOLUME feeds clean120 + twin + ac30.
     if (p.volume != o.volume) {
@@ -351,6 +360,7 @@ void ClipperEngine::setPedalOversampling(int factor) {
     // OUTPUT stage is a real transistor, so it oversamples like a dirt box and
     // reports real latency (docs §58.4) — unlike the phaser below.
     wah_.setOversampling(factor);
+    comp_.setOversampling(factor);
     // The phaser is a LINEAR time-varying stage (allpass sweep) — no nonlinearity,
     // so it has no oversampler and no group delay. The web C ABI's
     // phaser_set_oversampling is likewise a no-op.
@@ -487,6 +497,7 @@ void ClipperEngine::processPedal(int type, const float* in, float* out, int numF
         case PEDAL_PHASER: phaser_.process(in, out, numFrames); break;
         case PEDAL_GOLD:   gold_.process(in, out, numFrames); break;
         case PEDAL_WAH:    wah_.process(in, out, numFrames); break;
+        case PEDAL_COMP:   comp_.process(in, out, numFrames); break;
         default: break;
     }
 }
@@ -505,6 +516,7 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     phaser_.prepare(sampleRate_);  // linear: no block-size scratch to size
     gold_.prepare(sampleRate_, maxBlock_);
     wah_.prepare(sampleRate_, maxBlock_);
+    comp_.prepare(sampleRate_, maxBlock_);
     amp_.prepare(sampleRate_, maxBlock_);
     // The JCM runs at its fixed 4× internally (set BEFORE prepare so its stages
     // size to it), independent of the pedal OS selector — matches the C ABI.
@@ -701,6 +713,9 @@ int ClipperEngine::latencySamples() const {
             // The wah's transistor output stage oversamples too (§58.4), so it
             // carries the same group delay as a dirt box. Its resonator does not.
             case PEDAL_WAH:  n += wah_.latencySamples(); break;
+            // The compressor oversamples its OTA gain cell, so it carries the
+            // same OS group delay as the dirt boxes.
+            case PEDAL_COMP: n += comp_.latencySamples(); break;
             // The phaser is linear — zero group delay.
             case PEDAL_PHASER: break;
             default: break;

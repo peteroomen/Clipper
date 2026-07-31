@@ -14,6 +14,7 @@
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/OrangeAmp.h"
 #include "clipper/dsp/PhaserModel.h"
+#include "clipper/dsp/CompModel.h"
 #include "clipper/dsp/WahModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/MuffModel.h"
@@ -496,6 +497,63 @@ void wah_process(void* handle, const float* in_ptr, float* out_ptr,
     static_cast<clipper::dsp::WahModel*>(handle)->process(in_ptr, out_ptr,
                                                           num_frames);
 }
+
+// --- M13.1: OTA compressor exports -------------------------------------------
+//
+// Additive alongside rat_*/sd_*/ts_*/muff_*/gold_*/phaser_*, byte-for-byte the
+// same opaque-handle ABI so the worklet drives it exactly like any other pedal.
+// Param slots: 0 = SUSTAIN, 1 = UNUSED (a compressor has two knobs — the phaser
+// precedent), 2 = LEVEL. Under the hood it is the CA3080 gain cell inside a
+// feed-back detector loop (CompModel / CompressorEngine), but the ABI is
+// identical, so a chain can mix it with anything.
+
+EMSCRIPTEN_KEEPALIVE
+void* comp_create(float sample_rate) {
+    auto* m = new clipper::dsp::CompModel();
+    m->prepare(static_cast<double>(sample_rate), 128);
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void comp_destroy(void* handle) {
+    delete static_cast<clipper::dsp::CompModel*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void comp_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
+    static_cast<clipper::dsp::CompModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clear recursive state, re-park at the cached quiescent point,
+// keep the knobs / rate / factor. See the banner above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void comp_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::CompModel*>(handle)->reset();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void comp_set_oversampling(void* handle, int factor) {
+    if (!handle) return;
+    static_cast<clipper::dsp::CompModel*>(handle)->setOversampling(factor);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int comp_latency_samples(void* handle) {
+    if (!handle) return 0;
+    return static_cast<clipper::dsp::CompModel*>(handle)->latencySamples();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void comp_process(void* handle, const float* in_ptr, float* out_ptr,
+                  int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::CompModel*>(handle)->process(in_ptr, out_ptr,
+                                                           num_frames);
+}
+
 
 // --- M5: clean amp + cab exports ---------------------------------------------
 //

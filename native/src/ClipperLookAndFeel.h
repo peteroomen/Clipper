@@ -138,7 +138,11 @@ const Scheme& benchScheme();
 // DARK token in BOTH themes. The gold pedal's accent only ever paints on the
 // pinned-dark chassis, where the light-theme #8F6A22 sits at ~2.8:1 — a muddy brown
 // that loses the one thing this pedal is famous for. Champagne gold, ~6.9:1.
-enum class AccentId { Rat, Sd, Ts, Muff, Phaser, Gold, Wah, Jcm, Twin, Ac30, Orange, Clean };
+// M13.1 appends `Comp` — the "Squash" compressor's TEAL (tokens.css
+// --accent-comp). The real pedal is red, but Rat already owns red on this
+// board and two red boxes is a usability bug, so the colour is chosen for
+// distinguishability and the identity is carried by the two-knob face.
+enum class AccentId { Rat, Sd, Ts, Muff, Phaser, Gold, Comp, Wah, Jcm, Twin, Ac30, Orange, Clean };
 juce::Colour accent(AccentId);
 
 // Diagonal fill approximating a CSS linear-gradient(~150deg) across a rect.

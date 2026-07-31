@@ -159,34 +159,42 @@ int main(int argc, char** argv) {
     shootScrolled("native_scroll_default_board.png",
                   "default board - one RAT on the rail, board fits (no scrollbar)", 0.0);
 
-    // ALL SIX types at once — the board the old grow-the-window build would have
+    // ALL SEVEN types at once — the board the old grow-the-window build would have
     // demanded ~1622 px of desk for. Photographed mid-scroll, so the rail runs off
     // both edges and both boundary cables terminate at their grommets.
     const std::vector<int> full = {PEDAL_RAT,  PEDAL_SD,     PEDAL_TS,
-                                   PEDAL_MUFF, PEDAL_PHASER, PEDAL_GOLD};
+                                   PEDAL_MUFF, PEDAL_PHASER, PEDAL_GOLD,
+                                   PEDAL_COMP};
     proc.setChainOrder(full);
     for (const char* id : {pid::ratOn, pid::sdOn, pid::tsOn, pid::muffOn, pid::phaserOn,
-                           pid::goldOn})
+                           pid::goldOn, pid::compOn})
         setParam(proc.apvts, id, 1.0f);
     shootScrolled("native_scroll_six_pedals_midscroll.png",
-                  "6-pedal board mid-scroll - rail overflows, edge veils on both sides",
+                  "full board mid-scroll - rail overflows, edge veils on both sides",
                   0.5);
     shootScrolled("native_scroll_six_pedals_start.png",
-                  "the same six, scrolled hard left - input cable reaches the first pedal",
+                  "the same board, scrolled hard left - input cable reaches the first pedal",
                   0.0);
     shootScrolled("native_scroll_six_pedals_end.png",
-                  "the same six, scrolled hard right - last pedal meets the amp cable",
+                  "the same board, scrolled hard right - last pedal meets the amp cable",
                   1.0);
     if (editor->boardOverflow() <= 0) {
-        std::printf("FAILED: the six-pedal board did not overflow the viewport\n");
+        std::printf("FAILED: the full board did not overflow the viewport\n");
         ++failures;
     }
 
-    // The SMALLEST window with that same six-pedal board: the fixed INPUT card and
+    // The SMALLEST window with that same full board: the fixed INPUT card and
     // the full AMP face still stand outside a board that is mostly off screen.
     editor->setSize(1040, 560);
     shootScrolled("native_scroll_small_window.png",
                   "minimum window - fixed input + amp, board scrolled", 0.45);
+
+    // The M13.1 "Squash" compressor's face: the first TWO-knob box on the board,
+    // alone so the two-vs-three knob morphology cue is unmistakable.
+    proc.setChainOrder({PEDAL_COMP});
+    editor->setSize(1120, 700);
+    shootScrolled("native_scroll_comp_face.png",
+                  "the 'Squash' compressor - two knobs, teal accent", 0.0);
 
     // The GOLD pedal's face, close enough to judge: the engraved nameplate, the
     // hairline gold rules, the round stomp. Alone on the board so nothing crowds it.
