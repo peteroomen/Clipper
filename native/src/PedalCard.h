@@ -51,7 +51,11 @@ struct PedalFace {
 
     const char* eyebrow;      // the small model line (.pedal-model)
     const char* wordmark;     // the hero name (.pedal-logo) / the nameplate engraving
-    juce::Colour accent;      // the small-area identity colour
+    // The small-area identity colour, as a TOKEN rather than a value: tokens.css
+    // gives every --accent-* a light and a dark value, and the accents (unlike the
+    // chassis surfaces pedal.css pins) resolve at the root, so they follow the
+    // theme. skin::accent() answers for the theme in force when we paint.
+    skin::AccentId accent;
     Footswitch::Shape shape;  // the ONE morphology cue
     Layout layout;
     float wordmarkSize;
@@ -87,6 +91,11 @@ public:
     std::function<void(int newType)> onSwap;
     std::function<void(int parentX)> onDragTo;
     std::function<void()> onDragEnd;
+
+    // Re-resolve every theme-dependent colour this card holds (the knob accents,
+    // the remove chip's tint) and repaint. The editor calls this on a theme flip;
+    // the chassis itself is pinned dark in both themes, exactly like the web.
+    void applyTheme();
 
     void paint(juce::Graphics&) override;
     void resized() override;

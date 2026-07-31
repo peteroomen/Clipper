@@ -21,8 +21,12 @@
 //                            numeric readout beneath — the web Knob anatomy.
 //   * Lit LED / jewel      = accent fill + a soft outer glow (box-shadow 0 0 14px).
 //
-// This pass ships the LIGHT-bench look only; a dark theme is future work (see
-// docs "Native app (JUCE)" → Visual pass). No font-file assets: the condensed hero
+// Visual pass 3 adds the second token context: the editor now ships BOTH themes,
+// exactly as the web does (tokens.css light `:root` + the dark
+// `prefers-color-scheme` root). The bench, the amp panel, the rail, the top bar and
+// the input card all resolve the current theme; the PEDALS stay pinned dark in both,
+// which is the web behaviour (pedal.css pins .pedal to the dark values on every
+// theme). See skin::ThemeMode below. No font-file assets: the condensed hero
 // wordmarks are approximated with a boldened, horizontally-compressed system font
 // (JUCE built-in Font handling), which reads as the web's Anton marks without
 // bundling/decompressing a woff2.
@@ -41,15 +45,48 @@ namespace clipper::native {
 // ---------------------------------------------------------------------------
 namespace skin {
 
-// The bench (light porcelain) — tokens.css :root light values.
-inline const juce::Colour ground      {0xffE5E3DE};
-inline const juce::Colour groundDeep  {0xffDBD8D2};
-inline const juce::Colour benchWell   {0xffD6D3CC};
-inline const juce::Colour benchInkDim {0xff71736F};
-inline const juce::Colour benchFaint  {0xff9B9D98};
+// ---------------------------------------------------------------------------
+// THEME (visual pass 3). The web resolves two token roots — the light `:root` and
+// the dark `prefers-color-scheme` root — and the native editor now does the same.
+// Two facts make that cheap rather than a rewrite:
+//   * the DARK root's control tokens are byte-for-byte the values pedal.css pins
+//     the .pedal chassis to on EVERY theme, so darkIsland() already IS the dark
+//     token context and the pedals genuinely do not move between themes;
+//   * only the BENCH-level values (--ground, the cast shadow, the cable, the bench
+//     ink triplet) and the ACCENTS actually differ between the two roots.
+// `ThemeMode` is the user's choice; Auto follows the OS via
+// juce::Desktop::isDarkModeActive() (fed in through setSystemDark). isDark() is the
+// RESOLVED answer that every recipe below reads. The choice is persisted in a plain
+// juce::PropertiesFile in the app config dir — it is a look, not an audio
+// parameter, so it is deliberately NOT in the APVTS and never reaches a host.
+enum class ThemeMode { Auto, Light, Dark };
+void setThemeMode(ThemeMode);
+ThemeMode themeMode();
+void setSystemDark(bool osIsDark);
+bool isDark();  // the resolved theme — what the recipes paint
+juce::String themeModeName(ThemeMode);
+ThemeMode loadThemeMode();
+void saveThemeMode(ThemeMode);
+
+// The BENCH, theme-resolved (tokens.css light `:root` / dark root).
+juce::Colour ground();       // --ground
+juce::Colour groundDeep();   // --ground-deep
+juce::Colour benchWell();    // --well in the bench context
+juce::Colour benchInk();     // --ink
+juce::Colour benchInkDim();  // --ink-dim
+juce::Colour benchFaint();   // --ink-faint
+// The cast shadow a dark island throws on the bench. Light theme: the warm
+// .pedal.raised 16px 18px 34px rgba(54,50,44,.3). Dark theme: the base .raised
+// --sh-dark, because a warm brown shadow is invisible on a charcoal bench.
+juce::Colour castShadow();
+// Patch-cable palette (board.css --cable / --cable-hi / --cable-plug), per theme.
+juce::Colour cable();
+juce::Colour cableHi();
+juce::Colour cablePlug();
 
 // The dark chassis island interior (pedal.css: pinned to dark-theme values on
-// every theme so cards read as dark hardware on the light bench).
+// every theme so cards read as dark hardware on the light bench). These are also,
+// byte-for-byte, the dark-theme root values — see benchScheme().
 inline const juce::Colour panelTop    {0xff292C32};  // --panel-grad 160deg start
 inline const juce::Colour panelBot    {0xff222529};  // --panel-grad 160deg end
 inline const juce::Colour capTop      {0xff2E3238};  // --cap 145deg start
@@ -66,15 +103,6 @@ inline const juce::Colour arcTrack    {0x12FFFFFF};  // --arc-track rgba(255,255
 inline const juce::Colour shDark      {0xd9090B0E};  // rgba(9,11,14,.85)
 inline const juce::Colour shDarker    {0x99050608};  // rgba(5,6,8,.6)
 inline const juce::Colour shLight     {0x0EFFFFFF};  // rgba(255,255,255,.055)
-
-// The warm cast shadow the dark enclosure throws on the light bench
-// (.pedal.raised light-theme: 16px 18px 34px rgba(54,50,44,.3)).
-inline const juce::Colour castShadow  {0x4D36322C};  // rgba(54,50,44,.30)
-
-// Patch-cable palette (board.css light theme: --cable / --cable-hi / --cable-plug).
-inline const juce::Colour cable       {0xff35383E};
-inline const juce::Colour cableHi     {0x80FFFFFF};  // rgba(255,255,255,.5)
-inline const juce::Colour cablePlug   {0xffC4C0B8};
 
 // ---------------------------------------------------------------------------
 // Token SCHEMES (visual pass 2). The web resolves every control recipe in a CSS
@@ -95,39 +123,46 @@ struct Scheme {
 };
 const Scheme& darkIsland();   // the pedal chassis (today's constants, unchanged)
 const Scheme& lightBench();   // tokens.css :root light values, verbatim
+// The token context the BENCH-side surfaces resolve in — the amp panel, its
+// knobs/levers/rocker/mode switch, the rail, the scrollbar. lightBench() in light
+// theme, darkIsland() in dark (the dark root and the .pedal pinning are the same
+// token set, which is exactly why the pedals are theme-invariant).
+const Scheme& benchScheme();
 
-// Per-section ACCENTS — light-theme root values (readable on the light bench and
-// on the dark chassis). tokens.css :root / [data-theme=light].
-inline const juce::Colour accentRat   {0xffF03B24};  // --led / --accent-rat  (red)
-inline const juce::Colour accentSd    {0xffB58900};  // --accent-sd           (yellow/gold)
-inline const juce::Colour accentTs    {0xff1E9E5A};  // --accent-ts           (green box)
-inline const juce::Colour accentMuff  {0xff7A3FBF};  // --accent-muff         (violet)
-inline const juce::Colour accentPhaser{0xffC4611A};  // --accent-phaser       (burnt orange)
-// --accent-gold. Every other accent here is the LIGHT-theme root value, because
-// every other accent also has to survive on the light bench. This one does not: the
-// gold pedal's accent only ever paints on the pinned-DARK pedal chassis, and the
-// light-theme #8F6A22 sits at ~2.8:1 there — a muddy brown that loses the one thing
-// this pedal is famous for. So it takes the web's DARK-theme token, exactly as the
-// chassis surfaces already do (pedal.css pins its island to dark values on every
-// theme). Champagne gold, ~6.9:1 on the charcoal.
-inline const juce::Colour accentGold  {0xffD9B36B};  // --accent-gold (dark-theme token)
-inline const juce::Colour accentJcm   {0xffA87A18};  // --accent-jcm          (brass gold)
-inline const juce::Colour accentTwin  {0xff4E7BA8};  // --accent-twin         (silver-blue)
-inline const juce::Colour accentAc30  {0xffB4612C};  // --accent-ac30         (copper)
-inline const juce::Colour accentClean {0xffF03B24};  // Clean 120 → red accent
+// Per-section ACCENTS. tokens.css defines a light and a dark value for each
+// (`--accent-*`), and unlike the chassis surfaces the accents are NOT pinned by
+// pedal.css — they resolve at the root, so a RAT LED really is a different red in
+// the web's dark theme. accent() resolves the current theme.
+//
+// One deliberate exception, unchanged from visual pass 2: --accent-gold takes the
+// DARK token in BOTH themes. The gold pedal's accent only ever paints on the
+// pinned-dark chassis, where the light-theme #8F6A22 sits at ~2.8:1 — a muddy brown
+// that loses the one thing this pedal is famous for. Champagne gold, ~6.9:1.
+enum class AccentId { Rat, Sd, Ts, Muff, Phaser, Gold, Jcm, Twin, Ac30, Clean };
+juce::Colour accent(AccentId);
 
 // Diagonal fill approximating a CSS linear-gradient(~150deg) across a rect.
 void fillDiagGradient(juce::Graphics&, juce::Rectangle<float>, juce::Colour from,
                       juce::Colour to);
 
-// A raised dark-chassis card: warm cast shadow(s) on the bench + body gradient +
+// A raised dark-chassis card: cast shadow(s) on the bench + body gradient +
 // inset light top rim + inset dark edge. `radius` in px.
+//
+// SPLIT IN TWO on purpose (visual pass 3). JUCE clips a component's paint to its
+// own bounds, so a card that is a CHILD component cannot paint its own cast shadow
+// — it lands entirely under itself and the card reads flat. That is why the pedal
+// cards had no shadow while the editor-painted input/amp cards did. A child card
+// therefore paints drawChassisBody() and its PARENT paints
+// drawIslandCastShadow() at the card's bounds before the children draw.
+// drawChassisCard() is the two together, for cards the editor paints itself.
+void drawIslandCastShadow(juce::Graphics&, juce::Rectangle<float>, float radius);
+void drawChassisBody(juce::Graphics&, juce::Rectangle<float>, float radius);
 void drawChassisCard(juce::Graphics&, juce::Rectangle<float>, float radius);
 
-// A raised LIGHT bench card — the web `.raised` recipe verbatim (base.css):
-// --panel-grad body + 10px 10px 24px sh-dark + -10px -10px 22px sh-light + inset
-// top light rim. The amp panel (web parity: the amp is a light panel, not a dark
-// island — amp.css resolves in the light token context).
+// A raised BENCH card — the web `.raised` recipe verbatim (base.css): --panel-grad
+// body + 10px 10px 24px sh-dark + -10px -10px 22px sh-light + inset top light rim,
+// resolved in benchScheme(). The amp panel (web parity: the amp is a bench panel,
+// not a dark island — amp.css resolves in the page token context, light or dark).
 void drawBenchCard(juce::Graphics&, juce::Rectangle<float>, float radius);
 
 // A recessed well carved into a surface (inset dark TL + light BR). Defaults to
@@ -246,7 +281,7 @@ private:
     void refreshReadout();
     juce::Slider slider_;
     juce::Label nameLabel_, valueLabel_;
-    juce::Colour accent_{skin::accentRat};
+    juce::Colour accent_{skin::accent(skin::AccentId::Rat)};
     bool dimmed_{false};
     const skin::Scheme* scheme_{nullptr};  // set in ctor (darkIsland)
     double lastTickValue_{0.0};            // ui-sound detent tracking
@@ -293,7 +328,7 @@ private:
     void paintTreadle(juce::Graphics&, juce::Rectangle<float>);
     void paintPad(juce::Graphics&, juce::Rectangle<float>);
 
-    juce::Colour accent_{skin::accentRat};
+    juce::Colour accent_{skin::accent(skin::AccentId::Rat)};
     Shape shape_{Shape::Round};
     bool pressed_{false};
     bool engaged_{true};
@@ -331,9 +366,13 @@ private:
 
 // A carved-slot lever toggle (the amp Bright/Cab levers): a recessed well with a
 // cap lever that slides down + lights (accent) when on. Caption beneath. Paints
-// in the LIGHT scheme (amp-only widget — amp.css .toggle resolves light on the
-// web). The lever SLIDES with the web's 160 ms overshoot spring
-// (transition: top .16s cubic-bezier(.34,1.56,.64,1)) rather than snapping.
+// in benchScheme() (amp-only widget — amp.css .toggle resolves in the page token
+// context). The lever SLIDES with the web's 160 ms overshoot spring
+// (transition: top .16s cubic-bezier(.34,1.56,.64,1)) rather than snapping — but
+// the position is CLAMPED to the slot (visual pass 3): easeOutBack overshoots by
+// ~9.9 %, which carried the lever 2.2 px past the slot's 4 px inset at both ends
+// ("the bright switch goes too far down"). Clamping keeps the spring's timing and
+// gives it a physical stop, which is what a real lever has.
 class LeverToggle : public juce::Component, private juce::Timer {
 public:
     LeverToggle();
@@ -343,13 +382,17 @@ public:
     void setCaption(const juce::String& c) { caption_ = c; repaint(); }
     std::function<void()> onClick;
 
+    // Slot width + the head-room the lever's 2px/3px/6px cast shadow needs on each
+    // side, so nothing is clipped at the component bounds.
+    static int preferredWidth();
+
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
     void mouseUp(const juce::MouseEvent&) override;
 
 private:
     void timerCallback() override;
-    juce::Colour accent_{skin::accentRat};
+    juce::Colour accent_{skin::accent(skin::AccentId::Rat)};
     bool on_{false};
     bool everSet_{false};    // the first setOn (session sync) snaps, no animation
     float leverPos_{0.0f};   // 0 = top (off) … 1 = bottom (on), animated
@@ -359,10 +402,13 @@ private:
     juce::String caption_{"Bright"};
 };
 
-// The amp POWER control: a glowing jewel over a rocker, caption "Power". Paints
-// in the LIGHT scheme (amp-only — amp.css .power/.rocker/.jewel resolve light).
-// The jewel band reserves skin::glowSpread() of head-room so the lit halo is
-// never clipped by the component bounds (the 2026-07-31 draw-order report).
+// The amp POWER control: a glowing jewel over a rocker, caption "Power". Paints in
+// benchScheme() (amp-only — amp.css .power/.rocker/.jewel resolve in the page token
+// context). The jewel band reserves skin::glowSpread() of head-room so the lit halo
+// is never clipped by the component bounds, and preferredWidth() reserves the
+// rocker's own 5px/5px/12px cast shadow — pass 2 fixed the vertical clipping and
+// left the horizontal, which is why the 2026-07-31 screenshot still showed a halo
+// with a hard right edge and a rocker shadow sliced off (visual pass 3).
 class PowerControl : public juce::Component {
 public:
     PowerControl();
@@ -374,18 +420,27 @@ public:
     // The height the full web anatomy needs: jewel band + gap + 64 px rocker +
     // caption. layoutAmpCard sizes the cluster from this instead of guessing.
     static int preferredHeight();
+    // The width it needs: the 46 px rocker plus its cast-shadow head-room (which
+    // also covers the jewel's glow radius).
+    static int preferredWidth();
 
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
     void mouseUp(const juce::MouseEvent&) override;
 
 private:
-    juce::Colour accent_{skin::accentRat};
+    juce::Colour accent_{skin::accent(skin::AccentId::Rat)};
     bool on_{true};
 };
 
-// The 3-way chorus MODE switch: three carved segments stacked in a well, the
-// active one lit. Reports the chosen index (0 Off / 1 Chorus / 2 Vibrato).
+// The chorus/tremolo MODE switch — the web `.mode-switch` geometry exactly
+// (rebuilt in visual pass 3, the owner's "the chorus/trem is broken as well"):
+// every `.mode-opt` has the SAME footprint, they stack flush with the CSS's −1 px
+// overlap, and ONLY the stack's outer corners round (12 px). The active segment is
+// raised and lit at that same footprint — it must never read wider or squarer than
+// its neighbours, which is what the old per-segment full-rounded-rect inset strokes
+// and the middle segment's corner-less path together produced. Works for both the
+// 3-state (Clean 120 chorus) and 2-state (Twin tremolo) forms.
 class ModeSwitch : public juce::Component {
 public:
     ModeSwitch();
@@ -408,6 +463,10 @@ public:
     void setAccent(juce::Colour accent) { accent_ = accent; repaint(); }
     std::function<void(int)> onSelect;
 
+    // The width the web's 78 px segment plus the active segment's cast-shadow
+    // head-room needs (the shadow is clipped at the component bounds otherwise).
+    static int preferredWidth();
+
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
     void mouseUp(const juce::MouseEvent&) override;
@@ -415,7 +474,7 @@ public:
 private:
     juce::StringArray labels_{"Off", "Chorus", "Vibrato"};
     int selected_{0};
-    juce::Colour accent_{skin::accentClean};
+    juce::Colour accent_{skin::accent(skin::AccentId::Clean)};
 };
 
 }  // namespace clipper::native

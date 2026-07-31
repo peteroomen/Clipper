@@ -173,8 +173,18 @@ no WASM rebuild required, goldens untouched by construction.
 
 ## Deferred to next session
 
-- Native dark theme (still light-bench only; the Scheme struct now makes it a
-  data problem rather than a rewrite)
+- ~~Native dark theme (still light-bench only; the Scheme struct now makes it a
+  data problem rather than a rewrite)~~ — **DONE in visual pass 3**
+  (`docs/work/2026-07-31-native-visual-pass-3.md`). The prediction held: it was a
+  data problem, and cheaper than expected, because the dark token root's control
+  values turned out to be byte-for-byte the `.pedal` pinning this pass had already
+  translated — so `darkIsland()` IS the dark bench scheme.
+- Also fixed in pass 3, and worth recording against this pass's claims: the power
+  cluster's **width** was still wrong here. This pass fixed the cluster's height
+  (`PowerControl::preferredHeight()`) and left the width at a third of the card,
+  which gave the power control 36 px for a 46 px rocker — so the halo and the
+  rocker's cast shadow were still being clipped horizontally in the shipped build.
+  The lesson repeats: the screenshot, not the arithmetic.
 - Sfx in hosted wrappers (deliberately disabled — would need a host-safe output
   strategy, and DAW users may not want UI sounds at all)
 - The web's per-amp jewel hot-spot colour triples (#FFF0C8 etc.) are approximated

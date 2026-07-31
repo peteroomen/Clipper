@@ -58,16 +58,18 @@ void BoardEdgeFade::paint(juce::Graphics& g) {
     auto r = getLocalBounds().toFloat();
     const float w = juce::jmin((float)kFadeW, r.getWidth() * 0.25f);
     // Fades to the bench, not to white: the board reads as passing UNDER the edge of
-    // the working area rather than being wiped out by a gradient.
+    // the working area rather than being wiped out by a gradient. Theme-resolved, so
+    // a dark bench veils to charcoal rather than to porcelain.
+    const juce::Colour bench = skin::ground();
     if (left_) {
-        juce::ColourGradient grad(skin::ground.withAlpha(0.72f), r.getX(), 0.0f,
-                                  skin::ground.withAlpha(0.0f), r.getX() + w, 0.0f, false);
+        juce::ColourGradient grad(bench.withAlpha(0.72f), r.getX(), 0.0f,
+                                  bench.withAlpha(0.0f), r.getX() + w, 0.0f, false);
         g.setGradientFill(grad);
         g.fillRect(r.withWidth(w));
     }
     if (right_) {
-        juce::ColourGradient grad(skin::ground.withAlpha(0.72f), r.getRight(), 0.0f,
-                                  skin::ground.withAlpha(0.0f), r.getRight() - w, 0.0f, false);
+        juce::ColourGradient grad(bench.withAlpha(0.72f), r.getRight(), 0.0f,
+                                  bench.withAlpha(0.0f), r.getRight() - w, 0.0f, false);
         g.setGradientFill(grad);
         g.fillRect(r.withTrimmedLeft((int)(r.getWidth() - w)));
     }
@@ -76,6 +78,14 @@ void BoardEdgeFade::paint(juce::Graphics& g) {
 ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& p)
     : juce::AudioProcessorEditor(&p), proc_(p) {
     setLookAndFeel(&lnf_);
+
+    // ---- THEME (visual pass 3) -------------------------------------------------
+    // Resolve before ANY widget is constructed with an accent or a scheme: the
+    // saved mode, then the OS state Auto may defer to.
+    themeMode_ = skin::loadThemeMode();
+    skin::setThemeMode(themeMode_);
+    skin::setSystemDark(juce::Desktop::getInstance().isDarkModeActive());
+    juce::Desktop::getInstance().addDarkModeSettingListener(this);
 
     // ---- knob helper: name, accent, visible + APVTS slider attachment ----------
     auto knob = [this](NeuKnob& k, std::unique_ptr<SliderAttach>& at, const char* id,
@@ -87,7 +97,8 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     };
 
     // ---- INPUT ----------------------------------------------------------------
-    knob(inputTrim_, inputTrimAttach_, pid::inputTrim, "Trim", skin::accentTwin);
+    knob(inputTrim_, inputTrimAttach_, pid::inputTrim, "Trim",
+         skin::accent(skin::AccentId::Twin));
 
     // ---- THE BOARD ------------------------------------------------------------
     // Cards are built from the processor's chain (see rebuildBoard); the gear tray
@@ -114,7 +125,7 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     addAndMakeVisible(boardView_);
     addAndMakeVisible(boardFade_);  // added AFTER the viewport, so it veils it
 
-    trayAdd_.setTint(skin::benchInkDim);
+    trayAdd_.setTint(skin::benchInkDim());
     boardContent_.addAndMakeVisible(trayAdd_);
     trayAdd_.onClick = [this] { showTrayMenu(); };
 
@@ -148,19 +159,19 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     // Web parity (visual pass 2): the amp's controls resolve the LIGHT token
     // context on the web (the dark pinning is .pedal-scoped) — amp knobs paint as
     // porcelain on the light amp panel.
-    knob(volume_, volumeAttach_, pid::volume, "Vol", skin::accentClean);
-    knob(bass_, bassAttach_, pid::bass, "Bass", skin::accentClean);
-    knob(middle_, middleAttach_, pid::middle, "Mid", skin::accentClean);
-    knob(treble_, trebleAttach_, pid::treble, "Treble", skin::accentClean);
-    knob(presence_, presenceAttach_, pid::jcmPresence, "Presence", skin::accentJcm);
-    knob(master_, masterAttach_, pid::jcmMaster, "Master", skin::accentJcm);
-    knob(gain_, gainAttach_, pid::jcmGain, "Gain", skin::accentJcm);
-    knob(reverb_, reverbAttach_, pid::reverb, "Reverb", skin::accentClean);
-    knob(modSpeed_, modSpeedAttach_, pid::chorusSpeed, "Speed", skin::accentClean);
-    knob(modDepth_, modDepthAttach_, pid::chorusDepth, "Depth", skin::accentClean);
+    knob(volume_, volumeAttach_, pid::volume, "Vol", skin::accent(skin::AccentId::Clean));
+    knob(bass_, bassAttach_, pid::bass, "Bass", skin::accent(skin::AccentId::Clean));
+    knob(middle_, middleAttach_, pid::middle, "Mid", skin::accent(skin::AccentId::Clean));
+    knob(treble_, trebleAttach_, pid::treble, "Treble", skin::accent(skin::AccentId::Clean));
+    knob(presence_, presenceAttach_, pid::jcmPresence, "Presence", skin::accent(skin::AccentId::Jcm));
+    knob(master_, masterAttach_, pid::jcmMaster, "Master", skin::accent(skin::AccentId::Jcm));
+    knob(gain_, gainAttach_, pid::jcmGain, "Gain", skin::accent(skin::AccentId::Jcm));
+    knob(reverb_, reverbAttach_, pid::reverb, "Reverb", skin::accent(skin::AccentId::Clean));
+    knob(modSpeed_, modSpeedAttach_, pid::chorusSpeed, "Speed", skin::accent(skin::AccentId::Clean));
+    knob(modDepth_, modDepthAttach_, pid::chorusDepth, "Depth", skin::accent(skin::AccentId::Clean));
     for (NeuKnob* k : {&volume_, &bass_, &middle_, &treble_, &presence_, &master_, &gain_,
                        &reverb_, &modSpeed_, &modDepth_})
-        k->setScheme(skin::lightBench());
+        k->setScheme(skin::benchScheme());
 
     // Levers + power + chorus mode.
     bright_.setCaption("Bright");
@@ -205,6 +216,13 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     oversampleAttach_ =
         std::make_unique<ComboAttach>(proc_.apvts, pid::oversampling, oversampleBox_);
 
+    // The THEME override chip: Auto -> Light -> Dark -> Auto. Auto is the default
+    // and follows the OS; the other two pin it. Not a parameter — see PluginEditor.h.
+    themeChip_.setTint(skin::inkDim);
+    themeChip_.setText(skin::themeModeName(themeMode_).toUpperCase());
+    themeChip_.onClick = [this] { cycleTheme(); };
+    addAndMakeVisible(themeChip_);
+
     // Re-layout the amp face whenever the voice parameter changes (user or host).
     ampModelListen_ = std::make_unique<ParamAttach>(
         *proc_.apvts.getParameter(pid::ampModel), [this](float) { updateAmpFace(); },
@@ -213,7 +231,7 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     // ---- build stamp ----------------------------------------------------------
     buildStamp_.setText(juce::String("build ") + CLIPPER_GIT_HASH, juce::dontSendNotification);
     buildStamp_.setJustificationType(juce::Justification::centredRight);
-    buildStamp_.setColour(juce::Label::textColourId, skin::benchFaint);
+    buildStamp_.setColour(juce::Label::textColourId, skin::benchFaint());
     buildStamp_.setFont(skin::monoFont(11.0f));
     addAndMakeVisible(buildStamp_);
 
@@ -232,7 +250,54 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
 ClipperAudioProcessorEditor::~ClipperAudioProcessorEditor() {
     stopTimer();
     autoScroll_.stopTimer();
+    juce::Desktop::getInstance().removeDarkModeSettingListener(this);
     setLookAndFeel(nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Theme
+// ---------------------------------------------------------------------------
+void ClipperAudioProcessorEditor::darkModeSettingChanged() {
+    skin::setSystemDark(juce::Desktop::getInstance().isDarkModeActive());
+    if (themeMode_ == skin::ThemeMode::Auto) applyTheme();  // Light/Dark pin it
+}
+
+void ClipperAudioProcessorEditor::cycleTheme() {
+    switch (themeMode_) {
+        case skin::ThemeMode::Auto:  setThemeMode(skin::ThemeMode::Light); break;
+        case skin::ThemeMode::Light: setThemeMode(skin::ThemeMode::Dark); break;
+        default:                     setThemeMode(skin::ThemeMode::Auto); break;
+    }
+}
+
+void ClipperAudioProcessorEditor::setThemeMode(skin::ThemeMode m, bool persist) {
+    themeMode_ = m;
+    skin::setThemeMode(m);
+    if (persist) skin::saveThemeMode(m);
+    applyTheme();
+}
+
+// Every theme-dependent colour a widget CACHED (accents set once, label colours,
+// knob schemes) is re-resolved here; everything painted from skin:: at paint time
+// follows for free. Only ever runs on a flip, so the cost does not matter.
+void ClipperAudioProcessorEditor::applyTheme() {
+    themeChip_.setText(skin::themeModeName(themeMode_).toUpperCase());
+    themeChip_.setTint(skin::inkDim);
+    trayAdd_.setTint(skin::benchInkDim());
+    buildStamp_.setColour(juce::Label::textColourId, skin::benchFaint());
+
+    inputTrim_.setAccent(skin::accent(skin::AccentId::Twin));
+    for (NeuKnob* k : {&volume_, &bass_, &middle_, &treble_, &presence_, &master_, &gain_,
+                       &reverb_, &modSpeed_, &modDepth_})
+        k->setScheme(skin::benchScheme());
+    // The INPUT card is a dark island in both themes (like the pedals), so its knob
+    // keeps the pinned-dark scheme; only its accent follows the theme.
+    inputTrim_.setScheme(skin::darkIsland());
+
+    for (auto* card : cards_) card->applyTheme();
+
+    updateAmpFace();  // re-resolves ampAccent_ + re-applies it to every amp widget
+    repaint();
 }
 
 void ClipperAudioProcessorEditor::refreshFromState() {
@@ -488,7 +553,8 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
         case 1:  // JCM800 "Eight Hundred" — gold. Presence Bass Mid Treble Master Gain Reverb
             ampWordmark_ = "Eight Hundred";
             ampEyebrow_ = juce::String::fromUTF8("Head Nº2 · Brit-Type");
-            ampAccent_ = skin::accentJcm;
+            ampAccentId_ = skin::AccentId::Jcm;
+            ampAccent_ = skin::accent(ampAccentId_);
             showBright_ = false;
             show(presence_, "Presence", ampAccent_);
             show(bass_, "Bass", ampAccent_);
@@ -503,7 +569,8 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
         case 2:  // Twin "Twin Sixty-Five" — silver-blue. Vol Bass Mid Treble Reverb + tremolo
             ampWordmark_ = "Twin Sixty-Five";
             ampEyebrow_ = juce::String::fromUTF8("Combo Nº3 · Black-Panel");
-            ampAccent_ = skin::accentTwin;
+            ampAccentId_ = skin::AccentId::Twin;
+            ampAccent_ = skin::accent(ampAccentId_);
             showBright_ = true;
             show(volume_, "Vol", ampAccent_);
             show(bass_, "Bass", ampAccent_);
@@ -525,7 +592,8 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
         case 3:  // AC30 "Thirty" — copper. Vol Bass Treble Cut Reverb
             ampWordmark_ = "Thirty";
             ampEyebrow_ = juce::String::fromUTF8("Combo Nº4 · Top-Boost");
-            ampAccent_ = skin::accentAc30;
+            ampAccentId_ = skin::AccentId::Ac30;
+            ampAccent_ = skin::accent(ampAccentId_);
             showBright_ = false;
             show(volume_, "Vol", ampAccent_);
             show(bass_, "Bass", ampAccent_);
@@ -538,7 +606,8 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
             ampModel_ = 0;
             ampWordmark_ = "Clean 120";
             ampEyebrow_ = juce::String::fromUTF8("Solid State · Stereo");
-            ampAccent_ = skin::accentClean;
+            ampAccentId_ = skin::AccentId::Clean;
+            ampAccent_ = skin::accent(ampAccentId_);
             showBright_ = true;
             showMode_ = true;
             show(volume_, "Vol", ampAccent_);
@@ -588,12 +657,14 @@ void ClipperAudioProcessorEditor::updateEnablement() {
 void ClipperAudioProcessorEditor::resized() {
     auto r = getLocalBounds().reduced(kMargin);
 
-    // Top bar: title left; amp-voice + oversample pills right.
+    // Top bar: title left; theme chip + amp-voice + oversample pills right.
     auto top = r.removeFromTop(kTopBar);
     {
-        auto rightPills = top.removeFromRight(360);
+        auto rightPills = top.removeFromRight(juce::jmin(470, top.getWidth()));
+        auto theme = rightPills.removeFromLeft(102);
         auto voice = rightPills.removeFromLeft(184);
         auto os = rightPills;
+        themeChip_.setBounds(theme.withTrimmedTop(22).withHeight(34).reduced(4, 0));
         ampVoiceBox_.setBounds(voice.withTrimmedTop(22).withHeight(34).reduced(4, 0));
         oversampleBox_.setBounds(os.withTrimmedTop(22).withHeight(34).reduced(4, 0));
     }
@@ -629,14 +700,21 @@ void ClipperAudioProcessorEditor::layoutAmpCard(juce::Rectangle<int> card) {
     auto in = card.reduced(20);
     in.removeFromTop(56);  // eyebrow + wordmark header stays at top
 
-    // The Bright/Cab/Power cluster gives ground when the card is narrow, so the tone
-    // knobs never get starved into a single column.
-    const int clusterWant = showBright_ ? 168 : 116;
+    // The Bright/Cab/Power cluster. Its width is no longer a guess: each widget
+    // reports what its own SHADOWS need (visual pass 3 — pass 2 fixed the cluster's
+    // height and left the width at a third of the card, which gave the power control
+    // ~50 px for a 46 px rocker and sliced its cast shadow and the jewel's halo off
+    // at the component's right edge). It still gives ground on a narrow card, but
+    // proportionally, so no one widget is the one that gets clipped.
+    const int leverW = LeverToggle::preferredWidth();
+    const int powerW = PowerControl::preferredWidth();
+    const int clusterWant = (showBright_ ? 2 * leverW : leverW) + powerW;
     // The cluster's HEIGHT comes from the power control's real anatomy (glow
     // head-room + jewel + full 46x64 rocker + caption) — the old max(cellH, 84)
     // squished the rocker to a sliver and clipped the jewel's halo square.
     const int clusterH = PowerControl::preferredHeight();
-    auto cluster = in.removeFromRight(juce::jlimit(96, clusterWant, in.getWidth() / 3));
+    auto cluster = in.removeFromRight(
+        juce::jlimit(powerW, clusterWant, juce::jmax(powerW, in.getWidth() / 2)));
     in.removeFromRight(kGap);
     auto knobArea = in;
     const int nPrimary = (int)ampPrimaryKnobs_.size();
@@ -690,15 +768,18 @@ void ClipperAudioProcessorEditor::layoutAmpCard(juce::Rectangle<int> card) {
     // its full anatomy height (see clusterH above).
     {
         auto c = cluster.withY(startY).withHeight(clusterH);
-        int slot = c.getWidth() / (showBright_ ? 3 : 2);
+        // Each slot is exactly its widget's preferred width, scaled together if the
+        // card could not give the cluster all of it — so a squeeze never lands
+        // entirely on the power control the way a fixed third-of-the-card did.
+        const float k = juce::jmin(1.0f, (float)c.getWidth() / (float)clusterWant);
+        const int lw = juce::jmax(24, (int)(leverW * k));
         // The power jewel sits glowSpread(16) below its bounds top (halo head-room);
         // the web aligns the toggle slots' tops with the JEWEL, so the levers drop
         // by the same amount.
         const int leverDrop = (int)skin::glowSpread(16.0f);
-        if (showBright_)
-            bright_.setBounds(c.removeFromLeft(slot).reduced(2, 0).withTrimmedTop(leverDrop));
-        cab_.setBounds(c.removeFromLeft(slot).reduced(2, 0).withTrimmedTop(leverDrop));
-        power_.setBounds(c.reduced(2, 0));
+        if (showBright_) bright_.setBounds(c.removeFromLeft(lw).withTrimmedTop(leverDrop));
+        cab_.setBounds(c.removeFromLeft(lw).withTrimmedTop(leverDrop));
+        power_.setBounds(c);
     }
 
     // Modulation sub-row (Chorus/Tremolo): a divider centred in its own gap, then
@@ -718,8 +799,10 @@ void ClipperAudioProcessorEditor::layoutAmpCard(juce::Rectangle<int> card) {
             cx += cellW + 4;
         }
         // The mode switch starts ON the row line (never above it) and is never
-        // taller than the row, so it cannot reach back over the divider.
-        if (showMode_) chorusMode_.setBounds(cx + 10, rowY, 92, cellH);
+        // taller than the row, so it cannot reach back over the divider. Its width
+        // is the web segment plus the active segment's cast-shadow head-room.
+        if (showMode_)
+            chorusMode_.setBounds(cx + 10, rowY, ModeSwitch::preferredWidth(), cellH);
     }
 }
 
@@ -728,27 +811,29 @@ void ClipperAudioProcessorEditor::layoutAmpCard(juce::Rectangle<int> card) {
 // ---------------------------------------------------------------------------
 void ClipperAudioProcessorEditor::paint(juce::Graphics& g) {
     // The light porcelain bench (a soft vertical lift).
-    juce::ColourGradient bench(skin::ground.brighter(0.035f), getWidth() * 0.5f, 0.0f,
-                               skin::groundDeep, getWidth() * 0.5f, (float)getHeight(), false);
+    juce::ColourGradient bench(skin::ground().brighter(0.035f), getWidth() * 0.5f, 0.0f,
+                               skin::groundDeep(), getWidth() * 0.5f, (float)getHeight(),
+                               false);
     g.setGradientFill(bench);
     g.fillRect(getLocalBounds());
 
     // Title wordmark.
-    g.setColour(skin::benchInkDim);
+    g.setColour(skin::benchInkDim());
     g.setFont(skin::wordmarkFont(30.0f));
     g.drawText("CLIPPER", kMargin, kMargin - 2, 320, 40, juce::Justification::centredLeft);
-    g.setColour(skin::benchFaint);
+    g.setColour(skin::benchFaint());
     g.setFont(skin::monoFont(10.5f));
     g.drawText(juce::String::fromUTF8("GUITAR RIG · NATIVE"), kMargin, kMargin + 34, 320,
                14, juce::Justification::centredLeft);
 
     // Pill captions.
     auto pillCaption = [&](juce::Component& box, const juce::String& text) {
-        g.setColour(skin::benchInkDim);
+        g.setColour(skin::benchInkDim());
         g.setFont(skin::monoFont(10.0f));
         g.drawText(text, box.getX(), box.getY() - 16, box.getWidth(), 14,
                    juce::Justification::centredLeft);
     };
+    pillCaption(themeChip_, "THEME");
     pillCaption(ampVoiceBox_, "AMP VOICE");
     pillCaption(oversampleBox_, "OVERSAMPLE");
 
@@ -809,7 +894,7 @@ void ClipperAudioProcessorEditor::paint(juce::Graphics& g) {
     auto drawCard = [&](juce::Rectangle<int> card, const juce::String& eyebrow,
                         const juce::String& wordmark, juce::Colour accent, float wordSize) {
         if (card.isEmpty()) return;
-        const skin::Scheme& sc = skin::lightBench();
+        const skin::Scheme& sc = skin::benchScheme();
         skin::drawBenchCard(g, card.toFloat(), 26.0f);
         auto head = card.reduced(18, 14);
         g.setColour(sc.inkFaint);
@@ -840,7 +925,7 @@ void ClipperAudioProcessorEditor::paint(juce::Graphics& g) {
     }
 
     drawCard(cardAmp_, ampEyebrow_, ampWordmark_,
-             ampModel_ == 0 ? skin::lightBench().ink : ampAccent_, 26.0f);
+             ampModel_ == 0 ? skin::benchScheme().ink : ampAccent_, 26.0f);
     if (!cardAmp_.isEmpty())
         skin::drawJack(g, {(float)cardAmp_.getX(),
                            (float)cardAmp_.getY() + cardAmp_.getHeight() * 0.42f},
@@ -851,7 +936,7 @@ void ClipperAudioProcessorEditor::paint(juce::Graphics& g) {
     // knobs' floating value arcs nor the mode switch can touch it.
     if (!ampModRowCaption_.isEmpty()) {
         auto cap = ampModRowCaption_;
-        const skin::Scheme& sc = skin::lightBench();
+        const skin::Scheme& sc = skin::benchScheme();
         g.setColour(sc.shDarker);  // .amp-chorus border-top on the light panel
         g.drawLine((float)cap.getX(), (float)ampModDividerY_,
                    (float)cardAmp_.getRight() - 24, (float)ampModDividerY_, 1.0f);
@@ -884,6 +969,15 @@ void ClipperAudioProcessorEditor::paintBoardContent(juce::Graphics& g) {
         skin::drawBoardRail(g, rail.toFloat());
     }
 
+    // The pedal cards' CAST SHADOWS, drawn here — by the parent, onto the rail —
+    // rather than by each card. A JUCE component's paint is clipped to its own
+    // bounds, so a card painting its own shadow lands the whole thing underneath
+    // itself and reads flat; that is why the board's pedals had no shadow while the
+    // input and amp cards (which the EDITOR paints) did (visual pass 3, the owner's
+    // "the pedals don't have shadows matching the other skeuomorphic things").
+    for (auto* card : cards_)
+        skin::drawIslandCastShadow(g, card->getBounds().toFloat(), 24.0f);
+
     // The cables BETWEEN pedals, in content space — they scroll for free, because
     // they are drawn by the same component the cards live in. Drawn after the rail
     // and before the cards (children paint last), so a plug tucks into its socket.
@@ -891,7 +985,7 @@ void ClipperAudioProcessorEditor::paintBoardContent(juce::Graphics& g) {
         skin::drawCable(g, cards_[i - 1]->outJack(), cards_[i]->inJack());
 
     // Gear-tray caption, above the add button and clear of the cable line.
-    g.setColour(skin::benchFaint);
+    g.setColour(skin::benchFaint());
     g.setFont(skin::monoFont(9.5f));
     g.drawText(cards_.isEmpty() ? juce::String("EMPTY CHAIN") : juce::String("GEAR TRAY"),
                trayAdd_.getX(), trayAdd_.getY() - 18, trayAdd_.getWidth(), 14,

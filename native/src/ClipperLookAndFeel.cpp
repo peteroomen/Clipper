@@ -21,6 +21,111 @@ juce::Path roundedRectPath(juce::Rectangle<float> r, float radius) {
 // ===========================================================================
 namespace skin {
 
+// ---------------------------------------------------------------------------
+// THEME state + the two token roots (tokens.css, verbatim)
+// ---------------------------------------------------------------------------
+namespace {
+ThemeMode gThemeMode = ThemeMode::Auto;
+bool gSystemDark = false;
+
+juce::PropertiesFile::Options themeStoreOptions() {
+    juce::PropertiesFile::Options o;
+    o.applicationName = "Clipper";
+    o.filenameSuffix = "settings";
+#if JUCE_LINUX || JUCE_BSD
+    // JUCE's plain folderName would put this at ~/Clipper/; XDG says ~/.config.
+    o.folderName = ".config/Clipper";
+#else
+    o.folderName = "Clipper";
+#endif
+    o.osxLibrarySubFolder = "Application Support";
+    o.commonToAllUsers = false;
+    return o;
+}
+constexpr const char* kThemeKey = "themeMode";
+}  // namespace
+
+void setThemeMode(ThemeMode m) { gThemeMode = m; }
+ThemeMode themeMode() { return gThemeMode; }
+void setSystemDark(bool osIsDark) { gSystemDark = osIsDark; }
+bool isDark() {
+    return gThemeMode == ThemeMode::Dark || (gThemeMode == ThemeMode::Auto && gSystemDark);
+}
+
+juce::String themeModeName(ThemeMode m) {
+    switch (m) {
+        case ThemeMode::Light: return "light";
+        case ThemeMode::Dark:  return "dark";
+        default:               return "auto";
+    }
+}
+
+// The store is opened and closed per call rather than kept alive in a global: a
+// juce::PropertiesFile is a Timer + ChangeBroadcaster, and one outliving the JUCE
+// message manager (a plugin unloading, the snapshot tool exiting) is a shutdown
+// assert waiting to happen. Reading a ~50-byte file twice a session costs nothing.
+ThemeMode loadThemeMode() {
+    const auto opts = themeStoreOptions();
+    juce::PropertiesFile store(opts.getDefaultFile(), opts);
+    const juce::String v = store.getValue(kThemeKey, "auto");
+    if (v == "light") return ThemeMode::Light;
+    if (v == "dark") return ThemeMode::Dark;
+    return ThemeMode::Auto;
+}
+
+void saveThemeMode(ThemeMode m) {
+    const auto opts = themeStoreOptions();
+    juce::PropertiesFile store(opts.getDefaultFile(), opts);
+    store.setValue(kThemeKey, themeModeName(m));
+    store.saveIfNeeded();
+}
+
+// --- the BENCH, per theme (tokens.css :root / prefers-color-scheme: dark) ----
+juce::Colour ground() { return isDark() ? juce::Colour(0xff26292E) : juce::Colour(0xffE5E3DE); }
+juce::Colour groundDeep() {
+    return isDark() ? juce::Colour(0xff202329) : juce::Colour(0xffDBD8D2);
+}
+juce::Colour benchWell() {
+    return isDark() ? juce::Colour(0xff1D2025) : juce::Colour(0xffD6D3CC);
+}
+juce::Colour benchInk() { return isDark() ? juce::Colour(0xffE8E9EB) : juce::Colour(0xff2B2C2E); }
+juce::Colour benchInkDim() {
+    return isDark() ? juce::Colour(0xff969BA3) : juce::Colour(0xff71736F);
+}
+juce::Colour benchFaint() {
+    return isDark() ? juce::Colour(0xff6A6F77) : juce::Colour(0xff9B9D98);
+}
+juce::Colour castShadow() {
+    // Light: the warm .pedal.raised cast, rgba(54,50,44,.30). Dark: the base
+    // .raised --sh-dark rgba(9,11,14,.85) — the warm brown is invisible on charcoal
+    // and the dark theme's own recipe is the near-black one.
+    return isDark() ? juce::Colour(0xd9090B0E) : juce::Colour(0x4D36322C);
+}
+juce::Colour cable() { return isDark() ? juce::Colour(0xff14161A) : juce::Colour(0xff35383E); }
+juce::Colour cableHi() { return isDark() ? juce::Colour(0x1CFFFFFF) : juce::Colour(0x80FFFFFF); }
+juce::Colour cablePlug() {
+    return isDark() ? juce::Colour(0xff474C54) : juce::Colour(0xffC4C0B8);
+}
+
+juce::Colour accent(AccentId id) {
+    const bool d = isDark();
+    switch (id) {
+        case AccentId::Rat:    return d ? juce::Colour(0xffFF4A34) : juce::Colour(0xffF03B24);
+        case AccentId::Sd:     return d ? juce::Colour(0xffFFC94D) : juce::Colour(0xffB58900);
+        case AccentId::Ts:     return d ? juce::Colour(0xff2FD07A) : juce::Colour(0xff1E9E5A);
+        case AccentId::Muff:   return d ? juce::Colour(0xffB98CEE) : juce::Colour(0xff7A3FBF);
+        case AccentId::Phaser: return d ? juce::Colour(0xffFF8C3A) : juce::Colour(0xffC4611A);
+        // Gold takes the DARK token in BOTH themes — see the header: it only ever
+        // paints on the pinned-dark chassis, where #8F6A22 measures ~2.8:1.
+        case AccentId::Gold:   return juce::Colour(0xffD9B36B);
+        case AccentId::Jcm:    return d ? juce::Colour(0xffE8B84B) : juce::Colour(0xffA87A18);
+        case AccentId::Twin:   return d ? juce::Colour(0xff7FB4E8) : juce::Colour(0xff4E7BA8);
+        case AccentId::Ac30:   return d ? juce::Colour(0xffE08A4A) : juce::Colour(0xffB4612C);
+        case AccentId::Clean:  return d ? juce::Colour(0xffFF4A34) : juce::Colour(0xffF03B24);
+    }
+    return d ? juce::Colour(0xffFF4A34) : juce::Colour(0xffF03B24);
+}
+
 const Scheme& darkIsland() {
     // The pedal chassis pinning — exactly the constants above, gathered.
     static const Scheme s{capTop,     capBot,   capEdgeTop, capEdgeBot, well,
@@ -47,6 +152,13 @@ const Scheme& lightBench() {
     return s;
 }
 
+const Scheme& benchScheme() {
+    // The dark root's control tokens ARE the .pedal pinning, byte for byte — which
+    // is why a dark-theme amp panel needs no third scheme and why the pedals do not
+    // move between themes.
+    return isDark() ? darkIsland() : lightBench();
+}
+
 void fillDiagGradient(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour from,
                       juce::Colour to) {
     // ~150deg: from top-left toward bottom-right.
@@ -55,13 +167,18 @@ void fillDiagGradient(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour 
     g.fillRect(r);
 }
 
-void drawChassisCard(juce::Graphics& g, juce::Rectangle<float> r, float radius) {
+void drawIslandCastShadow(juce::Graphics& g, juce::Rectangle<float> r, float radius) {
     auto path = roundedRectPath(r, radius);
+    // The .pedal.raised dual cast: 16px 18px 34px @ .30 + a tighter 3px 4px 10px at
+    // ~.73 of it. In dark theme castShadow() is the near-black --sh-dark, so the
+    // ratio carries over and the recipe stays one recipe.
+    const juce::Colour cs = castShadow();
+    juce::DropShadow(cs, 22, {11, 13}).drawForPath(g, path);
+    juce::DropShadow(cs.withMultipliedAlpha(0.73f), 8, {3, 4}).drawForPath(g, path);
+}
 
-    // Two warm cast shadows on the bench (the .pedal.raised dual box-shadow):
-    // 16px 18px 34px @ .30, then a tighter 3px 4px 10px @ .22.
-    juce::DropShadow(castShadow, 22, {11, 13}).drawForPath(g, path);
-    juce::DropShadow(castShadow.withAlpha(0.22f), 8, {3, 4}).drawForPath(g, path);
+void drawChassisBody(juce::Graphics& g, juce::Rectangle<float> r, float radius) {
+    auto path = roundedRectPath(r, radius);
 
     // Body — the dark island (--panel-grad 160deg).
     {
@@ -80,10 +197,17 @@ void drawChassisCard(juce::Graphics& g, juce::Rectangle<float> r, float radius) 
                1.2f);
 }
 
+void drawChassisCard(juce::Graphics& g, juce::Rectangle<float> r, float radius) {
+    // Cast + body, for a card the EDITOR paints (the input card, the amp): those
+    // are not child components, so their shadow has the bench to fall on.
+    drawIslandCastShadow(g, r, radius);
+    drawChassisBody(g, r, radius);
+}
+
 void drawBenchCard(juce::Graphics& g, juce::Rectangle<float> r, float radius) {
     auto path = roundedRectPath(r, radius);
     // The web .raised dual box-shadow: 10px 10px 24px sh-dark + -10 -10 22 sh-light.
-    const Scheme& s = lightBench();
+    const Scheme& s = benchScheme();
     juce::DropShadow(s.shDark.withMultipliedAlpha(0.75f), 16, {7, 7}).drawForPath(g, path);
     juce::DropShadow(s.shLight.withMultipliedAlpha(0.85f), 15, {-7, -7}).drawForPath(g, path);
     {
@@ -185,9 +309,10 @@ void drawJack(juce::Graphics& g, juce::Point<float> centre, float diameter) {
     g.drawEllipse(body.reduced(0.5f).translated(0.7f, 0.8f), 1.6f);
     g.setColour(shLight);
     g.drawEllipse(body.reduced(0.5f).translated(-0.6f, -0.6f), 1.2f);
-    // The bore (.jack::after) — a darker inner disc.
+    // The bore (.jack::after) — a darker inner disc. Chassis-toned, not bench-toned:
+    // a jack is hardware and reads the same in both themes.
     auto bore = body.reduced(diameter * 0.25f);
-    g.setColour(groundDeep.darker(0.55f));
+    g.setColour(well.darker(0.6f));
     g.fillEllipse(bore);
     g.setColour(shDarker);
     g.drawEllipse(bore.reduced(0.4f), 0.9f);
@@ -208,24 +333,24 @@ void drawCable(juce::Graphics& g, juce::Point<float> from, juce::Point<float> to
     {
         juce::Path shadow = p;
         shadow.applyTransform(juce::AffineTransform::translation(1.0f, 3.0f));
-        g.setColour(castShadow.withAlpha(0.30f));
+        g.setColour(castShadow().withMultipliedAlpha(0.6f));
         g.strokePath(shadow, juce::PathStrokeType(8.0f, juce::PathStrokeType::curved,
                                                   juce::PathStrokeType::rounded));
     }
     // .cable-body — the rubber tube.
-    g.setColour(cable);
+    g.setColour(cable());
     g.strokePath(p, juce::PathStrokeType(7.0f, juce::PathStrokeType::curved,
                                          juce::PathStrokeType::rounded));
     // .cable-hi — the specular edge hugging the top of the tube (translateY -1.4).
     {
         juce::Path hi = p;
         hi.applyTransform(juce::AffineTransform::translation(0.0f, -1.4f));
-        g.setColour(cableHi.withAlpha(0.22f));
+        g.setColour(cableHi().withMultipliedAlpha(0.44f));
         g.strokePath(hi, juce::PathStrokeType(2.4f, juce::PathStrokeType::curved,
                                               juce::PathStrokeType::rounded));
     }
     // .cable-plug — the plug disc at each end.
-    g.setColour(cablePlug);
+    g.setColour(cablePlug());
     g.fillEllipse(from.x - 5.0f, from.y - 5.0f, 10.0f, 10.0f);
     g.fillEllipse(to.x - 5.0f, to.y - 5.0f, 10.0f, 10.0f);
 }
@@ -329,16 +454,20 @@ void drawBoardRail(juce::Graphics& g, juce::Rectangle<float> r) {
     //    a whole plank. Bench-toned, so it belongs to the porcelain rather than
     //    competing with the dark enclosures standing in it.
     const float radius = 14.0f;
+    const Scheme& bs = benchScheme();
     auto channel = roundedRectPath(r, radius);
-    g.setColour(benchWell);
+    g.setColour(benchWell());
     g.fillPath(channel);
     {
         juce::Graphics::ScopedSaveState ss(g);
         g.reduceClipRegion(channel);
-        g.setColour(juce::Colour(0x40000000));
+        // The recess pair, in the BENCH scheme — in dark theme --sh-light is
+        // rgba(255,255,255,.055), so the milled highlight goes from porcelain-bright
+        // to the faint sheen a dark surface actually catches.
+        g.setColour(bs.shDarker.withMultipliedAlpha(isDark() ? 1.0f : 0.75f));
         g.strokePath(roundedRectPath(r.translated(2.5f, 3.0f), radius),
                      juce::PathStrokeType(7.0f));
-        g.setColour(juce::Colour(0x66FFFFFF));
+        g.setColour(bs.shLight);
         g.strokePath(roundedRectPath(r.translated(-2.0f, -2.0f), radius),
                      juce::PathStrokeType(5.0f));
     }
@@ -351,7 +480,12 @@ void drawBoardRail(juce::Graphics& g, juce::Rectangle<float> r) {
     {
         juce::Graphics::ScopedSaveState ss(g);
         g.reduceClipRegion(matPath);
-        fillDiagGradient(g, mat, juce::Colour(0xff4A473F), juce::Colour(0xff35332E));
+        // A different family from the cool charcoal chassis in both themes; the dark
+        // theme's mat is a shade deeper so a pedal never dissolves into it.
+        if (isDark())
+            fillDiagGradient(g, mat, juce::Colour(0xff3A3830), juce::Colour(0xff2A2824));
+        else
+            fillDiagGradient(g, mat, juce::Colour(0xff4A473F), juce::Colour(0xff35332E));
 
         // Drawn ribs, not a texture bitmap: a light edge and a dark valley per rib,
         // the way moulded rubber matting actually catches a workbench lamp.
@@ -533,7 +667,7 @@ void ClipperLookAndFeel::drawScrollbar(juce::Graphics& g, juce::ScrollBar&, int 
     // it must not read as a second rail under the real one.
     auto track = isScrollbarVertical ? area.reduced(thick * 0.30f, 2.0f)
                                      : area.reduced(2.0f, thick * 0.30f);
-    g.setColour(skin::benchWell.darker(0.06f));
+    g.setColour(skin::benchWell().darker(0.06f));
     g.fillRoundedRectangle(track, track.getHeight() * 0.5f);
 
     if (thumbSize <= 0) return;  // content fits — nothing to grab
@@ -547,9 +681,9 @@ void ClipperLookAndFeel::drawScrollbar(juce::Graphics& g, juce::ScrollBar&, int 
     thumb = isScrollbarVertical ? thumb.reduced(thick * 0.22f, 1.0f)
                                 : thumb.reduced(1.0f, thick * 0.22f);
     const float alpha = isMouseDown ? 0.92f : (isMouseOver ? 0.78f : 0.58f);
-    g.setColour(skin::benchInkDim.withAlpha(alpha));
+    g.setColour(skin::benchInkDim().withAlpha(alpha));
     g.fillRoundedRectangle(thumb, radius);
-    g.setColour(juce::Colour(0x30FFFFFF));
+    g.setColour(skin::benchScheme().shLight.withMultipliedAlpha(0.35f));
     g.drawRoundedRectangle(thumb.reduced(0.5f), radius, 1.0f);
 }
 
@@ -892,9 +1026,21 @@ float easeOutBack(float t) {
     return 1.0f + c3 * u * u * u + c1 * u * u;
 }
 constexpr int kLeverAnimMs = 160;
+// .t-slot 30x54 radius 15; .t-lever inset 4 px each side, 24 px tall, top 4 (off)
+// → 26 (on). The lever's cast shadow is 2px 3px 6px, so it needs ~8 px of
+// head-room on the right and below and ~4 px above/left.
+constexpr float kSlotW = 30.0f;
+constexpr float kSlotH = 54.0f;
+constexpr float kLeverInset = 4.0f;
+constexpr float kLeverH = 24.0f;
+constexpr float kLeverShadowPad = 8.0f;
 }  // namespace
 
 LeverToggle::LeverToggle() {}
+
+int LeverToggle::preferredWidth() {
+    return (int)std::ceil(kSlotW + 2.0f * kLeverShadowPad);
+}
 
 void LeverToggle::setOn(bool o) {
     if (!everSet_ || on_ == o) {
@@ -918,7 +1064,11 @@ void LeverToggle::timerCallback() {
         0.0f, 1.0f,
         (float)((juce::Time::getMillisecondCounterHiRes() - animStartMs_) / kLeverAnimMs));
     const float target = on_ ? 1.0f : 0.0f;
-    leverPos_ = animFrom_ + (target - animFrom_) * easeOutBack(t);
+    // CLAMPED (visual pass 3). easeOutBack peaks at 1.0987, which put the lever
+    // 2.17 px past the slot's 4 px inset — out of the slot at whichever end it was
+    // travelling to. The spring's timing is what the web's cubic-bezier gives you;
+    // the overshoot past a physical stop is not something a real lever does.
+    leverPos_ = juce::jlimit(0.0f, 1.0f, animFrom_ + (target - animFrom_) * easeOutBack(t));
     if (t >= 1.0f) {
         leverPos_ = target;
         animating_ = false;
@@ -937,25 +1087,28 @@ void LeverToggle::mouseUp(const juce::MouseEvent&) {
 }
 
 void LeverToggle::paint(juce::Graphics& g) {
-    const skin::Scheme& sc = skin::lightBench();
+    const skin::Scheme& sc = skin::benchScheme();
     auto r = getLocalBounds().toFloat();
     // .t-slot: 30x54, radius 15, a carved well (inset 4/4/9 darker + -3/-3/7 light).
-    const float slotW = 30.0f, slotH = 54.0f;
-    juce::Rectangle<float> slot(r.getCentreX() - slotW * 0.5f, r.getY(), slotW, slotH);
+    juce::Rectangle<float> slot(r.getCentreX() - kSlotW * 0.5f, r.getY(), kSlotW, kSlotH);
     skin::drawWell(g, slot, 15.0f, sc);
     // .t-lever: inset 4 px each side, 24 px tall, top 4 (off) → 26 (on), animated.
-    // The lever casts 2px 3px 6px sh-dark and carries an inset top light rim.
-    const float leverY = slot.getY() + 4.0f + leverPos_ * 22.0f;
-    auto lever = juce::Rectangle<float>(slot.getX() + 4.0f, leverY, slotW - 8.0f, 24.0f);
+    // The travel is exactly (slotH - 2*inset - leverH) = 22 px, so the settled lit
+    // position IS the web's top:26px with the 4 px bottom inset preserved.
+    const float travel = kSlotH - 2.0f * kLeverInset - kLeverH;
+    const float leverY = slot.getY() + kLeverInset + leverPos_ * travel;
+    auto lever = juce::Rectangle<float>(slot.getX() + kLeverInset, leverY,
+                                        kSlotW - 2.0f * kLeverInset, kLeverH);
     {
         juce::Path lp = roundedRectPath(lever, 12.0f);
         juce::DropShadow(sc.shDark, 5, {2, 3}).drawForPath(g, lp);
     }
     // The lit gradient only once the lever has crossed halfway, like the web's
     // class flip (the colour switches while the slide is in flight).
-    if (leverPos_ > 0.5f) {
+    const bool lit = leverPos_ > 0.5f;
+    if (lit) {
         g.setGradientFill(juce::ColourGradient(
-            accent_.interpolatedWith(skin::ground, 0.40f), lever.getTopLeft(),
+            accent_.interpolatedWith(skin::ground(), 0.40f), lever.getTopLeft(),
             accent_.interpolatedWith(juce::Colours::black, 0.15f), lever.getBottomRight(),
             false));
     } else {
@@ -963,7 +1116,14 @@ void LeverToggle::paint(juce::Graphics& g) {
                                                lever.getBottomRight(), false));
     }
     g.fillRoundedRectangle(lever, 12.0f);
-    g.setColour(sc.shLight.withMultipliedAlpha(0.7f));  // inset 0 1px 1px sh-light
+    // inset 0 1px 1px sh-light. On the UNLIT cap this is the web's rim. On the LIT
+    // lever it is not: --sh-light is rgba(255,255,255,.95) in light theme, and a
+    // 95 %-white hairline across a saturated accent reads as a white LINE painted on
+    // the orange (the owner's report), not as light catching a cap edge. The lit
+    // lever takes a rim of its own accent, brightened — the same cue, in the right
+    // material.
+    g.setColour(lit ? accent_.brighter(0.55f).withAlpha(0.35f)
+                    : sc.shLight.withMultipliedAlpha(0.7f));
     g.drawLine(lever.getX() + 6.0f, lever.getY() + 1.0f, lever.getRight() - 6.0f,
                lever.getY() + 1.0f, 1.0f);
     // caption (.toggle .k-name — ink-dim, mono small caps).
@@ -985,6 +1145,10 @@ constexpr float kRockerW = 46.0f;      // .rocker 46x64, radius 12
 constexpr float kRockerH = 64.0f;
 constexpr float kPowerCaptionH = 16.0f;
 constexpr float kPowerGap = 9.0f;      // .power gap: 9px
+// The rocker's own cast shadow is 5px 5px 12px: it reaches ~12 px past the body on
+// the right and below, ~7 px on the left and above. Take the larger for both sides
+// so the widget is symmetric and nothing is sliced at the bounds.
+constexpr float kRockerShadowPad = 12.0f;
 }  // namespace
 
 PowerControl::PowerControl() {}
@@ -992,6 +1156,13 @@ PowerControl::PowerControl() {}
 int PowerControl::preferredHeight() {
     return (int)std::ceil(skin::glowSpread(kJewelD) + kJewelD + kPowerGap + kRockerH +
                           4.0f + kPowerCaptionH);
+}
+
+int PowerControl::preferredWidth() {
+    // The rocker + its shadow head-room. That also covers the jewel's halo, which
+    // reaches jewelR + glowSpread = 8 + 12.8 = 20.8 px from the centre against the
+    // (46 + 24)/2 = 35 px this gives it.
+    return (int)std::ceil(kRockerW + 2.0f * kRockerShadowPad);
 }
 
 void PowerControl::mouseDown(const juce::MouseEvent&) {
@@ -1004,10 +1175,11 @@ void PowerControl::mouseUp(const juce::MouseEvent&) {
 }
 
 void PowerControl::paint(juce::Graphics& g) {
-    const skin::Scheme& sc = skin::lightBench();
+    const skin::Scheme& sc = skin::benchScheme();
     auto r = getLocalBounds().toFloat();
-    // The jewel band: glow head-room ABOVE the jewel (sides are covered by the
-    // component being wider than the rocker). Everything below follows from it.
+    // The jewel band: glow head-room ABOVE the jewel; the sides are covered by
+    // preferredWidth() reserving the rocker's shadow pad, which is wider than the
+    // halo's own reach.
     const float glowPad = skin::glowSpread(kJewelD);
     auto jewel = juce::Rectangle<float>(r.getCentreX() - kJewelD * 0.5f,
                                         r.getY() + glowPad, kJewelD, kJewelD);
@@ -1069,17 +1241,44 @@ void PowerControl::paint(juce::Graphics& g) {
 }
 
 // ===========================================================================
-// ModeSwitch — the web .mode-switch: each .mode-opt is its OWN carved well
-// (inset 3/3/7 darker + -3/-3/6 light), stacked flush; only the stack's outer
-// corners round (12px). The ACTIVE segment is RAISED and lit (accent gradient +
-// 2px 3px 6px cast + inset top light) — the inverse of its neighbours.
+// ModeSwitch — the web .mode-switch, rebuilt to its geometry (visual pass 3).
+//
+// The CSS: every .mode-opt is the same 78 px-wide box; `+ .mode-opt` pulls each one
+// up by 1 px so the stack is flush with a 1 px OVERLAP; only nth-of-type(1)/(last)
+// round their outer pair (12 px); the inactive ones are carved wells (inset 3/3/7
+// darker + -3/-3/6 light) and the active one is RAISED and lit (accent gradient +
+// 2px 3px 6px cast + inset 0 1px 1px light) at the SAME footprint.
+//
+// Two things made the old translation read as a wider, sharp-cornered red block:
+// the inset strokes were FULL rounded rects rather than the segment's own
+// corner-specific path (so every well drew a capsule outline inside itself, and the
+// active middle segment — which has no rounded corners at all — was the only one
+// without that inner capsule), and the stack ran edge to edge in the component, so
+// the active segment's cast shadow was clipped on both sides and piled up as extra
+// visual width. The stack now keeps kModeShadowPad of head-room, and the active
+// segment is drawn LAST so its shadow falls on its neighbours instead of under them.
 // ===========================================================================
+namespace {
+constexpr float kModeCaptionH = 16.0f;
+constexpr float kModeShadowPad = 8.0f;  // head-room for the 2px 3px 6px active cast
+constexpr float kModeSegW = 78.0f;      // .mode-switch --seg-w
+constexpr float kModeRadius = 12.0f;
+constexpr float kModeOverlap = 1.0f;    // .mode-opt + .mode-opt { margin-top: -1px }
+}  // namespace
+
 ModeSwitch::ModeSwitch() {}
 
+int ModeSwitch::preferredWidth() {
+    return (int)std::ceil(kModeSegW + 2.0f * kModeShadowPad);
+}
+
 void ModeSwitch::mouseDown(const juce::MouseEvent& e) {
-    auto r = getLocalBounds().withTrimmedBottom(16);
-    int segH = r.getHeight() / labels_.size();
-    int idx = juce::jlimit(0, labels_.size() - 1, (e.y - r.getY()) / juce::jmax(1, segH));
+    // Same geometry as paint(): the caption band is trimmed, the stack is inset.
+    auto r = getLocalBounds().toFloat().withTrimmedBottom(kModeCaptionH);
+    const float segH = r.getHeight() / (float)juce::jmax(1, labels_.size());
+    const int idx = juce::jlimit(0, labels_.size() - 1,
+                                 (int)std::floor(((float)e.y - r.getY()) /
+                                                 juce::jmax(1.0f, segH)));
     uisound::thunk(true);
     if (onSelect) onSelect(idx);
 }
@@ -1089,52 +1288,77 @@ void ModeSwitch::mouseUp(const juce::MouseEvent&) {
 }
 
 void ModeSwitch::paint(juce::Graphics& g) {
-    const skin::Scheme& sc = skin::lightBench();
+    const skin::Scheme& sc = skin::benchScheme();
     auto full = getLocalBounds().toFloat();
-    auto r = full.withTrimmedBottom(16.0f);
-    const int n = labels_.size();
+    auto r = full.withTrimmedBottom(kModeCaptionH).reduced(kModeShadowPad, 0.0f);
+    const int n = juce::jmax(1, labels_.size());
     const float segH = r.getHeight() / (float)n;
-    const float rad = 12.0f;
 
-    for (int i = 0; i < n; ++i) {
-        auto seg = juce::Rectangle<float>(r.getX(), r.getY() + segH * i, r.getWidth(),
-                                          segH - (i < n - 1 ? 1.0f : 0.0f));
-        // Outer corners only: first segment rounds its top pair, last its bottom.
-        juce::Path sp;
-        sp.addRoundedRectangle(seg.getX(), seg.getY(), seg.getWidth(), seg.getHeight(),
-                               rad, rad, i == 0, i == 0, i == n - 1, i == n - 1);
-        const bool on = (i == selected_);
-        if (on) {
-            // .mode-opt.on — raised + lit.
-            juce::DropShadow(sc.shDark, 5, {2, 3}).drawForPath(g, sp);
-            juce::Graphics::ScopedSaveState ss(g);
-            g.reduceClipRegion(sp);
-            juce::ColourGradient grad(accent_.interpolatedWith(skin::ground, 0.45f),
-                                      seg.getTopLeft(),
-                                      accent_.interpolatedWith(juce::Colours::black, 0.18f),
-                                      seg.getBottomRight(), false);
-            g.setGradientFill(grad);
-            g.fillPath(sp);
-            g.setColour(sc.shLight.withMultipliedAlpha(0.7f));  // inset 0 1px 1px light
-            g.drawLine(seg.getX() + 6.0f, seg.getY() + 1.0f, seg.getRight() - 6.0f,
-                       seg.getY() + 1.0f, 1.0f);
-        } else {
-            // .mode-opt — a carved well of its own.
-            g.setColour(sc.well);
-            g.fillPath(sp);
-            juce::Graphics::ScopedSaveState ss(g);
-            g.reduceClipRegion(sp);
-            g.setColour(sc.shDarker);
-            g.strokePath(roundedRectPath(seg.translated(1.4f, 1.6f), rad),
-                         juce::PathStrokeType(2.8f));
-            g.setColour(sc.shLight.withMultipliedAlpha(0.8f));
-            g.strokePath(roundedRectPath(seg.translated(-1.2f, -1.2f), rad),
-                         juce::PathStrokeType(2.0f));
-        }
+    // One footprint for every segment, differing ONLY in which outer corners round.
+    auto segBounds = [&](int i) {
+        return juce::Rectangle<float>(r.getX(), r.getY() + segH * (float)i, r.getWidth(),
+                                      segH + (i < n - 1 ? kModeOverlap : 0.0f));
+    };
+    auto segPath = [&](int i) {
+        auto s = segBounds(i);
+        juce::Path p;
+        p.addRoundedRectangle(s.getX(), s.getY(), s.getWidth(), s.getHeight(), kModeRadius,
+                              kModeRadius, i == 0, i == 0, i == n - 1, i == n - 1);
+        return p;
+    };
+    auto caption = [&](int i, bool on) {
         g.setColour(on ? sc.ink : sc.inkDim);
         g.setFont(skin::monoFont(11.0f));
-        g.drawText(labels_[i], seg, juce::Justification::centred);
+        g.drawText(labels_[i], segBounds(i).withHeight(segH), juce::Justification::centred);
+    };
+
+    // The carved neighbours first…
+    for (int i = 0; i < n; ++i) {
+        if (i == selected_) continue;
+        const juce::Path sp = segPath(i);
+        g.setColour(sc.well);
+        g.fillPath(sp);
+        {
+            juce::Graphics::ScopedSaveState ss(g);
+            g.reduceClipRegion(sp);
+            // inset 3px 3px 7px sh-darker / inset -3px -3px 6px sh-light — as the
+            // SEGMENT's own path, so an interior edge stays a straight seam.
+            juce::Path in = sp;
+            in.applyTransform(juce::AffineTransform::translation(1.6f, 1.8f));
+            g.setColour(sc.shDarker);
+            g.strokePath(in, juce::PathStrokeType(3.0f));
+            juce::Path out = sp;
+            out.applyTransform(juce::AffineTransform::translation(-1.4f, -1.4f));
+            g.setColour(sc.shLight.withMultipliedAlpha(0.8f));
+            g.strokePath(out, juce::PathStrokeType(2.2f));
+        }
+        caption(i, false);
     }
+
+    // …then the ACTIVE one, last, so its cast shadow lands on them (it is the raised
+    // element) — at exactly the same footprint.
+    if (selected_ >= 0 && selected_ < n) {
+        const juce::Path sp = segPath(selected_);
+        auto seg = segBounds(selected_);
+        juce::DropShadow(sc.shDark, 6, {2, 3}).drawForPath(g, sp);
+        {
+            juce::Graphics::ScopedSaveState ss(g);
+            g.reduceClipRegion(sp);
+            g.setGradientFill(juce::ColourGradient(
+                accent_.interpolatedWith(skin::ground(), 0.45f), seg.getTopLeft(),
+                accent_.interpolatedWith(juce::Colours::black, 0.18f), seg.getBottomRight(),
+                false));
+            g.fillPath(sp);
+            // inset 0 1px 1px sh-light — as on the lever, a 95 %-white hairline on a
+            // saturated accent reads as a painted line, so the lit segment gets its
+            // own accent brightened instead.
+            g.setColour(accent_.brighter(0.55f).withAlpha(0.32f));
+            g.drawLine(seg.getX() + 8.0f, seg.getY() + 1.0f, seg.getRight() - 8.0f,
+                       seg.getY() + 1.0f, 1.0f);
+        }
+        caption(selected_, true);
+    }
+
     g.setColour(sc.inkDim);
     g.setFont(skin::monoFont(9.5f));
     g.drawText("MODE", full.withTop(r.getBottom() + 4.0f), juce::Justification::centredTop);

@@ -15,28 +15,28 @@ constexpr int kJackD = 16;      // .jack is 16px
 // the underlying param ids are the ones the host automates.
 const PedalFace kFaces[PEDAL_TYPE_COUNT] = {
     // RAT — the reference: red, the round stomp, the vertical stack.
-    {"Dirt N\xc2\xba""1 \xc2\xb7 Rodent-Type", "Rodent", skin::accentRat,
+    {"Dirt N\xc2\xba""1 \xc2\xb7 Rodent-Type", "Rodent", skin::AccentId::Rat,
      Footswitch::Shape::Round, PedalFace::Layout::Stack, 38.0f,
      {{"Dist", pid::ratDist}, {"Filter", pid::ratFilter}, {"Level", pid::ratLevel}},
      pid::ratOn},
     // SD-1 — yellow, and the Boss-compact RUBBER TREADLE (the morphology cue).
-    {"Drive N\xc2\xba""2 \xc2\xb7 Yellow", "Super Drive", skin::accentSd,
+    {"Drive N\xc2\xba""2 \xc2\xb7 Yellow", "Super Drive", skin::AccentId::Sd,
      Footswitch::Shape::Treadle, PedalFace::Layout::Stack, 26.0f,
      {{"Drive", pid::sdDrive}, {"Tone", pid::sdTone}, {"Level", pid::sdLevel}},
      pid::sdOn},
     // TS — the green box, and the Ibanez-format hinged metal PAD.
-    {"Drive N\xc2\xba""3 \xc2\xb7 Green", "Screamer", skin::accentTs,
+    {"Drive N\xc2\xba""3 \xc2\xb7 Green", "Screamer", skin::AccentId::Ts,
      Footswitch::Shape::Pad, PedalFace::Layout::Stack, 30.0f,
      {{"Drive", pid::tsDrive}, {"Tone", pid::tsTone}, {"Level", pid::tsLevel}},
      pid::tsOn},
     // Muff — violet, the big stomp, and the classic three-knob TRIANGLE. Knob order
     // is the triangle placement: Sustain top-left, Volume top-right, Tone below.
-    {"Fuzz N\xc2\xba""5 \xc2\xb7 Pi", "Pi", skin::accentMuff,
+    {"Fuzz N\xc2\xba""5 \xc2\xb7 Pi", "Pi", skin::AccentId::Muff,
      Footswitch::Shape::BigRound, PedalFace::Layout::Triangle, 44.0f,
      {{"Sustain", pid::muffSustain}, {"Volume", pid::muffVolume}, {"Tone", pid::muffTone}},
      pid::muffOn},
     // Phaser — burnt orange, and the iconic ONE big knob.
-    {"Phaser N\xc2\xba""4 \xc2\xb7 Script", "Ninety", skin::accentPhaser,
+    {"Phaser N\xc2\xba""4 \xc2\xb7 Script", "Ninety", skin::AccentId::Phaser,
      Footswitch::Shape::Round, PedalFace::Layout::Single, 34.0f,
      {{"Speed", pid::phaserSpeed}},
      pid::phaserOn},
@@ -45,7 +45,7 @@ const PedalFace kFaces[PEDAL_TYPE_COUNT] = {
     // printed, so native takes the colour and the engraving IDEA. Type only — the
     // figure on the real enclosure IS the trademark and is deliberately absent, as
     // are the words Klon/Centaur/KTR. "Myth" is the wink at what the box became.
-    {"Drive N\xc2\xba""6 \xc2\xb7 Gold", "Myth", skin::accentGold,
+    {"Drive N\xc2\xba""6 \xc2\xb7 Gold", "Myth", skin::AccentId::Gold,
      Footswitch::Shape::Round, PedalFace::Layout::Plate, 30.0f,
      {{"Gain", pid::goldGain}, {"Treble", pid::goldTreble}, {"Output", pid::goldLevel}},
      pid::goldOn},
@@ -74,7 +74,7 @@ PedalCard::PedalCard(ClipperAudioProcessor& p, int type) : proc_(p), type_(type)
     for (const auto& k : face.knobs) {
         auto knob = std::make_unique<NeuKnob>();
         knob->setName(k.name);
-        knob->setAccent(face.accent);
+        knob->setAccent(skin::accent(face.accent));
         addAndMakeVisible(*knob);
         knobAttach_.push_back(
             std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
@@ -82,7 +82,7 @@ PedalCard::PedalCard(ClipperAudioProcessor& p, int type) : proc_(p), type_(type)
         knobs_.push_back(std::move(knob));
     }
 
-    stomp_.setAccent(face.accent);
+    stomp_.setAccent(skin::accent(face.accent));
     stomp_.setShape(face.shape);
     // Only the round stomps carry a caption; the treadle/pad wear their name
     // embossed on the face itself (and nothing sits below them), as in the web.
@@ -113,7 +113,7 @@ PedalCard::PedalCard(ClipperAudioProcessor& p, int type) : proc_(p), type_(type)
     grip_.onDragEnd = [this] { if (onDragEnd) onDragEnd(); };
     left_.onClick = [this] { if (onMoveLeft) onMoveLeft(); };
     right_.onClick = [this] { if (onMoveRight) onMoveRight(); };
-    remove_.setTint(skin::accentRat);
+    remove_.setTint(skin::accent(skin::AccentId::Rat));
     remove_.onClick = [this] { if (onRemove) onRemove(); };
     swap_.onClick = [this] {
         juce::PopupMenu m;
@@ -143,6 +143,17 @@ void PedalCard::setPosition(int index, int total) {
     left_.setChipEnabled(index > 0);
     right_.setChipEnabled(index < total - 1);
     repaint();
+}
+
+void PedalCard::applyTheme() {
+    const PedalFace& face = pedalFace(type_);
+    const juce::Colour ac = skin::accent(face.accent);
+    for (auto& k : knobs_) k->setAccent(ac);
+    stomp_.setAccent(ac);
+    remove_.setTint(skin::accent(skin::AccentId::Rat));
+    // The card's own knobs stay dimmed/lit as they were — re-apply so the dimmed
+    // variants pick the new accent up too.
+    refreshEngaged();
 }
 
 void PedalCard::refreshEngaged() {
@@ -237,8 +248,14 @@ void PedalCard::resized() {
 
 void PedalCard::paint(juce::Graphics& g) {
     const PedalFace& face = pedalFace(type_);
+    const juce::Colour accent = skin::accent(face.accent);
     auto card = getLocalBounds().toFloat();
-    skin::drawChassisCard(g, card, 24.0f);
+    // BODY ONLY. A child component's paint is clipped to its own bounds, so the
+    // cast shadow this card throws on the rail is painted by the board content
+    // (the parent) before the cards draw — see paintBoardContent. Painting it here
+    // is what made the pedals read flat next to the input/amp cards, which the
+    // editor paints itself (visual pass 3).
+    skin::drawChassisBody(g, card, 24.0f);
 
     // Chain position, in the gap the rack row left for it.
     if (posWidth_ > 0) {
@@ -254,14 +271,14 @@ void PedalCard::paint(juce::Graphics& g) {
     g.drawText(juce::String::fromUTF8(face.eyebrow).toUpperCase(),
                headerBounds_.withTrimmedRight(kLedD + 20), juce::Justification::centredLeft);
     if (!wordmarkBounds_.isEmpty()) {
-        g.setColour(face.accent.withAlpha(engaged_ ? 1.0f : 0.62f));
+        g.setColour(accent.withAlpha(engaged_ ? 1.0f : 0.62f));
         g.setFont(skin::wordmarkFont(face.wordmarkSize));
         g.drawText(face.wordmark, wordmarkBounds_, juce::Justification::centredLeft);
     }
 
     // The GOLD box's engraved nameplate — this face's whole morphology cue.
     if (!plateBounds_.isEmpty())
-        skin::drawNamePlate(g, plateBounds_.toFloat(), face.accent, face.wordmark, engaged_);
+        skin::drawNamePlate(g, plateBounds_.toFloat(), accent, face.wordmark, engaged_);
 
     // The side jacks, drawn ON the chassis edge so the cable ends tuck into them.
     skin::drawJack(g, {0.0f, card.getHeight() * 0.42f}, (float)kJackD);
@@ -269,7 +286,7 @@ void PedalCard::paint(juce::Graphics& g) {
 
     // The LED goes on LAST, so nothing (least of all a neighbour's drop shadow) can
     // paint over its halo. Lit iff the pedal is engaged — the web's `.pedal.on .led`.
-    skin::drawJewel(g, ledBounds_.toFloat(), face.accent, engaged_);
+    skin::drawJewel(g, ledBounds_.toFloat(), accent, engaged_);
 }
 
 }  // namespace clipper::native
