@@ -55,6 +55,14 @@ inline constexpr const char* goldLevel   = "goldLevel";
 inline constexpr const char* compOn      = "compOn";
 inline constexpr const char* compSustain = "compSustain";
 inline constexpr const char* compLevel   = "compLevel";
+// Post-v1.1 — the "Weeper" wah / envelope filter, the board's first FILTER pedal
+// (docs §58). POSITION is the treadle (heel->toe) and is an ordinary automatable
+// parameter; SENSE at 0 is exactly that manual pedal and above 0 hands the same
+// resonant tank to an envelope follower; VOICE is the "vocal mod" (width only).
+inline constexpr const char* wahOn       = "wahOn";
+inline constexpr const char* wahPosition = "wahPosition";
+inline constexpr const char* wahSense    = "wahSense";
+inline constexpr const char* wahVoice    = "wahVoice";
 inline constexpr const char* ampOn       = "ampOn";
 inline constexpr const char* volume      = "volume";
 inline constexpr const char* bass        = "bass";
@@ -76,6 +84,8 @@ inline constexpr const char* ampModel    = "ampModel";
 inline constexpr const char* jcmGain     = "jcmGain";
 inline constexpr const char* jcmMaster   = "jcmMaster";
 inline constexpr const char* jcmPresence = "jcmPresence";
+// M10.3 Orange OR120 F.A.C. — a 0..1 knob the core snaps to six detents.
+inline constexpr const char* orangeFac   = "orangeFac";
 inline constexpr const char* oversampling = "oversampling";
 }  // namespace pid
 

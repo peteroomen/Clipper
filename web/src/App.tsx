@@ -308,6 +308,8 @@ export default function App() {
       setCabNote('Twin Sixty-Five loaded — try the Clean 2×12 (a real Twin is a 2×12 combo).');
     } else if (type === 'ac30' && rigRef.current.amp.cabModel === 'brit412') {
       setCabNote('Thirty loaded — try the Clean 2×12 (the closest 2×12 platform for its chime).');
+    } else if (type === 'orange' && rigRef.current.amp.cabModel !== 'orange412') {
+      setCabNote('Overdrive 120 loaded — try the Orange 4×12 (its own cab: big bottom, upper-mid bark).');
     } else {
       setCabNote(null);
     }
@@ -345,9 +347,13 @@ export default function App() {
     }
     setCabNote(null);
     setRig((r) => ({ ...r, amp: { ...r.amp, cabModel: cab } }));
-    if (cab === 'brit412' || cab === 'clean212') {
+    if (cab !== 'custom') {
+      // Every BUILT-IN goes through the same call. Written as "not custom" rather
+      // than as a list of names: the previous form enumerated clean212/brit412 by
+      // hand, so adding the orange412 (M10.3) updated the rig and silently never
+      // reached the engine. AVAILABLE_CABS is the one list that defines them.
       engineRef.current?.setCabBuiltin(cab);
-    } else if (cab === 'custom' && customIrRef.current) {
+    } else if (customIrRef.current) {
       void loadCustomIntoEngine(customIrRef.current);
     }
   }
@@ -426,11 +432,18 @@ export default function App() {
       // Cab expansion: the coach may switch between the BUILT-IN cabs only
       // (never 'custom' — that requires a user file upload).
       setCab: (cab) => {
-        if (cab === 'clean212' || cab === 'brit412') setCabModel(cab);
+        if (cab === 'clean212' || cab === 'brit412' || cab === 'orange412') setCabModel(cab);
       },
-      // M9.4/M10.1/v1.1: the coach may swap the amp voice (clean120 | jcm800 | twin | ac30).
+      // M9.4/M10.1/v1.1/M10.3: the coach may swap the amp voice
+      // (clean120 | jcm800 | twin | ac30 | orange).
       setAmp: (type) => {
-        if (type === 'clean120' || type === 'jcm800' || type === 'twin' || type === 'ac30')
+        if (
+          type === 'clean120' ||
+          type === 'jcm800' ||
+          type === 'twin' ||
+          type === 'ac30' ||
+          type === 'orange'
+        )
           setAmpType(type);
       },
       addPedal: (type, position) => addPedal((type as PedalType) ?? 'rat', position),

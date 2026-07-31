@@ -31,11 +31,12 @@ export interface RigController {
   setParam: (unit: Unit, param: string, value: number, pedalIndex?: number) => number;
   setEngaged: (unit: Unit, engaged: boolean, pedalIndex?: number) => void;
   setSwitch: (name: SwitchName, on: boolean) => void;
-  // Cab expansion: switch between the BUILT-IN cabs ('clean212' | 'brit412').
+  // Cab expansion: switch between the BUILT-IN cabs
+  // ('clean212' | 'brit412' | 'orange412').
   // Never selects 'custom' (that needs a user file upload).
-  setCab: (cab: 'clean212' | 'brit412') => void;
+  setCab: (cab: 'clean212' | 'brit412' | 'orange412') => void;
   // M9.4/M10.1/v1.1: swap the amp voice ('clean120' | 'jcm800' | 'twin' | 'ac30').
-  setAmp: (type: 'clean120' | 'jcm800' | 'twin' | 'ac30') => void;
+  setAmp: (type: 'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange') => void;
   // Chain edits (M6.4). addPedal returns the new instance's chain index.
   addPedal: (type: string, position?: number) => number;
   removePedal: (index: number) => void;
@@ -82,6 +83,16 @@ export const TOOLS = [
       "'presence' param as its top CUT control — INVERTED, so HIGHER 'presence' = " +
       "DARKER/smoother (tames the top without losing chime). It IGNORES middle/gain/" +
       "master/bright/chorus. " +
+      "Orange OR120 amp params (only when the Orange is the active amp — see set_amp): " +
+      "it uses 'volume' (which IS the whole amp — there is NO master, so the power " +
+      "section is the overdrive and the knob position IS the amount of dirt), 'bass'/" +
+      "'treble' (a James/Baxandall stack: NO 'middle', and turning BOTH down leaves the " +
+      "mids standing — that is how you get the Orange midrange honk), 'fac' (the " +
+      "six-position F.A.C. rotary — 0 is the fattest and each click to the right takes " +
+      "away bass AND gain; use it to tighten a woolly low end instead of pulling the " +
+      "bass knob down), 'presence' REUSED as its HF DRIVE (a top-end lift in the " +
+      "feedback loop — the Orange has no bright switch, this is it), and 'reverb'. It " +
+      "IGNORES middle/gain/master/bright/chorus. " +
       "Input params: 'trim' — the rig-level INPUT gain BEFORE the pedal " +
       "(0..1 maps to -12..+24 dB, 1/3 = 0 dB). Raise it when the input peak is " +
       "weak (below ~-12 dBFS) so the guitar actually drives the diodes; lower it " +
@@ -110,6 +121,7 @@ export const TOOLS = [
             'gain',
             'presence',
             'master',
+            'fac',
             'trim',
           ],
         },
@@ -178,13 +190,18 @@ export const TOOLS = [
       "'brit412' — a Marshall-style 4×12, thicker in the low-mids and noticeably " +
       'DARKER on top (a greenback-ish voicing), the classic rock/JCM cab. Reach ' +
       "for brit412 when the player wants a thicker, darker, rock voicing, and " +
-      'clean212 for the pristine clean platform. This selects WHICH cab; the ' +
+      'clean212 for the pristine clean platform. And ' +
+      "'orange412' — an Orange-style " +
+      '4×12: the biggest, woolliest bottom of the three (its -6 dB low corner reaches ' +
+      '9 Hz lower than the Brit) with a pronounced UPPER-MID BARK around 1.2 kHz. It is ' +
+      "the OR120's own cab and the natural pairing for the Overdrive 120. " +
+      'This selects WHICH cab; the ' +
       "'cab' switch (set_switch) still bypasses the cab entirely. You cannot pick " +
       'a user-uploaded custom IR — the player loads that themselves from the amp menu.',
     input_schema: {
       type: 'object',
       properties: {
-        cab: { type: 'string', enum: ['clean212', 'brit412'] },
+        cab: { type: 'string', enum: ['clean212', 'brit412', 'orange412'] },
       },
       required: ['cab'],
       additionalProperties: false,
@@ -193,7 +210,7 @@ export const TOOLS = [
   {
     name: 'set_amp',
     description:
-      'Choose the AMP head. Four voices: ' +
+      'Choose the AMP head. Five voices: ' +
       "'clean120' — the JC-120-style solid-state CLEAN platform (linear; all the " +
       'dirt comes from the pedals in front; has the bright switch, stereo chorus/' +
       'vibrato, and spring reverb). ' +
@@ -217,12 +234,23 @@ export const TOOLS = [
       'control + a spring REVERB. CUT tames the top WITHOUT losing the chime the way ' +
       'pulling treble down would — and it is INVERTED: higher CUT = darker. No middle/' +
       'gain/master/bright/chorus. The chime-and-jangle of a Rickenbacker into a top-boost ' +
-      'combo, from the Beatles through Britpop to Radiohead. Switching is click-free; the ' +
+      'combo, from the Beatles through Britpop to Radiohead. ' +
+      "'orange' — an early-70s Orange OR120 'Overdrive' head: the MID-FORWARD voice, and " +
+      'the counterweight to the JCM800. Same EL34 push-pull power section, but a ' +
+      'CATHODYNE phase inverter (stiffer, punchier, fuzzier than a long-tail pair) and a ' +
+      'James/Baxandall tone stack that leaves the midrange STANDING where a Marshall ' +
+      'stack scoops it — measured, its tone network sits 8.3 dB more mid-forward than the ' +
+      "JCM's at noon. There is NO MASTER: VOLUME is the whole amp, clean in the bottom " +
+      'third and roaring at the top, so set the dirt with the volume knob. It has VOLUME + ' +
+      'BASS/TREBLE (no middle) + the six-position F.A.C. rotary (clicks bass and gain away ' +
+      'as it climbs) + HF DRIVE (the presence slot) + REVERB. Reach for it for thick, ' +
+      'woolly, midrange-forward British rock and doom/stoner weight — where a JCM cuts, ' +
+      'this one shoves. Pairs with the Orange 4×12. Switching is click-free; the ' +
       'cab and pedals carry over.',
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['clean120', 'jcm800', 'twin', 'ac30'] },
+        type: { type: 'string', enum: ['clean120', 'jcm800', 'twin', 'ac30', 'orange'] },
       },
       required: ['type'],
       additionalProperties: false,
@@ -265,14 +293,24 @@ export const TOOLS = [
       "'phaser' (a script-era 4-stage phaser — the classic swirling/whooshing " +
       'modulation with ONE knob, SPEED: placed AFTER the dirt it gives the vocal ' +
       'EVH swoosh, before the dirt it is subtler; slow = tape-warble, fast = ' +
-      "Leslie-ish shimmer), and 'tuner' (a chromatic tuner — no " +
+      "Leslie-ish shimmer), " +
+      "'wah' (the 'Weeper' — a Cry-Baby-style WAH and the rig's first FILTER " +
+      'pedal: a sharp resonant peak sweeping ~450 Hz to ~2.25 kHz, the vowel/voice ' +
+      'effect. Its knobs are POSITION (heel 0 -> toe 100 — the treadle itself, an ' +
+      'ordinary parameter you can set or automate), SENSE (0 = a plain manual wah; ' +
+      'above 0 an ENVELOPE FOLLOWER sweeps the same filter from your picking, i.e. ' +
+      'an auto-wah/envelope filter) and VOICE (how NARROW the peak is — the classic ' +
+      '"vocal mod": low = broad and vowel-less, high = sharp and talkative). ' +
+      'Placement matters: BEFORE the dirt is the classic funk/rhythm wah, AFTER the ' +
+      'dirt is the screaming lead wah), ' +
+      "and 'tuner' (a chromatic tuner — no " +
       'tone, but when stomped ON it MUTES the rig so the player can tune in ' +
       'silence; put it first in the chain by convention). Omit `position` to ' +
       'append at the end (just before the amp), or give a 0-based slot to insert.',
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'phaser', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'phaser', 'wah', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -313,6 +351,9 @@ const PEDAL_PARAM: Record<string, string> = {
   dist: 'distortion',
   drive: 'distortion', // SD-1 Drive shares the distortion slot (id 0)
   speed: 'distortion', // phaser SPEED is the one knob — also slot 0
+  position: 'distortion', // wah POSITION (heel->toe) shares slot 0
+  sense: 'filter', // wah SENSITIVITY (0 = manual pedal) shares slot 1
+  voice: 'level', // wah VOICE (peak width, the "vocal mod") shares slot 2
   sustain: 'distortion', // Muff SUSTAIN shares the distortion slot (id 0)
   filter: 'filter',
   tone: 'filter', // SD-1/Muff Tone shares the filter slot (id 1)
@@ -331,6 +372,8 @@ const AMP_PARAM: Record<string, string> = {
   gain: 'gain',
   presence: 'presence',
   master: 'master',
+  // M10.3 Orange OR120 (1:1).
+  fac: 'fac',
 };
 const INPUT_PARAM: Record<string, string> = {
   trim: 'trim',
@@ -349,11 +392,15 @@ const PARAM_LABEL: Record<string, string> = {
   middle: 'Mid',
   treble: 'Treble',
   speed: 'Speed',
+  position: 'Position',
+  sense: 'Sense',
+  voice: 'Voice',
   depth: 'Depth',
   reverb: 'Reverb',
   gain: 'Gain',
   presence: 'Presence',
   master: 'Master',
+  fac: 'F.A.C.',
   trim: 'Trim',
 };
 
@@ -451,7 +498,7 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'phaser' | 'tuner' =
+    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'phaser' | 'wah' | 'tuner' =
       input.type === 'tuner' ? 'tuner'
       : input.type === 'sd1' ? 'sd1'
       : input.type === 'ts' ? 'ts'
@@ -459,6 +506,7 @@ export function executeTool(
       : input.type === 'gold' ? 'gold'
       : input.type === 'comp' ? 'comp'
       : input.type === 'phaser' ? 'phaser'
+      : input.type === 'wah' ? 'wah'
       : 'rat';
     const rawPos = input.position;
     const position =
@@ -472,6 +520,7 @@ export function executeTool(
               : type === 'gold' ? 'Myth'
                 : type === 'comp' ? 'Squash'
                   : type === 'phaser' ? 'Phaser'
+                    : type === 'wah' ? 'Weeper'
                     : 'RAT';
     return {
       content: JSON.stringify({ applied: { added: type, index } }),
@@ -513,11 +562,18 @@ export function executeTool(
   }
 
   if (name === 'set_cab') {
-    const cab = input.cab === 'brit412' ? 'brit412' : 'clean212';
+    const cab =
+      input.cab === 'brit412' ? 'brit412'
+      : input.cab === 'orange412' ? 'orange412'
+      : 'clean212';
     controller.setCab(cab);
+    const cabName =
+      cab === 'brit412' ? 'Brit 4×12'
+      : cab === 'orange412' ? 'Orange 4×12'
+      : 'Clean 2×12';
     return {
       content: JSON.stringify({ applied: { cab } }),
-      chip: `Cab ${cab === 'brit412' ? 'Brit 4×12' : 'Clean 2×12'}`,
+      chip: `Cab ${cabName}`,
     };
   }
 
@@ -526,12 +582,14 @@ export function executeTool(
       input.type === 'jcm800' ? 'jcm800'
       : input.type === 'twin' ? 'twin'
       : input.type === 'ac30' ? 'ac30'
+      : input.type === 'orange' ? 'orange'
       : 'clean120';
     controller.setAmp(type);
     const chipName =
       type === 'jcm800' ? 'JCM800'
       : type === 'twin' ? 'Twin Sixty-Five'
       : type === 'ac30' ? 'Thirty'
+      : type === 'orange' ? 'Overdrive 120'
       : 'Clean 120';
     return {
       content: JSON.stringify({ applied: { amp: type } }),

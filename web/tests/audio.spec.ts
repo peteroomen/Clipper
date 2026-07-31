@@ -1658,6 +1658,9 @@ test('rig state: JSON round-trips exactly and restores from localStorage', async
           gain: 0.55,
           presence: 0.35,
           master: 0.7,
+          // M10.3 Orange F.A.C. — a real AmpParams field, so it is part of the
+          // normalized shape for every voice and sits last.
+          fac: 0.45,
         },
       },
       oversampling: 8,
@@ -1958,4 +1961,174 @@ test('live input: getUserMedia path reaches running with no errors', async ({ pa
   await expect(page.getByText(/Latency · model/)).toBeVisible();
 
   expect(errors, `console errors: ${errors.join(' | ')}`).toEqual([]);
+});
+
+// Post-v1.1 — the "Weeper" wah, the rig's first FILTER pedal (docs §58). This is
+// the ONLY test that proves the new pedal actually reaches audio through the real
+// stack: the WASM export list, the worklet's `wah` dispatch, the rig param slots.
+// The core suite proves the DSP; this proves the plumbing, and it does it on the
+// two properties a player would check first.
+//
+//   (1) POSITION really moves the resonance. Two renders of the SAME broadband
+//       stimulus at heel (0) and toe (1): the heel render must have more energy
+//       around 500 Hz than around 2 kHz, and the toe render the reverse. That is
+//       a CROSS-OVER, so no single-band gain change can fake it.
+//   (2) SENSE really hands the filter to the envelope. With POSITION parked at
+//       the heel, a plucked burst rendered at SENSE 0 and SENS 1 must differ, and
+//       the difference must be TRANSIENT — the two renders reconverge once the
+//       note has decayed, because the envelope falls back to POSITION.
+test('wah worklet: POSITION moves the resonance, and SENSE hands it to the envelope', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 1.2;
+
+    async function render(
+      params: { distortion: number; filter: number; level: number },
+      stimulus: 'noise' | 'pluck',
+    ): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      // Same Chromium addModule warm-up guard the phaser spec uses.
+      let ctx: OfflineAudioContext | null = null;
+      for (let attempt = 0; attempt < 4 && !ctx; attempt++) {
+        const c = new OfflineAudioContext(1, length, sampleRate);
+        try {
+          await Promise.race([
+            c.audioWorklet.addModule('/generated/clipper-processor.js'),
+            new Promise((_r, rej) => setTimeout(() => rej(new Error('addModule timeout')), 6000)),
+          ]);
+          ctx = c;
+        } catch {
+          /* fresh context, try again */
+        }
+      }
+      if (!ctx) throw new Error('addModule failed after retries');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') {
+            clearTimeout(t);
+            resolve();
+          } else if (e.data?.type === 'error') {
+            clearTimeout(t);
+            reject(new Error(e.data.message));
+          }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 6000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') {
+            clearTimeout(t);
+            resolve();
+          }
+        };
+        // Amp OFF so this is a pure pedal-DSP proof.
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true });
+        node.port.postMessage({
+          type: 'chain',
+          pedals: [{ id: 'w', type: 'wah', engaged: true, params }],
+        });
+        node.port.postMessage({ type: 'oversampling', factor: 4 });
+      });
+
+      // Deterministic stimulus (no OscillatorNode): a fixed-seed noise burst, or
+      // a plucked harmonic stack with a hard attack and a fast decay.
+      const src = ctx.createBufferSource();
+      const buf = ctx.createBuffer(1, length, sampleRate);
+      const d = buf.getChannelData(0);
+      let seed = 12345;
+      for (let i = 0; i < length; i++) {
+        const t = i / sampleRate;
+        if (stimulus === 'noise') {
+          seed = (seed * 1664525 + 1013904223) >>> 0;
+          d[i] = ((seed / 4294967296) * 2 - 1) * 0.2;
+        } else {
+          const env = Math.exp(-4 * t) * (1 - Math.exp(-t / 0.003));
+          let s = 0;
+          for (let h = 1; h <= 8; h++) s += Math.sin(2 * Math.PI * 146.83 * h * t) / h;
+          d[i] = (0.4 * env * s) / 1.6;
+        }
+      }
+      src.buffer = buf;
+      src.connect(node).connect(ctx.destination);
+      src.start();
+      const out = await ctx.startRendering();
+      return out.getChannelData(0).slice();
+    }
+
+    // Goertzel magnitude at f over [a, b).
+    function bin(x: Float32Array, f: number, a: number, b: number): number {
+      const w = (2 * Math.PI * f) / sampleRate;
+      const c = 2 * Math.cos(w);
+      let s1 = 0, s2 = 0;
+      for (let i = a; i < b; i++) {
+        const s0 = x[i] + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+      }
+      const re = s1 - s2 * Math.cos(w), im = s2 * Math.sin(w);
+      return Math.sqrt(re * re + im * im) / (b - a);
+    }
+    function band(x: Float32Array, lo: number, hi: number, a: number, b: number): number {
+      let sum = 0, n = 0;
+      for (let f = lo; f <= hi; f += 25) { sum += bin(x, f, a, b) ** 2; n++; }
+      return Math.sqrt(sum / n);
+    }
+    function rms(x: Float32Array, a: number, b: number): number {
+      let s = 0;
+      for (let i = a; i < b; i++) s += x[i] * x[i];
+      return Math.sqrt(s / Math.max(1, b - a));
+    }
+
+    const A = Math.floor(0.3 * sampleRate), B = Math.floor(1.1 * sampleRate);
+    // (1) POSITION: heel vs toe, SENSE 0 (manual), VOICE stock.
+    const heel = await render({ distortion: 0.0, filter: 0.0, level: 0.5 }, 'noise');
+    const toe = await render({ distortion: 1.0, filter: 0.0, level: 0.5 }, 'noise');
+    const heelLow = band(heel, 400, 600, A, B), heelHigh = band(heel, 1900, 2400, A, B);
+    const toeLow = band(toe, 400, 600, A, B), toeHigh = band(toe, 1900, 2400, A, B);
+
+    // (2) SENSE: the same pluck at SENSE 0 and SENSE 1, POSITION parked low.
+    const manual = await render({ distortion: 0.1, filter: 0.0, level: 0.5 }, 'pluck');
+    const auto = await render({ distortion: 0.1, filter: 1.0, level: 0.5 }, 'pluck');
+    let attackDiff = 0, tailDiff = 0;
+    const at0 = Math.floor(0.02 * sampleRate), at1 = Math.floor(0.35 * sampleRate);
+    const tl0 = Math.floor(1.0 * sampleRate), tl1 = Math.floor(1.15 * sampleRate);
+    for (let i = at0; i < at1; i++) attackDiff += (manual[i] - auto[i]) ** 2;
+    for (let i = tl0; i < tl1; i++) tailDiff += (manual[i] - auto[i]) ** 2;
+    attackDiff = Math.sqrt(attackDiff / (at1 - at0));
+    tailDiff = Math.sqrt(tailDiff / (tl1 - tl0));
+
+    let finite = true;
+    for (const x of [heel, toe, manual, auto]) for (let i = 0; i < x.length; i++) if (!Number.isFinite(x[i])) finite = false;
+
+    return {
+      heelLow, heelHigh, toeLow, toeHigh,
+      attackDiff, tailDiff,
+      attackRms: rms(manual, at0, at1), tailRms: rms(manual, tl0, tl1),
+      finite,
+    };
+  });
+
+  expect(result.finite).toBe(true);
+  // (1) The CROSS-OVER. Heel-down is a low-mid vowel; toe-down is a high nasal
+  // one. Each render leans the opposite way, which no flat gain change can fake.
+  expect(result.heelLow).toBeGreaterThan(result.heelHigh * 2);
+  expect(result.toeHigh).toBeGreaterThan(result.toeLow * 2);
+  // (2) SENSE hands the SAME filter to the envelope: with the treadle parked, a
+  // pluck rendered at SENSE 1 differs from SENSE 0 while the note is alive...
+  expect(result.attackDiff).toBeGreaterThan(result.attackRms * 0.1);
+  // ...and the two RECONVERGE once it has decayed, because the envelope falls
+  // back to POSITION. That is what makes this an envelope follower rather than
+  // just a second, louder setting.
+  expect(result.tailDiff).toBeLessThan(result.attackDiff * 0.1);
 });

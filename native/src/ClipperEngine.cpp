@@ -23,7 +23,7 @@ constexpr float  kPi = 3.14159265358979323846f;
 // The stable serialization keys, indexed by PedalType.
 const char* const kPedalKeys[PEDAL_TYPE_COUNT] = {"rat",    "sd1",  "ts",
                                                   "muff",   "phaser", "gold",
-                                                  "comp"};
+                                                  "wah",   "comp"};
 constexpr int   kCabPartition = 128;  // == worklet render quantum / cab partition
 // Extra samples to HOLD the output at zero after a CAB swap, before the fade back
 // in. Mirrors CAB_SWAP_DEAD_SAMPLES in web/worklet/clipper-processor.js and exists
@@ -41,9 +41,11 @@ constexpr int   kCabPrepareSpinLimit = 1000000;
 constexpr int   kJcmOversampling = 4;
 constexpr int   kTwinOversampling = 4;  // matches the C ABI (docs §20: 4× ships)
 constexpr int   kAc30Oversampling = 4;  // matches the C ABI (docs §23: 4× ships)
+constexpr int   kOrangeOversampling = 4;  // matches the C ABI (docs §57: 4× ships)
 constexpr int   kAmpJcm800 = 1;  // Params::ampModel value for the JCM
 constexpr int   kAmpTwin = 2;    // Params::ampModel value for the Twin
 constexpr int   kAmpAc30 = 3;    // Params::ampModel value for the AC30
+constexpr int   kAmpOrange = 4;  // Params::ampModel value for the Orange OR120
 }  // namespace
 
 float trimKnobToGain(float knob01) {
@@ -72,6 +74,7 @@ bool Params::pedalOn(int type) const {
         case PEDAL_MUFF:   return muffOn;
         case PEDAL_PHASER: return phaserOn;
         case PEDAL_GOLD:   return goldOn;
+        case PEDAL_WAH:    return wahOn;
         case PEDAL_COMP:   return compOn;
         default:           return false;
     }
@@ -112,6 +115,11 @@ void ClipperEngine::applyParamsToModels() {
     gold_.setParameter(clipper::dsp::GoldModel::PARAM_TREBLE, p.goldTreble);
     gold_.setParameter(clipper::dsp::GoldModel::PARAM_OUTPUT, p.goldLevel);
 
+    // Wah "Weeper" (docs §58) — same positional 0/1/2 slot ABI, reading as
+    // POSITION / SENSITIVITY / VOICE.
+    wah_.setParameter(clipper::dsp::WahModel::PARAM_POSITION, p.wahPosition);
+    wah_.setParameter(clipper::dsp::WahModel::PARAM_SENSITIVITY, p.wahSense);
+    wah_.setParameter(clipper::dsp::WahModel::PARAM_VOICE, p.wahVoice);
     // "Squash" OTA compressor (M13.1) — the same positional slot ABI, but only
     // slots 0 and 2 are real knobs (SUSTAIN / LEVEL). Slot 1 is not written at
     // all: a compressor has no tone control and the model ignores it.
@@ -166,6 +174,18 @@ void ClipperEngine::applyParamsToModels() {
     ac30_.setParameter(X::PARAM_TREBLE, p.treble);
     ac30_.setParameter(X::PARAM_TOPCUT, p.jcmPresence);  // presence slot reused as TOP CUT
     ac30_.setParameter(X::PARAM_REVERB, p.reverb);
+
+    // Orange OR120 (M10.3): reuses volume + bass/treble + reverb from the shared
+    // fields and REUSES the presence field as its HF DRIVE (docs §57). It has NO
+    // mid control (a James stack is bass + treble), so 'middle' never routes here,
+    // and NO master (VOLUME is the whole amp). Its one own field is the F.A.C.
+    using O = clipper::dsp::OrangeAmp;
+    orange_.setParameter(O::PARAM_VOLUME, p.volume);
+    orange_.setParameter(O::PARAM_BASS, p.bass);
+    orange_.setParameter(O::PARAM_TREBLE, p.treble);
+    orange_.setParameter(O::PARAM_FAC, p.orangeFac);
+    orange_.setParameter(O::PARAM_HF_DRIVE, p.jcmPresence);  // presence slot = HF DRIVE
+    orange_.setParameter(O::PARAM_REVERB, p.reverb);
 }
 
 void ClipperEngine::setParams(const Params& p) {
@@ -204,8 +224,10 @@ bool ClipperEngine::chainEditPending() const {
 
 void ClipperEngine::updateParams(const Params& p) {
     using clipper::dsp::Ac30Amp;
+    using clipper::dsp::OrangeAmp;
     using clipper::dsp::AmpModel;
     using clipper::dsp::GoldModel;
+    using clipper::dsp::WahModel;
     using clipper::dsp::CompModel;
     using clipper::dsp::Jcm800Amp;
     using clipper::dsp::MuffModel;
@@ -233,6 +255,9 @@ void ClipperEngine::updateParams(const Params& p) {
     if (p.goldGain != o.goldGain)     gold_.setParameter(GoldModel::PARAM_GAIN, p.goldGain);
     if (p.goldTreble != o.goldTreble) gold_.setParameter(GoldModel::PARAM_TREBLE, p.goldTreble);
     if (p.goldLevel != o.goldLevel)   gold_.setParameter(GoldModel::PARAM_OUTPUT, p.goldLevel);
+    if (p.wahPosition != o.wahPosition) wah_.setParameter(WahModel::PARAM_POSITION, p.wahPosition);
+    if (p.wahSense != o.wahSense)     wah_.setParameter(WahModel::PARAM_SENSITIVITY, p.wahSense);
+    if (p.wahVoice != o.wahVoice)     wah_.setParameter(WahModel::PARAM_VOICE, p.wahVoice);
     if (p.compSustain != o.compSustain) comp_.setParameter(CompModel::PARAM_SUSTAIN, p.compSustain);
     if (p.compLevel != o.compLevel)   comp_.setParameter(CompModel::PARAM_LEVEL, p.compLevel);
 
@@ -241,6 +266,7 @@ void ClipperEngine::updateParams(const Params& p) {
         amp_.setParameter(AmpModel::PARAM_VOLUME, p.volume);
         twin_.setParameter(TwinAmp::PARAM_VOLUME, p.volume);
         ac30_.setParameter(Ac30Amp::PARAM_VOLUME, p.volume);
+        orange_.setParameter(OrangeAmp::PARAM_VOLUME, p.volume);
     }
     // bass/treble are SHARED across ALL FOUR amp voices; middle feeds all but the AC30
     // (top-boost has no mid) — update every tone stack so the inactive voices are
@@ -250,6 +276,7 @@ void ClipperEngine::updateParams(const Params& p) {
         jcm_.setParameter(Jcm800Amp::PARAM_BASS, p.bass);
         twin_.setParameter(TwinAmp::PARAM_BASS, p.bass);
         ac30_.setParameter(Ac30Amp::PARAM_BASS, p.bass);
+        orange_.setParameter(OrangeAmp::PARAM_BASS, p.bass);
     }
     if (p.middle != o.middle) {
         amp_.setParameter(AmpModel::PARAM_MIDDLE, p.middle);
@@ -262,6 +289,7 @@ void ClipperEngine::updateParams(const Params& p) {
         jcm_.setParameter(Jcm800Amp::PARAM_TREBLE, p.treble);
         twin_.setParameter(TwinAmp::PARAM_TREBLE, p.treble);
         ac30_.setParameter(Ac30Amp::PARAM_TREBLE, p.treble);
+        orange_.setParameter(OrangeAmp::PARAM_TREBLE, p.treble);
     }
     // BRIGHT feeds clean120 + twin.
     if (p.bright != o.bright) {
@@ -289,6 +317,7 @@ void ClipperEngine::updateParams(const Params& p) {
         jcm_.setParameter(Jcm800Amp::PARAM_REVERB, p.reverb);
         twin_.setParameter(TwinAmp::PARAM_REVERB, p.reverb);
         ac30_.setParameter(Ac30Amp::PARAM_REVERB, p.reverb);
+        orange_.setParameter(OrangeAmp::PARAM_REVERB, p.reverb);
     }
 
     // JCM800-only knobs. The presence field is SHARED: it is the JCM's presence AND
@@ -298,7 +327,12 @@ void ClipperEngine::updateParams(const Params& p) {
     if (p.jcmPresence != o.jcmPresence) {
         jcm_.setParameter(Jcm800Amp::PARAM_PRESENCE, p.jcmPresence);
         ac30_.setParameter(Ac30Amp::PARAM_TOPCUT, p.jcmPresence);  // reused as TOP CUT
+        orange_.setParameter(OrangeAmp::PARAM_HF_DRIVE, p.jcmPresence);  // …and HF DRIVE
     }
+
+    // M10.3 Orange-only knob: the F.A.C. rotary.
+    if (p.orangeFac != o.orangeFac)
+        orange_.setParameter(OrangeAmp::PARAM_FAC, p.orangeFac);
 
     // Oversampling change: reset only the pedals' OS filter state (like the web
     // worklet's per-node setOversampling), not a full re-prepare.
@@ -322,6 +356,10 @@ void ClipperEngine::setPedalOversampling(int factor) {
     ts_.setOversampling(factor);
     muff_.setOversampling(factor);
     gold_.setOversampling(factor);
+    // The wah's RESONATOR is linear and runs at base rate, but its common-emitter
+    // OUTPUT stage is a real transistor, so it oversamples like a dirt box and
+    // reports real latency (docs §58.4) — unlike the phaser below.
+    wah_.setOversampling(factor);
     comp_.setOversampling(factor);
     // The phaser is a LINEAR time-varying stage (allpass sweep) — no nonlinearity,
     // so it has no oversampler and no group delay. The web C ABI's
@@ -372,8 +410,11 @@ void ClipperEngine::loadCurrentCabIntoPair(int pair) {
         // low mantissa bits of an IR the identical-core test renders bit-exactly.
         clipper::dsp::peakNormalizeIR(ir, sampleRate_);
     } else {
-        ir = cabSource_ == CAB_BRIT412 ? clipper::dsp::generateBrit4x12IR(sampleRate_)
-                                       : clipper::dsp::generateDefaultCab2x12IR(sampleRate_);
+        // The native CabChoice ids and the C ABI's built-in ids diverge at 2 (see
+        // the enum's comment) — mapped HERE, in code, rather than by index maths.
+        ir = cabSource_ == CAB_BRIT412   ? clipper::dsp::generateBrit4x12IR(sampleRate_)
+           : cabSource_ == CAB_ORANGE412 ? clipper::dsp::generateOrange4x12IR(sampleRate_)
+                                         : clipper::dsp::generateDefaultCab2x12IR(sampleRate_);
     }
     if (ir.empty()) return;
     const int len = static_cast<int>(ir.size());
@@ -384,7 +425,9 @@ void ClipperEngine::loadCurrentCabIntoPair(int pair) {
 }
 
 bool ClipperEngine::prepareCabBuiltin(int which) {
-    const int w = (which == CAB_BRIT412) ? CAB_BRIT412 : CAB_CLEAN212;
+    const int w = (which == CAB_BRIT412)     ? CAB_BRIT412
+                : (which == CAB_ORANGE412)  ? CAB_ORANGE412
+                                            : CAB_CLEAN212;
     if (!beginCabPrepare()) return false;
     cabSource_ = w;
     loadCurrentCabIntoPair(activeCabPair_.load(std::memory_order_relaxed) ^ 1);
@@ -453,6 +496,7 @@ void ClipperEngine::processPedal(int type, const float* in, float* out, int numF
         case PEDAL_MUFF:   muff_.process(in, out, numFrames); break;
         case PEDAL_PHASER: phaser_.process(in, out, numFrames); break;
         case PEDAL_GOLD:   gold_.process(in, out, numFrames); break;
+        case PEDAL_WAH:    wah_.process(in, out, numFrames); break;
         case PEDAL_COMP:   comp_.process(in, out, numFrames); break;
         default: break;
     }
@@ -471,6 +515,7 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     muff_.prepare(sampleRate_, maxBlock_);
     phaser_.prepare(sampleRate_);  // linear: no block-size scratch to size
     gold_.prepare(sampleRate_, maxBlock_);
+    wah_.prepare(sampleRate_, maxBlock_);
     comp_.prepare(sampleRate_, maxBlock_);
     amp_.prepare(sampleRate_, maxBlock_);
     // The JCM runs at its fixed 4× internally (set BEFORE prepare so its stages
@@ -485,6 +530,8 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     // the pedal OS selector — matches the C ABI.
     ac30_.setOversampling(kAc30Oversampling);
     ac30_.prepare(sampleRate_, maxBlock_);
+    orange_.setOversampling(kOrangeOversampling);
+    orange_.prepare(sampleRate_, maxBlock_);
 
     setPedalOversampling(params_.oversampling);
 
@@ -582,6 +629,10 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
             // The AC30 is a mono combo head → dual-mono into the identical cab pair.
             ac30_.process(cur, outL, numFrames);
             for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
+        } else if (p.ampModel == kAmpOrange) {
+            // The OR120 is a mono HEAD → dual-mono into the identical cab pair.
+            orange_.process(cur, outL, numFrames);
+            for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
         } else {
             amp_.processStereo(cur, outL, outR, numFrames);
         }
@@ -659,6 +710,9 @@ int ClipperEngine::latencySamples() const {
             // The gold overdrive oversamples its germanium clipper like the other
             // dirt boxes, so it carries the same OS group delay.
             case PEDAL_GOLD: n += gold_.latencySamples(); break;
+            // The wah's transistor output stage oversamples too (§58.4), so it
+            // carries the same group delay as a dirt box. Its resonator does not.
+            case PEDAL_WAH:  n += wah_.latencySamples(); break;
             // The compressor oversamples its OTA gain cell, so it carries the
             // same OS group delay as the dirt boxes.
             case PEDAL_COMP: n += comp_.latencySamples(); break;
@@ -672,6 +726,7 @@ int ClipperEngine::latencySamples() const {
     if (p.ampOn && p.ampModel == kAmpJcm800) n += jcm_.latencySamples();
     if (p.ampOn && p.ampModel == kAmpTwin) n += twin_.latencySamples();
     if (p.ampOn && p.ampModel == kAmpAc30) n += ac30_.latencySamples();
+    if (p.ampOn && p.ampModel == kAmpOrange) n += orange_.latencySamples();
     if (p.ampOn && p.cab) n += kCabPartition;      // cab adds one partition (128)
     n += limiter_.latencySamples();                // lookahead (64)
     return n;

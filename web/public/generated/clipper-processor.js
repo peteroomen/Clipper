@@ -203,10 +203,13 @@ class ClipperProcessor extends AudioWorkletProcessor {
     this._pending = null; // { nodes, removed } waiting for the fade-out zero
     // Cab expansion: a pending cab swap (built-in select or custom-IR load) that
     // is applied at the SAME declick fade-out zero as a chain edit (M6.4), so the
-    // IR change is click-free. { builtin } or { irPtr, irLen }.
+    // IR change is click-free. { builtin } or { irPtr, irLen }. Built-in indices
+    // mirror CabBuiltin in clipper_c_api.cpp: 0 = Clean 2x12, 1 = Brit 4x12,
+    // 2 = Orange 4x12 (M10.3).
     this._pendingCab = null;
-    // M9.4/M10.1/v1.1: a pending amp-model swap (0 = Clean 120, 1 = JCM800,
-    // 2 = Twin, 3 = AC30), applied at the SAME declick fade-out zero, so switching
+    // M9.4/M10.1/v1.1/M10.3: a pending amp-model swap (0 = Clean 120, 1 = JCM800,
+    // 2 = Twin, 3 = AC30, 4 = Orange OR120), applied at the SAME declick fade-out
+    // zero, so switching
     // amps mid-signal is click-free. The index is passed through opaquely to
     // _amp_set_model.
     this._pendingAmpModel = null;
@@ -291,12 +294,18 @@ class ClipperProcessor extends AudioWorkletProcessor {
     // compressor (slot 0 = SUSTAIN, slot 2 = LEVEL, slot 1 unused-but-carried),
     // 'phaser'=Ninety (linear allpass sweep: set_oversampling is a no-op,
     // latency 0), anything else = RAT.
-    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'muff' ? 'muff' : type === 'gold' ? 'gold' : type === 'comp' ? 'comp' : type === 'phaser' ? 'phaser' : 'rat';
-    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'muff' ? '_muff' : t === 'gold' ? '_gold' : t === 'comp' ? '_comp' : t === 'phaser' ? '_phaser' : '_rat';
+    // overdrive (slots read GAIN/TREBLE/OUTPUT), 'phaser'=Ninety (linear allpass
+    // sweep: set_oversampling is a no-op, latency 0), 'wah'=Weeper (the FIRST
+    // FILTER pedal: a swept resonant tank into a real transistor stage, so unlike
+    // the phaser its set_oversampling and latency ARE real — slots read
+    // POSITION/SENSE/VOICE), anything else = RAT.
+    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'muff' ? 'muff' : type === 'gold' ? 'gold' : type === 'comp' ? 'comp' : type === 'phaser' ? 'phaser' : type === 'wah' ? 'wah' : 'rat';
+    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'muff' ? '_muff' : t === 'gold' ? '_gold' : t === 'comp' ? '_comp' : t === 'phaser' ? '_phaser' : t === 'wah' ? '_wah' : '_rat';
     const handle = mod[P + '_create'](this._sr);
     mod[P + '_set_oversampling'](handle, this._oversampling | 0);
     if (params) {
-      // Slot 0/1/2 are pedal-agnostic; for a phaser slot 0 = SPEED, 1/2 unused.
+      // Slot 0/1/2 are pedal-agnostic; for a phaser slot 0 = SPEED, 1/2 unused;
+      // for a wah they are POSITION / SENSITIVITY / VOICE.
       mod[P + '_set_param'](handle, 0, +params.distortion);
       mod[P + '_set_param'](handle, 1, +params.filter);
       mod[P + '_set_param'](handle, 2, +params.level);
@@ -306,8 +315,9 @@ class ClipperProcessor extends AudioWorkletProcessor {
 
   // C-ABI export prefix for a node's type
   // ('_sd' | '_ts' | '_muff' | '_gold' | '_comp' | '_phaser' | '_rat').
+  // ('_sd' | '_ts' | '_muff' | '_gold' | '_phaser' | '_wah' | '_rat').
   _prefix(node) {
-    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'muff' ? '_muff' : node.type === 'gold' ? '_gold' : node.type === 'comp' ? '_comp' : node.type === 'phaser' ? '_phaser' : '_rat';
+    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'muff' ? '_muff' : node.type === 'gold' ? '_gold' : node.type === 'comp' ? '_comp' : node.type === 'phaser' ? '_phaser' : node.type === 'wah' ? '_wah' : '_rat';
   }
 
   _destroyPedal(node) {
@@ -315,7 +325,7 @@ class ClipperProcessor extends AudioWorkletProcessor {
     this._module[this._prefix(node) + '_destroy'](node.handle);
   }
 
-  // Per-node ABI routing by C-ABI prefix (sd_*/ts_*/phaser_*/rat_*). Keeps the
+  // Per-node ABI routing by C-ABI prefix (sd_*/ts_*/phaser_*/wah_*/rat_*). Keeps the
   // chain dispatch type-agnostic everywhere below.
   _pedalSetParam(node, id, value) {
     this._module[this._prefix(node) + '_set_param'](node.handle, id, value);

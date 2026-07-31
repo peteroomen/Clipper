@@ -70,6 +70,21 @@
   background: color-mix(in srgb, var(--accent-ac30) 18%, var(--well));
 }
 
+/* M10.3 Orange OR120 face — same doctrine again: shared chassis, identity is a
+   small-area SATURATED ORANGE accent (the tolex wink). Docs §57. */
+.amp[data-amp-type="orange"] {
+  --pedal-accent: var(--accent-orange);
+  --pedal-accent-glow: var(--accent-orange-glow);
+}
+.amp[data-amp-type="orange"] .amp-name { color: var(--accent-orange); }
+.amp[data-amp-type="orange"].on .jewel {
+  background: radial-gradient(circle at 35% 30%, #FFE3C2, var(--accent-orange) 55%, #5A2A00);
+  box-shadow: 0 0 16px var(--accent-orange-glow), 0 0 5px var(--accent-orange-glow);
+}
+.amp[data-amp-type="orange"] .jewel {
+  background: color-mix(in srgb, var(--accent-orange) 18%, var(--well));
+}
+
 /* toggle (bright / cab) — a lever in a carved slot */
 .toggle { display: flex; flex-direction: column; align-items: center; gap: 9px; cursor: pointer;
   background: none; border: none; padding: 0; font: inherit; }

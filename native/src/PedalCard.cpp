@@ -57,6 +57,17 @@ const PedalFace kFaces[PEDAL_TYPE_COUNT] = {
      Footswitch::Shape::Round, PedalFace::Layout::Stack, 34.0f,
      {{"Sustain", pid::compSustain}, {"Level", pid::compLevel}},
      pid::compOn},
+    // WAH "Weeper" (docs §58) — the board's first FILTER pedal, and the first one
+    // whose real enclosure is a ROCKING TREADLE rather than a box. The treadle
+    // footswitch shape is that morphology cue (shared with the Boss-compact SD-1
+    // here; the web front-end draws its own ribbed 'rocker' plate). TEAL accent,
+    // the furthest hue from the six dirt/mod pedals. No Dunlop/Cry Baby/Vox/
+    // Mu-Tron wording anywhere. POSITION / SENSE / VOICE: SENSE at 0 is a plain
+    // manual wah, above 0 an envelope follower sweeps the SAME tank.
+    {"Filter N\xc2\xba""7 \xc2\xb7 Treadle", "Weeper", skin::AccentId::Wah,
+     Footswitch::Shape::Treadle, PedalFace::Layout::Stack, 26.0f,
+     {{"Position", pid::wahPosition}, {"Sense", pid::wahSense}, {"Voice", pid::wahVoice}},
+     pid::wahOn},
 };
 }  // namespace
 
@@ -73,6 +84,7 @@ juce::String pedalMenuLabel(int type) {
         case PEDAL_PHASER: return "Ninety - script phaser";
         case PEDAL_GOLD:   return "Myth - gold transparent overdrive";
         case PEDAL_COMP:   return "Squash - OTA compressor";
+        case PEDAL_WAH:    return "Weeper - wah / envelope filter";
         default:           return "Pedal";
     }
 }

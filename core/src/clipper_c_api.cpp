@@ -12,8 +12,10 @@
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/TwinAmp.h"
 #include "clipper/dsp/Ac30Amp.h"
+#include "clipper/dsp/OrangeAmp.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/CompModel.h"
+#include "clipper/dsp/WahModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/RatModel.h"
@@ -437,6 +439,65 @@ void gold_process(void* handle, const float* in_ptr, float* out_ptr,
                                                            num_frames);
 }
 
+// --- The FILTER pedal: wah / envelope filter ("Weeper") exports --------------
+//
+// Additive alongside rat_*/sd_*/ts_*/muff_*/gold_*/phaser_*, byte-for-byte the
+// same opaque-handle ABI so the worklet drives it exactly like every other pedal.
+// Param slots: 0 = POSITION (heel→toe), 1 = SENSITIVITY (0 = manual pedal, > 0
+// hands the same tank to the envelope follower), 2 = VOICE (the documented
+// "vocal mod": R7 10.89 k…100 k, 0.5 = the stock 33 k). The resonator is linear
+// and runs at base rate; the transistor OUTPUT stage is nonlinear and runs
+// oversampled, so set_oversampling and latency_samples are REAL here (unlike the
+// phaser's). Docs §58.
+
+EMSCRIPTEN_KEEPALIVE
+void* wah_create(float sample_rate) {
+    auto* m = new clipper::dsp::WahModel();
+    m->prepare(static_cast<double>(sample_rate), 128);
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void wah_destroy(void* handle) {
+    delete static_cast<clipper::dsp::WahModel*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void wah_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
+    static_cast<clipper::dsp::WahModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clears the resonator's two integrator states and the envelope
+// follower, and re-parks the transistor stage at its cached operating point
+// WITHOUT re-solving. See the banner above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void wah_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::WahModel*>(handle)->reset();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void wah_set_oversampling(void* handle, int factor) {
+    if (!handle) return;
+    static_cast<clipper::dsp::WahModel*>(handle)->setOversampling(factor);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int wah_latency_samples(void* handle) {
+    if (!handle) return 0;
+    return static_cast<clipper::dsp::WahModel*>(handle)->latencySamples();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void wah_process(void* handle, const float* in_ptr, float* out_ptr,
+                 int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::WahModel*>(handle)->process(in_ptr, out_ptr,
+                                                          num_frames);
+}
+
 // --- M13.1: OTA compressor exports -------------------------------------------
 //
 // Additive alongside rat_*/sd_*/ts_*/muff_*/gold_*/phaser_*, byte-for-byte the
@@ -493,6 +554,7 @@ void comp_process(void* handle, const float* in_ptr, float* out_ptr,
                                                            num_frames);
 }
 
+
 // --- M5: clean amp + cab exports ---------------------------------------------
 //
 // The amp instance is a small CHAIN: a linear AmpModel (volume + tone stack +
@@ -518,10 +580,29 @@ constexpr int kAmpParamJcmGain = 10;
 constexpr int kAmpParamJcmPresence = 11;
 constexpr int kAmpParamJcmMaster = 12;
 
+// M10.3 (docs §57): the Orange OR120's F.A.C. rotary. A NEW id, above every
+// existing one, because no other voice has a six-position switch and reusing a
+// knob slot for it would make a stale rig state silently mean something else.
+// Everything else the OR120 needs is a REUSE, in the house pattern:
+//   VOLUME (0)   -> the OR120's single volume (it has no master)
+//   BASS (1) / TREBLE (3) -> the James stack; the 'middle' slot (2) never reaches
+//                   it (like the AC30, this amp has no mid control)
+//   PRESENCE (11) -> HF DRIVE (both are power-amp HF controls in the NFB loop)
+//   REVERB (9)   -> the usability spring
+// Must mirror web/src/params.ts AMP_PARAM_ORANGE_FAC.
+constexpr int kAmpParamOrangeFac = 13;
+
 // Which amp model the chain's single handle is currently voicing. M10.1 adds the
 // Twin as the THIRD voice (index 2); M10.2 adds the AC30 as the FOURTH voice (index
 // 3), purely additive — clean120/jcm/twin ids unchanged.
-enum AmpModelId { kAmpClean120 = 0, kAmpJcm800 = 1, kAmpTwin = 2, kAmpAc30 = 3 };
+// M10.3 adds the Orange OR120 as the FIFTH voice (index 4), purely additive.
+enum AmpModelId {
+    kAmpClean120 = 0,
+    kAmpJcm800 = 1,
+    kAmpTwin = 2,
+    kAmpAc30 = 3,
+    kAmpOrange = 4,
+};
 
 // The tube amps' fixed internal oversampling. Docs §18/§20/§23 measured 4× as the
 // requirement (8× buys nothing at the composed max-gain floor), so the tube amps run
@@ -530,6 +611,7 @@ enum AmpModelId { kAmpClean120 = 0, kAmpJcm800 = 1, kAmpTwin = 2, kAmpAc30 = 3 }
 constexpr int kJcmOversampling = 4;
 constexpr int kTwinOversampling = 4;
 constexpr int kAc30Oversampling = 4;
+constexpr int kOrangeOversampling = 4;
 
 // One per-side cab convolver pair (L/R). Two of these live in every AmpChain so a
 // cab change can be BUILT into the spare while the render path keeps using the
@@ -547,6 +629,7 @@ struct AmpChain {
     clipper::dsp::Jcm800Amp jcm;        // Marshall JCM800 2204 (mono head)
     clipper::dsp::TwinAmp twin;         // Fender blackface Twin (mono combo head)
     clipper::dsp::Ac30Amp ac30;         // Vox AC30 top boost (mono combo head)
+    clipper::dsp::OrangeAmp orange;     // Orange OR120 Overdrive (mono head)
     int model = kAmpClean120;
     // M6.3: the amp goes STEREO from the chorus stage on, so the cab IR runs PER
     // SIDE. Two independent CabConvolver instances (same IR) — the wet R side is
@@ -572,7 +655,7 @@ struct AmpChain {
 
 // Built-in cab selector for amp_set_cab_builtin. Kept as small ints so the ABI
 // stays language-neutral (the worklet passes 0/1).
-enum CabBuiltin { kCabClean212 = 0, kCabBrit412 = 1 };
+enum CabBuiltin { kCabClean212 = 0, kCabBrit412 = 1, kCabOrange412 = 2 };
 
 // Synthesise a built-in cab IR at the chain rate into `out`. `which` selects;
 // anything other than kCabBrit412 falls back to the default 2x12 (matches the
@@ -581,8 +664,9 @@ enum CabBuiltin { kCabClean212 = 0, kCabBrit412 = 1 };
 // file sits inside `extern "C"`, and a C-linkage function returning a
 // user-defined type draws -Wreturn-type-c-linkage.
 void builtinIr(const AmpChain* c, int which, std::vector<float>& out) {
-    out = which == kCabBrit412 ? clipper::dsp::generateBrit4x12IR(c->sr)
-                               : clipper::dsp::generateDefaultCab2x12IR(c->sr);
+    out = which == kCabBrit412    ? clipper::dsp::generateBrit4x12IR(c->sr)
+        : which == kCabOrange412  ? clipper::dsp::generateOrange4x12IR(c->sr)
+                                  : clipper::dsp::generateDefaultCab2x12IR(c->sr);
 }
 
 // Load an IR into BOTH sides of `pair` at the chain's engine rate (same IR, same
@@ -617,6 +701,9 @@ void* amp_create(float sample_rate) {
     // Prepare the AC30 up front as well (M10.2) — same lock-free-swap discipline.
     c->ac30.setOversampling(kAc30Oversampling);
     c->ac30.prepare(sr, 128);
+    // Prepare the Orange up front as well (M10.3) — same lock-free-swap discipline.
+    c->orange.setOversampling(kOrangeOversampling);
+    c->orange.prepare(sr, 128);
     // Load the default IR into BOTH double-buffered pairs. Only the active pair is
     // strictly needed at t=0, but preparing both means every pair is always a valid
     // convolver — amp_commit_cab can never activate an unprepared one, even if a
@@ -638,10 +725,11 @@ EMSCRIPTEN_KEEPALIVE
 void amp_set_model(void* handle, int which) {
     if (!handle) return;
     auto* c = static_cast<AmpChain*>(handle);
-    // 0 = Clean 120, 1 = JCM800, 2 = Twin, 3 = AC30. Unknown → Clean 120.
+    // 0 = Clean 120, 1 = JCM800, 2 = Twin, 3 = AC30, 4 = Orange. Unknown → Clean 120.
     c->model = (which == kAmpJcm800) ? kAmpJcm800
              : (which == kAmpTwin)   ? kAmpTwin
              : (which == kAmpAc30)   ? kAmpAc30
+             : (which == kAmpOrange) ? kAmpOrange
                                      : kAmpClean120;
 }
 
@@ -765,6 +853,7 @@ void amp_reset(void* handle) {
     c->jcm.reset();
     c->twin.reset();
     c->ac30.reset();
+    c->orange.reset();
     for (auto& pair : c->cabs) { pair.l.reset(); pair.r.reset(); }
 }
 
@@ -805,17 +894,20 @@ void amp_set_param(void* handle, int param_id, float value) {
     using J = clipper::dsp::Jcm800Amp;
     using T = clipper::dsp::TwinAmp;
     using X = clipper::dsp::Ac30Amp;
+    using O = clipper::dsp::OrangeAmp;
     switch (param_id) {
         case A::PARAM_VOLUME:
             c->amp.setParameter(A::PARAM_VOLUME, value);
             c->twin.setParameter(T::PARAM_VOLUME, value);
             c->ac30.setParameter(X::PARAM_VOLUME, value);
+            c->orange.setParameter(O::PARAM_VOLUME, value);
             break;
         case A::PARAM_BASS:
             c->amp.setParameter(A::PARAM_BASS, value);
             c->jcm.setParameter(J::PARAM_BASS, value);
             c->twin.setParameter(T::PARAM_BASS, value);
             c->ac30.setParameter(X::PARAM_BASS, value);
+            c->orange.setParameter(O::PARAM_BASS, value);
             break;
         case A::PARAM_MIDDLE:
             c->amp.setParameter(A::PARAM_MIDDLE, value);
@@ -828,6 +920,7 @@ void amp_set_param(void* handle, int param_id, float value) {
             c->jcm.setParameter(J::PARAM_TREBLE, value);
             c->twin.setParameter(T::PARAM_TREBLE, value);
             c->ac30.setParameter(X::PARAM_TREBLE, value);
+            c->orange.setParameter(O::PARAM_TREBLE, value);
             break;
         case A::PARAM_BRIGHT:
             c->amp.setParameter(A::PARAM_BRIGHT, value);
@@ -854,13 +947,16 @@ void amp_set_param(void* handle, int param_id, float value) {
             c->jcm.setParameter(J::PARAM_REVERB, value);
             c->twin.setParameter(T::PARAM_REVERB, value);
             c->ac30.setParameter(X::PARAM_REVERB, value);
+            c->orange.setParameter(O::PARAM_REVERB, value);
             break;
         case kAmpParamJcmGain:     c->jcm.setParameter(J::PARAM_GAIN, value); break;
         case kAmpParamJcmPresence:
             c->jcm.setParameter(J::PARAM_PRESENCE, value);
             c->ac30.setParameter(X::PARAM_TOPCUT, value);  // AC30 reuses the slot as TOP CUT
+            c->orange.setParameter(O::PARAM_HF_DRIVE, value);  // Orange: HF DRIVE
             break;
         case kAmpParamJcmMaster:   c->jcm.setParameter(J::PARAM_MASTER, value); break;
+        case kAmpParamOrangeFac:   c->orange.setParameter(O::PARAM_FAC, value); break;
         default:
             c->amp.setParameter(param_id, value);
             break;
@@ -879,6 +975,7 @@ int amp_latency_samples(void* handle) {
     if (c->model == kAmpJcm800) n = c->jcm.latencySamples();
     else if (c->model == kAmpTwin) n = c->twin.latencySamples();
     else if (c->model == kAmpAc30) n = c->ac30.latencySamples();
+    else if (c->model == kAmpOrange) n = c->orange.latencySamples();
     // Both double-buffered pairs share the 128 partition, so a pending cab change
     // never moves reported latency — but read the ACTIVE pair anyway so this stays
     // correct if a future cab ever uses a different partition size.
@@ -896,6 +993,7 @@ void amp_process(void* handle, const float* in_ptr, float* out_ptr,
     if (c->model == kAmpJcm800) c->jcm.process(in_ptr, out_ptr, num_frames);
     else if (c->model == kAmpTwin) c->twin.process(in_ptr, out_ptr, num_frames);
     else if (c->model == kAmpAc30) c->ac30.process(in_ptr, out_ptr, num_frames);
+    else if (c->model == kAmpOrange) c->orange.process(in_ptr, out_ptr, num_frames);
     else c->amp.process(in_ptr, out_ptr, num_frames);
     if (c->cabOn) c->active().l.process(out_ptr, out_ptr, num_frames);  // in-place ok
 }
@@ -926,6 +1024,11 @@ void amp_process_stereo(void* handle, const float* in_ptr, float* out_l_ptr,
         // identical cab pair (M10.2). Natural pairing is the clean212 (closest 2×12
         // platform; a future alnico 2×12 IR is ledgered) — the app hints at it.
         c->ac30.process(in_ptr, out_l_ptr, num_frames);
+        for (int i = 0; i < num_frames; ++i) out_r_ptr[i] = out_l_ptr[i];
+    } else if (c->model == kAmpOrange) {
+        // The OR120 is a HEAD into a separate 4x12 — mono, dual-mono into the
+        // identical cab pair (M10.3). Natural pairing is the orange412.
+        c->orange.process(in_ptr, out_l_ptr, num_frames);
         for (int i = 0; i < num_frames; ++i) out_r_ptr[i] = out_l_ptr[i];
     } else {
         c->amp.processStereo(in_ptr, out_l_ptr, out_r_ptr, num_frames);

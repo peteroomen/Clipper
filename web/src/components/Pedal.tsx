@@ -46,7 +46,7 @@ interface KnobSpec {
   param: ParamName;
   testId: string;
 }
-type FaceLayout = 'stack' | 'compact' | 'slim' | 'single' | 'wide' | 'plate';
+type FaceLayout = 'stack' | 'compact' | 'slim' | 'single' | 'wide' | 'plate' | 'rocker';
 interface PedalFace {
   layout: FaceLayout;
   model: string; // small model line (top eyebrow)
@@ -155,6 +155,28 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Level', aria: 'Level', param: 'level', testId: 'knob-level' },
     ],
   },
+  // Post-v1.1 wah "Weeper": the lineup's FIRST FILTER pedal, and the first one
+  // whose real-world enclosure is not a box you press but a ROCKING TREADLE you
+  // stand on. That is its morphology cue and it gets its own 'rocker' layout: a
+  // wide, low chassis dominated by a full-width RIBBED footplate hinged at the
+  // back, with the three small knobs on a strip along the top edge. TEAL accent —
+  // deliberately the furthest hue from the six dirt/mod pedals, because this is
+  // the first member of a new family. "Weeper" is the wink; no Dunlop / Cry Baby /
+  // Vox / Mu-Tron wording anywhere on the face (docs §17 doctrine).
+  wah: {
+    layout: 'rocker',
+    model: 'FILTER Nº7 · TREADLE',
+    wordmark: 'Weeper',
+    knobs: [
+      // Slot 0 = POSITION (heel -> toe: an ordinary automatable parameter, and the
+      // reason the treadle is not the only way to play this). Slot 1 = SENSE (0 is
+      // exactly the manual pedal; above 0 the envelope sweeps the same tank).
+      // Slot 2 = VOICE (the documented "vocal mod" — width only).
+      { name: 'Position', aria: 'Position', param: 'distortion', testId: 'knob-position' },
+      { name: 'Sense', aria: 'Sensitivity', param: 'filter', testId: 'knob-sense' },
+      { name: 'Voice', aria: 'Voice', param: 'level', testId: 'knob-voice' },
+    ],
+  },
   phaser: {
     // The iconic ONE-KNOB face: a single big centered SPEED knob on a dark chassis
     // with an ORANGE accent (the orange box, instantly read). "Ninety" is the wink
@@ -195,7 +217,10 @@ export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
   // only its SHAPE changes — round stomp on 'stack', wide treadle pad on 'compact',
   // a rectangular hinged PAD on 'slim' (the Ibanez-format stomp).
   const fswShape =
-    face.layout === 'compact' ? ' fsw-treadle' : face.layout === 'slim' ? ' fsw-pad' : '';
+    face.layout === 'compact' ? ' fsw-treadle'
+      : face.layout === 'slim' ? ' fsw-pad'
+      : face.layout === 'rocker' ? ' fsw-rocker'
+      : '';
   const footswitch = (
     <button
       type="button"
@@ -210,7 +235,7 @@ export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
         thunk(false);
       }}
     >
-      {face.layout === 'compact' && (
+      {(face.layout === 'compact' || face.layout === 'rocker') && (
         <span className="treadle-wordmark" aria-hidden="true">
           {face.wordmark}
         </span>
@@ -248,6 +273,15 @@ export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
           {knobs}
           <div className="slim-wordmark display">{face.wordmark}</div>
           <div className="fsw-zone pad-zone">{footswitch}</div>
+        </>
+      ) : face.layout === 'rocker' ? (
+        // 'rocker' (the wah): a low, wide chassis with the three small knobs on a
+        // strip across the top and a full-width RIBBED footplate, hinged at the
+        // back, owning the rest of the body — the silhouette of a treadle pedal
+        // rather than a box. The footswitch IS the footplate.
+        <>
+          {knobs}
+          <div className="fsw-zone rocker-zone">{footswitch}</div>
         </>
       ) : face.layout === 'plate' ? (
         // 'plate' (the GOLD box): knob row on top, an ENGRAVED NAMEPLATE band across

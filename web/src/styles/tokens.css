@@ -79,6 +79,13 @@
      only cool hue not already spoken for by the Twin's blue. */
   --accent-comp: #17786F;
   --accent-comp-glow: rgba(35, 170, 156, 0.5);
+  /* Wah "Weeper" (post-v1.1, the first FILTER pedal) — DEEP TEAL/CYAN. Chosen to
+     sit as far from the six dirt/mod accents as the wheel allows (red, yellow,
+     green, violet, orange, gold), because it is the first pedal of a NEW family
+     and the board should read that at a glance. Readable on the light porcelain;
+     the glow reads bright on the dark board. */
+  --accent-wah: #17868F;
+  --accent-wah-glow: rgba(35, 175, 190, 0.5);
   --accent-tuner: var(--seg-green); /* tuner — its green lock color */
   --accent-tuner-glow: var(--seg-green-glow);
   /* M9.4 JCM800 amp — GOLD/BRASS accent (the Marshall gold-plexi wink), a readable
@@ -93,6 +100,12 @@
      copper on the light porcelain. Amp faces set --pedal-accent from this. */
   --accent-ac30: #B4612C;
   --accent-ac30-glow: rgba(180, 97, 44, 0.5);
+  /* M10.3 Orange OR120 amp — a SATURATED ORANGE (the tolex wink). Deliberately
+     more chroma and less brown than --accent-ac30's copper and less red than
+     --accent-phaser's burnt orange, because all three can appear on screen at
+     once (the amp menu lists ac30 and orange; a phaser may sit on the board). */
+  --accent-orange: #C85A00;
+  --accent-orange-glow: rgba(200, 90, 0, 0.5);
   /* M6.8 tuner — segmented meter LEDs (recessed neumorphic wells) + the 7-seg
      note "screen" (a dark readout window in both themes; lit segments glow, unlit
      stay faintly visible). */
@@ -154,6 +167,8 @@
     --accent-gold-glow: rgba(217, 179, 107, 0.55);
     --accent-comp: #3ECFC0; /* bright teal, glows on the dark board */
     --accent-comp-glow: rgba(62, 207, 192, 0.55);
+    --accent-wah: #3ED0DD; /* bright teal/cyan, glows on the dark board */
+    --accent-wah-glow: rgba(62, 208, 221, 0.6);
     --accent-tuner: var(--seg-green);
     --accent-tuner-glow: var(--seg-green-glow);
     /* M9.4 JCM800 — brighter brass gold, glows on the dark board */
@@ -165,6 +180,9 @@
     /* v1.1 AC30 — brighter warm copper, glows on the dark board */
     --accent-ac30: #E08A4A;
     --accent-ac30-glow: rgba(224, 138, 74, 0.55);
+    /* M10.3 Orange OR120 — brighter saturated orange, glows on the dark board */
+    --accent-orange: #FF9A2E;
+    --accent-orange-glow: rgba(255, 154, 46, 0.55);
     /* M6.8 tuner segments (glow on dark) */
     --seg-red: #FF4A34;
     --seg-red-glow: rgba(255, 74, 52, 0.6);
@@ -196,9 +214,11 @@
   --accent-phaser: #C4611A; --accent-phaser-glow: rgba(210,110,40,.5);
   --accent-gold: #8F6A22; --accent-gold-glow: rgba(190,145,55,.5);
   --accent-comp: #17786F; --accent-comp-glow: rgba(35,170,156,.5);
+  --accent-wah: #17868F; --accent-wah-glow: rgba(35,175,190,.5);
   --accent-jcm: #A87A18; --accent-jcm-glow: rgba(198,148,30,.5);
   --accent-twin: #4E7BA8; --accent-twin-glow: rgba(78,123,168,.5);
   --accent-ac30: #B4612C; --accent-ac30-glow: rgba(180,97,44,.5);
+  --accent-orange: #C85A00; --accent-orange-glow: rgba(200,90,0,.5);
   --accent-tuner: var(--seg-green); --accent-tuner-glow: var(--seg-green-glow);
   --seg-red: #E23B2A; --seg-red-glow: rgba(226,59,42,.55);
   --seg-green: #24C265; --seg-green-glow: rgba(36,194,101,.6);
@@ -224,9 +244,11 @@
   --accent-phaser: #FF8C3A; --accent-phaser-glow: rgba(255,140,58,.55);
   --accent-gold: #D9B36B; --accent-gold-glow: rgba(217,179,107,.55);
   --accent-comp: #3ECFC0; --accent-comp-glow: rgba(62,207,192,.55);
+  --accent-wah: #3ED0DD; --accent-wah-glow: rgba(62,208,221,.6);
   --accent-jcm: #E8B84B; --accent-jcm-glow: rgba(232,184,75,.55);
   --accent-twin: #7FB4E8; --accent-twin-glow: rgba(127,180,232,.55);
   --accent-ac30: #E08A4A; --accent-ac30-glow: rgba(224,138,74,.55);
+  --accent-orange: #FF9A2E; --accent-orange-glow: rgba(255,154,46,.55);
   --accent-tuner: var(--seg-green); --accent-tuner-glow: var(--seg-green-glow);
   --seg-red: #FF4A34; --seg-red-glow: rgba(255,74,52,.6);
   --seg-green: #34E070; --seg-green-glow: rgba(52,224,112,.65);

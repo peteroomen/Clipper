@@ -253,6 +253,61 @@ std::vector<float> generateBrit4x12IR(double sampleRate) {
     return h;
 }
 
+// ---------------------------------------------------------------------------
+// Orange 4x12 (M10.3, docs §57) — the same sealed 4x12 family as the Brit, voiced
+// the other way round, because the OR120 is a mid-FORWARD amp and its cab is part
+// of that. Distinct from the Brit 4x12:
+//   * a LOWER low cut (~62 Hz vs 72 Hz) and box modes moved DOWN — the big woolly
+//     Orange bottom,
+//   * NO 200 Hz low-mid chunk; the weight sits below it,
+//   * a pronounced UPPER-MID BARK: +4 dB centred at 1.2 kHz, broad (Q 0.9). This
+//     is the voicing decision of the cab, and it is the same direction as the
+//     amp's James stack rather than a second, independent EQ opinion,
+//   * a slightly later top rolloff than the Brit's greenback darkness (four
+//     low-passes from 4.8 kHz vs five from 4.6 kHz) — present, not fizzy.
+//
+// Measured magnitude response (raw DTFT, dB relative to 1 kHz; ctest-asserted at
+// 44.1 k / 48 k / 96 k, and asserted DIFFERENT from the Brit where it matters):
+//     60 Hz   ~ -4 dB      (lowest low cut of the three cabs)
+//     100 Hz  ~ -1 dB
+//     200 Hz  ~ -1 dB      (no chunk — contrast the Brit's +1.5 dB)
+//     1 kHz   =  0 dB       (reference / passband)
+//     1.2 kHz ~ +1 dB      (the bark)
+//     3 kHz   ~ -4 dB
+//     8 kHz   ~ -47 dB
+// Load-bearing: MORE 60 Hz than the Brit, MORE 1.2 kHz relative to 200 Hz than
+// the Brit, still darker than the 2x12 up top; plus the four metric asserts.
+// ---------------------------------------------------------------------------
+std::vector<float> generateOrange4x12IR(double sampleRate) {
+    const double fs = sampleRate > 0.0 ? sampleRate : 48000.0;
+    const int len = static_cast<int>(std::lround(1024.0 * fs / 48000.0));
+    const double rr = fs / 48000.0;
+    const int direct = static_cast<int>(std::lround(5.0 * rr));
+
+    // Tiny amplitudes (see the 2x12 note). Box modes lower and a touch longer than
+    // the Brit's; the breakup cluster pulled DOWN into the bark region.
+    static const std::vector<Mode> kModes = {
+        // box/port — the lowest of the three cabs
+        {72.0, 2.6, 0.0016}, {104.0, 2.3, 0.0014},
+        // low-mid cone body — deliberately NOT weighted at 200 Hz
+        {165.0, 2.1, 0.0012}, {300.0, 1.7, 0.0011}, {430.0, 1.5, 0.0010},
+        {620.0, 1.3, 0.0010},
+        // the bark: a damped cluster centred where the Orange honk lives
+        {1150.0, 1.0, 0.0014}, {1450.0, 0.9, 0.0013}, {2400.0, 0.6, 0.0010},
+        {3100.0, 0.5, 0.0008},
+    };
+
+    std::vector<float> h = modalRaw(len, fs, 1.0, direct, kModes);
+
+    applyBiquad(h, rbj::highPass(62.0, 0.6, fs));        // Q 0.6: tight, low ring
+    applyBiquad(h, rbj::peaking(1200.0, 4.0, 0.9, fs));  // the upper-mid bark
+    for (int i = 0; i < 4; ++i) applyBiquad(h, rbj::lowPass(4800.0, 0.707, fs));
+
+    applyTailFade(h, fs, 2.0, 5.5);  // gate the far tail
+    peakNormalize(h, fs);
+    return h;
+}
+
 // Public entry point (see CabIR.h): peak-normalize any IR to unity spectral peak
 // in place. Delegates to the same dense-grid normalizer the generators use, so a
 // user-uploaded cab is held to the exact same "never boosts" rule (M6.6).

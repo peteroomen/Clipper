@@ -320,6 +320,17 @@ independent slices that can interleave anywhere:
   deliberately.)*
 - **M10.3 — Orange tube-head style** *(S–M)* — heavy EL34/JCM800 machinery
   reuse with Orange voicing; quick win after 10.1–10.2.
+  *(SHIPPED 2026-07-31 as the OR120 "Overdrive", amp voice 4 + an `orange412`
+  cab — docs §57. The power machinery IS reused; the voice is the CIRCUIT
+  differences: a CATHODYNE phase inverter DC-coupled to its driver (leg balance
+  1.000000 by topology, against the LTP's fitted 0.988), a JAMES/passive-Baxandall
+  BASS+TREBLE stack, the six-position F.A.C. rotary, global NFB into the driver's
+  CATHODE with HF DRIVE in the loop, and NO MASTER VOLUME. The acceptance bar was
+  "measurably not a re-skinned JCM800": mid-notch metric at noon **+2.32 dB vs the
+  FMV's −6.03**, an 8.35 dB network contrast and 6.24 dB on the composed amps.
+  All five goldens unchanged; nothing blessed. Research honesty note: no schematic
+  was reachable from the build container — see §57.1 for what is sourced and what
+  is reconstruction.)*
 - **M10.4 — Mesa high-gain style** *(L)* — hardest, last: 5+ cascaded stages
   with heavy interstage voicing, selectable TUBE-rectifier sag (the sag model
   parameterizes for it), loose/tight modes, graphic-EQ charm (5 biquads).
