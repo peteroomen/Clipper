@@ -291,13 +291,17 @@ class ClipperProcessor extends AudioWorkletProcessor {
     // latency / process), so routing is by prefix. 'sd1'=SD-1, 'ts'=TS Screamer
     // (both the SD-1 engine family), 'muff'=Pi fuzz, 'gold'=the GOLD clean-blend
     // overdrive (slots read GAIN/TREBLE/OUTPUT), 'phaser'=Ninety (linear allpass
-    // sweep: set_oversampling is a no-op, latency 0), anything else = RAT.
-    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'muff' ? 'muff' : type === 'gold' ? 'gold' : type === 'phaser' ? 'phaser' : 'rat';
-    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'muff' ? '_muff' : t === 'gold' ? '_gold' : t === 'phaser' ? '_phaser' : '_rat';
+    // sweep: set_oversampling is a no-op, latency 0), 'wah'=Weeper (the FIRST
+    // FILTER pedal: a swept resonant tank into a real transistor stage, so unlike
+    // the phaser its set_oversampling and latency ARE real — slots read
+    // POSITION/SENSE/VOICE), anything else = RAT.
+    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'muff' ? 'muff' : type === 'gold' ? 'gold' : type === 'phaser' ? 'phaser' : type === 'wah' ? 'wah' : 'rat';
+    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'muff' ? '_muff' : t === 'gold' ? '_gold' : t === 'phaser' ? '_phaser' : t === 'wah' ? '_wah' : '_rat';
     const handle = mod[P + '_create'](this._sr);
     mod[P + '_set_oversampling'](handle, this._oversampling | 0);
     if (params) {
-      // Slot 0/1/2 are pedal-agnostic; for a phaser slot 0 = SPEED, 1/2 unused.
+      // Slot 0/1/2 are pedal-agnostic; for a phaser slot 0 = SPEED, 1/2 unused;
+      // for a wah they are POSITION / SENSITIVITY / VOICE.
       mod[P + '_set_param'](handle, 0, +params.distortion);
       mod[P + '_set_param'](handle, 1, +params.filter);
       mod[P + '_set_param'](handle, 2, +params.level);
@@ -306,9 +310,9 @@ class ClipperProcessor extends AudioWorkletProcessor {
   }
 
   // C-ABI export prefix for a node's type
-  // ('_sd' | '_ts' | '_muff' | '_gold' | '_phaser' | '_rat').
+  // ('_sd' | '_ts' | '_muff' | '_gold' | '_phaser' | '_wah' | '_rat').
   _prefix(node) {
-    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'muff' ? '_muff' : node.type === 'gold' ? '_gold' : node.type === 'phaser' ? '_phaser' : '_rat';
+    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'muff' ? '_muff' : node.type === 'gold' ? '_gold' : node.type === 'phaser' ? '_phaser' : node.type === 'wah' ? '_wah' : '_rat';
   }
 
   _destroyPedal(node) {
@@ -316,7 +320,7 @@ class ClipperProcessor extends AudioWorkletProcessor {
     this._module[this._prefix(node) + '_destroy'](node.handle);
   }
 
-  // Per-node ABI routing by C-ABI prefix (sd_*/ts_*/phaser_*/rat_*). Keeps the
+  // Per-node ABI routing by C-ABI prefix (sd_*/ts_*/phaser_*/wah_*/rat_*). Keeps the
   // chain dispatch type-agnostic everywhere below.
   _pedalSetParam(node, id, value) {
     this._module[this._prefix(node) + '_set_param'](node.handle, id, value);

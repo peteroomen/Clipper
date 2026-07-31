@@ -75,6 +75,7 @@ add_library(clipper_dsp STATIC
     src/dsp/AmpModel.cpp
     src/dsp/ChorusModel.cpp
     src/dsp/PhaserModel.cpp
+    src/dsp/WahModel.cpp
     src/dsp/ReverbModel.cpp
     src/dsp/CabConvolver.cpp
     src/dsp/CabIR.cpp
@@ -184,6 +185,12 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(clipper_phaser_tests PRIVATE clipper_dsp)
     clipper_add_test_flags(clipper_phaser_tests)
     add_test(NAME clipper_phaser_tests COMMAND clipper_phaser_tests)
+
+    # --- The FILTER pedal: wah / envelope filter ("Weeper") tests -------------
+    add_executable(clipper_wah_tests tests/test_wah_model.cpp)
+    target_link_libraries(clipper_wah_tests PRIVATE clipper_dsp)
+    clipper_add_test_flags(clipper_wah_tests)
+    add_test(NAME clipper_wah_tests COMMAND clipper_wah_tests)
 
     # --- M5: amp + cab tests --------------------------------------------------
     add_executable(clipper_amp_tests tests/test_amp_model.cpp)

@@ -14,6 +14,7 @@
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/OrangeAmp.h"
 #include "clipper/dsp/PhaserModel.h"
+#include "clipper/dsp/WahModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/RatModel.h"
@@ -435,6 +436,65 @@ void gold_process(void* handle, const float* in_ptr, float* out_ptr,
     if (!handle) return;
     static_cast<clipper::dsp::GoldModel*>(handle)->process(in_ptr, out_ptr,
                                                            num_frames);
+}
+
+// --- The FILTER pedal: wah / envelope filter ("Weeper") exports --------------
+//
+// Additive alongside rat_*/sd_*/ts_*/muff_*/gold_*/phaser_*, byte-for-byte the
+// same opaque-handle ABI so the worklet drives it exactly like every other pedal.
+// Param slots: 0 = POSITION (heel→toe), 1 = SENSITIVITY (0 = manual pedal, > 0
+// hands the same tank to the envelope follower), 2 = VOICE (the documented
+// "vocal mod": R7 10.89 k…100 k, 0.5 = the stock 33 k). The resonator is linear
+// and runs at base rate; the transistor OUTPUT stage is nonlinear and runs
+// oversampled, so set_oversampling and latency_samples are REAL here (unlike the
+// phaser's). Docs §58.
+
+EMSCRIPTEN_KEEPALIVE
+void* wah_create(float sample_rate) {
+    auto* m = new clipper::dsp::WahModel();
+    m->prepare(static_cast<double>(sample_rate), 128);
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void wah_destroy(void* handle) {
+    delete static_cast<clipper::dsp::WahModel*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void wah_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
+    static_cast<clipper::dsp::WahModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clears the resonator's two integrator states and the envelope
+// follower, and re-parks the transistor stage at its cached operating point
+// WITHOUT re-solving. See the banner above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void wah_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::WahModel*>(handle)->reset();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void wah_set_oversampling(void* handle, int factor) {
+    if (!handle) return;
+    static_cast<clipper::dsp::WahModel*>(handle)->setOversampling(factor);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int wah_latency_samples(void* handle) {
+    if (!handle) return 0;
+    return static_cast<clipper::dsp::WahModel*>(handle)->latencySamples();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void wah_process(void* handle, const float* in_ptr, float* out_ptr,
+                 int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::WahModel*>(handle)->process(in_ptr, out_ptr,
+                                                          num_frames);
 }
 
 // --- M5: clean amp + cab exports ---------------------------------------------

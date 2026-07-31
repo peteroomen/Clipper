@@ -34,7 +34,14 @@ export type SourceKind = 'test' | 'live';
 // (distortion==Gain, filter==Treble, level==Output). Its architecture is the odd one
 // out: a PARALLEL clean/dirt blend cross-faded by a dual-ganged gain pot, with
 // germanium clippers — so at GAIN 0 it is a genuinely clean buffer/boost.
-export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'phaser' | 'tuner';
+// Post-v1.1 adds 'wah' (the "Weeper" — the lineup's FIRST FILTER pedal, a
+// GCB-95-class Cry Baby): SAME three-knob shape/ABI, its slots reading as
+// POSITION / SENSE / VOICE (distortion==Position, filter==Sense, level==Voice).
+// POSITION is an ordinary automatable parameter (a treadle you can sweep); SENSE
+// at 0 is exactly that manual pedal and above 0 hands the SAME resonant tank to
+// an envelope follower (Mu-Tron-style auto-wah); VOICE is the documented "vocal
+// mod" — it changes the resonance's WIDTH only, not its centre. Docs §58.
+export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'phaser' | 'wah' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
@@ -75,7 +82,7 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412' | 'orange412', num
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'phaser', 'tuner'];
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'phaser', 'wah', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
@@ -248,6 +255,16 @@ export const PHASER_KNOB_DEFAULTS: PedalParams = {
   level: 0.5,
 };
 
+// Wah ("Weeper") opening state. POSITION 0.35 is a low-mid vowel (~816 Hz on the
+// derived sweep law) — a musical resting place that is obviously a wah the moment
+// you sweep it. SENSE 0 opens in MANUAL mode (the envelope contributes exactly
+// nothing until you ask for it). VOICE 0.5 is the STOCK 33 kOhm R7. See WahModel.
+export const WAH_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.35,
+  filter: 0.0,
+  level: 0.5,
+};
+
 // Per-type opening knob positions (gear tray "add" / swap use this).
 export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   rat: KNOB_DEFAULTS,
@@ -256,6 +273,7 @@ export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   muff: MUFF_KNOB_DEFAULTS,
   gold: GOLD_KNOB_DEFAULTS,
   phaser: PHASER_KNOB_DEFAULTS,
+  wah: WAH_KNOB_DEFAULTS,
   // The tuner has no knobs; params are unused but keep the shared shape.
   tuner: KNOB_DEFAULTS,
 };
@@ -364,6 +382,7 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
     : p.type === 'muff' ? 'muff'
     : p.type === 'gold' ? 'gold'
     : p.type === 'phaser' ? 'phaser'
+    : p.type === 'wah' ? 'wah'
     : 'rat';
   return {
     id,

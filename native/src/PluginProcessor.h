@@ -49,6 +49,14 @@ inline constexpr const char* goldOn      = "goldOn";
 inline constexpr const char* goldGain    = "goldGain";
 inline constexpr const char* goldTreble  = "goldTreble";
 inline constexpr const char* goldLevel   = "goldLevel";
+// Post-v1.1 — the "Weeper" wah / envelope filter, the board's first FILTER pedal
+// (docs §58). POSITION is the treadle (heel->toe) and is an ordinary automatable
+// parameter; SENSE at 0 is exactly that manual pedal and above 0 hands the same
+// resonant tank to an envelope follower; VOICE is the "vocal mod" (width only).
+inline constexpr const char* wahOn       = "wahOn";
+inline constexpr const char* wahPosition = "wahPosition";
+inline constexpr const char* wahSense    = "wahSense";
+inline constexpr const char* wahVoice    = "wahVoice";
 inline constexpr const char* ampOn       = "ampOn";
 inline constexpr const char* volume      = "volume";
 inline constexpr const char* bass        = "bass";
