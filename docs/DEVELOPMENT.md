@@ -9636,7 +9636,10 @@ MXR / Dyna Comp / Ross text on any user surface; the wordmark is "Squash").
 voice (M13.3) is a second config plus one `applyGainCell()` case; the noise gate
 (M13.6) is this same detector feeding a different `ControlMap`. The seam is
 written out in full in the `CompressorEngine.h` banner so the next slice does not
-have to guess where it is.
+have to guess where it is, and the decision — including its named risk, that a
+seam written before its second consumer exists can be the *wrong* seam — is
+recorded in **ADR 019**
+(`docs/decisions/019-compressor-engine-is-config-parameterized.md`).
 
 ### 59.1 Research — what was reachable, and what was not
 
