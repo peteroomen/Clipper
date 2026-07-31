@@ -82,6 +82,7 @@ juce_add_plugin(Clipper
 target_sources(Clipper PRIVATE
     src/ClipperEngine.cpp
     src/PluginProcessor.cpp
+    src/CabIrFile.cpp
     src/ClipperLookAndFeel.cpp
     src/UiSound.cpp
     src/PedalCard.cpp
@@ -130,9 +131,28 @@ target_link_libraries(clipper_chain_edit_test PRIVATE
     juce::juce_recommended_config_flags)
 target_include_directories(clipper_chain_edit_test PRIVATE src)
 
+# --- Cab/IR picker STATE test -------------------------------------------------
+# Drives the real ClipperAudioProcessor: the cab choice (a parameter) and the custom
+# IR's path (a state-tree property, NOT a parameter) must round-trip through
+# get/setStateInformation like a DAW session, a missing IR must fall back to the
+# Clean 2x12 with a note, and the reported latency must not move for any cab.
+juce_add_console_app(clipper_cab_state_test PRODUCT_NAME clipper_cab_state_test)
+target_sources(clipper_cab_state_test PRIVATE tests/cab_state_test.cpp)
+target_link_libraries(clipper_cab_state_test PRIVATE
+    Clipper
+    clipper_dsp
+    juce::juce_audio_utils
+    juce::juce_recommended_config_flags)
+target_include_directories(clipper_cab_state_test PRIVATE src)
+
 enable_testing()
 add_test(NAME clipper_identical_core COMMAND clipper_identical_test)
 add_test(NAME clipper_chain_edit COMMAND clipper_chain_edit_test)
+# NOTE for whoever next touches .github/workflows/ci.yml: the native CI job filters
+# with -R 'clipper_identical_core|clipper_chain_edit' (the native build registers the
+# CORE's tests too, without building them). This entry is NOT matched by that regex,
+# so it runs locally but not yet in CI — add clipper_cab_state to the filter.
+add_test(NAME clipper_cab_state COMMAND clipper_cab_state_test)
 
 # --- Dev-only editor SNAPSHOT tool (NOT shipped) -----------------------------
 # A headless console app that opens the real editor and writes a

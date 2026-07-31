@@ -5952,6 +5952,85 @@ tests were instead verified by driving the real worklet under Node with a stubbe
 `AudioWorkletGlobalScope`, against both the pre-fix and fixed worklets sharing one
 rebuilt WASM artifact; all the before/after numbers quoted above come from that.
 
+### §30 amendment — the NATIVE cab/IR picker (2026-07-31)
+
+The paragraph above said native "loads the default 2×12 once in `prepare()` — so there
+is no native counterpart to this change to keep in step". True when it was written, and
+the reason the owner's question was *"where do I pick my cab/ir?"*: the web has had
+Clean 2×12 / Brit 4×12 / user-IR upload since v1.1 and the plugin had none of it. This
+amendment is the catch-up (`docs/work/2026-07-31-native-cab-picker.md`).
+
+The engine's convolver pair is now **double-buffered** — `cab_[2][2]`, one live pair and
+one spare, plus an atomic `activeCabPair_` — and the split is ADR 003's, with the one
+residual that ADR names **fixed rather than copied**:
+
+| Thread | Does |
+| --- | --- |
+| MESSAGE | `prepareCabBuiltin` / `prepareCabCustom`: synthesise or copy the IR, peak-normalize a user one (M6.6 — never trust the file's level), `CabConvolver::prepare` **both sides of the spare pair**, then ARM. Every allocation the feature makes is here. |
+| AUDIO | Notices the arm at the top of `process()`, runs the ordinary declick fade, and at the fade **zero** performs one CAS + one integer flip (`commitCabIfArmed`). No allocation, no lock, no file I/O, no `prepare()`, **no `free()`**. |
+| MESSAGE | `retireCab()`: after it has *observed* the swap, `reset()` the retired pair; its heap is released (and reused) by the next message-thread prepare. |
+
+That last row is the difference from the worklet, whose `_commitPending` still calls
+`free()` on a removed pedal handle from inside `process()` — a documented bug, and
+explicitly not a precedent. The handshake is a single atomic state word (Idle →
+Preparing → Armed → Committing → Swapped → Idle); the message thread may take the
+inactive pair back from `Armed` (a second click before the audio thread reached its
+zero simply rewrites the pending IR), and it is the CAS that stops the audio thread
+swapping into a pair being rewritten.
+
+**Declick.** A swap rides the same 6 ms raised-cosine fade a chain edit does, and the
+zero HOLD is widened to `max(kDeclickHoldSeconds, kCabSwapDeadSamples = 256)` for the
+same reason the worklet holds: `CabConvolver::prepare()` zeroes the FDL, so a swapped-in
+cab emits silence for up to two partitions and a fade-in would otherwise ramp that gap.
+Measured in `clipper_chain_edit_test`, Clean 2×12 → Brit 4×12 landing mid-note:
+**max step at the seam 0.002413 against a bound of 0.003017**, and the seam step is
+*exactly* the settled signal's own 220 Hz slope — the fade contributes nothing. The same
+switch spliced HARD steps **0.021781, 7.2× the bound**. Perturbation-proven: replacing
+the arm with an immediate `commitCabIfArmed()` takes the seam to **0.060711, 20× the
+bound**, and the case goes red.
+
+**Latency does not move.** The partition stays 128 for every cab, built-in or user IR
+(`clean212 264, brit412 264, custom 264` samples on the test rig), so switching cabs
+never asks the host to re-align the track. Asserted in both native tests.
+
+**State.** `cabModel` is an APVTS **choice parameter** (indices 0/1/2 == the C ABI's
+built-in indices == web `CabChoice`), so it is automatable and round-trips with the
+session. The custom IR's **path is NOT a parameter** — a host cannot meaningfully
+automate a file path — it is a property of a `cab` child node of the state tree, exactly
+like the board's `order`. Host automation of `cabModel` can arrive on the audio thread,
+so the processor's APVTS listener does nothing but `triggerAsyncUpdate()`; the rebuild
+happens in `handleAsyncUpdate()`.
+
+**The file path** (`native/src/CabIrFile.cpp`) follows `web/src/cab.ts` deliberately:
+mono-ise by **averaging** every channel (not "take channel 0"), resample to the engine
+rate (`juce::LagrangeInterpolator` where the web uses an `OfflineAudioContext`), cap at
+**4096** samples with a **128**-sample raised-cosine tail fade, and hand the samples to
+the engine **un-normalized** — the engine normalizes, in the same place the C ABI does.
+
+**Missing-IR fallback** is the web's convention (`App.tsx`: a rig that says
+`cabModel:'custom'` with no IR behind it): fall back to the Clean 2×12 and *say so*
+under the chip. One deliberate divergence — native **keeps the path** in the state tree
+rather than clearing it, so a session opened before an external drive is mounted is
+repaired by re-picking Custom rather than by hunting for the file again. Because that
+retry request looks identical to the one that just failed, a *user* action bypasses the
+apply-deduplication (`applyCabFromState`'s `force`); the dedup exists so that one click
+is one declick fade rather than two (the click applies directly AND through the
+listener's async hop).
+
+**UI**: a chip under the Cab lever on the amp card, captioned CAB IR, labelled with the
+current cab (a custom IR shows its file name), opening a popup with the two built-ins,
+the loaded IR, and "Load IR…" (an async `juce::FileChooser`). Both themes; the fallback
+note is the entire error surface — no dialog. `clipper_editor_snap` grew
+`native_cab_*` scenes covering both built-ins, a loaded custom IR, the missing-file note
+and the 1040×560 minimum window, in light and dark.
+
+**Suites**: `clipper_identical_core` **untouched and green** — max |plugin−ref| =
+`0.000e+00` on all eight cases, which is the proof that the default state (Clean 2×12,
+no custom IR) still renders bit-identically to the pre-picker engine. `clipper_chain_edit`
+green with the new cab case; new `clipper_cab_state` (33 checks) green. **CI note:** the
+native job filters `ctest -R 'clipper_identical_core|clipper_chain_edit'`, which does not
+match `clipper_cab_state` — add it to the filter in `.github/workflows/ci.yml`.
+
 ## 31. Audit "Test & process integrity" — the artifact staleness stamp, the golden blessing ritual, and a reproducible artifact
 
 Two process holes from the 2026-07-24 audit, both of which had already cost something

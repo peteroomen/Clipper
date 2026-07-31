@@ -13,7 +13,8 @@
 //     -> ...                                  /
 //     -> AmpModel.processStereo      [mono -> stereo: tone stack + volume + bright
 //                                     + JC-120 chorus/vibrato split]
-//     -> per-side CabConvolver       [cabL / cabR, if cab on]
+//     -> per-side CabConvolver       [the LIVE cab pair, if cab on — see the cab
+//                                     picker note below]
 //     -> * declick envelope          [6 ms raised cosine, chain edits only]
 //     -> OutputLimiter.processStereo [lookahead gain-rider safety limiter]
 //   -> stereo out
@@ -57,9 +58,29 @@
 // Platform-free except it includes the core headers; it has no JUCE dependency so
 // the identical-core console test can drive it, and the plugin wraps it.
 
+// THE CAB / IR PICKER (2026-07-31, native parity with the web's cab select + upload).
+// The convolver pair is DOUBLE BUFFERED, mirroring the C ABI's amp_prepare_cab_* /
+// amp_commit_cab split (docs §30, ADR 003) — but with the one thing the worklet path
+// still gets wrong fixed rather than copied:
+//
+//   MESSAGE thread : builds the requested IR into the INACTIVE pair (IR synthesis or
+//                    a decoded file, peak normalization, FFT partitioning — 11-46 ms,
+//                    and every allocation the whole feature makes), then ARMS a swap.
+//   AUDIO thread   : notices the arm, runs the ordinary declick fade, and at the fade
+//                    ZERO flips ONE integer. No allocation, no lock, no file I/O, no
+//                    prepare(), no free().
+//   MESSAGE thread : RETIRES the pair the audio thread stopped using — but only after
+//                    it has observed the swap. The retired pair's buffers are released
+//                    (and reused) by the NEXT message-thread prepare, so a free never
+//                    lands on the render path. The worklet's _destroyPedal free inside
+//                    _commitPending is a documented BUG (CLAUDE.md), not a precedent.
+//
+// The handshake is one atomic state word; see CabState below.
+
 #ifndef CLIPPER_NATIVE_ENGINE_H
 #define CLIPPER_NATIVE_ENGINE_H
 
+#include <atomic>
 #include <vector>
 
 #include "clipper/dsp/Ac30Amp.h"
@@ -96,6 +117,18 @@ enum PedalType : int {
 
 // Each type is instantiable once, so the board can never be longer than this.
 constexpr int kMaxChain = PEDAL_TYPE_COUNT;
+
+// Which cabinet IR the convolver pair is loaded with. 0/1 are ALSO the C ABI's
+// built-in indices (amp_prepare_cab_builtin) and the web's CabChoice order
+// ('clean212' | 'brit412' | 'custom' — web/src/rig.ts), so the integer round-trips
+// between the two front-ends unchanged. Values are STABLE: the APVTS choice
+// parameter stores them.
+enum CabChoice : int {
+    CAB_CLEAN212 = 0,  // the procedural closed-back 2x12 (generateDefaultCab2x12IR)
+    CAB_BRIT412  = 1,  // the greenback-ish 4x12 (generateBrit4x12IR)
+    CAB_CUSTOM   = 2,  // a user .wav IR, decoded + resampled by the shell
+    CAB_CHOICE_COUNT = 3,
+};
 
 // The short, stable key each type serializes as in the APVTS chain-order state
 // (matches the web PedalType strings). Returns nullptr for an out-of-range id.
@@ -246,6 +279,44 @@ public:
     // is told about an edit as soon as it is requested.
     int latencySamples() const;
 
+    // --- THE CAB / IR PICKER — MESSAGE THREAD ONLY ---------------------------
+    // See the banner at the top of this file for the threading contract. Every one
+    // of these allocates; none of them may be called from process() or from a host
+    // audio callback.
+    //
+    // prepareCab*() builds the IR into the INACTIVE convolver pair and ARMS the
+    // swap; the audio thread performs it at the next declick fade zero. They return
+    // false only if another prepare is already in flight on this engine (in which
+    // case nothing was touched and the caller may retry) — a failed prepare NEVER
+    // arms, because activating a pair that was not prepared would splice in the
+    // previous IR plus its stale convolution tail (the C ABI's invariant).
+    //
+    // `which` is CAB_CLEAN212 / CAB_BRIT412. The custom form takes MONO samples;
+    // the engine peak-normalizes them itself (M6.6 — the engine never trusts a
+    // file's level), exactly like amp_prepare_cab_custom.
+    bool prepareCabBuiltin(int which);
+    bool prepareCabCustom(const float* ir, int irLength, double irSampleRate);
+
+    // SETUP ONLY — perform an armed swap immediately, with no fade. Legal only when
+    // the audio thread is NOT running (a constructor, prepareToPlay), because it
+    // writes the active-pair index the render path reads.
+    void commitCabNow();
+
+    // Release the pair the audio thread has stopped using. A no-op unless a swap has
+    // actually been observed. Called automatically by the next prepareCab*(); the
+    // editor also polls it so the retirement is prompt rather than lazy.
+    void retireCab();
+
+    // True while a prepared swap is waiting for the audio thread's fade zero.
+    bool cabSwapArmed() const;
+    // Which IR the engine will build on the next prepare() (the message thread's
+    // idea of the current cab).
+    int  cabSource() const { return cabSource_; }
+    bool hasCustomIr() const { return !customIr_.empty(); }
+    // How many swaps the AUDIO thread has committed — the tests' proof that the
+    // swap really landed inside process() and not on the message thread.
+    int  cabCommitCount() const { return cabCommits_.load(std::memory_order_relaxed); }
+
     // --- introspection (tests / editor) --------------------------------------
     // True while a chain edit is fading out/in (the declick envelope is active).
     bool declicking() const { return declickPhase_ != Declick::Idle; }
@@ -254,6 +325,16 @@ public:
 
 private:
     void applyParamsToModels();
+
+    // --- cab double-buffer internals -----------------------------------------
+    // Take ownership of the inactive pair for a message-thread prepare. Returns
+    // false if another prepare holds it.
+    bool beginCabPrepare();
+    // Build `cabSource_`'s IR at the engine rate into `pair` (message thread).
+    void loadCurrentCabIntoPair(int pair);
+    // AUDIO THREAD, at the declick fade zero: flip the active pair if a prepared
+    // swap is armed. One CAS plus one integer store — no allocation, no loop.
+    bool commitCabIfArmed();
 
     // Run one pedal type over a mono block (in -> out, distinct buffers).
     void processPedal(int type, const float* in, float* out, int numFrames);
@@ -296,7 +377,36 @@ private:
     clipper::dsp::Jcm800Amp jcm_;     // JCM800 2204 (mono head, M9.4)
     clipper::dsp::TwinAmp twin_;      // Fender blackface Twin (mono combo, M10.1)
     clipper::dsp::Ac30Amp ac30_;      // Vox AC30 top boost (mono combo, M10.2)
-    clipper::dsp::CabConvolver cabL_, cabR_;
+    // THE DOUBLE-BUFFERED CAB. cab_[pair][0] is the left side, cab_[pair][1] the
+    // right. Exactly one pair is live at a time; the message thread only ever
+    // touches the other one. Both are plain members, so the "swap" is an index and
+    // the retired pair's storage is reused rather than freed on the render path.
+    clipper::dsp::CabConvolver cab_[2][2];
+    // The live pair. Written by the AUDIO thread at the declick zero (and by
+    // commitCabNow() during setup, where no audio thread exists); read by the audio
+    // thread every block and by the message thread's retirement, which is why it is
+    // atomic rather than a plain int.
+    std::atomic<int> activeCabPair_{0};
+
+    // The cab-swap handshake, one word:
+    //   Idle       nobody owns the inactive pair.
+    //   Preparing  the MESSAGE thread owns it (building an IR into it).
+    //   Armed      it holds a finished IR; the AUDIO thread may swap to it.
+    //   Committing the AUDIO thread is mid-flip (two instructions).
+    //   Swapped    the flip is done; the RETIRED pair is the message thread's again.
+    enum CabState : int {
+        CabIdle = 0, CabPreparing = 1, CabArmed = 2, CabCommitting = 3, CabSwapped = 4
+    };
+    std::atomic<int> cabState_{CabIdle};
+    std::atomic<int> cabCommits_{0};
+
+    // MESSAGE-THREAD-OWNED cab source. prepare() rebuilds THIS at the new engine
+    // rate, so a sample-rate change keeps the user's cab instead of silently
+    // reverting to the 2x12.
+    int cabSource_ = CAB_CLEAN212;
+    std::vector<float> customIr_;   // mono user IR, as handed in (NOT normalized)
+    double customIrRate_ = 0.0;     // the rate customIr_ is sampled at
+
     clipper::dsp::OutputLimiter limiter_;
 
     // Mono scratch buffers (sized in prepare to maxBlock). Two ping-pong buffers

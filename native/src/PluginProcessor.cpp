@@ -1,10 +1,21 @@
 #include "PluginProcessor.h"
 
+#include "CabIrFile.h"
 #include "PluginEditor.h"
 
 namespace clipper::native {
 
 namespace {
+// The cab/IR picker's choice parameter. Index order == clipper::native::CabChoice
+// == the C ABI's built-in indices == web/src/rig.ts CabChoice, so the same integer
+// means the same cab everywhere.
+const juce::StringArray kCabChoices{juce::String::fromUTF8("Clean 2\xc3\x97" "12"),
+                                    juce::String::fromUTF8("Brit 4\xc3\x97" "12"),
+                                    "Custom IR"};
+// The APVTS state child holding the custom IR's file path.
+const juce::Identifier kCabNode{"cab"};
+const juce::Identifier kCabCustomPath{"customIr"};
+
 // The four legal oversampling factors, indexed by the APVTS choice parameter.
 const juce::StringArray kOversampleChoices{"1x", "2x", "4x", "8x"};
 constexpr int kOversampleFactors[] = {1, 2, 4, 8};
@@ -135,6 +146,11 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::treble, "Treble", 0.6f));
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::bright, 1}, "Bright", false));
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::cab, 1}, "Cab", true));
+    // WHICH cab (the picker). Default index 0 == Clean 2x12, i.e. the cab every
+    // build before this one was hard-wired to — a fresh instance and a pre-picker
+    // session both render bit-identically to the old engine.
+    layout.add(std::make_unique<Choice>(juce::ParameterID{pid::cabModel, 1},
+                                        "Cab Model", kCabChoices, 0));
 
     // M9.4 JCM800-only knobs (bass/middle/treble above are shared with the Clean 120).
     layout.add(knob(pid::jcmGain, "JCM Gain", 0.5f));
@@ -163,6 +179,19 @@ ClipperAudioProcessor::ClipperAudioProcessor()
       apvts(*this, nullptr, "state", makeLayout()) {
     // A fresh instance opens on the web app's default rig: one RAT on the board.
     setChainOrder(defaultChain());
+    // Host automation of the cab choice must reach the engine, so the picker is not
+    // a dead parameter. parameterChanged() can fire on the AUDIO thread, hence the
+    // AsyncUpdater hop — see the header.
+    apvts.addParameterListener(pid::cabModel, this);
+    // The default cab is the Clean 2x12, which is exactly what ClipperEngine::
+    // prepare() builds anyway, so this only matters for a state load. It is
+    // `immediate` because no audio thread exists yet.
+    applyCabFromState(/*immediate=*/true);
+}
+
+ClipperAudioProcessor::~ClipperAudioProcessor() {
+    apvts.removeParameterListener(pid::cabModel, this);
+    cancelPendingUpdate();
 }
 
 std::vector<int> ClipperAudioProcessor::chainOrder() const {
@@ -192,6 +221,139 @@ void ClipperAudioProcessor::syncChainFromState(bool legacyFallback) {
     }
     std::vector<int> types = parseChain(node.getProperty(kBoardOrder).toString());
     setChainOrder(types);  // re-publishes the atomic + bumps the version
+}
+
+// ---------------------------------------------------------------------------
+// THE CAB / IR PICKER — state (message thread)
+// ---------------------------------------------------------------------------
+int ClipperAudioProcessor::cabChoice() const {
+    const int v = static_cast<int>(apvts.getRawParameterValue(pid::cabModel)->load());
+    return juce::jlimit(0, CAB_CHOICE_COUNT - 1, v);
+}
+
+void ClipperAudioProcessor::setCabChoice(int choice) {
+    auto* p = apvts.getParameter(pid::cabModel);
+    if (p == nullptr) return;
+    const int c = juce::jlimit(0, CAB_CHOICE_COUNT - 1, choice);
+    p->beginChangeGesture();
+    p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(c)));
+    p->endChangeGesture();
+    // The listener would get here on its own, but only after an async hop; doing it
+    // now keeps a user's click synchronous with the UI that made it — and FORCED,
+    // so re-picking the same entry is a real retry rather than a no-op.
+    applyCabFromState(/*immediate=*/false, /*force=*/true);
+}
+
+juce::String ClipperAudioProcessor::customIrPath() const {
+    auto node = apvts.state.getChildWithName(kCabNode);
+    if (!node.isValid()) return {};
+    return node.getProperty(kCabCustomPath).toString();
+}
+
+void ClipperAudioProcessor::setCustomIrPath(const juce::String& path) {
+    auto node = apvts.state.getOrCreateChildWithName(kCabNode, nullptr);
+    node.setProperty(kCabCustomPath, path, nullptr);
+}
+
+bool ClipperAudioProcessor::loadCustomIrFile(const juce::File& file) {
+    const CabIrFileResult ir = loadCabIrFile(file, engineRate_);
+    if (!ir.ok) {
+        // The previous cab keeps playing — a bad file must never leave the rig
+        // silent or half-swapped. Say what went wrong and stop.
+        cabNote_ = juce::String::fromUTF8("Could not load that IR (") + ir.error + ").";
+        cabVersion_.fetch_add(1);
+        return false;
+    }
+    setCustomIrPath(file.getFullPathName());
+    customIrLabel_ = ir.label;
+    setCabChoice(CAB_CUSTOM);  // applies it (and re-reads the path we just stored)
+    if (ir.truncated)
+        cabNote_ = juce::String::fromUTF8("Loaded \xe2\x80\x9c") + ir.label +
+                   juce::String::fromUTF8("\xe2\x80\x9d \xe2\x80\x94 capped ") +
+                   juce::String(ir.originalLength) + juce::String::fromUTF8(" \xe2\x86\x92 ") +
+                   juce::String(static_cast<int>(ir.samples.size())) + " samples.";
+    cabVersion_.fetch_add(1);
+    return true;
+}
+
+juce::String ClipperAudioProcessor::cabLabel() const {
+    switch (cabChoice()) {
+        case CAB_BRIT412: return kCabChoices[CAB_BRIT412];
+        case CAB_CUSTOM:  return customIrLabel_.isNotEmpty() ? customIrLabel_
+                                                             : juce::String("Custom IR");
+        default:          return kCabChoices[CAB_CLEAN212];
+    }
+}
+
+// Build the selected cab into the engine's SPARE convolver pair. This is where the
+// feature's file I/O and allocation live; the engine's audio thread only ever flips
+// an index (ClipperEngine's banner).
+void ClipperAudioProcessor::applyCabFromState(bool immediate, bool force) {
+    const int choice = cabChoice();
+    const juce::String path = choice == CAB_CUSTOM ? customIrPath() : juce::String();
+    const juce::String sig = juce::String(choice) + "|" + path;
+    // Idempotence. `immediate` (a constructor / prepareToPlay rebuild) always runs;
+    // everything else skips a request the engine already holds, so one user click
+    // is one declick fade — see lastCabSig_ in the header.
+    if (!immediate && !force && sig == lastCabSig_) return;
+    lastCabSig_ = sig;
+
+    if (choice == CAB_CUSTOM) {
+        const CabIrFileResult ir =
+            path.isNotEmpty() ? loadCabIrFile(juce::File(path), engineRate_)
+                              : CabIrFileResult{};
+        if (ir.ok) {
+            customIrLabel_ = ir.label;
+            cabNote_ = ir.truncated ? juce::String("IR capped to ") +
+                                          juce::String(static_cast<int>(ir.samples.size())) +
+                                          " samples."
+                                    : juce::String();
+            engine_.prepareCabCustom(ir.samples.data(),
+                                     static_cast<int>(ir.samples.size()), ir.sampleRate);
+        } else {
+            // MISSING / UNREADABLE IR. The web's convention (App.tsx: a restored rig
+            // that says cabModel:'custom' with no IR data behind it) is to fall back
+            // to the Clean 2x12 and SAY SO rather than play a rig with no cab. Native
+            // does the same — with one deliberate difference: the PATH is kept in the
+            // state tree. A DAW session opened on another machine, or before an
+            // external drive is mounted, can be put right by re-selecting Custom
+            // instead of having to find the file again.
+            customIrLabel_ = {};
+            cabNote_ = path.isEmpty()
+                           ? juce::String::fromUTF8(
+                                 "No IR loaded yet \xe2\x80\x94 using the Clean 2\xc3\x97" "12.")
+                           : juce::String::fromUTF8(
+                                 "IR not found \xe2\x80\x94 using the Clean 2\xc3\x97" "12.");
+            engine_.prepareCabBuiltin(CAB_CLEAN212);
+            // Reflect the fallback in the parameter, so the UI, the host and the
+            // saved session all agree on what is actually playing. Record the
+            // EFFECTIVE signature first: the parameter write re-enters through the
+            // listener, and this is what makes that pass a no-op instead of a
+            // second prepare and a second fade.
+            lastCabSig_ = juce::String(CAB_CLEAN212) + "|";
+            if (auto* p = apvts.getParameter(pid::cabModel)) {
+                p->beginChangeGesture();
+                p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(CAB_CLEAN212)));
+                p->endChangeGesture();
+            }
+        }
+    } else {
+        cabNote_ = {};
+        engine_.prepareCabBuiltin(choice);
+    }
+
+    if (immediate) engine_.commitCabNow();
+    cabVersion_.fetch_add(1);
+}
+
+void ClipperAudioProcessor::parameterChanged(const juce::String& id, float) {
+    // May be the AUDIO thread (host automation). Do nothing here but wake the
+    // message thread — applyCabFromState() reads files and allocates.
+    if (id == pid::cabModel) triggerAsyncUpdate();
+}
+
+void ClipperAudioProcessor::handleAsyncUpdate() {
+    applyCabFromState(/*immediate=*/false);
 }
 
 Params ClipperAudioProcessor::snapshotParams() const {
@@ -267,8 +429,16 @@ void ClipperAudioProcessor::updateLatency(const Params& p) {
 
 void ClipperAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     const Params p = snapshotParams();
+    engineRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
     engine_.setParams(p);
+    // prepare() rebuilds the SELECTED cab at the new rate from the engine's own
+    // source, so a built-in survives a rate change with no work here.
     engine_.prepare(sampleRate, juce::jmax(1, samplesPerBlock));
+    // A CUSTOM IR does need re-reading: the samples the engine holds were resampled
+    // to the OLD engine rate, and re-decoding the file at the new one beats letting
+    // the convolver linearly resample them again. No audio thread is running inside
+    // prepareToPlay, so this can commit immediately.
+    if (cabChoice() == CAB_CUSTOM) applyCabFromState(/*immediate=*/true);
     lastReportedLatency_ = -1;
     updateLatency(p);
 }
@@ -329,6 +499,13 @@ void ClipperAudioProcessor::setStateInformation(const void* data, int sizeInByte
             // to the audio thread (and migrate a pre-parity session, which has no
             // board node, back onto its old fixed RAT → SD-1 pair).
             syncChainFromState(/*legacyFallback=*/true);
+            // The cab travels with the session too: the choice is a parameter (so
+            // replaceState already restored it) and the custom IR's path is a
+            // property of the tree we just swapped in. Rebuild from both — declicked
+            // rather than immediate, because a host may load a preset while the
+            // transport is rolling. A missing file falls back here (see
+            // applyCabFromState), which is exactly where a moved/absent IR shows up.
+            applyCabFromState(/*immediate=*/false);
         }
     }
 }

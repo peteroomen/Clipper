@@ -172,6 +172,209 @@ void runCase(const char* label, const Params& edited) {
         }
 }
 
+// ---------------------------------------------------------------------------
+// CASE 7 — THE CAB / IR SWAP (2026-07-31, the native cab picker).
+//
+// A cab change is a topology change like any other, but it is the one that used to
+// be expensive: building an IR is 11-46 ms of synthesis + FFT partitioning against a
+// 2.7 ms deadline (docs §30, ADR 003). The native engine splits it — the MESSAGE
+// thread prepares the spare convolver pair, the AUDIO thread flips one integer at
+// the declick fade zero — so this case has two jobs:
+//
+//   a) the seam is inside the declick envelope, exactly like a chain edit, and a
+//      HARD splice of the same two cabs would blow past that bound (sensitivity);
+//   b) the swap was committed BY THE AUDIO THREAD (cabCommitCount goes 0 -> 1) and
+//      only after the fade started — a prepare on its own must change nothing.
+//
+// This case runs with the amp POWERED ON and the cab ON, unlike the chain-edit
+// cases: the cab is only in the signal path there.
+// ---------------------------------------------------------------------------
+Params cabBaseParams() {
+    Params p;
+    p.chain[0] = clipper::native::PEDAL_TS;
+    p.chainLength = 1;
+    p.inputTrim = 0.28f;
+    p.tsOn = true;  p.tsDrive = 0.12f; p.tsTone = 0.5f; p.tsLevel = 0.5f;
+    p.ampOn = true;            // the cab only exists downstream of a powered amp
+    p.ampModel = 0;            // Clean 120: linear, so the waveform stays smooth
+    p.cab = true;
+    p.volume = 0.7f;
+    p.reverb = 0.0f;           // a reverb tail would smear the seam we are measuring
+    p.chorusMode = 0;
+    p.oversampling = 4;
+    return p;
+}
+
+// Render kTotal samples through the cab rig. `swapTo` >= 0 asks for that built-in
+// cab from sample kPre onward (the MESSAGE-thread prepare, arriving between blocks
+// exactly as a UI click would); `startCab` is what the rig boots with.
+std::vector<float> renderCab(int startCab, int swapTo, bool* declickedOut,
+                             int* commitsOut) {
+    ClipperEngine eng;
+    const Params p = cabBaseParams();
+    eng.setParams(p);
+    // The boot cab is chosen the way the plugin chooses it: prepared and committed
+    // on the message thread with no audio running, before prepare().
+    if (startCab != clipper::native::CAB_CLEAN212) {
+        eng.prepareCabBuiltin(startCab);
+        eng.commitCabNow();
+    }
+    eng.prepare(kFs, kBlock);
+
+    const std::vector<float> in = makeSignal();
+    std::vector<float> out((size_t)kTotal, 0.0f);
+    std::vector<float> l(kBlock), r(kBlock);
+    bool sawDeclick = false;
+    bool asked = false;
+
+    int off = 0;
+    while (off < kTotal) {
+        const int n = std::min(kBlock, kTotal - off);
+        eng.updateParams(p);
+        if (!asked && swapTo >= 0 && off >= kPre) {
+            // MESSAGE THREAD: build the new IR into the spare pair and arm the swap.
+            // Nothing audible may change until the audio thread reaches its fade zero.
+            asked = eng.prepareCabBuiltin(swapTo);
+            if (!asked) { std::printf("  FAIL prepareCabBuiltin refused\n"); failed = true; }
+        }
+        if (off >= kPre && eng.declicking()) sawDeclick = true;
+        eng.process(in.data() + off, l.data(), r.data(), n);
+        for (int i = 0; i < n; ++i) out[(size_t)(off + i)] = l[(size_t)i];
+        off += n;
+    }
+    if (declickedOut) *declickedOut = sawDeclick;
+    if (commitsOut) *commitsOut = eng.cabCommitCount();
+    return out;
+}
+
+void runCabSwapCase() {
+    std::printf("\n--- edit: cab swap (Clean 2x12 -> Brit 4x12, mid-note) ---\n");
+    using clipper::native::CAB_BRIT412;
+    using clipper::native::CAB_CLEAN212;
+
+    bool declicked = false;
+    int commits = -1;
+    const std::vector<float> out = renderCab(CAB_CLEAN212, CAB_BRIT412, &declicked, &commits);
+
+    // The continuity bound is the SIGNAL'S OWN steady slew — and a cab swap changes
+    // what that is, because the two cabs are at different levels (the Brit 4x12
+    // measures ~4 dB hotter here). Taking only the pre-edit slew would hold the
+    // fade-in of a louder cab to the quieter cab's slew and fail on nothing: the
+    // first run measured seam 0.002413 against a pre-only bound of 0.002227, all of
+    // it ordinary 220 Hz slope at the new level. The honest bound is the larger of
+    // the two settled slews.
+    const double slewPre = maxStep(out, kPre - 8000, kPre - 100);
+    const double slewPost = maxStep(out, kPre + 4200, kTotal);
+    const double slew = std::max(slewPre, slewPost);
+    // The cab swap's zero HOLD is widened to cover the swapped-in convolver's empty
+    // frequency-delay line (kCabSwapDeadSamples), so the seam window is wider than
+    // the chain-edit cases': fade 6 ms + hold ~6 ms + fade 6 ms, plus slack.
+    const int seamFrom = kPre - 1200;
+    const int seamTo = kPre + 3600;
+    const double seam = maxStep(out, seamFrom, seamTo);
+    const double bound = std::max(1.25 * slew, 1e-4);
+
+    // The same change with NO fade: the two cabs rendered separately and spliced.
+    const std::vector<float> a = renderCab(CAB_CLEAN212, -1, nullptr, nullptr);
+    const std::vector<float> b = renderCab(CAB_BRIT412, -1, nullptr, nullptr);
+    const double hardStep =
+        std::fabs((double)b[(size_t)kPre] - (double)a[(size_t)(kPre - 1)]);
+
+    std::printf("  steady slew      : %.6f  (pre %.6f, post-swap %.6f)\n", slew, slewPre,
+                slewPost);
+    std::printf("  max step at seam : %.6f  (bound %.6f)\n", seam, bound);
+    std::printf("  hard-switch step : %.6f  (x%.1f the bound)\n", hardStep,
+                bound > 0.0 ? hardStep / bound : 0.0);
+    std::printf("  audio-thread cab commits: %d\n", commits);
+
+    check(declicked, "the cab swap armed the declick fade");
+    check(seam <= bound, "no discontinuity beyond the declick envelope");
+    check(commits == 1, "the swap was committed exactly once, by the AUDIO thread");
+    check(hardStep > 4.0 * bound,
+          "an unfaded cab swap really would click (the bound can fail)");
+
+    const double settled = rms(out, kPre + 3600, kTotal);
+    const double target = rms(b, kPre + 3600, kTotal);
+    std::printf("  settled RMS      : %.6f  (new cab alone: %.6f)\n", settled, target);
+    check(target > 1e-6 && settled > 0.5 * target && settled < 2.0 * target,
+          "output settles at the NEW cab's own level (a fade, not a mute)");
+    for (int i = 0; i < kTotal; ++i)
+        if (!std::isfinite(out[(size_t)i])) {
+            check(false, "output stayed finite");
+            break;
+        }
+}
+
+// A prepare on the message thread must be INAUDIBLE until the audio thread commits
+// it, and the reported latency must not move for any cab — the partition stays 128
+// whatever IR is loaded, which is what lets a player switch cabs without the host
+// re-aligning the track.
+void runCabInvariants() {
+    std::printf("\n--- cab invariants ---\n");
+    using clipper::native::CAB_BRIT412;
+    using clipper::native::CAB_CLEAN212;
+    using clipper::native::CAB_CUSTOM;
+
+    ClipperEngine eng;
+    const Params p = cabBaseParams();
+    eng.setParams(p);
+    eng.prepare(kFs, kBlock);
+    const int latClean = eng.latencySamples();
+
+    // Render one block, prepare a different cab, render the SAME block again with no
+    // process() in between the prepare and the read: the first sample after the
+    // prepare still belongs to the old cab (the fade has not reached zero yet).
+    const std::vector<float> in = makeSignal();
+    std::vector<float> l(kBlock), r(kBlock), l2(kBlock), r2(kBlock);
+    eng.process(in.data(), l.data(), r.data(), kBlock);
+
+    ClipperEngine ref;  // the same engine with no cab change at all
+    ref.setParams(p);
+    ref.prepare(kFs, kBlock);
+    ref.process(in.data(), l2.data(), r2.data(), kBlock);
+
+    check(eng.prepareCabBuiltin(CAB_BRIT412), "prepareCabBuiltin succeeded");
+    check(eng.cabSwapArmed(), "the prepare ARMED a swap rather than performing one");
+    check(eng.cabCommitCount() == 0, "no swap happened on the message thread");
+    const int latArmed = eng.latencySamples();
+
+    // One block after the arm: the fade has started, so the audio has moved — but
+    // only through the envelope, and the LATENCY has not moved at all.
+    eng.process(in.data() + kBlock, l.data(), r.data(), kBlock);
+    check(latArmed == latClean, "arming a cab swap does not move reported latency");
+
+    // Drive past the fade so the swap actually lands, then check latency again.
+    for (int off = 2 * kBlock; off + kBlock <= kTotal; off += kBlock)
+        eng.process(in.data() + off, l.data(), r.data(), kBlock);
+    check(eng.cabCommitCount() == 1, "the audio thread committed the swap");
+    std::printf("  latency: clean212 %d, armed %d, after brit412 %d (partition 128)\n",
+                latClean, latArmed, eng.latencySamples());
+    check(eng.latencySamples() == latClean, "a cab change does not move reported latency");
+
+    // A CUSTOM IR takes the same path. A short synthetic one is enough to prove the
+    // plumbing (the file decoding is the shell's job, not the engine's).
+    std::vector<float> ir((size_t)512, 0.0f);
+    ir[0] = 1.0f;
+    ir[64] = -0.5f;  // a crude comb, audibly different from either built-in
+    check(eng.prepareCabCustom(ir.data(), (int)ir.size(), kFs),
+          "prepareCabCustom accepted a mono IR");
+    check(eng.cabSource() == CAB_CUSTOM, "the engine records the custom source");
+    for (int off = 0; off + kBlock <= kTotal; off += kBlock)
+        eng.process(in.data() + off, l.data(), r.data(), kBlock);
+    check(eng.cabCommitCount() == 2, "the custom IR swap also landed on the audio thread");
+    check(eng.latencySamples() == latClean, "a custom IR does not move reported latency");
+
+    // Garbage in: rejected outright, nothing armed, the rig keeps playing.
+    check(!eng.prepareCabCustom(nullptr, 0, kFs), "a null IR is refused");
+    check(!eng.cabSwapArmed(), "a refused prepare arms nothing");
+
+    // prepare() must REBUILD the selected cab, not silently revert to the 2x12 —
+    // that is what keeps a chosen cab through a sample-rate change.
+    eng.prepare(kFs, kBlock);
+    check(eng.cabSource() == CAB_CUSTOM, "re-prepare keeps the selected cab source");
+    check(eng.latencySamples() == latClean, "re-prepare does not move reported latency");
+}
+
 }  // namespace
 
 int main() {
@@ -206,6 +409,11 @@ int main() {
         p.chainLength = 1;
         runCase("remove (TS taken off the board)", p);
     }
+
+    // 4b. THE CAB / IR SWAP — the same declick discipline, prepared on the message
+    // thread and committed by the audio thread (see the block comment above).
+    runCabSwapCase();
+    runCabInvariants();
 
     // 5. SENSITIVITY: the continuity bound has to be one a real click would fail.
     // Splice the loudest of the edits (adding the RAT) HARD — no fade — and confirm

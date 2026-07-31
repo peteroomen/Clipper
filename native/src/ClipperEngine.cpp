@@ -24,6 +24,17 @@ constexpr float  kPi = 3.14159265358979323846f;
 const char* const kPedalKeys[PEDAL_TYPE_COUNT] = {"rat",    "sd1",  "ts",
                                                   "muff",   "phaser", "gold"};
 constexpr int   kCabPartition = 128;  // == worklet render quantum / cab partition
+// Extra samples to HOLD the output at zero after a CAB swap, before the fade back
+// in. Mirrors CAB_SWAP_DEAD_SAMPLES in web/worklet/clipper-processor.js and exists
+// for the same reason: CabConvolver::prepare() zeroes the frequency-domain delay
+// line, so a freshly swapped-in cab emits silence until its FDL refills (up to two
+// partitions). Fading INTO that gap would ramp silence and then jump; holding at
+// zero across it and only then ramping means the fade-in always ramps real audio.
+constexpr int   kCabSwapDeadSamples = 256;
+// A hard cap on the message thread's wait for the audio thread's two-instruction
+// commit window (CabCommitting). It cannot spin forever by construction; the cap is
+// belt-and-braces so a stopped audio thread can never wedge the UI.
+constexpr int   kCabPrepareSpinLimit = 1000000;
 // The JCM's fixed internal oversampling — matches the C ABI (docs §18: 4× ships;
 // 8× buys nothing at the composed max-gain floor). Independent of the pedal OS.
 constexpr int   kJcmOversampling = 4;
@@ -305,6 +316,123 @@ void ClipperEngine::setPedalOversampling(int factor) {
     // phaser_set_oversampling is likewise a no-op.
 }
 
+// ---------------------------------------------------------------------------
+// THE CAB / IR PICKER — the message-thread half.
+//
+// Everything in this block allocates (IR synthesis, peak normalization, one FFT
+// spectrum per partition) and is therefore MESSAGE THREAD ONLY. It never touches
+// the live pair, never touches the declick state machine, and never blocks on the
+// audio thread for longer than its two-instruction commit window.
+// ---------------------------------------------------------------------------
+
+bool ClipperEngine::beginCabPrepare() {
+    for (int spin = 0; spin < kCabPrepareSpinLimit; ++spin) {
+        int s = cabState_.load(std::memory_order_acquire);
+        if (s == CabCommitting) continue;     // the audio thread is mid-flip (ns)
+        if (s == CabPreparing) return false;  // another prepare already owns it
+        if (s == CabSwapped) {                // reclaim the retired pair first
+            retireCab();
+            continue;
+        }
+        // Idle or Armed. Taking it back from Armed is deliberate: a second cab
+        // change arriving before the audio thread reached its fade zero simply
+        // rewrites the pending IR, and the CAS is what stops the audio thread from
+        // swapping into a pair we are about to overwrite.
+        if (cabState_.compare_exchange_strong(s, CabPreparing, std::memory_order_acq_rel,
+                                              std::memory_order_acquire))
+            return true;
+        // s moved under us — re-read and decide again.
+    }
+    return false;
+}
+
+void ClipperEngine::loadCurrentCabIntoPair(int pair) {
+    std::vector<float> ir;
+    double irRate = sampleRate_;
+    if (cabSource_ == CAB_CUSTOM && !customIr_.empty()) {
+        ir = customIr_;
+        irRate = customIrRate_ > 0.0 ? customIrRate_ : sampleRate_;
+        // M6.6: the engine NEVER trusts a file's level — a cab may colour the tone
+        // but must never boost a band past the level entering it, or it pushes the
+        // output limiter and fizzes. Same call, same place, as the C ABI's
+        // amp_prepare_cab_custom. The BUILT-INS are deliberately NOT re-normalized:
+        // their generators already normalize, and a second pass would perturb the
+        // low mantissa bits of an IR the identical-core test renders bit-exactly.
+        clipper::dsp::peakNormalizeIR(ir, sampleRate_);
+    } else {
+        ir = cabSource_ == CAB_BRIT412 ? clipper::dsp::generateBrit4x12IR(sampleRate_)
+                                       : clipper::dsp::generateDefaultCab2x12IR(sampleRate_);
+    }
+    if (ir.empty()) return;
+    const int len = static_cast<int>(ir.size());
+    // The partition stays 128 in every case — the cab's contribution to reported
+    // latency must not move when the user changes cabs (asserted in the tests).
+    cab_[pair][0].prepare(sampleRate_, ir.data(), len, irRate, kCabPartition);
+    cab_[pair][1].prepare(sampleRate_, ir.data(), len, irRate, kCabPartition);
+}
+
+bool ClipperEngine::prepareCabBuiltin(int which) {
+    const int w = (which == CAB_BRIT412) ? CAB_BRIT412 : CAB_CLEAN212;
+    if (!beginCabPrepare()) return false;
+    cabSource_ = w;
+    loadCurrentCabIntoPair(activeCabPair_.load(std::memory_order_relaxed) ^ 1);
+    cabState_.store(CabArmed, std::memory_order_release);
+    return true;
+}
+
+bool ClipperEngine::prepareCabCustom(const float* ir, int irLength, double irSampleRate) {
+    if (ir == nullptr || irLength <= 0) return false;
+    if (!beginCabPrepare()) return false;
+    customIr_.assign(ir, ir + irLength);
+    customIrRate_ = irSampleRate > 0.0 ? irSampleRate : sampleRate_;
+    cabSource_ = CAB_CUSTOM;
+    loadCurrentCabIntoPair(activeCabPair_.load(std::memory_order_relaxed) ^ 1);
+    cabState_.store(CabArmed, std::memory_order_release);
+    return true;
+}
+
+bool ClipperEngine::cabSwapArmed() const {
+    const int s = cabState_.load(std::memory_order_acquire);
+    return s == CabArmed || s == CabCommitting;
+}
+
+void ClipperEngine::commitCabNow() {
+    // SETUP ONLY (see the header). With no audio thread running, commitCabIfArmed()
+    // is simply performed here instead of at a fade zero, and the retirement can
+    // follow immediately.
+    commitCabIfArmed();
+    retireCab();
+}
+
+void ClipperEngine::retireCab() {
+    int s = CabSwapped;
+    if (!cabState_.compare_exchange_strong(s, CabIdle, std::memory_order_acq_rel,
+                                           std::memory_order_acquire))
+        return;
+    // The CAS above acquires the audio thread's release store, so the flipped
+    // activeCabPair_ is visible here — the pair we are about to clear is genuinely
+    // the retired one and not the live one.
+    const int retired = activeCabPair_.load(std::memory_order_relaxed) ^ 1;
+    // Retirement: drop the retired convolvers' running state on the MESSAGE thread.
+    // Its heap buffers are released (and reused) by the next prepare into this pair,
+    // which is also message thread — so no free ever reaches the render path.
+    cab_[retired][0].reset();
+    cab_[retired][1].reset();
+}
+
+bool ClipperEngine::commitCabIfArmed() {
+    // AUDIO THREAD. One CAS to claim the swap, one integer flip, one release store.
+    int s = CabArmed;
+    if (!cabState_.compare_exchange_strong(s, CabCommitting, std::memory_order_acq_rel,
+                                           std::memory_order_relaxed))
+        return false;
+    activeCabPair_.store(activeCabPair_.load(std::memory_order_relaxed) ^ 1,
+                         std::memory_order_relaxed);
+    cabCommits_.fetch_add(1, std::memory_order_relaxed);
+    cabState_.store(CabSwapped, std::memory_order_release);
+    return true;
+}
+
 void ClipperEngine::processPedal(int type, const float* in, float* out, int numFrames) {
     switch (type) {
         case PEDAL_RAT:    rat_.process(in, out, numFrames); break;
@@ -355,11 +483,18 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     declickHold_ = 0;
     commitChain();  // prepare() adopts the requested board with no fade
 
-    const std::vector<float> ir = clipper::dsp::generateDefaultCab2x12IR(sampleRate_);
-    cabL_.prepare(sampleRate_, ir.data(), static_cast<int>(ir.size()), sampleRate_,
-                  kCabPartition);
-    cabR_.prepare(sampleRate_, ir.data(), static_cast<int>(ir.size()), sampleRate_,
-                  kCabPartition);
+    // THE CAB. prepare() rebuilds the CURRENTLY SELECTED cab (cabSource_, which the
+    // message thread owns and which survives a re-prepare) at the new engine rate,
+    // into pair 0, and makes pair 0 live. A default engine has cabSource_ ==
+    // CAB_CLEAN212, so this is byte-for-byte the pre-picker call and the
+    // identical-core render is bit-identical.
+    //
+    // Only the ACTIVE pair is prepared here. The spare is never activated without a
+    // prepare of its own — that is the C ABI's invariant (ADR 003), and it is what
+    // stops a swap from splicing in stale convolution tail.
+    cabState_.store(CabIdle, std::memory_order_release);
+    activeCabPair_.store(0, std::memory_order_relaxed);
+    loadCurrentCabIntoPair(0);
 
     limiter_.prepare(sampleRate_);
 
@@ -383,6 +518,16 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
     }
 
     const Params& p = params_;
+
+    // 0. A CAB SWAP prepared on the message thread waits for the declick fade's
+    // zero, exactly like a chain edit. It is armed HERE rather than in
+    // updateParams() so the message thread never has to touch the declick state
+    // machine — it publishes one atomic and the audio thread does the rest. When an
+    // edit is already in flight the swap simply rides that same fade to its zero
+    // (the worklet's _stageEdit behaviour).
+    if (declickPhase_ == Declick::Idle &&
+        cabState_.load(std::memory_order_acquire) == CabArmed)
+        declickPhase_ = Declick::Out;
 
     // 1. Input trim into ping-pong buffer A.
     const float g = trimKnobToGain(p.inputTrim);
@@ -427,8 +572,11 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
             amp_.processStereo(cur, outL, outR, numFrames);
         }
         if (p.cab) {
-            cabL_.process(outL, outL, numFrames);  // in-place ok
-            cabR_.process(outR, outR, numFrames);
+            // The LIVE pair. Reading the index once per block is the entire
+            // audio-thread cost of the cab picker.
+            const int pair = activeCabPair_.load(std::memory_order_relaxed);
+            cab_[pair][0].process(outL, outL, numFrames);  // in-place ok
+            cab_[pair][1].process(outR, outR, numFrames);
         }
     }
 
@@ -444,7 +592,15 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
                 if (dg <= 0.0f) {
                     dg = 0.0f;
                     commitChain();  // the topology swap happens exactly at zero
-                    declickHold_ = declickHoldLen_;
+                    // ...and so does the CAB swap: one CAS + one integer flip, the
+                    // whole audio-thread cost of a cab change (ADR 003). A swapped-in
+                    // convolver's FDL is empty, so the zero HOLD is widened to cover
+                    // the worklet's CAB_SWAP_DEAD_SAMPLES as well as the settling
+                    // window the chain edits need.
+                    const bool cabSwapped = commitCabIfArmed();
+                    declickHold_ = cabSwapped
+                                       ? std::max(declickHoldLen_, kCabSwapDeadSamples)
+                                       : declickHoldLen_;
                     declickPhase_ = Declick::Hold;
                 }
             } else if (declickPhase_ == Declick::Hold) {

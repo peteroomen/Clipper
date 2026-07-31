@@ -44,6 +44,14 @@ constexpr int kAutoScrollStep = 22;
 constexpr int kAutoScrollMs = 24;
 // The edge veil's width (the "more board that way" affordance).
 constexpr int kFadeW = 34;
+// The cab/IR picker chip under the amp's Cab lever: caption line, chip, and the
+// note line that only appears when something needs saying.
+constexpr int kCabChipH = 26;
+constexpr int kCabCaptionH = 13;
+constexpr int kCabNoteH = 26;
+constexpr int kCabChipMinW = 148;
+const juce::String kCabMenuClean = juce::String::fromUTF8("Clean 2\xc3\x97" "12");
+const juce::String kCabMenuBrit = juce::String::fromUTF8("Brit 4\xc3\x97" "12");
 
 int preferredPedalWidth(int type) {
     const int knobs = (int)pedalFace(type).knobs.size();
@@ -192,6 +200,12 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     cab_.onClick = [this] {
         cabAttach_->setValueAsCompleteGesture(cab_.isOn() ? 0.0f : 1.0f);
     };
+    // The CAB / IR picker chip. Its label is the CURRENT cab (or the loaded IR's
+    // file name), so the amp card always says which cabinet is in the room.
+    cabChip_.setTint(skin::inkDim);
+    addAndMakeVisible(cabChip_);
+    cabChip_.onClick = [this] { showCabMenu(); };
+
     ampOnAttach_ = std::make_unique<ParamAttach>(
         *proc_.apvts.getParameter(pid::ampOn),
         [this](float v) { power_.setOn(v >= 0.5f); updateEnablement(); }, nullptr);
@@ -286,6 +300,7 @@ void ClipperAudioProcessorEditor::applyTheme() {
     trayAdd_.setTint(skin::benchInkDim());
     buildStamp_.setColour(juce::Label::textColourId, skin::benchFaint());
 
+    cabChip_.setTint(skin::inkDim);
     inputTrim_.setAccent(skin::accent(skin::AccentId::Twin));
     for (NeuKnob* k : {&volume_, &bass_, &middle_, &treble_, &presence_, &master_, &gain_,
                        &reverb_, &modSpeed_, &modDepth_})
@@ -306,6 +321,7 @@ void ClipperAudioProcessorEditor::refreshFromState() {
     cabAttach_->sendInitialUpdate();
     ampOnAttach_->sendInitialUpdate();
     chorusModeAttach_->sendInitialUpdate();
+    refreshCab();
     updateAmpFace();  // reads ampModel from the param, lays out + repaints
 }
 
@@ -317,6 +333,71 @@ void ClipperAudioProcessorEditor::timerCallback() {
         resized();
         repaint();
     }
+    // ...and so can the cab: host automation of cabModel, a session load, or the
+    // missing-IR fallback firing on the message thread. Same version-counter trick.
+    if (cabVersion_ != proc_.cabVersion()) {
+        refreshCab();
+        resized();
+        repaint();
+    }
+    // Hand the engine's retired convolver pair back on the MESSAGE thread. Nothing
+    // depends on this being prompt (the next prepare reclaims it anyway) — it just
+    // means the memory of a cab you switched away from goes back at human speed
+    // instead of waiting for the next switch.
+    proc_.retireCab();
+}
+
+// ---------------------------------------------------------------------------
+// The cab / IR picker
+// ---------------------------------------------------------------------------
+void ClipperAudioProcessorEditor::refreshCab() {
+    cabVersion_ = proc_.cabVersion();
+    cabChip_.setText(proc_.cabLabel().toUpperCase());
+    const juce::String note = proc_.cabNote();
+    if (note != cabNote_) {
+        cabNote_ = note;
+        resized();  // the note takes a line, so the chip's box moves
+    }
+    repaint();
+}
+
+void ClipperAudioProcessorEditor::showCabMenu() {
+    const int choice = proc_.cabChoice();
+    const juce::String custom = proc_.customIrLabel();
+    juce::PopupMenu m;
+    m.addSectionHeader("Cabinet");
+    m.addItem(1, kCabMenuClean, true, choice == CAB_CLEAN212);
+    m.addItem(2, kCabMenuBrit, true, choice == CAB_BRIT412);
+    if (custom.isNotEmpty())
+        m.addItem(3, juce::String("Custom: ") + custom, true, choice == CAB_CUSTOM);
+    m.addSeparator();
+    m.addItem(4, custom.isNotEmpty()
+                     ? juce::String::fromUTF8("Load another IR\xe2\x80\xa6")
+                     : juce::String::fromUTF8("Load IR\xe2\x80\xa6"));
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&cabChip_),
+                    [this](int result) {
+                        if (result == 1) proc_.setCabChoice(CAB_CLEAN212);
+                        else if (result == 2) proc_.setCabChoice(CAB_BRIT412);
+                        else if (result == 3) proc_.setCabChoice(CAB_CUSTOM);
+                        else if (result == 4) { chooseIrFile(); return; }
+                        else return;
+                        refreshCab();
+                    });
+}
+
+void ClipperAudioProcessorEditor::chooseIrFile() {
+    // Async, and the chooser OUTLIVES this call — hence the member. Cancelling
+    // leaves the current cab exactly as it was; an unreadable file leaves it too,
+    // and puts the reason in the note under the chip (proc_.cabNote()).
+    irChooser_ = std::make_unique<juce::FileChooser>(
+        "Load a cabinet impulse response", juce::File(), "*.wav;*.aif;*.aiff");
+    irChooser_->launchAsync(
+        juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [this](const juce::FileChooser& fc) {
+            const juce::File f = fc.getResult();
+            if (f != juce::File()) proc_.loadCustomIrFile(f);
+            refreshCab();
+        });
 }
 
 // ---------------------------------------------------------------------------
@@ -766,6 +847,7 @@ void ClipperAudioProcessorEditor::layoutAmpCard(juce::Rectangle<int> card) {
     // Right cluster (Bright?/Cab/Power) aligned with the FIRST primary knob row.
     // The levers' visual weight sits in their top 70 px; the power control needs
     // its full anatomy height (see clusterH above).
+    const juce::Rectangle<int> clusterBox = cluster.withY(startY).withHeight(clusterH);
     {
         auto c = cluster.withY(startY).withHeight(clusterH);
         // Each slot is exactly its widget's preferred width, scaled together if the
@@ -803,6 +885,35 @@ void ClipperAudioProcessorEditor::layoutAmpCard(juce::Rectangle<int> card) {
         // is the web segment plus the active segment's cast-shadow head-room.
         if (showMode_)
             chorusMode_.setBounds(cx + 10, rowY, ModeSwitch::preferredWidth(), cellH);
+    }
+
+    // ---- the CAB / IR picker, directly under the Cab lever -------------------
+    // It sits in the cluster's column (that is where the CAB lever is), but it is
+    // allowed to reach LEFT for a legible width, because a chip that says "TWEED
+    // 1X12 CONE B" is useless clipped to the 70 px a squeezed cluster gets. It can
+    // never cross the modulation divider: on a small window that line is the only
+    // thing below the cluster, and the chip going under it would read as belonging
+    // to the tremolo row.
+    {
+        const bool hasNote = cabNote_.isNotEmpty();
+        const int need = kCabCaptionH + kCabChipH + (hasNote ? kCabNoteH : 0);
+        const int limit = (hasMod && ampModDividerY_ > 0) ? ampModDividerY_ - 8
+                                                          : knobArea.getBottom();
+        int top = clusterBox.getBottom() + 12;
+        if (top + need > limit) top = juce::jmax(clusterBox.getBottom() + 4, limit - need);
+
+        const int chipW = juce::jmax(clusterBox.getWidth(), kCabChipMinW);
+        const int chipX = juce::jmax(knobArea.getX(), clusterBox.getRight() - chipW);
+        const int w = clusterBox.getRight() - chipX;
+
+        cabChipCaption_ = {chipX, top, w, kCabCaptionH};
+        cabChip_.setBounds(chipX, top + kCabCaptionH, w, kCabChipH);
+        cabNoteBox_ = hasNote ? juce::Rectangle<int>(chipX, top + kCabCaptionH + kCabChipH + 2,
+                                                     w, kCabNoteH)
+                              : juce::Rectangle<int>();
+        // Below the card entirely (a pathologically short window) — hide rather
+        // than paint the chip over the build stamp.
+        cabChip_.setVisible(cabChip_.getBounds().getBottom() <= knobArea.getBottom() + 6);
     }
 }
 
@@ -930,6 +1041,24 @@ void ClipperAudioProcessorEditor::paint(juce::Graphics& g) {
         skin::drawJack(g, {(float)cardAmp_.getX(),
                            (float)cardAmp_.getY() + cardAmp_.getHeight() * 0.42f},
                        16.0f);
+
+    // The CAB / IR picker's caption and its note. The chip itself is a child
+    // component; these two are the editor's, so they resolve the amp panel's own
+    // token scheme (light porcelain or dark bench) rather than the chip's chassis.
+    if (cabChip_.isVisible() && !cabChipCaption_.isEmpty()) {
+        const skin::Scheme& sc = skin::benchScheme();
+        g.setColour(sc.inkFaint);
+        g.setFont(skin::monoFont(10.0f));
+        g.drawText("CAB IR", cabChipCaption_, juce::Justification::centredLeft);
+        if (!cabNoteBox_.isEmpty() && cabNote_.isNotEmpty()) {
+            // The error / fallback surface: a missing IR, an unreadable file, a
+            // truncated upload. Amber-ish (the amp accent reads as "this is about
+            // your amp"), two lines, never a dialog.
+            g.setColour(ampAccent_.withAlpha(0.92f));
+            g.setFont(skin::monoFont(9.5f));
+            g.drawFittedText(cabNote_, cabNoteBox_, juce::Justification::topLeft, 2);
+        }
+    }
 
     // Modulation row divider + caption inside the amp card. The line lives in the
     // MIDDLE of the gap between the tone rows and the mod row, so neither the mod
