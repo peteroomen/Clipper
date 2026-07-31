@@ -52,6 +52,9 @@
 //     the real unit measures 0.2-3.9 % even at min; ours is bit-exact clean).
 //       cleanBlendAt(g) = 1.0                       (flat)
 //       clipBlendAt(g)  = kClipBlendWeight past a short fade-in from 0
+//     kClipBlendWeight is DERIVED from the summing network (R20/R16 against the
+//     clean feed's own transimpedance) — 4.1702, docs §52. It was 0.65 (a fit) until
+//     2026-07-31.
 //   * A(g) — the drive amp, gang 1 in its ground leg:
 //       A = 1 + 422k/((1-g)·100k + 17k) = 4.61x ... 25.82x (+13.3 ... +28.2 dB),
 //     END-LOADED (half the dB range in the last quarter-turn). The pre-§50 law
@@ -162,7 +165,66 @@ constexpr double kDriveRlegOhms = 17.0e3;  // ground-leg fixed part (15k + 2k st
 // documented GAIN-0 contract (clipBlend(0) = 0 -> the crossfade switches the clipped
 // half fully OUT, an idealization the real unit doesn't share — it measures 0.2-3.9 %
 // even at min. Kept deliberately: bit-exact-clean at zero is a product contract here).
-constexpr double kClipBlendWeight = 0.65;  // fixed dirt summing weight (fit, §50)
+//
+// --- THE SUMMING NETWORK, DERIVED (2026-07-31, docs §52) ---------------------------
+// §50 left this weight as the pedal's last FIT (0.65). It is now the schematic's
+// number. Source: the published ElectroSmash gain-stage schematic, re-checked
+// component-for-component against Jatin Chowdhury's KlonCentaur reference
+// implementation (github.com/jatinchowdhury18/KlonCentaur, DAFx-19 "A Comparison of
+// Virtual Analog Modelling Techniques" — the §27 method reference, whose netlist WAS
+// reachable this time in ChowCentaur/GainStageProcessors/*.h and Paper/Figures/).
+//
+// The real summing stage (U2A) is a TRANSIMPEDANCE amp, not a mixer: three paths
+// deliver a CURRENT into its virtual ground and one feedback resistor turns the sum
+// into a voltage.
+//     R20 = 392 kOhm   summing-amp feedback (SummingAmp.h; C13 = 820 pF across it)
+//     R16 =  47 kOhm   the GAIN-STAGE/dirt summing resistor: the diode node reaches
+//                      the virtual ground through C10 = 1 uF then R16. C10 is the
+//                      only post-diode network before that resistor and it is a
+//                      3.4 Hz high-pass (1/(2*pi*47k*1uF)) — i.e. NO in-band
+//                      post-diode attenuation: |C10 leg| = 47.000 kOhm at 220 Hz.
+//     R19 =  15 kOhm   the FF1 (clean, bass) summing resistor, fed from node B
+//                      through R7 = 1.5 k with C16 = 1 uF to ground
+//     FF2              the clean TREBLE feed: gang-2 wiper -> C11 2.2 nF + R15 22 k
+//                      (+ R16) into the same node
+// So each path's weight is its transimpedance R20 * G, where G is its
+// transconductance into the virtual ground:
+//     dirt : G_dirt  = 1/R16                     = 21.277 uS  -> R20/R16 = 8.3404
+//     clean: G_clean = G_FF1(f,g) + G_FF2(f,g)   =  4.65-5.92 uS (nodal solve over
+//            the netlist above) -> R20*G_clean = 1.82 .. 2.32 across 82 Hz..1 kHz
+// The second line is the INDEPENDENT CHECK that this model's summing normalization
+// was already right: kSumGain * cleanBlend = 2.0, and the schematic's clean
+// transimpedance measures 1.96 at 110 Hz / 2.28 at 220 Hz / 1.82 at 1 kHz. Our flat
+// 2.0 sits inside +/-0.8 dB of the real (mildly frequency-shaped) clean feed.
+// The dirt weight therefore follows with no fitting left in it:
+//     kClipBlendWeight = (R20/R16) / kSumGain = 8.3404 / 2.0 = 4.1702
+// Expressed as a ratio to the clean feed at a single frequency it is 3.59 (82 Hz) to
+// 4.88 (1 kHz), band-rms 4.45 — the 4.1702 above is the absolute form (both paths'
+// transimpedances reproduced, the clean idealized flat), which is why it is written
+// as resistors and not as a ratio.
+//
+// HONESTY, LOUDLY (docs §52, the plan file's HONESTY GATE): this is SIX AND A HALF
+// TIMES the 0.65 it replaces, so it makes the pedal LOUDER and DIRTIER, which is the
+// OPPOSITE of the field report that commissioned the slice. It was shipped anyway,
+// unfitted, because the schematic says so and because re-fitting the mix to taste is
+// exactly the failure mode this project has a rule against. The measured gap and the
+// two coupled defects it exposes (the diode-node level — our Ge pair clamps ~2.1x
+// higher than the reference's fitted 1N34A pair, Is = 15 uA vs our 200 nA — and the
+// MISSING R20 || C13 = 495 Hz summing-amp pole, which is what makes the real unit
+// creamy rather than bright) are written up in docs §52. Do NOT "fix" this constant
+// back to a fit; fix the diode node.
+//
+// kClipBlendFadeTo: RE-EXAMINED in the same derivation and DELIBERATELY UNCHANGED.
+// The real network gives it no support at all — the dirt weight is fixed at every
+// knob position (the gangs are in the drive amp's ground leg and the pre-amp divider,
+// never in the mix), and the real unit is never clean. The fade exists solely to hold
+// clipBlend(0) = 0, the documented bit-exact-clean product contract, and 0.15 is kept
+// rather than re-picked because no derivation supports any other span and changing it
+// would be a taste move smuggled in beside a derivation.
+constexpr double kSummingRfOhms = 392.0e3;  // R20, summing-amp feedback
+constexpr double kDirtSumROhms = 47.0e3;    // R16, the dirt path's summing resistor
+constexpr double kSumGain = 2.0;  // R20 * G_clean, the clean path's transimpedance
+constexpr double kClipBlendWeight = kSummingRfOhms / (kDirtSumROhms * kSumGain);
 constexpr double kClipBlendFadeTo = 0.15;  // linear fade-in span keeping clip(0)=0
 // The drive path's INPUT network attenuates before the diodes see anything: measured
 // on the real topology ~0.20x @220 Hz / 0.65x @1 kHz (the model previously passed
@@ -170,8 +232,18 @@ constexpr double kClipBlendFadeTo = 0.15;  // linear fade-in span keeping clip(0
 // the drive branch). One pole + a scale fit to the reference rows (±3 dB, g <= .75):
 constexpr double kDrivePreScale = 0.65;
 constexpr double kDriveHpHz = 600.0;  // drive-branch HP (was 106.1, mis-assigned; fit: |H|·pre at 220 Hz = 0.22 vs the reference 0.20, at 1 kHz 0.56 vs 0.65)
-constexpr double kSumGain = 2.0;      // the summing amp's non-inverting gain (1 + R/R)
-constexpr double kRailVolts = 8.6;    // charge-pump rails (+/-9 V minus dropout)
+// §52 VALIDATION of the two constants above, from the same netlist that gave the
+// summing weight: the reference's drive path is H_pre(f,g) * H_amp(f,g) (the pre-amp
+// divider C3/R6/C5/gang-1 into the amp stage R10b/R11/R12/C7/C8). Its shaping
+// H_pre*H_amp / A(g) measures 0.2234 at 220 Hz and 0.5343 at 1 kHz at the shipped
+// g = 0.35, against this model's kDrivePreScale * HP600 = 0.2238 and 0.5574. §50's
+// fit was right to within 0.02 dB / 0.35 dB at the default, so both constants STAND
+// unchanged. Known residual, named for the next slice: the real shaping is strongly
+// GAIN-dependent (C7 = 82 nF sits across R10b, so at g = 1 the amp's 1 kHz gain is
+// 100.5x against its 25.8x DC law — the reference's D/A reaches 2.53 at 1 kHz where
+// this model holds 0.557). This model's drive is therefore COLDER than the reference
+// at high gain, not hotter.
+constexpr double kRailVolts = 8.6;  // charge-pump rails (+/-9 V minus dropout)
 
 // The op-amp: TL07x-class on the charge-pump rails.
 constexpr double kOpAmpGbwHz = 3.0e6;
