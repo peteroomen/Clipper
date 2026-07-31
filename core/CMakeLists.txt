@@ -246,8 +246,10 @@ if(NOT EMSCRIPTEN)
     target_include_directories(clipper_muff_tests PRIVATE tools)
     clipper_add_test_flags(clipper_muff_tests)
     add_test(NAME clipper_muff_tests COMMAND clipper_muff_tests)
-    # XFAILs: audit finding 16 (the Muff has no output DC blocker at all).
-    clipper_add_xfail_ledger(clipper_muff_tests)
+    # No clipper_add_xfail_ledger: the Muff suite has ZERO known-bad properties as of
+    # docs §53 (the DC-blocked diode branch made finding 16's bass half and the ±20 V
+    # slam cap both XPASS, and both are asserted outright now). Registering a ledger
+    # with an empty decl list would report Passed instead of ***Skipped.
 
     # --- v1.1 item 6: GOLD overdrive (clean-blend + germanium WDF) tests -------
     add_executable(clipper_gold_tests tests/test_gold_model.cpp)

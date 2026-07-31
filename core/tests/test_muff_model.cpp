@@ -13,12 +13,15 @@
 //   5. Aliasing: shipped 4× at max sustain below the M2 −60 dB bar; naive far worse.
 //   6. VOLUME linearity; stability + hygiene at ±20 V, all rates, with the damped
 //      Newton's iteration count pinned so the globalization cannot quietly degrade — and
-//      as of docs §37 it CONVERGES at every rate x oversampling, asserted outright.
+//      as of docs §53 it CONVERGES at every rate x oversampling, asserted outright.
 //   7. Idle solver cost (docs §34): a PARKED stage does zero Newton iterations, so
 //      the Muff cannot go back to costing more when you are not playing.
 //   8. The low end is where a guitar's low end is (testLowEndResponse) and the output does
 //      not ride on DC when driven (the DC-on-signal block in testStabilityHygiene) — audit
-//      finding 16, fixed 2026-07-25, docs §37 / ADR 009.
+//      finding 16, DC half fixed 2026-07-25 (docs §37 / ADR 009), bass half 2026-07-31
+//      (docs §53: the clip stages' DC-blocking diode caps + the 4th Newton node).
+//   9. The clip stages bias like a published Big Muff's (testDcOperatingPoints' absolute
+//      block) and their diode branch carries NO DC (testDiodeBranchIsDcBlocked).
 
 #include "clipper/dsp/MuffModel.h"
 
@@ -43,37 +46,27 @@ using clipper::dsp::MuffModel;
 using clipper::dsp::MuffToneStack;
 
 // --- known-bad properties still open on this branch --------------------------------
-// Audit finding 16 names TWO defects: no output DC blocker, and almost no bass. This slice
-// fixes the FIRST only. The bass fix needs a series base resistor on the clip stages, whose
-// value cannot be taken from the schematic without first resolving why this model's
-// clip-stage base node measures ~1.8 k against the real stage's ~4 k — see ADR 009. So the
-// bass defect stays measured, printed and named rather than quietly half-fixed.
-constexpr clipper::test::XfailDecl kXfMuffBass{
-    "finding16-muff-almost-no-bass",
-    "2026-07-24 audit finding 16 (bass half, residual)",
-    "the guitar's low E (82.4 Hz) sits within 6 dB of 1 kHz through the Muff",
-    // 2026-07-31 (docs §49): the schematic 10 k series base resistors LANDED on the
-    // clip stages and moved the low E from −41 dB to −14.2 dB re 1 kHz — most of the
-    // bass is back, but still short of the −6 bar. The residual is the corner the
-    // resistor alone cannot finish: the base node's own impedance is still ~1.8 k
-    // against the real stage's ~4 k because the DC-COUPLED diode branch loads it
-    // (the real branch is blocked by a series 1 uF). Owned by ADR 009's follow-up:
-    "the DC-blocked diode feedback branch (4th Newton node) + the base-to-ground "
-    "bias resistor, which together let the schematic corners land (ADR 009)"};
-
-// 2026-07-31 (docs §49): the series base resistors LANDED and the cap-exhaustion set
-// shrank 6 → 5 combinations with a different distribution — improved, not fixed, so
-// the ledger entry stays (its old note predicted the Rs branch would fix it outright;
-// measurement says the ±20 V slam at 1×/2× still finds the stiff corner).
-constexpr clipper::test::XfailDecl kXfSlamIterCap{
-    "muff-slam-exhausts-newton-cap",
-    "found 2026-07-25 by perf/muff-newton-earlyout (docs §34), no audit finding number",
-    "a ±20 V slam converges STRICTLY INSIDE the damped Newton's 60-iteration cap at "
-    "every supported sample rate x oversampling factor. It does at 10 of 16 (14-18 "
-    "iterations), but SIX exhaust the cap: 2x oversampling at all four base rates, and "
-    "4x at 88.2 and 96 kHz",
-    "fix/muff-series-base-resistors, which fixes it as a side effect. Do NOT paper over "
-    "it by raising kMaxNewtonIter — that buys iterations, not convergence"};
+//
+// EMPTY as of 2026-07-31 (docs §53). Both entries that lived here are gone because the
+// DC-blocked diode branch made them XPASS, which support/Xfail.h treats as a hard
+// failure precisely so a fixed defect cannot leave a stale ledger line behind:
+//
+//   * `finding16-muff-almost-no-bass` — audit finding 16's bass half. The clip stages'
+//     diodes were DC-coupled, so they conducted at idle and shunted the base node to
+//     ~1.8 k, cornering each stage's input coupling at ~900 Hz. With the schematic's
+//     1 uF C6/C7 in series with the pair the branch carries no DC, the base node sits
+//     on RA//RF as published, and the low E measured −14.24 → −5.48 dB re 1 kHz. The
+//     property is now asserted outright in testLowEndResponse.
+//   * `muff-slam-exhausts-newton-cap` — found by the §34 slice. Root-caused here (see
+//     testSlamConvergence): the damped Newton clipped its step COMPONENT-WISE, which
+//     rotates the direction off Newton's, and a rotated direction need not be a
+//     descent direction for the residual norm — so the line search rejected all 30
+//     backtracks and the solve stood still for the whole cap. The 4-node path scales
+//     the direction instead, and the ledger went 5 of 16 at the cap → 0 of 16.
+//
+// The 3-node path still clips component-wise, deliberately: changing it would move
+// every existing BjtStage user's audio, and this slice's contract is that a stage
+// without the DC-blocked branch is bit-identical. See Sys::limitStep in BjtStage.cpp.
 
 double goertzelAmp(const std::vector<float>& x, size_t start, size_t n, double f,
                    double fs) {
@@ -138,12 +131,20 @@ double thd(const std::vector<float>& o, double f0, double fs, int hi = 12) {
 // Same collector-feedback KCL as BjtStage, but written here from scratch and solved
 // by a damped 3-node Newton, so agreement with the model's quiescents genuinely
 // cross-validates the device model + solver. Diodes optional (clip stages).
+//
+// Two DC terms beyond the original network (docs §53): the base-to-ground bias
+// resistor Rbg, and the fact that a DC-BLOCKED diode branch (Cdiode > 0) carries no
+// DC current at all — the series cap is an open circuit there, so the pair simply
+// leaves the DC system. Rs does NOT appear: it is in series with the input coupling
+// cap, which is also open at DC.
 struct DcOp { double Vb, Vc, Ve, Ic; };
 DcOp analyticBias(const BjtStage::Config& c) {
     const BjtStage::EbersMoll& p = c.bjt;
     const double gRc = 1.0 / c.Rc, gRf = 1.0 / c.Rf, gRe = 1.0 / c.Re;
+    const double gRbg = c.Rbg > 0.0 ? 1.0 / c.Rbg : 0.0;
+    const bool diodesCarryDc = c.diodes.present && c.Cdiode <= 0.0;
     auto id = [&](double v) {  // antiparallel diode pair
-        if (!c.diodes.present) return 0.0;
+        if (!diodesCarryDc) return 0.0;
         return c.diodes.Isd * (std::exp(std::min(v / c.diodes.nVt, 60.0)) -
                                std::exp(std::min(-v / c.diodes.nVt, 60.0)));
     };
@@ -154,7 +155,7 @@ DcOp analyticBias(const BjtStage::Config& c) {
         const double Ib = BjtStage::ebersMollIb(Vbe, Vbc, p);
         const double Ie = Ic + Ib;
         const double Id = id(Vc - Vb);
-        const double r1 = (Vc - Vb) * gRf + Id - Ib;
+        const double r1 = (Vc - Vb) * gRf - Vb * gRbg + Id - Ib;
         const double r2 = (c.Vcc - Vc) * gRc + (Vb - Vc) * gRf - Ic - Id;
         const double r3 = Ie - Ve * gRe;
         // Numerical Jacobian (independent of the model's analytic one).
@@ -164,7 +165,7 @@ DcOp analyticBias(const BjtStage::Config& c) {
             const double ic = BjtStage::ebersMollIc(vbe, vbc, p);
             const double ib = BjtStage::ebersMollIb(vbe, vbc, p);
             const double idd = id(cc - b);
-            r[0] = (cc - b) * gRf + idd - ib;
+            r[0] = (cc - b) * gRf - b * gRbg + idd - ib;
             r[1] = (c.Vcc - cc) * gRc + (b - cc) * gRf - ic - idd;
             r[2] = (ic + ib) - e * gRe;
         };
@@ -202,8 +203,15 @@ void testDcOperatingPoints(double fs) {
     MuffModel m;
     m.prepare(fs, 128);
     m.setOversampling(4);
-    BjtStage::Config nodi;             // Q1/Q4 (no diodes)
-    BjtStage::Config di = nodi; di.diodes.present = true;  // Q2/Q3 (clip)
+    BjtStage::Config nodi;             // Q1/Q4 (no diodes, no clip network)
+    // Q2/Q3 (clip): the same network MuffModel::configureStages builds — the diode
+    // pair behind its 1 uF DC-blocking cap (C6/C7) plus the 10 k series base
+    // resistor and the 100 k base-to-ground bias resistor (docs §49, §53).
+    BjtStage::Config di = nodi;
+    di.diodes.present = true;
+    di.Rs = 10.0e3;
+    di.Rbg = 100.0e3;
+    di.Cdiode = 1.0e-6;
     const DcOp aNo = analyticBias(nodi);
     const DcOp aDi = analyticBias(di);
     const bool clip[4] = {false, true, true, false};
@@ -221,7 +229,74 @@ void testDcOperatingPoints(double fs) {
             "Vb=%.3f Ve=%.3f Ic=%.3f mA%s\n",
             i + 1, fs, vc, a.Vc, relErr * 100.0, q.quiescentBaseVoltage(),
             q.quiescentEmitterVoltage(), q.quiescentCollectorCurrent() * 1e3,
-            clip[i] ? " [clip diodes]" : "");
+            clip[i] ? " [clip diodes, DC-blocked]" : "");
+    }
+
+    // --- The clip stages against an ABSOLUTE reference, not this netlist ---------
+    //
+    // Everything above cross-validates the solver against a hand-written solve of
+    // the SAME netlist, which by construction cannot notice a wrong topology — the
+    // exact hole CLAUDE.md's "measure, don't assert" section names, and the exact
+    // hole audit finding 16 fell through for months. So the clip stages are also
+    // held to a published Big Muff clip stage's own bias: a working unit idles with
+    // its clip-stage collector in the low-to-mid volts off a 9 V rail (Rc = 10 k
+    // against roughly 0.4 mA of collector current), NOT clamped a diode drop above
+    // its own base.
+    //
+    // That is precisely what the missing C6/C7 did to this model: with the pair
+    // DC-coupled it conducted at idle and pinned Vc at 1.213 V, 0.261 V above the
+    // base, with 0.777 mA through a stage that should draw about half that. Delete
+    // `clip.Cdiode` in MuffModel::configureStages and both bars below fail (measured
+    // under perturbation: Vc 1.213 V, headroom 0.261 V, Ic 0.777 mA).
+    for (int i : {1, 2}) {
+        const BjtStage& q = m.stage(i);
+        const double vc = q.quiescentCollectorVoltage();
+        const double headroom = vc - q.quiescentBaseVoltage();
+        const double icMa = q.quiescentCollectorCurrent() * 1e3;
+        assert(vc > 3.0 && vc < 7.0 &&
+               "clip-stage collector is not biased into the middle of the 9 V rail — "
+               "the diode branch is loading the bias again (docs §53: C6/C7 must "
+               "block DC, or the pair conducts at idle and clamps Vc to Vb + 0.26)");
+        assert(headroom > 2.0 &&
+               "clip stage has no swing above its own base: the clipping diodes are "
+               "conducting at idle (docs §53)");
+        assert(icMa > 0.2 && icMa < 0.7 &&
+               "clip-stage collector current is not in the published ~0.4 mA region");
+        std::printf("  [ok] Q%d clip bias @ %.0f Hz: Vc=%.3f V, %.3f V above the base, "
+                    "Ic=%.3f mA (bars 3-7 V / >2 V / 0.2-0.7 mA)\n",
+                    i + 1, fs, vc, headroom, icMa);
+    }
+}
+
+// --- Test 1b: the DC-blocking cap actually blocks DC (docs §53). ---------------
+//
+// The 4th Newton node exists for one reason: C6/C7 keep the clipping diodes out of
+// the bias network. This asserts that directly on the solved operating point — the
+// diode-side node must sit EXACTLY on the base, which is the only place a series
+// capacitor with no DC path through it can leave it, so the branch carries zero DC
+// current. A stage without the cap has no such constraint (its diode node IS the
+// collector, 0.26 V away), which is what makes this a real property and not a
+// restatement of the solver.
+void testDiodeBranchIsDcBlocked(double fs) {
+    MuffModel m;
+    m.prepare(fs, 128);
+    m.setOversampling(4);
+    for (int i : {1, 2}) {
+        const BjtStage& q = m.stage(i);
+        const double vd = q.quiescentDiodeNodeVoltage();
+        const double vb = q.quiescentBaseVoltage();
+        // The diode current at the solved point, from the model's own pair law.
+        const BjtStage::DiodePair d{};  // 1N4148 defaults, as the clip stages use
+        const double id = d.Isd * (std::exp((vd - vb) / d.nVt) - std::exp(-(vd - vb) / d.nVt));
+        assert(std::fabs(vd - vb) < 1e-9 &&
+               "the DC-blocked diode node is not parked on the base: the branch is "
+               "carrying DC, so the cap is missing or the 4th node is mis-wired");
+        assert(std::fabs(id) < 1e-12 &&
+               "clip diodes are conducting at idle — the whole point of C6/C7 is that "
+               "they do not (docs §53)");
+        std::printf("  [ok] Q%d diode branch @ %.0f Hz: Vd-Vb = %.2e V, idle diode "
+                    "current %.2e A (bars 1e-9 V / 1e-12 A)\n",
+                    i + 1, fs, vd - vb, id);
     }
 }
 
@@ -307,13 +382,31 @@ void testSustainRange(double fs) {
     // now, not just an escape hatch. Pre-fix, the −54 dB taper floor left the whole
     // travel past the clip stages' ~1–3 mV clean window: knob 0.14 was the HOTTEST
     // point of the sweep (−4.7 dBFS / 43 % THD at a 0.1 V pluck) and the owner called
-    // it "way too gainy, even on sustain=14". §49 re-derivation: with the clip stages'
-    // series base resistors in (their clean window widened ~10×) the floor re-derived
-    // −84 → −70 against these same bars; knob 0.15 at a 0.1 V pluck measures
-    // 11.9/11.9/12.0 % THD and 20.3 dB below the wall at 44.1/48/96 k. Perturbation
-    // lineage: kSustainMinDb = −54 reproduces the pre-§43 single-exponent law exactly
-    // and fails the bars on the §43 circuit (~43 %/~3 dB) AND on the §49 circuit
-    // (~29 %/~2 dB — the level authority collapses either way).
+    // it "way too gainy, even on sustain=14". §49 re-derived the floor −84 → −70 once
+    // the series base resistors widened that window.
+    //
+    // §53 re-derivation, and an HONEST BAR CHANGE that must be read before it is
+    // "fixed" back. With the diode branch DC-blocked, each clip stage biases at
+    // Vc = 4.95 V and makes its real ~28 dB, so the drive that reaches clipping is far
+    // smaller: kClipDriveMax came off its 6.0 compensation to the pot's physical 1.0
+    // and the floor re-derived −70 → −65 (both derivations are in MuffModel.cpp).
+    //
+    //   * The THD bar is UNCHANGED at < 20 %, and it is the field-report bar: measured
+    //     9.8 % at knob 0.15 (0.1 V, 220 Hz, 48 kHz), against §49's 10.7 % — the same
+    //     player feel, re-landed on the corrected circuit.
+    //   * The level bar moved 15 dB → 4 dB, and NOT to go green. On the corrected
+    //     circuit the clip stages clamp their output near 0.65 V at any drive, so the
+    //     SUSTAIN knob governs saturation far more than level — which is what a Big
+    //     Muff does, and the opposite of the old model, whose knob-bottom level
+    //     collapse came from stages that had no bias to clip around. The best any
+    //     floor achieves here is 8.0 dB (at −70, where knob 0.15 is 3.8 % THD, i.e.
+    //     cleaner than the field report asked for). 4 dB keeps the bar meaningful:
+    //     the pre-§43 law (kSustainMinDb = −54) measures 3.0 dB and fails it.
+    //
+    // Perturbation lineage, all measured: kSustainMinDb = −54 fails the level bar
+    // (3.0 dB) and nearly the THD one (20.2 %); kClipDriveMax = 6.0 fails BOTH
+    // (23.6 % THD, 2.3 dB); deleting clip.Cdiode fails the low-end assertions in
+    // testLowEndResponse instead.
     {
         const auto low = render(sine(f0, 0.1f, 1.0, fs), {0.15f, 0.5f, 0.6f}, fs);
         const auto wall = render(sine(f0, 0.1f, 1.0, fs), {1.0f, 0.5f, 0.6f}, fs);
@@ -324,10 +417,11 @@ void testSustainRange(double fs) {
                     tLow15 * 100.0, dropDb);
         assert(tLow15 < 0.20 &&
                "SUSTAIN 0.15 at a 0.1 V pluck is not a tame fuzz (<20% THD) — the low "
-               "half of the knob lost its authority again (docs §43)");
-        assert(dropDb > 15.0 &&
-               "SUSTAIN 0.15 is not >=15 dB quieter than the wall — the taper floor "
-               "is too hot again (docs §43)");
+               "half of the knob lost its authority again (docs §43/§53)");
+        assert(dropDb > 4.0 &&
+               "SUSTAIN 0.15 is not >=4 dB quieter than the wall — the taper floor "
+               "is too hot again (docs §53; read the bar's derivation above before "
+               "touching this number)");
     }
     std::printf(
         "  [ok] SUSTAIN THD range @ %.0f Hz: min 0.0 -> %.1f%%, default 0.6 -> %.1f%%, "
@@ -472,27 +566,32 @@ void testLowEndResponse(double fs) {
     const double g60 = gainDb(60.0);     // below the lowest fretted note; also mains hum
     const double g30 = gainDb(30.0);     // subsonic — must still be rejected
 
-    // The bass half of audit finding 16 is NOT fixed on this branch — that needs the series
-    // base resistor, held to its own slice because its value cannot be taken from the
-    // schematic until the ~1.8 k vs ~4 k clip-stage base-node discrepancy is settled
-    // (ADR 009). So the property is recorded as an XFAIL: measured, printed, and named.
-    // One entry covers the low E, the open A and 60 Hz — they are one root cause, and three
-    // ledger lines for one defect would just be noise.
+    // ASSERTED FOR REAL as of 2026-07-31 (docs §53). This was the XFAIL
+    // `finding16-muff-almost-no-bass` from 2026-07-25 through §49; the DC-blocked
+    // diode branch (BjtStage::Config::Cdiode, the schematic's 1 uF C6/C7) made it
+    // XPASS, and support/Xfail.h treats an XPASS as a hard failure precisely so the
+    // ledger line cannot go stale. Measured at each landing, low E re 1 kHz:
     //
-    // NOT neutered with `assert(true && ...)` or #if 0: those make a property untested while
-    // looking tested, which is precisely what CLAUDE.md forbids and what support/Xfail.h
-    // exists to replace. An XPASS here is a hard failure, so when the base-resistor slice
-    // lands this cannot stay stale.
-    {
-        char detail[256];
-        std::snprintf(detail, sizeof detail,
-                      "low E(82.4) sits %+.2f dB re 1 kHz (bar > -6.0); open A(110) %+.2f "
-                      "(bar > -4.0); 60 Hz %+.2f (bar > -12.0)",
-                      gLowE - g1k, gA - g1k, g60 - g1k);
-        const bool bassHolds =
-            (gLowE - g1k > -6.0) && (gA - g1k > -4.0) && (g60 - g1k > -12.0);
-        clipper::test::expectXfail(bassHolds, kXfMuffBass, detail);
-    }
+    //   pre-§49 (no Rs, DC-coupled diodes)   −41.14 dB   audit finding 16 as filed
+    //   §49 (Rs = 10 k, DC-coupled diodes)   −14.24 dB   XFAIL, re-owned
+    //   §53 (Rs + Rbg + C6/C7 blocking)       −5.48 dB   passes, this assertion
+    //
+    // Perturbation: delete `clip.Cdiode` in MuffModel::configureStages and the
+    // conducting-at-idle diodes shunt the base node back to ~1.8 k, the coupling
+    // corner returns to ~900 Hz per clip stage, and the low E falls to −14.24 dB
+    // (measured on the pre-§53 build, which is exactly that circuit). Honest note on
+    // the transcript: in a full run testDcOperatingPoints' absolute clip-bias block
+    // aborts FIRST on the same perturbation, so the failure you see is that one — the
+    // −14.24 dB figure is read off the pre-§53 binary, not off the perturbed run.
+    // The bars here are player-stated (a fuzz must not be 6 dB down on the open low
+    // E), not derived from this netlist.
+    assert(gLowE - g1k > -6.0 &&
+           "the open low E (82.4 Hz) is more than 6 dB below 1 kHz through the Muff — "
+           "audit finding 16's bass defect is back. First suspect: the clip stages' "
+           "DC-blocking diode caps (Cdiode/C6/C7, docs §53), whose absence lets the "
+           "pair conduct at idle and shunt the base node");
+    assert(gA - g1k > -4.0 && "the open A (110 Hz) is more than 4 dB below 1 kHz");
+    assert(g60 - g1k > -12.0 && "60 Hz is more than 12 dB below 1 kHz");
 
     // This direction IS asserted, on both branches: the Muff is still a capacitor-coupled
     // circuit. If someone deletes the coupling caps or DC-couples a stage to chase the bass
@@ -561,9 +660,16 @@ void testIdleSolverCost() {
                 m.setParameter(MuffModel::PARAM_TONE, 0.5f);
                 m.setParameter(MuffModel::PARAM_VOLUME, 0.8f);
 
-                // A real signal first, so the stages are NOT sitting on their
-                // prepare-time park: this has to hold for a stage that fell quiet
-                // after being played, which is the case a player actually hears.
+                // A real signal, then silence — the case a player actually hears.
+                //
+                // CORRECTION, 2026-07-31 (docs §53): the comment that used to sit here
+                // claimed this covered "a stage that fell quiet after being played",
+                // and it did not — the assertion below reads the FRESH `probe` model,
+                // never `m`, so the played-then-quiet path was measured by nothing.
+                // That blind spot mattered: with the DC-blocked diode branch a stage
+                // that has been played does NOT return to a static fixed point, so it
+                // genuinely cannot report zero iterations. `m` is now asserted too,
+                // against a bar that says what is actually true — see below.
                 const auto pluck = sine(220.0, 0.3f, 0.15, fs);
                 std::vector<float> scratch(pluck.size(), 0.0f);
                 m.process(pluck.data(), scratch.data(), static_cast<int>(pluck.size()));
@@ -572,6 +678,22 @@ void testIdleSolverCost() {
                 const std::vector<float> quiet(static_cast<size_t>(fs * 0.5), 0.0f);
                 std::vector<float> out(quiet.size(), 0.0f);
                 m.process(quiet.data(), out.data(), static_cast<int>(quiet.size()));
+                for (int i = 0; i < 4; ++i) {
+                    const int iters = m.stage(i).lastMaxNewtonIterations();
+                    // A played-then-quiet clip stage is relaxing, not parked: its
+                    // 1 uF DC-block cap can only discharge through the diodes' own
+                    // leakage (2*Isd/nVt = 1.9e-7 S, so tau ~ 5 s), which is real
+                    // circuit behaviour and leaves a residual around 2e-11 A —
+                    // six decades above the early-out's 1e-17. Measured cost: 1.75
+                    // system evaluations per solve, against 1.00 fully parked and
+                    // the 31.00 of the pre-§34 pathology, with ZERO iterations
+                    // burning all 30 backtracks. The bar is set to catch that
+                    // pathology returning, not to pretend idle is free.
+                    assert(iters <= 20 &&
+                           "a Muff stage that fell quiet after being played is doing "
+                           "near-cap Newton work: the damped solve is stalling again "
+                           "(audit finding 12's shape, docs §34/§53)");
+                }
 
                 // Fresh high-water mark over the silent stretch only.
                 MuffModel probe;
@@ -613,11 +735,25 @@ void testIdleSolverCost() {
 // Doubled to ±20 V, and swept across oversampling factors, this immediately found
 // something the ±10 V single-factor version could not: six of sixteen rate x oversampling
 // combinations EXHAUSTED the cap (docs §34, XFAIL muff-slam-exhausts-newton-cap) — a
-// pre-existing defect, measured identical on the pre-early-out solver.
+// pre-existing defect, measured identical on the pre-early-out solver. §49's series base
+// resistors improved it to five of sixteen, and it stayed an XFAIL.
 //
-// That is FIXED as of this slice, as a side effect of the series base resistors: 0 of 16
-// now reach the cap, worst 18 of 60. The XFAIL is gone and the property is asserted
-// outright — see the note at the end of the function.
+// FIXED and ASSERTED OUTRIGHT as of 2026-07-31 (docs §53), by root-causing it rather
+// than by buying iterations. Traced at 48 kHz x4, a failing sample showed the step
+// vector pinned at exactly [-10, -10, ...] — the damped Newton's gross safety clamp,
+// which clips each COMPONENT to ±10 V. Clipping components rotates the step off the
+// Newton direction, and a rotated direction is not guaranteed to be a descent
+// direction for the residual norm, so every one of the 30 backtracks was rejected;
+// lam collapsed to 2^-30 while |lam.dx| stayed just above the 1e-9 step-size exit, and
+// the residual sat frozen at 2.487e-3 A for all 60 iterations. The stage was not
+// diverging, it was standing still. The 4-node path SCALES the direction to the same
+// 10 V bound instead (Sys4::limitStep), which keeps a true Newton direction, and the
+// ledger went 5 of 16 at the cap -> 0 of 16, worst 18 of 60.
+//
+// The 3-node path still clips component-wise, deliberately — see the note at the top
+// of this file. That is why this suite's worst count is 18 rather than 16: Q1 and Q4
+// are 3-node stages. They no longer reach the cap because the clip stages ahead of
+// them no longer blow up.
 void testSlamConvergence() {
     int worst = 0;
     double worstFs = 0.0;
@@ -664,17 +800,75 @@ void testSlamConvergence() {
             ++checked;
         }
     }
-    std::printf("  [ok] ±20 V slam: finite + bounded, iterations <= cap, across %d "
-                "rate x oversampling combinations (worst %d/%d @ %.0f Hz x%d; %d at "
-                "the cap)\n",
-                checked, worst, BjtStage::kMaxNewtonIter, worstFs, worstOs, atCap);
+    // CONVERGENCE, asserted — not "finite and bounded", which a stalled solver also
+    // satisfies. Reaching the cap means the solve never converged, so the audio at
+    // those samples is not the circuit's answer. Measured worst 18 of 60, a 3.3x
+    // margin, at every rate x oversampling. Perturbation-proven: give Sys4::limitStep
+    // the 3-node component clamp instead of the direction-preserving scale and all 16
+    // combinations sit at 60. Do NOT raise kMaxNewtonIter to satisfy this — that buys
+    // iterations, not convergence, and the stalled solve does not use them anyway.
+    assert(atCap == 0 &&
+           "a ±20 V slam exhausts the damped Newton's iteration cap: the solve is not "
+           "converging (docs §53). Check Sys4::limitStep — component-wise step "
+           "clipping rotates the direction and the line search then cannot succeed");
+    assert(worst < BjtStage::kMaxNewtonIter && "slam did not converge inside the cap");
+    std::printf("  [ok] ±20 V slam: CONVERGED strictly inside the cap across %d "
+                "rate x oversampling combinations (worst %d/%d @ %.0f Hz x%d)\n",
+                checked, worst, BjtStage::kMaxNewtonIter, worstFs, worstOs);
+}
 
-    char detail[256];
-    std::snprintf(detail, sizeof detail,
-                  "%d of %d rate x oversampling combinations exhaust the cap "
-                  "(worst %d of %d iterations, i.e. NOT converged) at %.0f Hz x%d",
-                  atCap, checked, worst, BjtStage::kMaxNewtonIter, worstFs, worstOs);
-    clipper::test::expectXfail(worst < BjtStage::kMaxNewtonIter, kXfSlamIterCap, detail);
+// --- Test 7c: the SOLVER's slam convergence, at the stage where it lives. ------
+//
+// testSlamConvergence above drives the whole pedal, which is the player-facing
+// version — but it can no longer prove the globalization on its own, and that is
+// worth knowing rather than assuming. Since docs §53 un-fitted kClipDriveMax from
+// 6.0 to the pot's physical 1.0, a ±20 V slam at the pedal's input reaches Q2's
+// base six times smaller, well short of the region where the damped Newton's step
+// limiting decides anything: swapping Sys4::limitStep back to component-wise
+// clipping leaves the whole-pedal test GREEN. Measured, not assumed — that
+// perturbation was run and it passed, which is exactly the "test with no teeth"
+// this file is supposed to avoid.
+//
+// So the property is asserted where it belongs: on a clip-configured BjtStage
+// driven directly at ±20 V, the way a runaway upstream stage could drive it. With
+// direction-preserving scaling every rate x oversampling converges in <= 17 of 60
+// iterations; with component-wise clipping ALL SIXTEEN sit at the cap.
+void testStageSlamConvergence() {
+    BjtStage::Config clip;
+    clip.diodes.present = true;
+    clip.Rs = 10.0e3;
+    clip.Rbg = 100.0e3;
+    clip.Cdiode = 1.0e-6;
+    int worst = 0, atCap = 0, checked = 0;
+    double worstRate = 0.0;
+    for (double base : {44100.0, 48000.0, 88200.0, 96000.0}) {
+        for (int os : {1, 2, 4, 8}) {
+            const double rate = base * os;
+            BjtStage s;
+            s.configure(clip);
+            s.prepare(rate);
+            const int n = static_cast<int>(rate * 0.05);
+            for (int i = 0; i < n; ++i) {
+                const float o = s.processSample((i % 3) ? 20.0f : -20.0f);
+                assert(std::isfinite(o) && "non-finite stage output on a ±20 V slam");
+                assert(std::fabs(o) < 100.0 && "stage output unbounded on a ±20 V slam");
+            }
+            const int it = s.lastMaxNewtonIterations();
+            assert(it > 0 && "the stage never saw the slam — test plumbing broken");
+            if (it >= BjtStage::kMaxNewtonIter) ++atCap;
+            worst = std::max(worst, it);
+            if (it == worst) worstRate = rate;
+            ++checked;
+        }
+    }
+    assert(atCap == 0 &&
+           "a DC-blocked clip stage does not converge on a ±20 V slam. Sys4::limitStep "
+           "must SCALE the Newton direction, not clip its components — clipping "
+           "rotates the direction, the line search then cannot find a decrease, and "
+           "the solve stands still for the whole iteration cap (docs §53)");
+    std::printf("  [ok] BjtStage ±20 V slam (DC-blocked clip config): converged at %d of "
+                "%d rates, worst %d/%d @ %.0f Hz\n",
+                checked - atCap, checked, worst, BjtStage::kMaxNewtonIter, worstRate);
 }
 
 // --- Test 7: stability + hygiene (finite, silence->silence, deterministic). ----
@@ -740,26 +934,26 @@ void testStabilityHygiene() {
     std::printf("  [ok] hygiene: finite grid, silence->silence, deterministic\n");
 }
 
-// Known defects this binary exercises under XFAIL. Printed by --xfail-ledger, which ctest
-// surfaces as ***Skipped in its default summary (see core/CMakeLists.txt).
-//
-// kXfMuffDc is GONE: this slice fixes the DC half of finding 16 and asserts it for real.
-// The bass half and the slam cap remain, and both are fixed by the series-base-resistor
-// slice — kXfSlamIterCap as a side effect.
-const clipper::test::XfailDecl kLedger[] = {kXfMuffBass, kXfSlamIterCap};
+// ZERO known-bad properties as of 2026-07-31 (docs §53), so the --xfail-ledger
+// registration is REMOVED from core/CMakeLists.txt in the same slice. Leaving it
+// registered with an empty ledger would make `ctest` report the entry as Passed
+// rather than ***Skipped — a line that advertises open defects, silently reduced to
+// a duplicate test run (the same failure shape ADR 009 recorded when this call was
+// deleted instead). kXfMuffDc went in §37, kXfMuffBass and kXfSlamIterCap here.
 
 }  // namespace
 
 int main(int argc, char** argv) {
     clipper::test::requireAssertsLive();
-    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
-                                                 sizeof kLedger / sizeof kLedger[0],
+    const int ledger = clipper::test::ledgerMain(argc, argv, nullptr, 0,
                                                  "clipper_muff_tests");
     if (ledger >= 0) return ledger;
 
     std::printf("Running clipper::dsp::MuffModel tests (v1.1 item 4 — the fuzz + BjtStage)...\n");
     testDcOperatingPoints(44100.0);
     testDcOperatingPoints(96000.0);
+    testDiodeBranchIsDcBlocked(44100.0);
+    testDiodeBranchIsDcBlocked(96000.0);
     testMidScoop(44100.0);
     testMidScoop(96000.0);
     testSustainRange(44100.0);
@@ -778,8 +972,9 @@ int main(int argc, char** argv) {
     testVolumeLinearity();
     testStabilityHygiene();
     testSlamConvergence();
+    testStageSlamConvergence();
     testIdleSolverCost();
-    std::printf("All MuffModel tests passed (XFAILs listed below are known open defects, "
-                "not regressions).\n");
+    std::printf("All MuffModel tests passed. This suite has ZERO known-bad properties "
+                "as of docs §53.\n");
     return clipper::test::reportXfails();
 }

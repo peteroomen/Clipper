@@ -8342,6 +8342,274 @@ so the web "transparent at min gain" spec is untouched by construction too. Deli
 tone change at every other knob position, argued against the schematic and shipped
 unfitted, with the gap reported above.
 
+## 53. The Muff clip stages' DC-blocked diode branch — the 4th Newton node
+
+*Date: 2026-07-31 · Branch: `claude/muff-dc-diodes-6f557i` · ADR 009's named follow-up: audit finding 16's remaining half, and the owner's "much much better. It's still a little gutless, it doesn't scream through either now."*
+
+§49 gave the clip stages their series base resistors and closed the max-sustain blowout,
+but left the bass 14 dB down and the XFAIL `finding16-muff-almost-no-bass` open, re-owned
+to this slice by name. The residual had one cause, and it was a missing component rather
+than a wrong constant.
+
+### 53.1 The component, and the reference
+
+Published Big Muff clip stage (ElectroSmash *Big Muff Pi Analysis*; guitarscience.net
+*A Case Study: Re-engineering the Big Muff π*, which works the same network):
+
+| designator | value | role | in this model |
+|---|---|---|---|
+| RS | 10 k | series base resistor | `Config::Rs`, landed §49 |
+| RA | 100 k | base-to-ground bias | `Config::Rbg`, **used here** |
+| RF | 470 k | collector-base feedback | already present |
+| RC | 10 k | collector load | already present |
+| **C6 / C7** | **1 µF** | **in series with the feedback diode pair** | **`Config::Cdiode`, new** |
+| — | 470 pF | Miller cap across RF | already present |
+| — | 100 nF | input coupling | already present |
+
+The published base-network impedance is **RB = RS//RA//RF = 10k//100k//470k = 8.9 k**.
+This model measured **~1.8 k**, and ADR 009 refused to pick a compromise resistor value
+against that discrepancy — it sent the question here instead.
+
+**C6/C7 are the whole answer.** They keep the diodes out of the DC network. Without them
+the branch carries DC: the idle collector-base voltage clears the diode knee, so the pair
+**conducts at idle** and clamps the collector 0.26 V above the base. That did two things,
+and the model had been documenting the first of them as canon:
+
+* it destroyed the stage's headroom (`BjtStage.h` said "a Big-Muff-family stage has almost
+  no clean headroom and clips essentially always" — an artifact, not a fact), and
+* it shunted the base node to ~1.8 k, putting each clip stage's **input coupling corner at
+  ~900 Hz** — which is audit finding 16's missing bass, both halves of it in one mechanism.
+
+`Config::Rbg` is the resistor §49 plumbed and deliberately left unused, because it only
+parks the stage deeper in the knee while the diodes are still shorting the base at DC. It
+is **used, not superseded**: RA and C6/C7 are one decision and land together.
+
+### 53.2 The 4-node solve
+
+`BjtStage` gains a fourth unknown, Vd — the junction between the cap and the diode pair:
+
+```
+    Vc ──┤ Cd ├── Vd ──(D± pair)── Vb
+
+    Icd = gCd·(Vc−Vd) − gCd·vCd      backward-Euler companion, vCd = Vc − Vd
+    Id  = 2·Isd·sinh((Vd−Vb)/nVt)    the pair, now referenced to Vd
+
+    r1 (base)      = … + Id(Vd−Vb) − Ib
+    r2 (collector) = … − Ic − Icd
+    r3 (emitter)   = Ie − Ve/Re
+    r4 (node d)    = Icd − Id(Vd−Vb)
+```
+
+Jacobian columns become (Vb, Vc, Ve, Vd); the diode partials move to ∂/∂Vb = −gd and
+∂/∂Vd = +gd, and gCd fills the (collector, d) block. The 4×4 is solved by Gaussian
+elimination with **partial pivoting** rather than Cramer, because gd spans ~20 decades
+between off and slammed.
+
+At DC the cap is open, so r4 degenerates to −Id(Vd−Vb) = 0 — i.e. **Vd = Vb with zero
+branch current**. The row is never singular (gd = Isd/nVt·(eˣ+e⁻ˣ) > 0 everywhere). So the
+DC solve finds the diodes OFF and the stage biases on RF + RA alone.
+
+**`Cdiode == 0` keeps the 3-node path, bit-identically.** Both systems are instantiations
+of one templated damped Newton, so the globalization, the residual early-out and the
+iteration accounting cannot drift apart, while `Sys::eval` + `solve3x3` + `infNorm3` are
+frozen byte-for-byte. Proof: 15 digests (5 rates × 3 stage shapes — no-diodes Q1/Q4,
+DC-coupled diodes + Rs, DC-coupled diodes bare) compared against the pre-slice
+header+library, **identical including the Newton iteration counts**; and the whole
+`MuffModel` at 10 configurations (4 knob settings + ragged 44.1/96 kHz × 1/2/8 oversampling)
+identical before the branch was switched on.
+
+### 53.3 The step-limiting defect this uncovered — and the slam ledger
+
+Switching the branch on took the ±20 V slam ledger from 5 of 16 combinations at the Newton
+cap to **7 of 16**, which is the wrong direction. Traced rather than tuned. A failing
+sample at 48 kHz × 4:
+
+```
+it= 2 cur=2.717e-03 lam=0.03125 dx=[-6.15e+00  1.00e+01 -3.42e-01  1.00e+01]
+it= 3 cur=2.487e-03 lam=0.00000 dx=[-1.00e+01 -1.00e+01  8.62e-01 -1.00e+01]
+it= 4 … 59 identical, cur frozen at 2.487e-03
+```
+
+The step vector is pinned at the damped Newton's **gross safety clamp**, which clips each
+**component** to ±10 V. Clipping components rotates the step off the Newton direction, and
+a rotated direction is not guaranteed to be a descent direction for the residual norm — so
+every one of the 30 backtracks was rejected, `lam` collapsed to 2⁻³⁰ while |lam·dx| stayed
+just above the 1e-9 step-size exit, and the solve **stood still** for the whole cap. It was
+never diverging.
+
+The 4-node path therefore **scales** the direction to the same 10 V bound instead
+(`Sys4::limitStep`). Same magnitude, direction preserved:
+
+| ±20 V slam, worst Newton iterations of 60, all 16 rate × oversampling | result |
+|---|---|
+| component clamp (the 3-node rule) | **60 at 16 of 16** — not converged |
+| direction-preserving scale | **16 at 16 of 16** — converged |
+
+Amplitude sweep at 48 kHz × 4 with scaling: 1 V=10, 5 V=14, 10 V=14, 20 V=16, 30 V=17 — it
+degrades gracefully instead of falling off a cliff.
+
+Whole-pedal ledger: **5 of 16 at the cap → 0 of 16, worst 18 of 60**. The XFAIL
+`muff-slam-exhausts-newton-cap` XPASSed, is deleted, and the property is asserted outright.
+
+**The 3-node path still clips component-wise, deliberately.** Fixing it there would move
+every existing `BjtStage` user's audio, and bit-identity is this slice's contract. It is a
+named, measured follow-up.
+
+**A test that had no teeth, found by checking:** the whole-pedal slam test can no longer
+prove the globalization, because §53 also un-fits `kClipDriveMax` (below) and a ±20 V slam
+at the pedal input now reaches Q2's base six times smaller. Swapping `Sys4::limitStep` back
+to component clipping leaves that test GREEN. So the property is asserted where it lives —
+`testStageSlamConvergence` drives a clip-configured `BjtStage` directly.
+
+### 53.4 The constants that came off, not on
+
+**`kClipDriveMax` 6.0 → 1.0.** A real SUSTAIN is a 100 kA pot wired as a passive divider
+between Q1's coupling cap and Q2's 10 k series base resistor: at the top of its travel it
+passes Q1's output through, and it can never pass **more**. 6× was 15.6 dB of gain no pot
+can provide, and it existed to slam clip stages that had no headroom. With the branch
+blocked each stage biases at Vc = 4.95 V and makes its real ~28 dB (Rc//Rf / Re =
+9.8 k / 390, against the reference's ~29 dB theoretical / ~25 dB measured), so the
+compensation comes off. This is CLAUDE.md's rule applied in the direction it usually is
+not: the error was found, so the constant fitted around it goes back to the physical value
+rather than being re-tuned. At the shipped default the voice barely notices (6.0 gives
+−4.5 dBFS / 36 % THD, 1.0 gives −4.8 / 33 %) because the diodes set the level, not the
+drive; what it buys is the bottom of the knob.
+
+**`kSustainMinDb` −70 → −65**, re-derived against the *same* §43 player bar (knob ~0.15 at
+a 0.1 V pluck is a tame fuzz — §49 measured 10.7 % THD there). Sweep at 220 Hz / 0.1 V /
+48 kHz:
+
+| floor | THD @ 0.15 | dB below the wall |
+|---|---|---|
+| −54 | 20.2 % | 3.0 |
+| −60 | 14.9 % | 4.3 |
+| −62 | 12.9 % | 4.8 |
+| **−65** | **9.8 %** | **5.8** |
+| −70 | 3.8 % | 8.0 |
+
+### 53.5 Measured results
+
+Operating point, Q2/Q3 (48 kHz × 4), before → after:
+
+| | before | after | published |
+|---|---|---|---|
+| Vc | 1.213 V | **4.946 V** | low-to-mid volts off 9 V |
+| Vc − Vb | 0.261 V | **4.160 V** | — |
+| Ic | 0.777 mA | **0.397 mA** | ~0.4 mA |
+| idle diode current | conducting | **0.00e+00 A** | zero (C6/C7) |
+
+Small-signal response re 1 kHz (SUSTAIN 0.15, 0.002 V, 48 kHz):
+
+| Hz | 30 | 41.2 | 60 | **82.4** | 110 | 220 | 440 | 1000 | 4000 |
+|---|---|---|---|---|---|---|---|---|---|
+| before | −42.87 | −32.61 | −21.83 | **−14.24** | −8.74 | −1.07 | +0.74 | 0.00 | +1.32 |
+| after | −29.36 | −20.11 | −11.13 | **−5.48** | −1.87 | +2.21 | +2.28 | 0.00 | −7.83 |
+
+The low E clears its −6 dB bar for the first time (audit finding 16 filed it at −41.14 dB;
+§49 got it to −14.24). 30 Hz is still rejected at −29 dB, so the pedal is still a coupled
+circuit. The 4 kHz column going −7.83 is the 470 pF Miller caps finally working against a
+real base-node impedance.
+
+Level / THD (220 Hz, 0.1 V, TONE 0.5 / VOLUME 0.6, 48 kHz):
+
+| knob | before | after |
+|---|---|---|
+| 0.00 | −38.1 dBFS / 2.6 % | −18.7 / 0.4 % |
+| 0.15 | −24.9 / 11.9 % | −10.2 / 9.8 % |
+| 0.60 (default) | −4.6 / 36.6 % | −4.8 / 33.1 % |
+| 1.00 | −4.6 / 40.8 % | −4.3 / 37.6 % |
+
+The wall stayed a wall **and** stayed articulate: SUSTAIN 0.7 spread across a 20 dB input
+sweep 0.09 → 0.40 dB, max-sustain THD 40.8 → 37.6 % (nowhere near the pre-§49 150 %).
+
+**The "scream" proxy** — an exponentially decaying 0.30 V pluck (τ = 0.6 s), time for the
+output fundamental to fall 20 dB below its own peak, minus the input's own 1.400 s:
+
+| | 110 Hz | 220 Hz |
+|---|---|---|
+| SUSTAIN 0.6, before → after | +1.375 s → **+2.575 s** | +1.775 s → **+2.700 s** |
+| SUSTAIN 1.0, before → after | +2.875 s → **+4.050 s** | +3.275 s → **+4.175 s** |
+
+The note is held roughly a second longer at every setting: the stages now have a bias to
+clip around, so they keep clamping the fundamental long after it used to fall away.
+
+Other ledgers: aliasing 4× at max sustain −116.1 dB (bar −60); DC on signal 0.00003 % of
+peak (bar 1 %); hum-alone at min sustain −51.9 dBFS, 41.8 dB below max; tube-solver
+production-vs-reference worst **−126.4 dBFS** (gate −120), so the §34 accuracy trade still
+holds on the 4-node solve; the idle residual ceiling on the 4-node path measures
+**7.05e-19 A** against the 3-node's 2.06e-18, so the 1e-17 early-out has *more* margin
+(14.2× rather than 4.9×), and a fully parked stage still does **0** Newton iterations
+across all 48 rate × oversampling × sustain combinations.
+
+### 53.6 The CPU cost, and the honest part of it
+
+**This slice is expensive.** Interleaved same-machine A/B, `clipper-bench`, muff row:
+
+| | before | after |
+|---|---|---|
+| pass 1 | 5.62× realtime / 17.79 % of a stream | 3.34× / 29.94 % |
+| pass 2 | 5.63× / 17.76 % | 3.21× / 31.15 % |
+
+`denormal_bench` section 2, per 10 s: signal 1734 → 3095 ms, **silence 382 → 3728 ms**.
+The hwFTZ column tracks it exactly (3139 / 3771 ms) and subnormal outputs stay 0, so this
+is **not** a denormal cliff — §33's rule applied.
+
+The silence figure needs saying plainly, because it partially undoes §34's headline. A
+played-then-quiet clip stage is **no longer at a static fixed point**: its 1 µF DC-block cap
+can only discharge through the diodes' own leakage (2·Isd/nVt = 1.9e-7 S, τ ≈ 5 s), which is
+what the real circuit does, and it leaves a residual around **2e-11 A** — six decades above
+the early-out's 1e-17, so the early-out cannot fire while it relaxes. Measured cost:
+**1.75 system evaluations per solve** against 1.00 fully parked, with **0.00 %** of
+iterations burning all 30 backtracks. So audit finding 12's *pathology* (31.00 evals) has
+not returned; what has gone is the claim that idle is free.
+
+**A blind spot this exposed:** `testIdleSolverCost` carried a comment saying it covered "a
+stage that fell quiet after being played", and it did not — the assertion read the fresh
+`probe` model and never `m`. The played-then-quiet path was measured by nothing. It is
+asserted now, against a bar that says what is true rather than what would be nice.
+
+Named follow-up for the cost: the 4×4 has real structure (J[2][3] = J[3][2] = 0, and the
+emitter row does not see Vd), so a specialised solve or a Schur complement onto the
+existing 3-node system should recover most of the per-sample overhead. Not attempted here —
+it is a perf slice with its own bit-identity bar.
+
+### 53.7 Tests, XFAILs and the golden
+
+`clipper_muff_tests` now has **ZERO** known-bad properties, so its `--xfail-ledger`
+registration is removed from `core/CMakeLists.txt` in the same slice (leaving it would
+report Passed instead of `***Skipped` — the same "guard that looks present and does
+nothing" shape ADR 009 recorded). Core ctest entries 25 → 24; repo XFAIL ledgers 4 → 3.
+
+New/changed tests: `testDiodeBranchIsDcBlocked` (Vd − Vb = 0 and idle diode current
+0 A — the property C6/C7 exist for); an **absolute** clip-stage bias block in
+`testDcOperatingPoints`, deliberately not derived from this netlist; `analyticBias` extended
+with Rbg and with the DC-blocked branch leaving the DC system; `testStageSlamConvergence`;
+the played-then-quiet assertion in `testIdleSolverCost`; and the honest re-derivation of the
+§43 level bar (15 dB → 4 dB) with its reason in the code — on the corrected circuit the
+diodes clamp Q2/Q3's output near 0.65 V at any drive, so the knob governs saturation far
+more than level, which is what a Big Muff does.
+
+Perturbation transcript (each patched, rebuilt with `touch` after **both** patch and
+restore, run, reverted):
+
+| perturbation | result |
+|---|---|
+| delete `clip.Cdiode` (mirrored in the test netlist) | RED — clip-stage bias bar (Vc 1.213 V) |
+| `Sys4::limitStep` clips components instead of scaling | RED — `testStageSlamConvergence`, 16 of 16 at the cap |
+| `kSustainMinDb = −54` | RED — SUSTAIN 0.15 THD bar (20.2 %) |
+| `kClipDriveMax = 6.0` | RED — SUSTAIN 0.15 THD bar (23.6 %) |
+| delete `clip.Rbg` (mirrored in the test netlist) | RED — clip-stage bias bar |
+
+**Golden:** `muff_twin` moves **−1.09 dB RMS / 13.18 dB worst band @ 252 Hz** (13 bands) —
+the bass coming back at the default sustain, which is the change. The other four are
+UNCHANGED (`rat_jcm800` +0.00, `sd1_twin_reverb` +0.00 / 0.02 dB, `ts_ac30` +0.00,
+`clean120_chorus` −0.00 / 0.11 dB) — the scope check. **NOT blessed by this slice**, so
+`clipper_player_expectations_tests` fails on this branch until a human blesses it; that is
+the intended end state, and core ctest is red at exactly that one gate and nowhere else.
+Playwright is 71/71 green with no probe re-derivation, and the node + electron suites pass.
+
+**The WASM artifact was rebuilt** (`core/` changed) — all three files in the same commit.
+
 ## 54. The GOLD clipping stage — the three defects §52 named, fixed against the reference netlist
 
 *Date: 2026-07-31 · Branch: `claude/gold-fidelity-6f557i` (stacked on `claude/gold-summing-6f557i`) · owner decision on §52's honesty gate: "full fidelity slice"*

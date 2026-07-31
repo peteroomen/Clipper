@@ -46,6 +46,22 @@ All five: 2.0 s standard pluck, 16-bit mono 48 kHz.
 ## 2026-07-31 — 1 golden(s) re-blessed
 
 - **Blessed by:** Claude
+- **On top of:** `9cf36cf` Merge remote-tracking branch 'origin/main' into claude/muff-dc-diodes-6f557i
+
+| Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |
+| --- | --- | --- | --- | --- |
+| `muff_twin` | CHANGED | -1.09 dB | 13.18 dB @ 252 Hz | 13 |
+| `rat_jcm800` | UNCHANGED | +0.00 dB | 0.00 dB @ 252 Hz | 12 |
+| `sd1_twin_reverb` | UNCHANGED | +0.00 dB | 0.02 dB @ 3200 Hz | 12 |
+| `ts_ac30` | UNCHANGED | +0.00 dB | 0.00 dB @ 2016 Hz | 8 |
+| `clean120_chorus` | UNCHANGED | -0.00 dB | 0.11 dB @ 252 Hz | 7 |
+
+**Justification:** The Muff clip stages' DC-blocked diode branch (docs §53, ADR 010 — ADR 009's named follow-up): the real pedal's 1 µF caps in series with each feedback diode pair, as a 4th Newton node. The diodes stop DC-loading the base (clip bias Vc 1.21 → 4.95 V, collector current at the published ~0.4 mA), so the bass the loading ate comes back: low E −14.2 → −5.5 dB re 1 kHz. The golden's 13.18 dB worst band at 252 Hz IS that bass returning to the default-sustain render — the intended fidelity change, not a drift; broadband only −1.09 dB. The other four goldens are UNCHANGED (the 3-node bit-identity contract, digest-verified — RAT/GOLD/SD/TS untouched). Owner authorized on 2026-07-31 ("merge … when it's all landed", following the presented measurements); same hand-run ritual as the other 2026-07-31 entries (no /dev/tty — table verified via --golden-report before --update-goldens).
+
+
+## 2026-07-31 — 1 golden(s) re-blessed
+
+- **Blessed by:** Claude
 - **On top of:** `bed7722` fix: re-derive the JCM800 GAIN pot taper so breakup lands at 30, not 20
 
 | Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |
