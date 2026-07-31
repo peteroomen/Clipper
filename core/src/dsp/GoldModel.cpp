@@ -18,6 +18,23 @@
 // marked as an approximation below. Where the paper's own values differ, this file
 // should be corrected against it — the topology, not the digits, is the claim.
 //
+// 2026-07-31 UPDATE (docs §52, then §54): the reference IS reachable after all —
+// not at arxiv.org, but as the author's own implementation,
+// github.com/jatinchowdhury18/KlonCentaur, which carries the section-by-section
+// netlist in ChowCentaur/GainStageProcessors/*.{h,cpp} plus the DAFx-19 paper
+// sources and the ElectroSmash schematic figures in Paper/. §52 took the summing
+// network from it; §54 takes the three things §52 measured as still wrong — the
+// diode fit + R13, the R20 || C13 summing pole, and the drive amp's C7/C8 network.
+// The netlist files this file now quotes, by name:
+//   ClippingStage.h  : R13 = 1 k, C9 = C10 = 1 uF, `ResVs Vbias { 47000.0 }` (R16),
+//                      `CustomDiodePairT<double, ...> D23 { 15e-6, 0.02585, P1 }`
+//   AmpStage.h       : R11 = 15 k, R12 = 422 k, C7 = 82 nF, C8 = 390 pF,
+//                      `newR10b = (1 - gain) * 100000 + 2000`
+//   SummingAmp.h     : R20 = 392 k, C13 = 820 pF, H(s) = R20 / (1 + s*C13*R20)
+//   PreAmpStage.h    : C3 = 0.1 uF, C5 = 68 nF, C16 = 1 uF, R6 = 10 k, R7 = 1.5 k,
+//                      Vbias2 = 15 k (the FF1 summing resistor), gang-1 = g*100 k
+//   FeedForward2.h   : the FF2 clean-treble network (R15 22 k, C11 2.2 n, ...)
+//
 // Reference level convention (model-wide): input float 1.0f == 1.0 V. A hot
 // humbucker DI peaks near 0.3 V.
 //
@@ -60,8 +77,23 @@
 //     END-LOADED (half the dB range in the last quarter-turn). The pre-§50 law
 //     (1 + g·100k/1.5k, to 67.7x linear) put the real knob-0.99 drive at the 0.35
 //     default — docs §50 has the full model-vs-real table.
-//     Note the minimum is EXACTLY unity — unlike the TS family (which grinds even
-//     at DRIVE 0), this pedal has an honestly clean setting.
+//     THAT LAW IS NOW THE DC LIMIT OF A REAL NETWORK, NOT A SCALAR (docs §54).
+//     The drive amp is a non-inverting op-amp stage whose ground leg is
+//     R10b = (1-g)·100k + 2k in SERIES with R11 = 15 k, with C7 = 82 nF ACROSS
+//     R10b and C8 = 390 pF across the feedback R12 = 422 k. So its gain is
+//     frequency- AND knob-dependent: C7 progressively shorts out R10b above
+//     1/(2*pi*R10b*C7), which at the wide-open end (R10b = 2 k) sits at 970 Hz and
+//     at the closed end (102 k) at 19 Hz. Measured on the network: at g = 1 the
+//     stage delivers 25.8x at DC but 47.6x at 220 Hz and 100.5x at 1 kHz; at
+//     g = 0.35, 6.15x / 6.78x / 5.12x. The model held a flat A(g) until 2026-07-31,
+//     i.e. it was COLDER than the real pedal wherever the knob was up — which is
+//     the third of the three defects docs §52 named. `AmpStageNetwork` below is
+//     that network, bilinear-transformed, and its DC gain is A(g) BY CONSTRUCTION
+//     (the leg resistance is recovered from the smoothed A, see the struct), so
+//     §50's law survives as an identity rather than as a second copy.
+//     Note the DC minimum is EXACTLY 4.61x and the law is monotone — unlike the TS
+//     family this pedal still has an honestly clean setting, because the dirt's
+//     summing weight fades to zero at GAIN 0 (the contract below).
 //   * HP(x) — the drive path is high-passed BEFORE the clipper:
 //       f_hp = 1/(2*pi*R*C) = 1/(2*pi*15 kOhm * 0.1 uF) ~= 106 Hz.
 //     The low end therefore reaches the summing node ONLY through the clean half.
@@ -72,24 +104,70 @@
 //     this op-amp adds no audible softening; it is present for honesty, stability
 //     and antialiasing. Reuses the house op-amp model (LM308Stage.h — the class is
 //     named for its first user, but it is a generic GBW+slew op-amp).
-//   * The GERMANIUM clipper (WDF, chowdsp_wdf). Antiparallel 1N34A-class pair,
-//     driven through the stage's output/feedback resistance and shunted by the
-//     stage's small cap — the library's canonical resistive-source || cap -> diode
-//     root, exactly as RatModel builds its silicon clipper:
-//       kRs = 2.2 kOhm, kCp = 4.7 nF  (HF corner 1/(2*pi*Rs*Cp) ~= 15.4 kHz)
-//       Germanium: Is = 200 nA, ideality n = 1.3, Vt = 25.85 mV
-//                  -> knee ~ n*Vt*ln(I/Is) = 0.29 V at 1 mA (a point-contact Ge
-//                     diode; roughly HALF the silicon 0.6 V and, far more audibly,
-//                     a MUCH softer knee: it starts bending decades of current
-//                     earlier, which is the germanium "bloom").
+//   * The GERMANIUM clipper (WDF, chowdsp_wdf). Antiparallel 1N34A-class pair at
+//     the schematic's own node: driven through R13 and loaded by the summing
+//     resistor R16, with a small shunt cap — the library's canonical
+//     resistive-source || resistor || cap -> diode root:
+//       kR13Ohms = 1 kOhm   the series source resistance (schematic R13)
+//       kDirtSumROhms = 47 kOhm  the SAME R16 whose transimpedance sets the dirt's
+//                          summing weight below, here as the node's shunt load —
+//                          in the real stage the diode node reaches the summing
+//                          amp's virtual ground through C10 (a 3.4 Hz HP) and R16,
+//                          so R16 loads the node AND carries the dirt current, and
+//                          the reference implementation models it exactly that way
+//                          (ClippingStage.h: `ResVs Vbias { 47000.0 }`).
+//       kCp = 4.7 nF       RETAINED APPROXIMATION, not in the reference netlist.
+//                          With the Thevenin source now R13 || R16 = 979 Ohm its
+//                          corner is 1/(2*pi*979*4.7n) ~= 34.6 kHz — out of band,
+//                          a band-limiting guard-rail ahead of the decimator. The
+//                          reference's own HF limit is C8 = 390 pF in the drive amp,
+//                          which THIS model now carries exactly (see the amp stage
+//                          below), so keeping Cp is a small extra rolloff, not a
+//                          stand-in for a missing one.
+//       Germanium: Is = 15 uA, Vt = 25.85 mV, ideality n = 1.0
+//                  -> knee ~ n*Vt*ln(I/Is) = 0.109 V at 1 mA.
+//     WHERE THAT PAIR OF NUMBERS COMES FROM, AND WHY IT SUPERSEDES THE DATASHEET
+//     ONES (docs §54): until 2026-07-31 this file carried Is = 200 nA, n = 1.3, a
+//     datasheet-shaped guess for "a point-contact germanium diode", giving a
+//     0.286 V knee behind Rs = 2.2 kOhm. Measured against the reference
+//     implementation's clipping stage — whose diode parameters are FITTED TO A REAL
+//     KLON's measured clipper, not to a datasheet — that node ran 5.7 to 8.5 dB HOT
+//     across a 0.05..20 V drive sweep (2.0x to 2.7x in voltage). A fit to the actual
+//     device beats a datasheet-shaped guess for THIS pedal, so the reference's pair
+//     is now what ships. Note what did NOT change: §36's finding was that the
+//     SILICON counterfactual had its ideality dropped to 1.0 and was therefore not
+//     a 1N4148 at all; that fix stands (kSiIdeality = 1.752 below), and the
+//     germanium-vs-silicon CONTRAST is still a real, asserted property — it is
+//     simply re-derived against the corrected germanium (docs §54.4).
 //       The ideality factor is carried through the library's nDiodes multiplier,
-//       which scales Vt (Vt_eff = n*Vt = 33.6 mV) — the same arithmetic.
+//       which scales Vt (Vt_eff = n*Vt) — the same arithmetic.
 //     DIODE_SILICON (1N914/1N4148-class, Is = 2.52 nA, n = 1.752 — the SPICE model
 //     card's own pair of numbers) is a MEASUREMENT-ONLY counterfactual so the tests
 //     can show the knee difference, never a user knob. Measured contrast in this
 //     network: silicon clips ~5.5-6.3 dB above germanium. It shipped at n = 1.0
 //     until 2026-07-25, where the contrast measured ~0.6-1.7 dB and the A/B was
 //     therefore worthless (audit finding 15; docs §36, ADR 008).
+//   * THE SUMMING POLE (R20 || C13 = 392 kOhm || 820 pF = 495 Hz), docs §54.
+//     The summing amp is a transimpedance stage (see the summing-network block
+//     below) and C13 sits across its feedback resistor, so the whole sum is
+//     one-pole low-passed at 495 Hz. That pole is the single largest reason a
+//     clipped Klon reads CREAMY rather than bright: it attenuates the clipper's
+//     harmonics far harder than the fundamental (-0.8 dB at 220 Hz, -7.1 dB at
+//     1 kHz, -15.8 dB at 3 kHz), and the tone stage after it puts the top back.
+//     WHERE IT IS APPLIED HERE, AND WHY THAT IS NOT A SHORTCUT: in the real stage
+//     the pole sits on the SUM, i.e. on the clean feed too. This model has
+//     idealized the COMPOSED clean path as flat (kSumGain = 2.0) since §27 — the
+//     real composed clean path is R20*G_clean*|pole|, which measures 2.25 at 82 Hz
+//     falling to 0.76 at 1 kHz, so "flat 2.0" was always an idealization of a
+//     shaped path, and the GAIN-0 transparency contract is built on it. Applying
+//     the pole to the DIRT branch only is exactly that same idealization carried
+//     one stage further: algebraically it is
+//         LP(clean_feed*LP^-1 + dirt)  ==  clean_feed + LP(dirt),
+//     i.e. the clean feed is pre-emphasized by the pole's inverse so the composed
+//     clean path stays the flat 2.0 it already was, while the DIRT path becomes
+//     EXACTLY the real composed dirt transfer LP(f)*(R20/R16)*V_node(f). The dirt
+//     side gets strictly MORE faithful; the clean side is unchanged, bit for bit,
+//     which is what keeps GAIN 0 bit-exact (render hashes in docs §54.5). ADR 016.
 //   * The charge pump. The real pedal generates a negative rail so its op-amps run
 //     on ~+/-9 V instead of a single 9 V supply. Here that is a HEADROOM statement:
 //     the summing node carries an explicit +/-kRailVolts clamp which, at guitar
@@ -226,35 +304,69 @@ constexpr double kDirtSumROhms = 47.0e3;    // R16, the dirt path's summing resi
 constexpr double kSumGain = 2.0;  // R20 * G_clean, the clean path's transimpedance
 constexpr double kClipBlendWeight = kSummingRfOhms / (kDirtSumROhms * kSumGain);
 constexpr double kClipBlendFadeTo = 0.15;  // linear fade-in span keeping clip(0)=0
+// C13, the cap ACROSS R20 — the summing amp's own pole and, per docs §54, the
+// "creamy" filter this model did not have until 2026-07-31. SummingAmp.h builds
+// H(s) = R20/(1 + s*C13*R20); the corner is therefore
+//     1/(2*pi*R20*C13) = 1/(2*pi*392k*820p) = 495.06 Hz.
+// Applied to the DIRT branch only — see the section-2 header for the algebra that
+// makes that identical to "pole on the sum, clean feed pre-emphasized", which is
+// what keeps this model's flat composed clean path (and GAIN 0 bit-exact). ADR 016.
+constexpr double kSummingCapF = 820.0e-12;
+constexpr double kSummingPoleHz = 1.0 / (kTwoPi * kSummingRfOhms * kSummingCapF);
 // The drive path's INPUT network attenuates before the diodes see anything: measured
 // on the real topology ~0.20x @220 Hz / 0.65x @1 kHz (the model previously passed
 // 0.90 @220 — its 106 Hz corner belonged to FF1, the always-on clean-bass path, not
 // the drive branch). One pole + a scale fit to the reference rows (±3 dB, g <= .75):
 constexpr double kDrivePreScale = 0.65;
 constexpr double kDriveHpHz = 600.0;  // drive-branch HP (was 106.1, mis-assigned; fit: |H|·pre at 220 Hz = 0.22 vs the reference 0.20, at 1 kHz 0.56 vs 0.65)
-// §52 VALIDATION of the two constants above, from the same netlist that gave the
-// summing weight: the reference's drive path is H_pre(f,g) * H_amp(f,g) (the pre-amp
-// divider C3/R6/C5/gang-1 into the amp stage R10b/R11/R12/C7/C8). Its shaping
-// H_pre*H_amp / A(g) measures 0.2234 at 220 Hz and 0.5343 at 1 kHz at the shipped
-// g = 0.35, against this model's kDrivePreScale * HP600 = 0.2238 and 0.5574. §50's
-// fit was right to within 0.02 dB / 0.35 dB at the default, so both constants STAND
-// unchanged. Known residual, named for the next slice: the real shaping is strongly
-// GAIN-dependent (C7 = 82 nF sits across R10b, so at g = 1 the amp's 1 kHz gain is
-// 100.5x against its 25.8x DC law — the reference's D/A reaches 2.53 at 1 kHz where
-// this model holds 0.557). This model's drive is therefore COLDER than the reference
-// at high gain, not hotter.
+// §54 RE-SCOPES AND RE-VALIDATES these two, and the re-scoping matters. §52 checked
+// them against H_pre(f,g) * H_amp(f,g) / A(g) — the WHOLE drive path's shaping,
+// normalized by the DC gain — because the model had no amp-stage network and this
+// scalar pair stood in for both. `AmpStageNetwork` now carries H_amp exactly, so
+// what is left for these two to represent is H_pre ALONE (the pre-amp divider
+// C3 into (C5||R6 + gang-1) || (R7 + (15k||C16))). Re-measured against that, on the
+// same netlist (all values in the reference's PreAmpStage.h/.cpp):
+//     f        82     110     220     500    1000    3000 Hz
+//   H_pre  0.1167  0.1317  0.2027  0.3921  0.6409  0.9279   (reference, g = 0.35)
+//   model  0.0880  0.1172  0.2238  0.4161  0.5574  0.6374   (0.65 * HP600)
+//   delta   -2.45   -1.02   +0.86   +0.52   -1.22   -3.26 dB
+// So the pair STANDS unchanged: within +/-1.3 dB across the guitar core band, which
+// is the same accuracy §52 recorded, now measured against the right target. The
+// residual is honest and named: H_pre is a one-pole HP with a ~1105 Hz corner into a
+// 0.93 shelf, and 0.65 * HP600 is a one-pole HP with a 600 Hz corner into a 0.65
+// shelf, so the model rolls the top off ~3 dB early and the very bottom ~2.5 dB fast.
+// Refitting (scale -> 0.93, corner -> 1105) is a candidate for a later slice; it is
+// NOT done here because this slice already changes three networks and a fourth
+// constant move would have no isolated perturbation proof. H_pre is also mildly
+// knob-dependent below g = 0.15 (0.1735 vs 0.2027 at 220 Hz) where the dirt is muted
+// by the contract fade anyway; the model's flat-in-g stand-in ignores that.
 constexpr double kRailVolts = 8.6;  // charge-pump rails (+/-9 V minus dropout)
+
+// --- The drive amp's own network (docs §54, reference AmpStage.h) ------------------
+// R10b (gang-1's lower half + the 2 k end stop) sits in the op-amp's ground leg in
+// series with R11; C7 shunts R10b, C8 shunts the feedback R12. R10b is recovered
+// from the SMOOTHED A rather than kept as a second copy of the knob, so the DC gain
+// of the discretized network is A(g) exactly (see AmpStageNetwork::setFromGain).
+constexpr double kAmpR11Ohms = 15.0e3;    // R11, the fixed part of the ground leg
+constexpr double kAmpC7 = 82.0e-9;        // across R10b — the gain-dependent zero
+constexpr double kAmpC8 = 390.0e-12;      // across R12 — the stage's own HF rolloff
+constexpr double kDriveGainMin = 1.0 + kDriveRfOhms / (kGainPotOhms + kDriveRlegOhms);
+constexpr double kDriveGainMax = 1.0 + kDriveRfOhms / kDriveRlegOhms;
 
 // The op-amp: TL07x-class on the charge-pump rails.
 constexpr double kOpAmpGbwHz = 3.0e6;
 constexpr double kOpAmpSlewVoltsPerSec = 13.0e6;
 
-// WDF clipping network.
-constexpr double kRs = 2.2e3;   // series/source resistance into the diode node
-constexpr double kCp = 4.7e-9;  // shunt cap (HF corner ~15.4 kHz)
+// WDF clipping network (docs §54: R13 + the R16 node load + the reference's fit).
+constexpr double kR13Ohms = 1.0e3;  // R13 — series source resistance (was 2.2 k)
+constexpr double kCp = 4.7e-9;      // shunt cap; Thevenin 979 Ohm -> corner ~34.6 kHz
 // Germanium (1N34A-class) vs the silicon counterfactual (1N914-class).
-constexpr double kGeIs = 200.0e-9;
-constexpr double kGeIdeality = 1.3;
+// The germanium pair is the reference implementation's FIT TO A REAL UNIT's clipper
+// (ClippingStage.h: `{ 15e-6, 0.02585 }`, a plain antiparallel pair, n = 1), which
+// supersedes this file's datasheet-shaped 200 nA / n = 1.3 guess for THIS pedal —
+// that guess measured 5.7-8.5 dB hot at the node across a 0.05..20 V drive sweep.
+constexpr double kGeIs = 15.0e-6;
+constexpr double kGeIdeality = 1.0;
 constexpr double kSiIs = 2.52e-9;
 // 1N4148/1N914 SPICE: `IS=2.52n N=1.752`. Was 1.0 until 2026-07-25 — the same
 // dropped-ideality error as RatModel (audit finding 15, docs §36, ADR 008). With
@@ -285,6 +397,66 @@ float onePoleCoeff(double cutoffHz, double sampleRate) {
     const double a = 1.0 - std::exp(-kTwoPi * cutoffHz / sampleRate);
     return static_cast<float>(std::clamp(a, 0.0, 1.0));
 }
+
+// --- The drive amp as a network, not a scalar (docs §54, reference AmpStage.h) -----
+// Non-inverting op-amp stage: ground leg = (R10b || C7) + R11, feedback = R12 || C8.
+//     H(s) = (b0 s^2 + b1 s + b2) / (a0 s^2 + a1 s + a2)
+//     a0 = C7*C8*R10b*R11*R12          b0 = a0
+//     a1 = C7*R10b*R11 + C8*R12*(R10b+R11)   b1 = C7*R11*R12 + a1
+//     a2 = R10b + R11                  b2 = R12 + a2
+// so H(0) = b2/a2 = 1 + R12/(R10b+R11) — §50's gang law, exactly. Discretized with a
+// plain bilinear transform (K = 2 fs, no warping): every pole of this network sits
+// between 148 Hz and 1.10 kHz across the whole knob travel, and it runs at the
+// OVERSAMPLED rate (176.4-384 kHz shipped), so the warping error is far below the
+// component tolerances the netlist itself carries.
+struct AmpStageNetwork {
+    double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
+    float x1 = 0.0f, x2 = 0.0f, y1 = 0.0f, y2 = 0.0f;
+    double legOhms = kGainPotOhms + kDriveRlegOhms;  // R10b + R11 (cached)
+
+    void clearState() { x1 = x2 = y1 = y2 = 0.0f; }
+
+    // Recover the ground leg from the SMOOTHED drive gain, so the network's DC gain
+    // IS the smoothed A(g) and §50's law is never written down twice:
+    //     A = 1 + R12/(R10b + R11)  =>  R10b + R11 = R12/(A - 1).
+    // The clamp covers exactly one edge case: a GoldModel whose PARAM_GAIN was never
+    // set leaves the smoother at 0, and A = 0 would give a negative leg. The dirt path
+    // is multiplied by clipBlend, which is also 0 there, so nothing audible depends on
+    // the clamped value — it exists so the coefficients stay finite.
+    void setFromGain(double A, double sampleRate) {
+        const double a = std::clamp(A, kDriveGainMin, kDriveGainMax);
+        const double leg = kDriveRfOhms / (a - 1.0);  // R10b + R11, in [17k, 117k]
+        if (leg == legOhms && a2 != 0.0) return;      // idle: no coefficient rebuild
+        legOhms = leg;
+        const double r10b = std::max(leg - kAmpR11Ohms, 1.0);
+        const double r11 = kAmpR11Ohms, r12 = kDriveRfOhms;
+        const double A0 = kAmpC7 * kAmpC8 * r10b * r11 * r12;
+        const double A1 = kAmpC7 * r10b * r11 + kAmpC8 * r12 * (r10b + r11);
+        const double A2 = r10b + r11;
+        const double B0 = A0;
+        const double B1 = kAmpC7 * r11 * r12 + A1;
+        const double B2 = r12 + A2;
+        const double K = 2.0 * (sampleRate > 0.0 ? sampleRate : 44100.0), K2 = K * K;
+        const double d0 = A0 * K2 + A1 * K + A2;
+        b0 = (B0 * K2 + B1 * K + B2) / d0;
+        b1 = (-2.0 * B0 * K2 + 2.0 * B2) / d0;
+        b2 = (B0 * K2 - B1 * K + B2) / d0;
+        a1 = (-2.0 * A0 * K2 + 2.0 * A2) / d0;
+        a2 = (A0 * K2 - A1 * K + A2) / d0;
+    }
+
+    // Direct form I. Anti-denormal (Denormal.h): y1/y2 are recursive states whose
+    // rest value IS zero (this is a pure signal path with no bias), so both are
+    // flushed — WASM has no FTZ. x1/x2 are input history, assigned not fed back.
+    inline float process(float x) {
+        const double y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        x2 = x1;
+        x1 = x;
+        y2 = y1;
+        y1 = flushDenormal(static_cast<float>(y));
+        return y1;
+    }
+};
 
 // TREBLE knob -> linear tilt gain applied to the HF half (1.0 == flat at 0.5).
 float toneKnobToTilt(float knob) {
@@ -332,6 +504,13 @@ struct GoldModel::Impl {
     // Section 2 (oversampled): drive-path high-pass state.
     float driveHpCoef = 0.0f;
     float driveHpState = 0.0f;
+    // Section 2 (oversampled): the drive amp's R10b/R11/R12/C7/C8 network (§54).
+    AmpStageNetwork ampStage;
+    // Section 2 (oversampled): the summing amp's R20 || C13 = 495 Hz pole (§54),
+    // applied to the dirt branch — see the section-2 header for why that is the
+    // faithful placement given this model's idealized-flat composed clean path.
+    float sumPoleCoef = 0.0f;
+    float sumPoleState = 0.0f;
 
     // Section 3/4 (base rate): tone pivot low-pass + output DC block.
     float toneCoef = 0.0f;
@@ -344,9 +523,18 @@ struct GoldModel::Impl {
 
     // The WDF germanium clipper. Declaration order matters: children first, root
     // last. Double precision, as the RAT's tree.
-    chowdsp::wdft::ResistiveVoltageSourceT<double> Vs { kRs };
+    //
+    // §54: the node is now the schematic's — driven through R13 = 1 k and LOADED by
+    // the summing resistor R16 = 47 k (the reference's ClippingStage.h models R16 as
+    // its `ResVs Vbias { 47000.0 }` and takes the dirt as the current through it; the
+    // 47 k here and the R20/R16 summing weight above are the same resistor). Rsum is
+    // a plain resistor rather than R16-in-series-with-C10 because C10 is a 3.4 Hz
+    // high-pass — out of band — and the pair is symmetric, so there is no DC to block.
+    chowdsp::wdft::ResistiveVoltageSourceT<double> Vs { kR13Ohms };
+    chowdsp::wdft::ResistorT<double> Rsum { kDirtSumROhms };
     chowdsp::wdft::CapacitorT<double> Cp { kCp, 48000.0 };
-    chowdsp::wdft::WDFParallelT<double, decltype(Vs), decltype(Cp)> P1 { Vs, Cp };
+    chowdsp::wdft::WDFParallelT<double, decltype(Vs), decltype(Rsum)> P0 { Vs, Rsum };
+    chowdsp::wdft::WDFParallelT<double, decltype(P0), decltype(Cp)> P1 { P0, Cp };
     chowdsp::wdft::DiodePairT<double, decltype(P1)> diodes {
         P1, kGeIs, kVt, kGeIdeality };
 
@@ -365,6 +553,12 @@ struct GoldModel::Impl {
         applyDiodes();
         driveHpCoef = onePoleCoeff(kDriveHpHz, osRate);
         driveHpState = 0.0f;
+        sumPoleCoef = onePoleCoeff(kSummingPoleHz, osRate);
+        sumPoleState = 0.0f;
+        ampStage.clearState();
+        // Force a coefficient rebuild at the new rate (a2 == 0 is the "unbuilt" flag).
+        ampStage.a2 = 0.0;
+        ampStage.setFromGain(driveGain.value(), osRate);
         opAmp.prepare(osRate, kOpAmpGbwHz, kOpAmpSlewVoltsPerSec);
     }
 };
@@ -492,6 +686,11 @@ void GoldModel::processChunk(const float* in, float* out, int numFrames) {
     }
     if (!d.cleanBlend) cleanW = 0.0f;  // measurement counterfactual
     if (!d.idealOpAmp) d.opAmp.setNoiseGain(A);
+    // The drive amp's coefficients follow the same control-rate discipline as A did
+    // before it (one rebuild per chunk, ~0.7-2.9 ms; the 5 ms glide is what keeps a
+    // knob move click-free). setFromGain() no-ops when the leg has not moved, so a
+    // parked knob costs one comparison per chunk.
+    d.ampStage.setFromGain(A, d.sampleRate * d.os.factor());
 
     // --- Section 2 (oversampled, nonlinear): the ganged gain section. --------
     // Both halves live at the oversampled rate so the clean signal and the clipped
@@ -505,7 +704,12 @@ void GoldModel::processChunk(const float* in, float* out, int numFrames) {
         // Drive-path input network (§50): the real branch ATTENUATES before the
         // diodes see anything — kDrivePreScale + the (re-assigned) HP corner.
         d.driveHpState = flushDenormal(d.driveHpState + hc * (x - d.driveHpState));
-        float u = A * static_cast<float>(kDrivePreScale) * (x - d.driveHpState);
+        // §54: the drive amp is the R10b/R11/R12/C7/C8 network, not the scalar A —
+        // its DC gain IS A (identity, see AmpStageNetwork::setFromGain), and above
+        // the C7 corner it rises well past it (47.6x at 220 Hz / 100.5x at 1 kHz at
+        // g = 1, against the 25.8x DC law).
+        float u = static_cast<float>(kDrivePreScale) * (x - d.driveHpState);
+        u = d.ampStage.process(u);
         if (!d.idealOpAmp) u = d.opAmp.processSample(u);  // GBW + slew
         // Germanium diode pair (WDF root); output is the clipping-node voltage.
         d.Vs.setVoltage(static_cast<double>(u));
@@ -517,9 +721,21 @@ void GoldModel::processChunk(const float* in, float* out, int numFrames) {
         // AFTER the voltage above is read, so this sample is bit-identical to the
         // unguarded network. Audit finding 11, docs §33.
         flushDenormalWdfCapacitor(d.Cp);
+        // §54: the summing amp's own pole, R20 || C13 = 495 Hz — the "creamy" filter.
+        // On the dirt branch only: this model's composed CLEAN path is idealized flat
+        // (kSumGain = 2.0) and always has been, so pre-emphasizing the clean feed by
+        // the pole's inverse — which is what applying the pole to the dirt alone
+        // amounts to — leaves the clean path bit-identical (the GAIN-0 transparency
+        // contract) while making the dirt path EXACTLY the real composed transfer
+        // LP(f)*(R20/R16)*V_node(f). Section-2 header + ADR 016 carry the algebra.
+        // Anti-denormal: this state rests at zero (silence -> zero dirt), and WASM has
+        // no FTZ. Runs at the OVERSAMPLED rate, which also band-limits the clipper's
+        // products before the decimator sees them.
+        d.sumPoleState = flushDenormal(d.sumPoleState + d.sumPoleCoef * (clipped - d.sumPoleState));
+        const float dirt = d.sumPoleState;
         // The summing amp: the ganged crossfade, then the charge-pump rails (which
         // at guitar levels never engage — the diodes are the only clipper).
-        float s = static_cast<float>(kSumGain) * (cleanW * x + clipW * clipped);
+        float s = static_cast<float>(kSumGain) * (cleanW * x + clipW * dirt);
         if (s > static_cast<float>(kRailVolts)) s = static_cast<float>(kRailVolts);
         else if (s < -static_cast<float>(kRailVolts)) s = -static_cast<float>(kRailVolts);
         w[i] = s;
