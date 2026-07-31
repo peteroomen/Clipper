@@ -313,40 +313,81 @@ constexpr double kClipBlendFadeTo = 0.15;  // linear fade-in span keeping clip(0
 // what keeps this model's flat composed clean path (and GAIN 0 bit-exact). ADR 016.
 constexpr double kSummingCapF = 820.0e-12;
 constexpr double kSummingPoleHz = 1.0 / (kTwoPi * kSummingRfOhms * kSummingCapF);
-// The drive path's INPUT network attenuates before the diodes see anything: measured
-// on the real topology ~0.20x @220 Hz / 0.65x @1 kHz (the model previously passed
-// 0.90 @220 — its 106 Hz corner belonged to FF1, the always-on clean-bass path, not
-// the drive branch). One pole + a scale fit to the reference rows (±3 dB, g <= .75):
-constexpr double kDrivePreScale = 0.65;
-constexpr double kDriveHpHz = 600.0;  // drive-branch HP (was 106.1, mis-assigned; fit: |H|·pre at 220 Hz = 0.22 vs the reference 0.20, at 1 kHz 0.56 vs 0.65)
-// §54 RE-SCOPES AND RE-VALIDATES these two, and the re-scoping matters. §52 checked
-// them against H_pre(f,g) * H_amp(f,g) / A(g) — the WHOLE drive path's shaping,
-// normalized by the DC gain — because the model had no amp-stage network and this
-// scalar pair stood in for both. `AmpStageNetwork` now carries H_amp exactly, so
-// what is left for these two to represent is H_pre ALONE (the pre-amp divider
-// C3 into (C5||R6 + gang-1) || (R7 + (15k||C16))). Re-measured against that, on the
-// same netlist (all values in the reference's PreAmpStage.h/.cpp):
-//     f        82     110     220     500    1000    3000 Hz
-//   H_pre  0.1167  0.1317  0.2027  0.3921  0.6409  0.9279   (reference, g = 0.35)
-//   model  0.0880  0.1172  0.2238  0.4161  0.5574  0.6374   (0.65 * HP600)
-//   delta   -2.45   -1.02   +0.86   +0.52   -1.22   -3.26 dB
-// So the pair STANDS unchanged: within +/-1.3 dB across the guitar core band, which
-// is the same accuracy §52 recorded, now measured against the right target. The
-// residual is honest and named: H_pre is a one-pole HP with a ~1105 Hz corner into a
-// 0.93 shelf, and 0.65 * HP600 is a one-pole HP with a 600 Hz corner into a 0.65
-// shelf, so the model rolls the top off ~3 dB early and the very bottom ~2.5 dB fast.
-// Refitting (scale -> 0.93, corner -> 1105) is a candidate for a later slice; it is
-// NOT done here because this slice already changes three networks and a fourth
-// constant move would have no isolated perturbation proof. H_pre is also mildly
-// knob-dependent below g = 0.15 (0.1735 vs 0.2027 at 220 Hz) where the dirt is muted
-// by the contract fade anyway; the model's flat-in-g stand-in ignores that.
+// --- The drive path's INPUT network, exactly (docs §56, reference PreAmpStage.*) ---
+// The drive branch ATTENUATES before the diodes see anything, and until 2026-07-31
+// this model stood that whole network in as a scalar times a one-pole high-pass
+// (kDrivePreScale = 0.65 into kDriveHpHz = 600). §50 fitted the pair, §52 validated
+// it against H_pre*H_amp/A(g) (the model had no amp network then, so the pair stood
+// for both), and §54 RE-SCOPED it to H_pre alone once `AmpStageNetwork` carried H_amp
+// exactly — measuring +/-1.3 dB across the guitar core band and naming the refit
+// below as the follow-up. THIS is that refit: the stand-in is GONE and the network
+// is the reference's own netlist.
+//
+// The topology, transcribed from ChowCentaur/GainStageProcessors/PreAmpStage.{h,cpp}
+// (the WDF tree there is C3 in series with the parallel pair, output taken across
+// the parallel pair as `voltage(Vbias) + voltage(R6)`):
+//
+//     in --||-- +------------------+------------------+
+//          C3   |                  |                  |
+//               |  R6 || C5        |  R7              |
+//               |     |            |   |              |
+//               |  gang-1 (g*R_pot)|  R19 || C16      |    out = V across this node
+//               |     |            |   |              |
+//              GND   GND          GND GND
+//
+//   Z_S1 = (R6 || 1/sC5) + g*R_pot          the GAIN pot's OTHER gang half
+//   Z_S2 = R7 + (R19 || 1/sC16)             the FF1 clean-bass leg, loading the node
+//   H_pre(s) = Zp / (Zc3 + Zp),  Zp = Z_S1 || Z_S2
+//
+// Written as ascending-power s polynomials with n1 = (R6+Rg) + s*C5*R6*Rg and
+// n2 = (R7+R19) + s*C16*R19*R7, a = C5*R6, b = C16*R19:
+//   num = s*C3*n1*n2                       (degree 3, num[0] = 0 — a zero at DC)
+//   den = n1*(1+s*b) + n2*(1+s*a) + s*C3*n1*n2
+// so H_pre is THIRD order and knob-dependent, which is why no one-pole stand-in was
+// ever going to sit inside a dB of it. Discretized with the plain bilinear transform
+// at K = 2*fs — the SAME map the reference's own trapezoidal WDF capacitors use, so
+// the discretization is not an approximation of the reference, it IS the reference:
+// measured against the reference tree itself (built on this repo's own pinned
+// chowdsp_wdf and driven sample by sample), the worst |H| error over 41 Hz - 10 kHz
+// at GAIN 0.15/0.35/0.90 is 0.0006 dB, against 7.23 dB for the stand-in it replaces,
+// and the worst PHASE error against the continuous-time divider is 0.06 deg.
+// See docs §56 table 1.
+//
+// TWO CONVENTION TRAPS if you re-run that comparison — BOTH are artifacts of how the
+// reference READS its tree, not disagreements about the circuit (docs §56):
+//   1. POLARITY. `PreAmpStage::processSample` returns `voltage(Vbias) + voltage(R6)`
+//      from inside a `PolarityInverterT` subtree, so its output is the physical
+//      divider NEGATED — measured phase difference 180.08 deg at 41 Hz, and the
+//      magnitudes agree to 0.0000 dB. Physically there is no inverting element
+//      between the input cap and this node, so the model is right to be non-inverting
+//      and it matters: the dirt branch is SUMMED with the clean feed, so a sign error
+//      here would change the sum, not just a scope trace.
+//   2. ONE SAMPLE OF DELAY. That same function reads the element voltages BETWEEN
+//      `Vin.incident(...)` and `I1.incident(...)`, so it reports the previous sample's
+//      solution: the residual phase error after removing the 180 deg is 0.077 deg at
+//      41 Hz, 0.41 at 220 Hz, 5.63 at 3 kHz, 18.75 at 10 kHz — exactly 360*f/192000 at
+//      every point, i.e. one sample at the oversampled rate. This model has no such
+//      delay, and its phase matches the CONTINUOUS-TIME divider to better than
+//      0.01 deg everywhere probed.
+//
+// R19 is deliberately the same 15 k that the summing derivation above calls the FF1
+// summing resistor: in the real pedal the FF1 leg both loads this divider AND carries
+// the clean bass to the summing amp. This model still idealizes the composed clean
+// path flat (kSumGain = 2.0, §27/ADR 016), so R19 appears here only as the load it is.
+constexpr double kPreC3 = 0.1e-6;    // input coupling into the divider
+constexpr double kPreC5 = 68.0e-9;   // across R6
+constexpr double kPreR6 = 10.0e3;
+constexpr double kPreR7 = 1.5e3;     // FF1 series resistor
+constexpr double kPreR19 = 15.0e3;   // FF1 shunt (the reference's `ResVs Vbias2`)
+constexpr double kPreC16 = 1.0e-6;   // across R19
 constexpr double kRailVolts = 8.6;  // charge-pump rails (+/-9 V minus dropout)
 
 // --- The drive amp's own network (docs §54, reference AmpStage.h) ------------------
 // R10b (gang-1's lower half + the 2 k end stop) sits in the op-amp's ground leg in
 // series with R11; C7 shunts R10b, C8 shunts the feedback R12. R10b is recovered
 // from the SMOOTHED A rather than kept as a second copy of the knob, so the DC gain
-// of the discretized network is A(g) exactly (see AmpStageNetwork::setFromGain).
+// of the discretized network is A(g) exactly (see driveLegOhms(), docs §56, which the
+// pre-amp divider's other gang half is now recovered from too).
 constexpr double kAmpR11Ohms = 15.0e3;    // R11, the fixed part of the ground leg
 constexpr double kAmpC7 = 82.0e-9;        // across R10b — the gain-dependent zero
 constexpr double kAmpC8 = 390.0e-12;      // across R12 — the stage's own HF rolloff
@@ -398,6 +439,127 @@ float onePoleCoeff(double cutoffHz, double sampleRate) {
     return static_cast<float>(std::clamp(a, 0.0, 1.0));
 }
 
+// --- THE GANG, IN ONE PLACE (docs §50, §54, §56) -----------------------------------
+// The GAIN pot is dual-ganged and BOTH halves of that gang now drive a real network:
+// gang-1's lower half is the drive amp's ground leg (`AmpStageNetwork`), gang-1's
+// upper half is the pre-amp divider's shunt (`PreAmpNetwork`). They are two ends of
+// ONE wiper, so the model must never carry two copies of the knob. Everything below
+// is recovered from the SMOOTHED drive gain A, which is what the knob actually
+// controls, via §50's law:
+//     A = 1 + R12/(R10b + R11)   =>   leg := R10b + R11 = R12/(A - 1)
+// The clamp covers exactly one edge case: a GoldModel whose PARAM_GAIN was never set
+// leaves the smoother at 0, and A = 0 would give a negative leg. The dirt path is
+// multiplied by clipBlend, which is also 0 there, so nothing audible depends on the
+// clamped value — it exists so the coefficients stay finite.
+double driveLegOhms(double A) {
+    const double a = std::clamp(A, kDriveGainMin, kDriveGainMax);
+    return kDriveRfOhms / (a - 1.0);
+}
+// ...and the OTHER half follows from the first with no second knob anywhere: the pot
+// is a divider, so its two halves plus the fixed end-stop sum to a constant.
+//     R10b = leg - R11 = (1-g)*R_pot + 2k    =>    g*R_pot = (R_pot + Rleg) - leg
+// (kDriveRlegOhms = 17 k = R11 15 k + the 2 k end stop, so R_pot + Rleg - leg is
+// exactly g*100k; it is 0 at the closed end and 100 k wide open, by construction.)
+double preAmpGangOhms(double leg) {
+    return std::max(kGainPotOhms + kDriveRlegOhms - leg, 0.0);
+}
+
+// --- The drive path's input network (docs §56, reference PreAmpStage.{h,cpp}) -------
+// Third-order, knob-dependent; the s-domain polynomials and the topology are in the
+// constants block above. Bilinear at K = 2*fs (no warping) — the reference's own
+// trapezoidal WDF capacitors use the same map, so this reproduces it exactly rather
+// than approximating it.
+struct PreAmpNetwork {
+    double b0 = 1.0, b1 = 0.0, b2 = 0.0, b3 = 0.0, a1 = 0.0, a2 = 0.0, a3 = 0.0;
+    // THE STATE IS `double`, AND THAT IS A MEASUREMENT, NOT A STYLE CHOICE (docs §56).
+    // This is a THIRD-order direct-form-I recursion whose slowest pole is the C3/node
+    // corner at ~60 Hz, running at the OVERSAMPLED rate — 192 kHz on the shipped
+    // desktop path. A pole at 60 Hz / 192 kHz sits at radius 0.998, and a direct form
+    // amplifies its own state-rounding by roughly (1 - r)^-order, so `float` state
+    // (~1.2e-7 relative) comes out as AUDIBLE NOISE rather than a last-bit detail.
+    // Measured against an otherwise identical long-double-state build, 0.15 V / 220 Hz,
+    // added noise floor (rms, 2 s, the model's own output):
+    //     48 kHz x4 (shipped)  float -73.4 dBFS   double -136.2 dBFS
+    //     48 kHz x8            float -56.3 dBFS   double -129.7 dBFS
+    //     96 kHz x8 (worst)    float -32.0 dBFS   double -112.5 dBFS
+    // i.e. float state would have shipped a 62 dB noise penalty on the DEFAULT path.
+    // `AmpStageNetwork` below carries the same reasoning with a smaller number (it is
+    // second order and its poles are decades higher): float -120.1 dBFS on the shipped
+    // path, double -126 and better. Do NOT narrow either to float for symmetry with the
+    // float SIGNAL type — the signal is float, the recursion is not.
+    // 112.5 dB at 96 kHz x8 is the honest worst corner and it is above the project's
+    // -120 dBFS gate; the structural cure is a cascade of first-order sections (all
+    // three poles and all three zeros of this network are real), named in docs §56 and
+    // deliberately not taken here so this slice keeps one isolated change per proof.
+    double x1 = 0.0, x2 = 0.0, x3 = 0.0, y1 = 0.0, y2 = 0.0, y3 = 0.0;
+    double gangOhms = -1.0;  // cached wiper position; -1 == "never built"
+
+    void clearState() { x1 = x2 = x3 = y1 = y2 = y3 = 0.0; }
+
+    void setFromLeg(double leg, double sampleRate) {
+        const double rg = preAmpGangOhms(leg);
+        // Idle: no coefficient rebuild. gangOhms starts at -1, which no real wiper
+        // position can equal (rg is in [0, 100k]); reprepareGainSection() resets it to
+        // -1 to force a rebuild after a rate or oversampling-factor change.
+        if (rg == gangOhms) return;
+        gangOhms = rg;
+        const double a = kPreC5 * kPreR6, bb = kPreC16 * kPreR19;
+        const double p0 = kPreR6 + rg, p1 = kPreC5 * kPreR6 * rg;    // n1 = p0 + p1 s
+        const double q0 = kPreR7 + kPreR19, q1 = kPreC16 * kPreR19 * kPreR7;  // n2
+        // Ascending-power s coefficients of H_pre = num/den.
+        const double n0 = 0.0;
+        const double n1c = kPreC3 * p0 * q0;
+        const double n2c = kPreC3 * (p0 * q1 + p1 * q0);
+        const double n3c = kPreC3 * p1 * q1;
+        const double d0 = p0 + q0;
+        const double d1 = (p1 + q1 + bb * p0 + a * q0) + n1c;
+        const double d2 = (bb * p1 + a * q1) + n2c;
+        const double d3 = n3c;
+        // Bilinear s -> K(1-z^-1)/(1+z^-1), multiplied through by (1+z^-1)^3.
+        const double K = 2.0 * (sampleRate > 0.0 ? sampleRate : 44100.0);
+        const double K2 = K * K, K3 = K2 * K;
+        auto tf = [&](double c0, double c1, double c2, double c3, double e[4]) {
+            e[0] = c0 + c1 * K + c2 * K2 + c3 * K3;
+            e[1] = 3.0 * c0 + c1 * K - c2 * K2 - 3.0 * c3 * K3;
+            e[2] = 3.0 * c0 - c1 * K - c2 * K2 + 3.0 * c3 * K3;
+            e[3] = c0 - c1 * K + c2 * K2 - c3 * K3;
+        };
+        double e[4], f[4];
+        tf(n0, n1c, n2c, n3c, e);
+        tf(d0, d1, d2, d3, f);
+        b0 = e[0] / f[0]; b1 = e[1] / f[0]; b2 = e[2] / f[0]; b3 = e[3] / f[0];
+        a1 = f[1] / f[0]; a2 = f[2] / f[0]; a3 = f[3] / f[0];
+    }
+
+    // Direct form I. Anti-denormal (Denormal.h): y1..y3 are recursive states whose
+    // rest value IS zero (pure signal path, no bias anywhere in this divider — the
+    // reference's own Vbias/Vbias2 sources are set to 0 V), so all three are guarded;
+    // WASM has no FTZ. x1..x3 are input history, assigned not fed back.
+    //
+    // AND IT IS NOT THE USUAL `y1 = flushDenormal(y)` ONE-LINER — that form DOES NOT
+    // CONVERGE above first order, which `clipper_denormal_tests` caught in this very
+    // network (docs §56). Flushing only the NEWEST tap leaves the older ones holding
+    // whatever they held when they were newest, and the recursion re-injects them:
+    // y1 goes to 0, then next sample y = -a2*y2 - a3*y3 with |a2|, |a3| ~ 3, which is
+    // LARGER than either, so the state pumps itself back over the floor and sits there
+    // forever. Measured on the GOLD before the fix: the output plateaus at ~1e-26 and
+    // NEVER reaches digital silence (3.4e-27 at 2 s of silence, 3.3e-27 at 16 s);
+    // bypassing this divider, or flushing the whole state together as below, both
+    // settle to exact zero in ~1.50 s. So the test is: are ALL the recursive taps under
+    // the floor? If so the ring-down is genuinely over and the whole state is zeroed at
+    // once. Still bit-transparent — the floor is 1e-30, ~600 dB below any audio.
+    inline float process(float x) {
+        const double y = b0 * x + b1 * x1 + b2 * x2 + b3 * x3
+                       - a1 * y1 - a2 * y2 - a3 * y3;
+        x3 = x2; x2 = x1; x1 = x;
+        y3 = y2; y2 = y1; y1 = y;
+        constexpr double floorD = static_cast<double>(kDenormalFloor);
+        if (std::fabs(y1) < floorD && std::fabs(y2) < floorD && std::fabs(y3) < floorD)
+            y1 = y2 = y3 = 0.0;
+        return static_cast<float>(y1);
+    }
+};
+
 // --- The drive amp as a network, not a scalar (docs §54, reference AmpStage.h) -----
 // Non-inverting op-amp stage: ground leg = (R10b || C7) + R11, feedback = R12 || C8.
 //     H(s) = (b0 s^2 + b1 s + b2) / (a0 s^2 + a1 s + a2)
@@ -411,21 +573,22 @@ float onePoleCoeff(double cutoffHz, double sampleRate) {
 // component tolerances the netlist itself carries.
 struct AmpStageNetwork {
     double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
-    float x1 = 0.0f, x2 = 0.0f, y1 = 0.0f, y2 = 0.0f;
+    // `double` state, for the reason spelled out on PreAmpNetwork above and measured
+    // in isolation (docs §56): this stage carried FLOAT state from §54, which cost a
+    // -120.1 dBFS noise floor on the shipped 48 kHz x4 path and -101.7 dBFS at
+    // 96 kHz x8 — right on and then past the project's own -120 dBFS gate. Widening it
+    // is a drive-path fidelity win of one word; it is NOT bit-identical (that residual
+    // IS the noise it removes) and it does not touch GAIN 0, which never runs this
+    // network at all.
+    double x1 = 0.0, x2 = 0.0, y1 = 0.0, y2 = 0.0;
     double legOhms = kGainPotOhms + kDriveRlegOhms;  // R10b + R11 (cached)
 
-    void clearState() { x1 = x2 = y1 = y2 = 0.0f; }
+    void clearState() { x1 = x2 = y1 = y2 = 0.0; }
 
     // Recover the ground leg from the SMOOTHED drive gain, so the network's DC gain
-    // IS the smoothed A(g) and §50's law is never written down twice:
-    //     A = 1 + R12/(R10b + R11)  =>  R10b + R11 = R12/(A - 1).
-    // The clamp covers exactly one edge case: a GoldModel whose PARAM_GAIN was never
-    // set leaves the smoother at 0, and A = 0 would give a negative leg. The dirt path
-    // is multiplied by clipBlend, which is also 0 there, so nothing audible depends on
-    // the clamped value — it exists so the coefficients stay finite.
-    void setFromGain(double A, double sampleRate) {
-        const double a = std::clamp(A, kDriveGainMin, kDriveGainMax);
-        const double leg = kDriveRfOhms / (a - 1.0);  // R10b + R11, in [17k, 117k]
+    // IS the smoothed A(g) and §50's law is never written down twice — see
+    // driveLegOhms() above, which is now shared with the pre-amp divider (docs §56).
+    void setFromLeg(double leg, double sampleRate) {
         if (leg == legOhms && a2 != 0.0) return;      // idle: no coefficient rebuild
         legOhms = leg;
         const double r10b = std::max(leg - kAmpR11Ohms, 1.0);
@@ -447,14 +610,21 @@ struct AmpStageNetwork {
 
     // Direct form I. Anti-denormal (Denormal.h): y1/y2 are recursive states whose
     // rest value IS zero (this is a pure signal path with no bias), so both are
-    // flushed — WASM has no FTZ. x1/x2 are input history, assigned not fed back.
+    // guarded — WASM has no FTZ. x1/x2 are input history, assigned not fed back.
+    // WHOLE-STATE flush, for the reason spelled out on PreAmpNetwork above: a
+    // newest-tap-only flush does not converge above first order. This stage's poles
+    // are decades higher (148 Hz - 1.10 kHz) so its ring-down passed through the floor
+    // fast enough to hide the hazard, but the guard is written correctly rather than
+    // luckily (docs §56).
     inline float process(float x) {
         const double y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
         x2 = x1;
         x1 = x;
         y2 = y1;
-        y1 = flushDenormal(static_cast<float>(y));
-        return y1;
+        y1 = y;
+        constexpr double floorD = static_cast<double>(kDenormalFloor);
+        if (std::fabs(y1) < floorD && std::fabs(y2) < floorD) y1 = y2 = 0.0;
+        return static_cast<float>(y1);
     }
 };
 
@@ -501,9 +671,9 @@ struct GoldModel::Impl {
     float inHpCoef = 0.0f;
     float inHpState = 0.0f;
 
-    // Section 2 (oversampled): drive-path high-pass state.
-    float driveHpCoef = 0.0f;
-    float driveHpState = 0.0f;
+    // Section 2 (oversampled): the drive path's C3/C5/R6/gang-1/R7/R19/C16 input
+    // divider (§56) — the exact reference netlist, replacing §50's scalar+one-pole.
+    PreAmpNetwork preAmp;
     // Section 2 (oversampled): the drive amp's R10b/R11/R12/C7/C8 network (§54).
     AmpStageNetwork ampStage;
     // Section 2 (oversampled): the summing amp's R20 || C13 = 495 Hz pole (§54),
@@ -551,14 +721,17 @@ struct GoldModel::Impl {
         Cp.prepare(osRate);  // the WDF cap runs at the OVERSAMPLED rate
         Vs.setVoltage(0.0);
         applyDiodes();
-        driveHpCoef = onePoleCoeff(kDriveHpHz, osRate);
-        driveHpState = 0.0f;
         sumPoleCoef = onePoleCoeff(kSummingPoleHz, osRate);
         sumPoleState = 0.0f;
+        const double leg = driveLegOhms(driveGain.value());
+        preAmp.clearState();
+        // Force a coefficient rebuild at the new rate (-1 is the "unbuilt" wiper).
+        preAmp.gangOhms = -1.0;
+        preAmp.setFromLeg(leg, osRate);
         ampStage.clearState();
         // Force a coefficient rebuild at the new rate (a2 == 0 is the "unbuilt" flag).
         ampStage.a2 = 0.0;
-        ampStage.setFromGain(driveGain.value(), osRate);
+        ampStage.setFromLeg(leg, osRate);
         opAmp.prepare(osRate, kOpAmpGbwHz, kOpAmpSlewVoltsPerSec);
     }
 };
@@ -609,7 +782,8 @@ void GoldModel::reset() {
     d.opAmp.reset();
     d.os.reset();
     // Re-derives the oversampled-section coefficients at the CURRENT rate/factor and
-    // resets driveHpState / the WDF cap / the source. Allocation-free.
+    // clears the pre-amp / drive-amp network states, the summing pole, the WDF cap and
+    // the source. Allocation-free.
     d.reprepareGainSection();
 }
 int GoldModel::oversampling() const { return impl_->os.factor(); }
@@ -686,11 +860,17 @@ void GoldModel::processChunk(const float* in, float* out, int numFrames) {
     }
     if (!d.cleanBlend) cleanW = 0.0f;  // measurement counterfactual
     if (!d.idealOpAmp) d.opAmp.setNoiseGain(A);
-    // The drive amp's coefficients follow the same control-rate discipline as A did
-    // before it (one rebuild per chunk, ~0.7-2.9 ms; the 5 ms glide is what keeps a
-    // knob move click-free). setFromGain() no-ops when the leg has not moved, so a
-    // parked knob costs one comparison per chunk.
-    d.ampStage.setFromGain(A, d.sampleRate * d.os.factor());
+    // BOTH gang halves' coefficients follow the same control-rate discipline as the
+    // scalar A did before them (one rebuild per chunk, ~0.7-2.9 ms; the 5 ms glide is
+    // what keeps a knob move click-free), and BOTH are derived from the SAME leg, so
+    // the wiper cannot desynchronize between the two networks. Each setFromLeg()
+    // no-ops when the wiper has not moved, so a parked knob costs two comparisons.
+    {
+        const double osRate = d.sampleRate * d.os.factor();
+        const double leg = driveLegOhms(A);
+        d.preAmp.setFromLeg(leg, osRate);
+        d.ampStage.setFromLeg(leg, osRate);
+    }
 
     // --- Section 2 (oversampled, nonlinear): the ganged gain section. --------
     // Both halves live at the oversampled rate so the clean signal and the clipped
@@ -698,17 +878,17 @@ void GoldModel::processChunk(const float* in, float* out, int numFrames) {
     d.os.upsample(out, numFrames);
     float* w = d.os.buffer();
     const int osN = d.os.bufferLength();
-    const float hc = d.driveHpCoef;
     for (int i = 0; i < osN; ++i) {
         const float x = w[i];
-        // Drive-path input network (§50): the real branch ATTENUATES before the
-        // diodes see anything — kDrivePreScale + the (re-assigned) HP corner.
-        d.driveHpState = flushDenormal(d.driveHpState + hc * (x - d.driveHpState));
+        // §56: the drive path's input divider is the reference's own netlist now —
+        // C3 into (C5||R6 + gang-1) || (R7 + (R19||C16)), third order and moving with
+        // the knob. It ATTENUATES before the diodes see anything (0.203x at 220 Hz /
+        // 0.641x at 1 kHz at g = 0.35), which is what §50's 0.65*HP600 stood in for.
+        float u = d.preAmp.process(x);
         // §54: the drive amp is the R10b/R11/R12/C7/C8 network, not the scalar A —
-        // its DC gain IS A (identity, see AmpStageNetwork::setFromGain), and above
-        // the C7 corner it rises well past it (47.6x at 220 Hz / 100.5x at 1 kHz at
-        // g = 1, against the 25.8x DC law).
-        float u = static_cast<float>(kDrivePreScale) * (x - d.driveHpState);
+        // its DC gain IS A (identity, see driveLegOhms()), and above the C7 corner it
+        // rises well past it (47.6x at 220 Hz / 100.5x at 1 kHz at g = 1, against the
+        // 25.8x DC law).
         u = d.ampStage.process(u);
         if (!d.idealOpAmp) u = d.opAmp.processSample(u);  // GBW + slew
         // Germanium diode pair (WDF root); output is the clipping-node voltage.

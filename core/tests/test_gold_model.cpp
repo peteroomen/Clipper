@@ -140,6 +140,42 @@ double hfHarmonicDb(const std::vector<float>& o, double f0, double fs) {
     return 10.0 * std::log10(hh / (f1 * f1 + 1e-30) + 1e-30);
 }
 
+// |H_pre(j2*pi*f)| for the GOLD's drive-path INPUT DIVIDER, written here from the
+// reference implementation's component values (KlonCentaur/ChowCentaur/
+// GainStageProcessors/PreAmpStage.{h,cpp}: C3 0.1 uF, C5 68 nF, C16 1 uF, R6 10 k,
+// R7 1.5 k, `ResVs Vbias2` = R19 15 k, `ResVs Vbias` = the GAIN pot's other gang
+// half = g * 100 k), NOT read back out of GoldModel.cpp. The topology:
+//     Zs1 = (R6 || 1/sC5) + g*R_pot        Zs2 = R7 + (R19 || 1/sC16)
+//     H_pre = Zp / (Zc3 + Zp),  Zp = Zs1 || Zs2
+// Complex arithmetic done by hand so this file keeps its no-<complex> shape.
+double refPreAmpMag(double f, double g) {
+    const double w = kTwoPi * f;
+    const double C3 = 0.1e-6, C5 = 68.0e-9, C16 = 1.0e-6;
+    const double R6 = 10.0e3, R7 = 1.5e3, R19 = 15.0e3, Rg = g * 100.0e3;
+    // (a + jb) / (c + jd)
+    auto div = [](double a, double b, double c, double d, double& re, double& im) {
+        const double q = c * c + d * d;
+        re = (a * c + b * d) / q;
+        im = (b * c - a * d) / q;
+    };
+    // Zs1 = R6/(1 + jw C5 R6) + Rg
+    double z1r, z1i;
+    div(R6, 0.0, 1.0, w * C5 * R6, z1r, z1i);
+    z1r += Rg;
+    // Zs2 = R7 + R19/(1 + jw C16 R19)
+    double z2r, z2i;
+    div(R19, 0.0, 1.0, w * C16 * R19, z2r, z2i);
+    z2r += R7;
+    // Zp = Zs1*Zs2 / (Zs1 + Zs2)
+    const double nr = z1r * z2r - z1i * z2i, ni = z1r * z2i + z1i * z2r;
+    double zpr, zpi;
+    div(nr, ni, z1r + z2r, z1i + z2i, zpr, zpi);
+    // H = Zp / (Zc3 + Zp), Zc3 = 1/(jw C3) = -j/(w C3)
+    double hr, hi;
+    div(zpr, zpi, zpr, zpi - 1.0 / (w * C3), hr, hi);
+    return std::sqrt(hr * hr + hi * hi);
+}
+
 // --- Test 1: TRANSPARENCY at GAIN 0 (the pedal's whole reputation). ----------
 // With the ganged pot at minimum the clipped half is switched out entirely, so the
 // box is its input buffer + summing amp + output pot: FLAT and CLEAN. OUTPUT at
@@ -250,9 +286,10 @@ void testGermaniumKnee(double fs) {
     const double f0 = 220.0;
     // Probed in the region where the knee IS the story: a 20 dB input sweep whose
     // diode-node drive straddles the germanium knee. §50 RE-DERIVED PROBE: the
-    // drive path now attenuates before the diodes (kDrivePreScale + the 600 Hz
-    // corner ≈ 0.22x at 220 Hz), so the old probe (A = 7.7, 0.01–0.1 V) no longer
-    // reached the knee at all.
+    // drive path now attenuates before the diodes (≈ 0.22x at 220 Hz), so the old
+    // probe (A = 7.7, 0.01–0.1 V) no longer reached the knee at all. §56 replaced
+    // that stand-in with the reference's own divider, which is 0.2027x at 220 Hz —
+    // the same attenuation to within 0.8 dB, so the probe still lands.
     // §54 RE-CHECK (no change needed): the drive amp is now the real C7/C8 network, so
     // at 220 Hz and max gain it delivers 47.6x rather than the DC law's 25.82x, and
     // the germanium knee moved DOWN to 0.109 V. The sweep below puts the node's source
@@ -645,8 +682,11 @@ void testClippingStageFidelity(double fs) {
     // (2) THE SUMMING POLE — R20 || C13 = 495 Hz, on the dirt branch.
     // A one-pole low-pass at 495 Hz costs 3 kHz 12.7 dB more than 500 Hz
     // (20*log10(sqrt((1+(3000/495)^2)/(1+(500/495)^2)))), so the dirt path's
-    // 3 kHz-vs-500 Hz tilt has to move by about that much. Measured -17.6 dB with the
-    // pole in; removing the pole alone (and nothing else) leaves -4.9 dB.
+    // 3 kHz-vs-500 Hz tilt has to move by about that much. Measured -13.92 dB with the
+    // pole in; removing the pole alone (and nothing else) leaves -4.9 dB. (It read
+    // -17.6 dB until docs §56 replaced the drive path's input stand-in with the
+    // reference divider, which is +3.7 dB brighter over that same pair — the pole did
+    // not move, the signal reaching it did.)
     {
         const double t = dirtDb(3000.0, 0.5f) - dirtDb(500.0, 0.5f);
         assert(t < -12.0 &&
@@ -675,23 +715,156 @@ void testClippingStageFidelity(double fs) {
                     fs, tiltLo, tiltHi, tiltHi - tiltLo);
     }
 
-    // (4) THE IDENTITY §50's law must keep: the network's DC gain IS A(g), because the
-    // ground leg is recovered from the smoothed A rather than written down twice.
-    // Probed through the model well below every pole of the drive network (its lowest
-    // is 148 Hz at the closed end) — the drive-path high-pass is down there too, so
-    // what is asserted is the RATIO between two knob positions, in which every
-    // knob-independent filter cancels exactly.
+    // (4) THE GANG IDENTITY — re-derived in §56, and it got STRONGER, not weaker.
+    //
+    // §54 asserted this as "the drive amp's DC gain IS A(g)", measured as the dirt
+    // path's gain ratio between two knob positions at 5 Hz, on the argument that every
+    // OTHER filter in that path is knob-independent and therefore cancels. §56 breaks
+    // that argument on purpose: the drive path's input divider is the reference's real
+    // network now, and the GAIN pot's OTHER gang half is its shunt leg, so the divider
+    // is knob-dependent too and no longer cancels. It contributes a measured 1.296 dB
+    // of the ratio, which is why the pre-§56 model reads 12.480 dB here where the two
+    // laws together predict 13.764.
+    //
+    // So the bar is restated on what the model must actually keep: ONE wiper drives
+    // BOTH halves, and each half follows its own published law. The prediction is the
+    // product of the two, and each factor is written from component values here in the
+    // test, transcribed from the reference netlist rather than read out of the model:
+    //   * drive amp     A(g) = 1 + R12/((1-g)*R_pot + Rleg)                (§50's law)
+    //   * input divider H_pre(s) = Zp/(Zc3 + Zp),
+    //                   Zp = [(R6 || 1/sC5) + g*R_pot] || [R7 + (R19 || 1/sC16)]
+    // This is a HARDER assertion than §54's: it fails if either half stops tracking the
+    // wiper, AND it fails if they track it in opposite directions — the failure mode a
+    // two-network gang actually has, and one that leaves each network individually
+    // well-formed. Perturbations measured for docs §56, against a 0.5 dB tolerance:
+    //   * revert the divider to §50's knob-independent 0.65*HP600 stand-in -> 12.480
+    //     measured against a 13.764 prediction, fails by 1.284 dB
+    //   * recover the divider's half as R10b instead of its complement (the two gang
+    //     halves wired backwards, which leaves each network individually well-formed)
+    //     -> 7.212 measured against the same 13.764 prediction, fails by 6.552 dB
     {
         const double lo = 5.0;
         const double r = dirtDb(lo, 1.0f) - dirtDb(lo, 0.35f);
-        const double analytic = toDb(GoldModel::driveGainAt(1.0)) -
-                                toDb(GoldModel::driveGainAt(0.35));
+        const double lawOnly = toDb(GoldModel::driveGainAt(1.0)) -
+                               toDb(GoldModel::driveGainAt(0.35));
+        const double analytic = lawOnly + 20.0 * std::log10(refPreAmpMag(lo, 1.0) /
+                                                           refPreAmpMag(lo, 0.35));
         assert(std::fabs(r - analytic) < 0.5 &&
-               "the drive network's DC gain ratio has drifted from §50's gang law "
-               "A = 1 + 422k/((1-g)*100k + 17k) — the law must be the network's exact "
-               "DC limit (docs §54)");
-        std::printf("  [ok] DC identity @ %.0f Hz: dirt gain at 5 Hz rises %.3f dB from "
-                    "GAIN 0.35 to 1.00; §50's law says %.3f dB\n", fs, r, analytic);
+               "the GAIN gang has drifted: the drive amp's DC gain must be §50's law "
+               "A = 1 + 422k/((1-g)*100k + 17k) AND the input divider's shunt must be "
+               "the SAME wiper's other half, g*100k (docs §50, §56)");
+        std::printf("  [ok] gang identity @ %.0f Hz: dirt gain at 5 Hz rises %.3f dB from "
+                    "GAIN 0.35 to 1.00; the two gang halves' laws say %.3f dB "
+                    "(§50's drive law alone says %.3f)\n", fs, r, analytic, lawOnly);
+    }
+
+    // (5) THE INPUT DIVIDER ITSELF — docs §56, the refit §54 named and deferred.
+    //
+    // Until 2026-07-31 the drive path's input network was a SCALAR times a one-pole
+    // high-pass (kDrivePreScale 0.65 into kDriveHpHz 600), fitted in §50. Measured
+    // against the reference implementation's own PreAmpStage tree it was up to 7.23 dB
+    // out across 41 Hz - 10 kHz (§54's quoted "+/-1.3 dB" was the 82 Hz - 1 kHz window
+    // at one knob position); the netlist network measures 0.004 dB worst-case over the
+    // same grid. Two bars, one at each end of the band, because the stand-in was wrong
+    // in OPPOSITE directions there and a single-frequency bar would miss one of them:
+    //
+    //   (a) THE BOTTOM. The real divider passes far more low end to the diodes than a
+    //       600 Hz high-pass does — |H_pre| at 41 Hz is 0.098 against the stand-in's
+    //       0.044, i.e. the stand-in threw away 7 dB of the drive signal's bass. The
+    //       divider's own 41-vs-500 Hz contribution is -12.04 dB; the stand-in's is
+    //       -19.45. Measured through the whole dirt path: -9.60 dB now, -17.01 dB with
+    //       the stand-in (the rest of that path is a net +2.4 dB over the same pair,
+    //       the 495 Hz summing pole being most of it). Bar at the midpoint of the two.
+    //
+    //   (b) THE TOP. Above its corner the real divider is essentially transparent
+    //       (0.981 at 6 kHz, 0.993 at 10 kHz) where the stand-in shelved flat at 0.65
+    //       from 600 Hz up, so the drive path now delivers the treble the germanium is
+    //       supposed to be clipping. The divider's own 6 kHz-vs-1 kHz contribution is
+    //       +3.69 dB against the stand-in's +1.29. Measured through the dirt path:
+    //       -21.50 dB now, -23.90 with the stand-in. Bar at the midpoint of the two.
+    //
+    // Both bars are one-sided and stated in absolute dB, so neither can be satisfied by
+    // a compensating gain change somewhere else in the path.
+    {
+        const double bass = dirtDb(41.0, 0.35f) - dirtDb(500.0, 0.35f);
+        assert(bass > -13.3 &&
+               "the drive path has lost its low end again — the input divider is a "
+               "one-pole 600 Hz high-pass, not the reference's C3/C5/R6/gang/R7/R19/C16 "
+               "network (docs §56; the stand-in measures -17.01 dB here)");
+        std::printf("  [ok] H_pre bottom @ %.0f Hz: dirt path 41 Hz is %.2f dB below "
+                    "500 Hz (bar -13.3; §50's 0.65*HP600 stand-in gives -17.01; the "
+                    "divider alone contributes %.2f)\n", fs, bass,
+                    20.0 * std::log10(refPreAmpMag(41.0, 0.35) / refPreAmpMag(500.0, 0.35)));
+
+        const double shelf = dirtDb(6000.0, 0.35f) - dirtDb(1000.0, 0.35f);
+        assert(shelf > -22.7 &&
+               "the drive path's top has been shelved again — the reference divider has "
+               "essentially NO shelf loss above its corner, where §50's stand-in held a "
+               "flat 0.65 (docs §56; the stand-in measures -23.90 dB here)");
+        std::printf("  [ok] H_pre top @ %.0f Hz: dirt path 6 kHz is %.2f dB below 1 kHz "
+                    "(bar -22.7; §50's stand-in gives -23.90; the divider alone "
+                    "contributes %+.2f)\n", fs, shelf,
+                    20.0 * std::log10(refPreAmpMag(6000.0, 0.35) / refPreAmpMag(1000.0, 0.35)));
+    }
+}
+
+// --- Test 10: THE DRIVE PATH'S ARITHMETIC FLOOR (docs §56). ------------------
+// §56's input divider is a THIRD-order recursion whose slowest pole (the C3/node
+// corner, ~60 Hz) runs at the OVERSAMPLED rate — 176-192 kHz on the shipped path, so
+// the pole sits at radius 0.998 and a direct form amplifies its own state rounding by
+// roughly (1 - r)^-order. That is not a last-bit detail: with `float` state the model
+// emits an AUDIBLE hiss, and the only reason it does not show up in a THD or a level
+// measurement is that the noise is broadband while every other bar in this file is a
+// single Goertzel bin.
+//
+// So this bar measures the thing directly and needs no second build: drive a pure
+// tone, project out every harmonic of it up to Nyquist, and look at what is left. The
+// bound is the project's own -120 dBFS solver gate (docs §25, §34).
+// Measured (0.15 V / 220 Hz, 2 s, settled half):
+//     double state (shipped)   -135.4 to -142.4 dBFS
+//     float state              -72.4 to -80.1 dBFS   <- the perturbation, fails by 40 dB
+// GAIN 1.00 is deliberately NOT probed: at max drive the model's own 4x alias floor
+// (-93 dBFS, docs §54) dominates this metric, which would make the bar measure
+// aliasing rather than arithmetic.
+void testDrivePathNumericalFloor(double fs) {
+    for (float g : {0.15f, 0.35f}) {
+        const double f0 = 220.0;
+        const auto in = sine(f0, 0.15f, 2.0, fs);
+        const auto o = render(in, {g, 0.5f, 0.5f}, fs);
+        const size_t start = o.size() / 2;
+        const size_t cycles = static_cast<size_t>((double(o.size() - start) * f0) / fs);
+        const size_t win = static_cast<size_t>(cycles * fs / f0);
+        assert(win > 0 && start + win <= o.size());
+        std::vector<double> y(win);
+        for (size_t i = 0; i < win; ++i) y[i] = o[start + i];
+        double sig = 0.0;
+        for (int h = 1; h * f0 < fs * 0.5; ++h) {
+            double re = 0.0, im = 0.0;
+            for (size_t i = 0; i < win; ++i) {
+                const double a = kTwoPi * h * f0 * double(i) / fs;
+                re += y[i] * std::cos(a);
+                im += y[i] * std::sin(a);
+            }
+            re *= 2.0 / win;
+            im *= 2.0 / win;
+            sig += 0.5 * (re * re + im * im);
+            for (size_t i = 0; i < win; ++i) {
+                const double a = kTwoPi * h * f0 * double(i) / fs;
+                y[i] -= re * std::cos(a) + im * std::sin(a);
+            }
+        }
+        double res = 0.0;
+        for (size_t i = 0; i < win; ++i) res += y[i] * y[i];
+        res /= win;
+        const double resDb = 10.0 * std::log10(res + 1e-300);
+        assert(sig > 1e-6 && "no signal — the probe rendered silence");
+        assert(resDb < -120.0 &&
+               "the drive path is emitting broadband noise above the project's "
+               "-120 dBFS floor — the input divider's or the drive amp's recursion has "
+               "been narrowed to float state (docs §56)");
+        std::printf("  [ok] drive-path arithmetic floor @ %.0f Hz, GAIN %.2f: residual "
+                    "%.2f dBFS (bar -120; float state measures -72 to -80)\n",
+                    fs, g, resDb);
     }
 }
 
@@ -720,6 +893,8 @@ int main(int, char**) {
     testAnalyticLaws(48000.0);
     testStabilityHygiene();
     testClippingStageFidelity(48000.0);
+    testDrivePathNumericalFloor(44100.0);
+    testDrivePathNumericalFloor(48000.0);
     std::printf("All GoldModel tests passed (no known open defects — §52's two XFAILs "
                 "were XPASSed and deleted by §54).\n");
     return 0;
