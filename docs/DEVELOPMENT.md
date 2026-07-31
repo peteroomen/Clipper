@@ -8166,3 +8166,435 @@ at GAIN 0.7, where the taper is 2.6 dB colder, and the power section gives back 
 it. Outside the ±1.0 dB gate, so the bless is the owner's; until authorized the core
 suite is red at that one assert by design (the §36/§47 precedent). The other four
 goldens are UNCHANGED (≤ 0.00/0.11 dB) — the scope check.
+
+## 52. The GOLD dirt summing weight — the schematic's network, and an honesty gate that fired
+
+*Date: 2026-07-31 · Branch: `claude/gold-summing-6f557i` · field report (owner, Drive doc "Clipper Feedback"): "Much better, but still too much gain. Edge of breakup is around 5, 0 is fully transparent which is good, 100 gain and it sounds like a marshall at mid-high gain… really they only get creamy/crunchy at max."*
+
+### 52.1 What was fitted, and what it is now
+
+§50 left exactly one fitted constant in this pedal: `kClipBlendWeight = 0.65`, the
+dirt path's weight at the summing node. This slice replaces it with the published
+circuit's own number.
+
+**Sources.** The ElectroSmash gain-stage and full-circuit schematics (the reference
+§27 already names), re-checked component-for-component against Jatin Chowdhury's
+`KlonCentaur` reference implementation — `ChowCentaur/GainStageProcessors/{PreAmpStage,
+AmpStage,FeedForward2,ClippingStage,SummingAmp}.h/.cpp` plus `Paper/Klon_Model.tex`
+and `Paper/Figures/{FullCircuit,GainStageCircuit}.png`. §27's honesty note records
+that the DAFx-19 paper "was NOT reachable from this build environment"; **it was
+reachable this time**, netlist and figures included, via the author's repository
+rather than arxiv.org. Every number below is from that netlist and is cross-checked
+against the schematic figure.
+
+**The summing stage is a transimpedance amp, not a mixer.** U2A's inverting input is a
+virtual ground; three paths push a *current* into it and one feedback resistor turns
+the sum into a voltage:
+
+| path | route to the virtual ground | transconductance |
+|---|---|---|
+| dirt | diode node → `C10` 1 µF → `R16` 47 kΩ | `1/R16` = **21.277 µS** |
+| clean, bass (FF1) | node B → `R7` 1.5 kΩ → (`C16` 1 µF ∥ `R19` 15 kΩ) | 5.87 µS @ 220 Hz |
+| clean, treble (FF2) | gang-2 wiper → `C11` 2.2 nF + `R15` 22 kΩ (+ `R16`) | 0.15 µS @ 220 Hz |
+| feedback | `R20` 392 kΩ ∥ `C13` 820 pF | the transimpedance |
+
+`C10` is the only post-diode network before the summing resistor and it is a **3.4 Hz**
+high-pass (`1/(2π·47k·1µF)`), so there is **no in-band post-diode attenuation** to
+divide out: the dirt branch measures 47.000 kΩ at 220 Hz. Hence
+
+```
+dirt transimpedance   = R20 / R16 = 392k / 47k = 8.3404
+clean transimpedance  = R20 · (G_FF1 + G_FF2) = 1.96 @ 110 Hz / 2.28 @ 220 / 1.82 @ 1 kHz
+kClipBlendWeight      = (R20/R16) / kSumGain  = 8.3404 / 2.0 = 4.1702
+```
+
+The middle row is the slice's **independent check**, and it lands: this model has
+carried `kSumGain · cleanBlend = 2.0` since §27 (justified there as "1 + R/R", which
+was the wrong reasoning for the right number), and the schematic's clean transimpedance
+is 1.82–2.28 across the band — the flat 2.0 is inside ±0.8 dB of it. So the clean side
+needed nothing; only the dirt side was a fit. Expressed as a ratio at one frequency the
+dirt weight is 3.59 (82 Hz) to 4.88 (1 kHz), band-rms 4.45; the code ships the absolute
+form because it reproduces *both* paths' transimpedances instead of picking a frequency.
+
+`kClipBlendFadeTo = 0.15` was re-examined in the same derivation and **deliberately
+left alone**. The real network gives it no support whatsoever — the weight is fixed at
+every knob position (both gangs are in the drive amp's ground leg and the pre-amp
+divider, never in the mix) and the real unit is never clean (0.2–3.9 % THD at min). The
+fade exists only to hold `clipBlend(0) = 0`, this model's bit-exact-clean product
+contract; no derivation supports any particular span, so re-picking it would have been
+a taste move smuggled in beside a derivation.
+
+`kDrivePreScale = 0.65` / `kDriveHpHz = 600` were **validated, not changed**. The same
+netlist gives the real drive path as `H_pre(f,g)·H_amp(f,g)` (the pre-amp divider
+`C3`/`R6`/`C5`/gang-1 into the amp stage `R10b`/`R11`/`R12`/`C7`/`C8`); its shaping
+`H_pre·H_amp/A(g)` measures **0.2234 @ 220 Hz / 0.5343 @ 1 kHz** at the shipped
+g = 0.35, against this model's `kDrivePreScale · HP600` = **0.2238 / 0.5574**. §50's fit
+was right to 0.02 dB / 0.35 dB at the default.
+
+### 52.2 Measured (48 kHz, 220 Hz, TREBLE 0.5, OUTPUT 0.5)
+
+GAIN 0 is **bit-identical** before and after — FNV-1a over the render is
+`85a97e9efc5686ba` (220 Hz 0.15 V sine) and `5b6b300ab9fd3a0d` (0.5 s white noise) on
+both sides. The transparency contract is preserved by construction.
+
+THD %, and the dirt-only RMS as a ratio to the GAIN-0 (clean) RMS — i.e. the
+dirt-to-clean level at the summing node:
+
+| GAIN | THD 0.10 V before→after | THD 0.15 V before→after | dirt/clean 0.15 V before→after |
+|---|---|---|---|
+| 0.00 | 0.000 → 0.000 | 0.000 → 0.000 | 0.000 → 0.000 |
+| 0.15 | 0.86 → 1.59 | 2.06 → 3.96 | 0.641 → 4.114 |
+| 0.35 (default) | 1.41 → 2.42 | 3.25 → 5.84 | 0.727 → 4.662 |
+| 0.50 | 2.27 → 3.63 | 4.66 → 7.97 | 0.807 → 5.178 |
+| 0.75 | 5.82 → 8.33 | 8.69 → 13.55 | 0.988 → 6.340 |
+| 1.00 | 15.30 → 19.60 | 16.77 → 23.70 | 1.289 → 8.270 |
+
+Output level at the 0.15 V anchor: GAIN 1.0 **−14.00 → −0.75 dBFS (+13.3 dB)**;
+default GAIN 0.35 **−16.39 → −5.34 dBFS**. Breakup onset (first GAIN whose THD crosses
+a bar, 0.15 V): 1 % 0.08 → **0.02**, 3 % 0.32 → **0.08**, 5 % 0.53 → **0.28**,
+10 % 0.81 → **0.61**.
+
+### 52.3 THE HONESTY GATE FIRED. Read this before touching the constant
+
+The plan file's gate says: *if the schematic-derived weight does not land the owner's
+percept, do NOT re-fit to taste — ship the derived value and report the gap.* It fired,
+and in the direction nobody expected:
+
+**The derived weight is 6.42× LARGER than the fit it replaces.** Breakup onset moves
+*earlier* (5 % THD at GAIN 0.53 → 0.28), the pedal gets **13.3 dB louder** at max, and
+max THD at the 0.15 V anchor goes 16.8 → 23.7 % — the top of the 15–25 % reference band
+rather than the middle of it, and 27.5–28.3 % at 0.30/0.50 V, outside it. None of the
+plan's acceptance criteria is met except "ratio = schematic value", which is met by
+construction. **The mix was not the cause of "too much gain", and the schematic says so
+in the strongest possible terms: in the real pedal the dirt is coupled to the summing
+node roughly six times harder than this model had it.**
+
+Two coupled defects explain where the perceived gain actually lives, both measured
+here, both named as the next probe (as the gate requires):
+
+1. **The diode node runs hot.** This model's germanium pair is `Is = 200 nA, n = 1.3`
+   → knee **0.286 V** at 1 mA, through `Rs = 2.2 kΩ`. The reference implementation's
+   pair — fitted to a real unit — is `Is = 15 µA, Vt = 25.85 mV` → knee **0.109 V**,
+   through the schematic's `R13 = 1 kΩ`. That is ~2.1× (6.5 dB) of clamped amplitude,
+   and the derived summing weight multiplies it. The schematic's weight is right; it is
+   being applied to a node that is too loud. **This, not the mix, is the next slice.**
+   Note the direction of the residual: even so, this model's *drive* is COLDER than the
+   reference at high gain — the reference's `C7 = 82 nF` across `R10b` gives the amp
+   stage a 1 kHz gain of 100.5× at g = 1 against its 25.8× DC law, where this model
+   holds a gain-independent 0.557 shaping. Correcting that makes the dirt hotter still.
+2. **The 495 Hz summing-amp pole does not exist here.** `C13 = 820 pF` across
+   `R20 = 392 kΩ` low-passes the *whole sum* at `1/(2π·392k·820p)` = **495 Hz** in the
+   real pedal, and the tone control's active treble stage boosts it back. That pole is
+   what keeps a clipped Klon *creamy*, and its absence is the best available explanation
+   of "sounds like a Marshall at mid-high gain". It was **not** ported in this slice
+   because it cannot be ported alone: on this model's flat clean feed it would put a
+   ~−14 dB midrange hole in the GAIN-0 path and destroy the transparency spec. It needs
+   the tone stage in the same slice, and the owner has signed off the current tone.
+
+### 52.4 What it cost the suite: two XFAILs, both the same root cause
+
+`clipper_gold_tests` gains an XFAIL ledger (repo ledgers 4 → 5; a plain `ctest` now
+shows `clipper_gold_tests_xfail_ledger ... ***Skipped`):
+
+- **`gold-summing-rails-engage`** — §27's headroom statement is "the germanium pair is
+  the only clipper in the box". At max GAIN with an ordinary 0.2 V pick it now depends
+  on the TREBLE knob: at noon the tone stage peaks **2.97 V** against the ±8.6 V
+  charge-pump rails (fine), at max it reaches **8.62 V** and the clamp engages.
+- **`gold-summing-alias-at-treble-max`** — the shadow of the first. The rail clamp is at
+  *base rate*, after the downsampler, so its products do not move with the oversampling
+  factor: measured 1× −20.3 / 4× −26.5 / 8× −26.4 dB at 44.1 kHz. A −60 dB "aliasing"
+  assertion on that stimulus no longer measures aliasing.
+
+`testAliasing` was therefore **split**, not loosened: the −60 dB M2 bar is now asserted
+**hard** on a stimulus where it is still isolated (TREBLE at noon, rails idle), where
+the clipper measures **−108.3 dB at 44.1 k / −127.7 dB at 96 k** at 4×; the max-treble
+case keeps running, keeps printing its real number, and is the XFAIL above.
+`testHeadroomAndOutput`'s 1 V wide-open peak guard moved 3.0 → 6.0 V for the same
+reason and it is stated in the comment: 3.0 was a snug drift guard around §27's 1.60 V
+measurement, the *property* is the ±8.6 V rail, and the new measurement is 4.302 V —
+6.0 dB inside it. The case that genuinely violates the property is the XFAIL, not a
+widened bound.
+
+Do **not** answer either XFAIL by re-fitting `kClipBlendWeight`, and do not answer them
+by raising `kRailVolts` — that is a real supply.
+
+### 52.5 Probe re-derivations, M11 rows and scope
+
+`testGermaniumKnee` and `testDiodeLevelContrast` needed **no** re-derivation (unlike
+§50): the knee probe's two ratios are essentially unmoved (onset 189× → 160×, slope
+ratio 0.0063 → 0.0071) because the weight scales the dirt, not the knee, and the Ge/Si
+contrast runs with the clean half switched OUT so the weight cancels in the dB
+difference (5.88–6.11 → 5.84–6.12 dB). Their recorded absolute THDs were re-baselined.
+`testCrossfade` gains the perturbation-proven bar pinning the derived weight —
+restoring `0.65` fails it ("dirt summing weight drifted from the schematic's
+R20/(R16*kSumGain)"), and the suite is green again on restore.
+
+M11 rows re-baselined: A1 defaults RMS **−27.8 → −15.9 dBFS** (peak 0.273 → 1.285 V,
+still inside the 2.0 V pedal ceiling), A2 hum default **−32.0 → −39.6 dB** (min-gain
+−30.1 unchanged — GAIN 0 is bit-exact), A3 GAIN THD **0.0→2.3→15.3 → 0.0→3.6→19.6**,
+A3 treble HF **−25.9→−15.3 → −22.9→−12.3** (knob authority still exactly +10.6 dB),
+A4 window re-centred **−3..17 → 9..29** on a measured +19.3 dB.
+
+**NO golden moved.** `--golden-report` on this branch: all five UNCHANGED
+(`rat_jcm800` +0.00, `sd1_twin_reverb` +0.00, `muff_twin` +0.00, `ts_ac30` +0.00,
+`clean120_chorus` −0.00) — GOLD is in no golden rig, and the GAIN-0 path is bit-exact,
+so the web "transparent at min gain" spec is untouched by construction too. Deliberate
+tone change at every other knob position, argued against the schematic and shipped
+unfitted, with the gap reported above.
+
+## 54. The GOLD clipping stage — the three defects §52 named, fixed against the reference netlist
+
+*Date: 2026-07-31 · Branch: `claude/gold-fidelity-6f557i` (stacked on `claude/gold-summing-6f557i`) · owner decision on §52's honesty gate: "full fidelity slice"*
+
+### 54.1 What §52 left, and why all three had to move together
+
+§52 replaced this pedal's last fitted constant (`kClipBlendWeight`) with the schematic's
+own `R20/(R16·kSumGain) = 4.1702` — and the pedal got **louder and dirtier**, the opposite
+of the field report that commissioned it. Its honesty section named three coupled defects
+and said the mix was not one of them. This slice fixes all three, against the same
+oracle: Jatin Chowdhury's `KlonCentaur` reference implementation, whose netlist is a
+section-by-section model of the real pedal and whose clipper parameters are **fitted to a
+real unit**. The derived summing weight 4.1702 is untouched, and its perturbation test
+still guards it.
+
+| # | defect (§52's words) | fix | reference file |
+|---|---|---|---|
+| 1 | "the diode node runs hot" | `Is` 200 nA → **15 µA**, ideality 1.3 → **1.0** (Vt 25.85 mV), `Rs` 2.2 kΩ → **R13 = 1 kΩ**, plus the node's own **R16 = 47 kΩ** load | `ClippingStage.h` |
+| 2 | "the 495 Hz summing-amp pole does not exist here" | `C13 = 820 pF` across `R20 = 392 kΩ` → a **495.06 Hz** one-pole, on the dirt branch (ADR 016) | `SummingAmp.h` |
+| 3 | "the reference's drive shaping is strongly gain-dependent" | the drive amp is now the **R10b/R11/R12/C7/C8 network** (`AmpStageNetwork`), not a scalar `A(g)` | `AmpStage.h` |
+
+They had to move together because they push in opposite directions: fix 1 takes the dirt
+down ~8 dB, fix 3 puts it back up at mid-band, fix 2 shapes what is left. Shipping any one
+alone would have been a level change dressed as a fidelity fix.
+
+### 54.2 Three-way table 1 — the drive-node |H| (input → the diode node's source)
+
+`BEFORE` = `kDrivePreScale·HP600·A(g)`; `AFTER` = `kDrivePreScale·HP600·H_amp(f,g)`;
+`REF` = `H_pre(f,g)·H_amp(f,g)` from the netlist. The Δ columns are each model's error
+against the reference, in dB.
+
+| f (Hz) | GAIN 0.35 BEFORE | AFTER | REF | Δ before | Δ after | GAIN 1.00 BEFORE | AFTER | REF | Δ before | Δ after |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 82   | 0.541 | 0.563 | 0.746 | −2.79 | −2.45 | 2.273 | 2.651 | 3.595 | −3.98 | −2.64 |
+| 110  | 0.720 | 0.763 | 0.857 | −1.51 | −1.01 | 3.027 | 3.879 | 4.449 | −3.35 | −1.19 |
+| 220  | 1.375 | 1.516 | 1.373 | +0.01 | +0.86 | 5.778 | 10.659 | 9.853 | **−4.63** | **+0.68** |
+| 500  | 2.558 | 2.677 | 2.523 | +0.12 | +0.52 | 10.746 | 33.722 | 32.397 | **−9.59** | **+0.35** |
+| 1000 | 3.426 | 2.856 | 3.284 | +0.37 | −1.21 | 14.393 | 56.011 | 65.316 | **−13.14** | **−1.33** |
+| 3000 | 3.918 | 1.555 | 2.264 | +4.76 | −3.26 | 16.459 | 39.149 | 57.184 | −10.82 | −3.29 |
+| 6000 | 3.975 | 0.988 | 1.497 | +8.48 | −3.61 | 16.702 | 21.576 | 32.735 | −5.84 | −3.62 |
+
+The headline is the GAIN 1.00 block. The old flat-`A` drive was **−4.6 dB at 220 Hz,
+−9.6 dB at 500 Hz and −13.1 dB at 1 kHz** against the real stage; it is now **+0.7 /
++0.35 / −1.3 dB**. Worst error anywhere in the table falls from 13.1 dB to **3.6 dB**, and
+that residual is all at 3–6 kHz and belongs to `kDrivePreScale`/`kDriveHpHz` (see 54.7).
+
+### 54.3 Three-way table 2 — the diode node's static transfer curve
+
+Solving `(Vsrc − V)/Rs = V/Rload + 2·Is·sinh(V/nVt)`. `AFTER` *is* the reference's own
+network, so the third column is redundant by construction — which is the point.
+
+| Vsrc (V) | BEFORE V | AFTER = REF V | BEFORE over REF |
+|---|---|---|---|
+| 0.05 | 0.0483 | 0.0215 | +7.00 dB |
+| 0.10 | 0.0930 | 0.0378 | +7.81 dB |
+| 0.20 | 0.1553 | 0.0581 | +8.53 dB |
+| 0.50 | 0.2173 | 0.0857 | +8.08 dB |
+| 1.00 | 0.2501 | 0.1056 | +7.49 dB |
+| 5.00 | 0.3116 | 0.1494 | +6.39 dB |
+| 20.0 | 0.3598 | 0.1858 | +5.74 dB |
+
+Knee at 1 mA: **0.2862 V → 0.1086 V** (2.635×, 8.42 dB). Measured through the *rendered*
+model at 1 V input wide open, node-referred: **0.336 V → 0.148 V** — that is the
+perturbation-proven bar in `testClippingStageFidelity`.
+
+**Why the reference's fit supersedes the datasheet numbers, said plainly.** The pre-§54
+pair (`Is = 200 nA, n = 1.3`) was a datasheet-shaped guess for "a point-contact germanium
+diode". The reference's pair is fitted to a real Klon's *measured* clipper. For THIS pedal
+a fit to the actual device beats a generic datasheet, and that is the whole argument. Note
+what did **not** change: §36's finding was that the *silicon counterfactual* had its
+ideality dropped to 1.0 and had stopped being a 1N4148 — that fix stands untouched
+(`kSiIdeality = 1.752`), and the Ge/Si contrast is still an asserted property, re-derived
+in 54.8 rather than abandoned.
+
+**A consequence worth knowing before you write a probe:** at `Is = 15 µA` the pair's
+zero-bias incremental resistance is `Vt/(2·Is) = 861.7 Ω`, against **84.0 kΩ** at the old
+`Is = 200 nA`. The reference germanium therefore has **no truly linear region** — it loads
+its own node by 6.78 dB even at microvolts. That is the "germanium bloom" as a number, and
+it is why every small-signal bar in the suite is a *ratio*, in which the loading cancels.
+
+### 54.4 Three-way table 3 — the dirt path after the summing node, and the creamy filter
+
+The dirt's transimpedance, node voltage → summing-amp output:
+
+| f (Hz) | BEFORE (flat `R20/R16`) | AFTER = REF (`R20/R16·\|pole\|`) | Δ |
+|---|---|---|---|
+| 82   | 8.340 | 8.228 | −0.12 dB |
+| 220  | 8.340 | 7.622 | −0.78 dB |
+| 500  | 8.340 | 5.869 | −3.05 dB |
+| 1000 | 8.340 | 3.701 | −7.06 dB |
+| 3000 | 8.340 | 1.358 | −15.76 dB |
+| 6000 | 8.340 | 0.686 | −21.70 dB |
+
+That column is the whole "creamy" argument: at a 220 Hz fundamental the pole costs the
+note 0.78 dB and its 5th harmonic 7.1 dB. **Where it is applied — the dirt branch only —
+is ADR 016**, and the short version is that "pole on the dirt" is algebraically identical
+to "pole on the sum with the clean feed pre-emphasized", which is the idealization this
+model has carried since §27 (`kSumGain = 2.0` flat, against a real composed clean path
+that measures 2.25 at 82 Hz and 0.76 at 1 kHz). The dirt side becomes exactly the real
+composed transfer; the clean side does not move a bit — literally.
+
+### 54.5 The GAIN-0 transparency contract: bit-exact, proven by hash
+
+FNV-1a over four full renders at 48 kHz / 4× / GAIN 0 / OUTPUT 0.5, **before and after**:
+
+| stimulus | hash before | hash after |
+|---|---|---|
+| 220 Hz 0.15 V sine, TREBLE noon | `85a97e9efc5686ba` | `85a97e9efc5686ba` |
+| 0.5 s white noise, TREBLE noon | `d10d3ffca9077b36` | `d10d3ffca9077b36` |
+| 220 Hz sine, TREBLE 0.0 | `449ef98662e22ec2` | `449ef98662e22ec2` |
+| 220 Hz sine, TREBLE 1.0 | `2217f25842819f17` | `2217f25842819f17` |
+
+Identical, so the plan file's 0.25 dB fallback contract never fired. The mechanism is worth
+stating: `clipBlendAt(0) == 0.0` exactly, its smoother starts and stays at 0, and
+`0.0f * finite == 0.0f` — every change in this slice lives on the far side of that
+multiply. The web "transparent at min gain" Playwright spec is untouched for the same
+reason, and so is the M11 A2 min-gain row (−30.1 dB, unmoved).
+
+### 54.6 Measured, at the field-acceptance anchor (0.15 V / 220 Hz, TREBLE noon, OUTPUT 0.5)
+
+| GAIN | THD % before → after | out dBFS before → after | dirt/clean before → after |
+|---|---|---|---|
+| 0.00 | 0.000 → 0.000 | −19.50 → −19.50 | 0.000 → 0.000 |
+| 0.10 | 3.40 → **2.86** | −9.50 → **−14.05** | 2.67 → **0.99** |
+| 0.35 (default) | 5.84 → **4.59** | −5.34 → **−11.33** | 4.66 → **1.71** |
+| 0.50 | 7.97 → **5.62** | −4.52 → **−10.74** | 5.18 → **1.90** |
+| 0.75 | 13.55 → **8.25** | −2.90 → **−9.46** | 6.34 → **2.40** |
+| 1.00 | 23.70 → **14.59** | −0.74 → **−7.90** | 8.27 → **3.51** |
+
+Breakup onset (first GAIN whose THD crosses the bar, same anchor): 1 % **0.02 → 0.03**,
+3 % **0.08 → 0.11**, 5 % **0.28 → 0.42**, 10 % **0.61 → 0.87**. THD at other input levels,
+max GAIN: 0.10 V **19.6 → 13.1 %**, 0.30 V **27.5 → 14.4 %**, 0.50 V **28.3 → 14.7 %** —
+the level-dependence has nearly gone, which is what a soft knee behind a fixed drive does.
+
+**HONESTY GATE, second reading.** The plan set five acceptance rows. Four land, one misses:
+
+1. *near-clean at knob ≤ 0.10* — **partially**. 2.86 % THD at GAIN 0.10 (was 3.40 %) is
+   grit, not clean; the 1 % crossing is at GAIN 0.03. Against the reference rows the real
+   unit measures 0.2–3.9 % THD **even at minimum**, so 2.9 % at knob 10 is inside the real
+   pedal's own clean range — but it is not "near-clean" in the sense the owner asked for,
+   and this model's own GAIN 0 is silent-clean by contract, so the knob's bottom decade is
+   steeper than a real one's. Reported, not fitted.
+2. *grit onset mid-knob or later* — **yes**: 5 % at GAIN 0.42, 10 % at 0.87 (§52: 0.28 / 0.61).
+3. *max THD in the reference's 15–25 % band* — **MISSED, by 0.4 points**: 14.59 % at the
+   anchor, 13.1–14.7 % across 0.10–0.50 V inputs. It sits just under the band rather than
+   inside it. Nothing was re-gained to reach it; the gap is the report.
+4. *the creamy tilt present* — **yes, and honestly mixed**. The dirt's 3 kHz-vs-500 Hz
+   harmonic ratio at max GAIN goes **−23.89 → −25.28 dB** (1.4 dB darker), and the M11
+   whole-pedal HF-harmonic row goes **−22.9 → −29.4 dB** (6.5 dB darker). The pole alone is
+   worth 12.7 dB of that tilt; fix 3's C7 boost gives some back, which is why the mid-knob
+   figure at GAIN 0.35 actually gets *brighter* (−53.36 → −49.54 dB). Both are the
+   reference netlist's own behaviour, not a compromise between them.
+5. *max output back within a few dB of §50's* — **partially**: §50 measured −14.00 dBFS at
+   this anchor, §52 took it to −0.74, and §54 lands at **−7.90** — 6.1 dB above §50 and
+   7.2 dB below §52. Closer to §50 than to §52, but "a few dB" is generous for 6.1.
+
+M11 rows re-baselined: A1 defaults **−15.9 → −22.6 dBFS** (peak 1.285 → 0.443 V), A2 hum
+default **−39.6 → −35.6 dB** (min row −30.1 UNCHANGED — GAIN 0 is bit-exact), A3 GAIN THD
+**0.0→3.6→19.6 → 0.0→4.2→13.1**, A3 treble HF **−22.9→−12.3 → −29.4→−18.9** (knob authority
+still exactly +10.6 dB, for the fourth re-baseline running), A4 default-rig delta
+**+19.3 → +12.5 dB**. The A4 window was **NOT** re-centred: 12.5 is comfortably inside the
+9..29 §52 opened, and re-snugging a window around the newest measurement is how a drift
+guard becomes a fit.
+
+**NO golden moved.** `--golden-report` on this branch: `rat_jcm800` +0.00, `sd1_twin_reverb`
++0.00, `muff_twin` +0.00, `ts_ac30` +0.00, `clean120_chorus` −0.00 — GOLD is in no golden
+rig and the GAIN-0 path is bit-exact.
+
+### 54.7 What was re-scoped rather than changed, and what is left
+
+`kDrivePreScale = 0.65` / `kDriveHpHz = 600` **stand**, but what they represent changed.
+§52 validated them against `H_pre·H_amp/A(g)` — the whole drive path's shaping — because
+the model had no amp-stage network. With `H_amp` now exact, they stand for `H_pre` alone,
+and re-measured against *that*:
+
+| f (Hz) | 82 | 110 | 220 | 500 | 1000 | 3000 |
+|---|---|---|---|---|---|---|
+| `H_pre` (reference, g = 0.35) | 0.1167 | 0.1317 | 0.2027 | 0.3921 | 0.6409 | 0.9279 |
+| model `0.65·HP600` | 0.0880 | 0.1172 | 0.2238 | 0.4161 | 0.5574 | 0.6374 |
+| Δ dB | −2.45 | −1.02 | **+0.86** | **+0.52** | **−1.22** | −3.26 |
+
+Within ±1.3 dB across the guitar core band — the same accuracy §52 recorded, now measured
+against the right target. `H_pre` is really a one-pole HP with a ~1105 Hz corner into a
+0.93 shelf, where the model has a 600 Hz corner into a 0.65 shelf; refitting to
+(0.93, 1105) is a candidate for a later slice and was **not** done here, because this slice
+already moves three networks and a fourth constant would have had no isolated perturbation
+proof. `H_pre` is also mildly knob-dependent below g = 0.15 (0.1735 vs 0.2027 at 220 Hz),
+where the dirt is muted by the contract fade anyway.
+
+Deliberately still out of scope, and named: the FF1/FF2 clean feed-forward networks (they
+are what would end the flat-clean idealization — ADR 016's honest cost), the reference's
+±4.5 V clip on the drive amp's output (this model documents ±8.6 V charge-pump rails
+instead, and the diodes clamp long before either), `kCp = 4.7 nF` (retained as an
+anti-alias guard-rail; with the new Thevenin source R13 ∥ R16 = 979 Ω its corner is
+34.6 kHz, out of band), and the OUTPUT pot law.
+
+Implementation notes for whoever touches `AmpStageNetwork` next: it is a plain bilinear
+transform at `K = 2·fs` with **no** frequency warping, which is fine because every pole of
+that network sits between 148 Hz and 1.10 kHz across the whole knob travel and it runs at
+the *oversampled* rate. Its coefficients are rebuilt once per chunk (the same control-rate
+discipline the scalar `A` had) and `setFromGain` no-ops when the leg has not moved, so a
+parked knob costs one comparison. Its `y1`/`y2` are recursive states that rest at zero, so
+both are `flushDenormal`-guarded per the §33 scope rule.
+
+### 54.8 The suite: two XFAILs XPASSed and were deleted, four bars added
+
+`clipper_gold_tests` had a two-entry XFAIL ledger, both naming **this** slice as their fix.
+Both XPASSed, so per the ratchet they are gone and their properties are hard assertions:
+
+| §52 XFAIL | before | after | now asserted as |
+|---|---|---|---|
+| `gold-summing-rails-engage` | tone-stage node **8.624 V** vs the 8.600 V rail | **1.274 V** (44.1 k) / **1.166 V** (96 k) | `testHeadroomAndOutput`, bar = the rail itself |
+| `gold-summing-alias-at-treble-max` | 4× **−26.5 dB**, flat in the OS factor | 4× **−92.9 dB**; 1× −27.3, 8× −106.8 | `testAliasing`, TWO bars: −60 dB **and** ≥ 20 dB of 1×→4× improvement |
+
+The second gets two bars deliberately: the defect was never "the number is too high", it
+was "the number stopped depending on the oversampling factor", and only the second bar can
+fail on that. `clipper_add_xfail_ledger(clipper_gold_tests)` is removed from
+`core/CMakeLists.txt` — **ctest 26 → 25 entries, repo ledgers 5 → 4**.
+
+New `testClippingStageFidelity`, one bar per fix plus the identity:
+
+1. **diode node** — 1 V in wide open clamps at **0.1477 V** node-referred (band 0.10–0.22;
+   the reference's static solve at that drive is 0.168 V, the pre-§54 pair gives 0.336).
+2. **summing pole** — the dirt path's 3 kHz sits **17.64 dB** below its 500 Hz (bar −12;
+   without the pole, −4.93).
+3. **drive C7** — the dirt path's 500-vs-110 Hz tilt is **7.90 dB at GAIN 0.15 and
+   15.97 dB at GAIN 1.00**, a spread of **8.07 dB** (bar 5). Without C7 the drive amp is a
+   flat `A(g)` and every other filter in that path is knob-independent, so the four knob
+   positions measure 7.27 / 7.26 / 7.24 / 7.23 dB — a spread of **−0.04 dB**, flat to the
+   measurement. The cleanest perturbation in the slice.
+4. **the §50 identity** — the drive network's DC gain *is* `A(g)`, because the ground leg is
+   recovered from the smoothed `A` (`R10b + R11 = R12/(A−1)`) rather than written down
+   twice. Measured through the model at 5 Hz: GAIN 0.35 → 1.00 raises the dirt by
+   **12.480 dB**; §50's law says **12.468**.
+
+Two probes re-derived, in the §42.9 / §50.3 discipline:
+
+- **`testDiodeLevelContrast`** — its band moved 4.0–9.0 dB → **11.0–18.0 dB**, and this is a
+  change of *reference*, not a loosened bound. The old band came from a datasheet argument
+  (1N34A ~0.3 V vs 1N4148 ~0.65 V ≈ 6 dB) about a germanium this model no longer has. The
+  two device models now in the file are 0.1086 V (the reference's fit to a real unit) and
+  0.5839 V (the 1N4148 SPICE card `IS=2.52n N=1.752`, corroborated by its datasheet's
+  ~0.62 V typical), i.e. **14.61 dB** apart analytically; measured through the whole dirt
+  path, **12.70–14.29 dB**. It still catches the bug it exists for: restoring §36's
+  `kSiIdeality = 1.0` measures **8.51–10.22 dB** and fails the 11.0 floor. That
+  regression now has *two* independent bars, because `testGermaniumKnee` catches it
+  harder still — its onset ratio collapses 139× → **3.8×** against a 20× bar.
+- **`testGermaniumKnee`** — re-checked, **no change needed**. The sweep now puts the node at
+  0.069–0.128 V around the 0.109 V knee, still a straddle from the toe to well past it.
+  Ratios: onset 160× → **139×** (bar 20×), slope ratio 0.0071 → **0.00565** (bar 0.05).
+
+Web: the `gold worklet` Playwright spec passes unchanged, but note its `pushedH3 >
+0.1·pushedF1` bar now measures **0.1056** — 5.6 % of margin, where it had ~2×. It was left
+alone (the property is real, and lowering it would be loosening a bound to go green), but it
+is now the tightest guard on this pedal and the next slice to touch the dirt path should
+expect to re-derive it.
