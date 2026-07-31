@@ -318,11 +318,44 @@ independent slices that can interleave anywhere:
   normalization); breakup onset now VOLUME 0.5 vs the Twin's 0.9, 2.2× its THD at
   mid-knob, guarded permanently by `testBreakupOrdering`. ts_ac30 golden regenerated
   deliberately.)*
-- **M10.3 — Orange tube-head style** *(S–M)* — heavy EL34/JCM800 machinery
-  reuse with Orange voicing; quick win after 10.1–10.2.
-- **M10.4 — Mesa high-gain style** *(L)* — hardest, last: 5+ cascaded stages
-  with heavy interstage voicing, selectable TUBE-rectifier sag (the sag model
-  parameterizes for it), loose/tight modes, graphic-EQ charm (5 biquads).
+- **M10.3 — Orange OR120 "Overdrive"** *(S–M)* — heavy EL34/JCM800 machinery
+  reuse with Orange voicing. The early-70s picture-graphics head: no master
+  volume, thick midrange-forward voicing, breakup from the power section
+  (Sabbath / Sleep / Mastodon). Ships with a **synthesised PPC412-style cab**
+  in the docs §15 modal-synthesis house style — do NOT commit a captured
+  third-party IR (provenance + licensing, and it breaks the pattern that every
+  cab in this project is generated). Owner: *"I'm an orange man."*
+- **M10.4 — Mesa Dual Rectifier** *(L)* — 5+ cascaded stages with heavy
+  interstage voicing, loose/tight modes, graphic-EQ charm (5 biquads).
+  **Rectifier, not Mark series** — the ask is grunge and 90s metal
+  (Soundgarden / Deftones / Korn); the Mark IIC+ is the *…And Justice* /
+  Petrucci voice and is a different amp. **Cost dropped after docs §55:** the
+  Recto's signature TUBE-vs-SILICON rectifier switch ("spongy" vs "bold") is
+  now close to a parameter change on the real Thévenin supply + reservoir droop
+  the AC30 slice built, rather than the new physics it would have been before.
+- **M10.7 — Orange Rockerverb 100 MkIII** *(M)* — the modern Orange, and the
+  second half of the owner's "OR120 and Rockerverb" ask. Deliberately NOT
+  bundled with M10.3: it adds footswitchable clean/dirty channel structure, a
+  master volume and its own reverb, so it is a real slice rather than a
+  re-voice. Do it directly after M10.3, while the Orange research is warm.
+- **M10.8 — Marshall "Bluesbreaker" 1962 combo** *(M)* — the JTM45 combo, the
+  Clapton *Beano* tone. **Note the name collides:** the Bluesbreaker *pedal* is
+  a transparent low-gain OD that overlaps the Gold/Myth territory and is NOT
+  wanted; the *combo* is a genuine hole. KT66/5881 power, no master volume,
+  the 5F6-A Bassman lineage.
+- **M10.9 — Marshall 1959 Superlead 100W plexi** *(M)* — the non-master-volume
+  ancestor the JCM800 descends from (Hendrix / Page / early Van Halen). The
+  **cheapest amp on this list per unit of tone**: mostly a re-voice of machinery
+  M9 already built, minus the master volume, plus the shared cathode / jumpered
+  channels.
+- **M10.10 — Fender Champ (5F1)** *(S–M)* — the small tweed. Single-ended
+  class A 6V6, ONE tone control, no negative feedback, breaks up almost
+  immediately. Fills the "dirty Fender" hole: the lineup has a clean Twin but
+  no Fender that distorts. New machinery is the single-ended output stage
+  (the plate load line — see audit finding 10).
+- **M10.11 — Soldano SLO-100** *(M–L)* — the origin of modern high gain and the
+  ancestor of nearly every boutique lead channel. Best done AFTER the Mesa, so
+  the cascaded-preamp machinery already exists to reuse.
 - **M10.5 — Crush-style solid-state practice amp** *(S)* — the user owns one:
   personal ground truth, like the RAT was. Op-amp clipping stages = existing
   machinery (op-amp model + ADAA). Includes its digital-reverb-and-all
@@ -438,7 +471,8 @@ how much existing machinery each reuses:
    mirror) and a 500 kΩ drive pot (+40.6 dB max plateau, analytic, vs the SD-1's
    +46.6 dB). Green `slim`-face box; the canonical mid-forward clean-boost stacker.
 2. **CE-2 chorus pedal** *(S)* — mono pedal re-voicing of the JC-120 BBD
-   chorus machinery we already validated.
+   chorus machinery we already validated. **Superseded 2026-07-31 by M13.7**
+   (the CE-1, which is literally the JC-120 circuit in a box).
 3. ~~**Phase 90** *(S–M)* — 4 JFET allpass stages + LFO + feedback; the spring
    work built deep allpass fluency. Script-logo voicing.~~ ✅ *(shipped as the
    'phaser' pedal "Ninety" — see docs §20: 4 first-order allpasses swept by one
@@ -483,6 +517,68 @@ how much existing machinery each reuses:
    add_pedal + always-on / push-a-breaking-up-amp / stacking coaching.)*
 7. **Deluxe Memory Man** *(L)* — BBD delay + compander + degradation;
    replaces the parked DD-3 as the delay milestone (analog > digital DSP-wise).
+
+### M13 — Effects families: the "all kinds" expansion *(planned 2026-07-31)*
+
+The lineup has **five flavours of dirt and almost nothing else**. Every family
+below is entirely absent, and each absence makes whole genres unplayable: funk
+needs wah + comp + envelope filter, country needs comp + delay, ambient needs
+delay + reverb, modern metal needs gate + EQ. Ordered by the project's own
+principle — machinery reuse first.
+
+**The three primitives that unlock most of it.** Deliberately called out because
+each one is shared by several pedals, and building the primitive first is what
+keeps these slices small:
+
+| Primitive | Unlocks |
+| --- | --- |
+| Resonant swept bandpass | wah **and** envelope filter (foot-driven vs envelope-driven) |
+| Envelope detector + gain element | compressor **and** noise gate (same detector, inverted) |
+| Delay line (partly exists — the JC-120 chorus is BBD) | delay, flanger, tape echo |
+
+1. **M13.1 — Cry Baby wah + envelope filter** *(M)* — GCB-95-style inductor
+   bandpass. A screen has no treadle, so **POSITION is a normal automatable
+   parameter** (drive it from a DAW expression pedal / automation lane) **plus an
+   AUTO mode** where an envelope follower sweeps the same filter — one primitive,
+   Cry Baby and Mu-Tron III territory together. Owner-chosen 2026-07-31.
+2. **M13.2 — Dyna Comp / Ross compressor** *(M)* — CA3080 OTA, two knobs
+   (SUSTAIN + LEVEL). The squishy pedal compressor: country chicken-pickin',
+   funk, the always-on sustain trick. Its envelope detector is the noise gate's.
+3. **M13.3 — Optical compressor (LA-2A style)** *(S–M after 13.2)* — the second
+   half of the owner's "the first two types". Electro-optical attenuator,
+   program-dependent release. Follows the **SD-1 / TS precedent**: a shared,
+   config-parameterized compressor engine with two voicings shipping as two
+   pedals — NOT bundled into 13.2.
+4. **M13.4 — Delay: Deluxe Memory Man / Echoplex EP-3** *(L)* — the single
+   biggest hole in the lineup. BBD + compander + degradation. Note the EP-3's
+   *preamp* is a tone in its own right (Page, EVH) and is worth exposing even
+   with the delay off.
+5. **M13.5 — Uni-Vibe** *(M)* — four **mismatched** phase stages (not the
+   Ninety's matched four), photocell-driven, lamp thermal lag. Genuinely not
+   reproducible with the existing phaser; Hendrix / Trower / Gilmour.
+6. **M13.6 — Utility + modulation batch** *(M, splittable)* — **Boss NS-2-style
+   noise gate** (mandatory companion to M10.4; reuses 13.2's detector),
+   **MXR 10-band graphic EQ** (mandatory for metal; 10 biquads, trivial DSP),
+   **Electric Mistress flanger** (cheap once the delay line exists),
+   **Mu-Tron III envelope filter** (falls out of 13.1 if that slice builds it).
+7. **M13.7 — CE-1 Chorus Ensemble** *(S — "almost free")* — worth knowing: the
+   CE-1 **is** the Roland JC-120's chorus circuit put in a box, which is its
+   literal design origin. So this is a re-voicing of machinery already validated,
+   not a new model. Supersedes the older CE-2 line item below.
+8. **M13.8 — Standalone reverb pedal** *(M)* — spring exists but only *inside*
+   amps. Wanted: hall / plate / room as a pedal.
+9. **M13.9 — Octavia** *(S–M)* — **cheaper than it looks**: octave-UP needs no
+   pitch tracking at all (full-wave rectifier → transformer → fuzz). Octave-DOWN
+   is the hard one and is not in this item. *(Not selected in the 2026-07-31
+   planning pass — recorded because the cost is widely over-estimated.)*
+
+**Not wanted (decided 2026-07-31):** the Bluesbreaker *pedal* — it overlaps the
+Gold/Myth transparent-OD territory already shipped. The *combo* is M10.8.
+
+**Standing risk this expansion sharpens:** there is still **no undo path** for
+removing a pedal, and no preset system. At six pedals that is an annoyance; at
+fifteen it is a liability. `feat/undo-ring` exists as a branch — land it before
+the board gets much longer.
 
 ### Parked (unordered)
 
