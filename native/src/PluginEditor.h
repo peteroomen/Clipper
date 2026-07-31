@@ -38,7 +38,14 @@
 // / Clean 120 red), mirroring the web Amp faces.
 //
 // All controls stay 100% APVTS-attached; the drawing lives in ClipperLookAndFeel
-// and PedalCard. Light-bench look only (a dark theme is still future work).
+// and PedalCard.
+//
+// THEMES (visual pass 3). The editor ships the web's light AND dark token contexts.
+// It follows the OS through juce::DarkModeSettingListener, and a small top-bar chip
+// cycles Auto → Light → Dark as a manual override. The choice is persisted in a
+// juce::PropertiesFile in the app config dir — it is a look, not audio, so it is
+// deliberately NOT an APVTS parameter and never reaches a host's automation or its
+// session state. The PEDALS stay pinned dark in both themes (web parity).
 
 #ifndef CLIPPER_NATIVE_PLUGIN_EDITOR_H
 #define CLIPPER_NATIVE_PLUGIN_EDITOR_H
@@ -108,10 +115,17 @@ public:
 };
 
 class ClipperAudioProcessorEditor : public juce::AudioProcessorEditor,
-                                    private juce::Timer {
+                                    private juce::Timer,
+                                    private juce::DarkModeSettingListener {
 public:
     explicit ClipperAudioProcessorEditor(ClipperAudioProcessor&);
     ~ClipperAudioProcessorEditor() override;
+
+    // Set the theme MODE (Auto follows the OS). `persist` writes the choice to the
+    // properties file; the headless snapshot tool passes false so photographing
+    // both themes never edits the user's settings.
+    void setThemeMode(skin::ThemeMode, bool persist = true);
+    skin::ThemeMode themeMode() const { return themeMode_; }
 
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -143,6 +157,12 @@ private:
     using ParamAttach = juce::ParameterAttachment;
 
     void timerCallback() override;  // notices an EXTERNAL board change (host load)
+    void darkModeSettingChanged() override;  // the OS flipped light/dark
+
+    // Re-resolve every theme-dependent colour held by a widget (schemes, accents,
+    // label colours) and repaint the whole tree. Cheap, and only ever on a flip.
+    void applyTheme();
+    void cycleTheme();  // the top-bar chip: Auto -> Light -> Dark -> Auto
 
     void rebuildBoard();          // recreate the cards from the processor's chain
     void scheduleBoardRefresh();  // ...but never from inside a card's own callback
@@ -159,9 +179,11 @@ private:
     ClipperAudioProcessor& proc_;
     ClipperLookAndFeel lnf_;
 
-    // Top-bar selectors.
+    // Top-bar selectors + the theme override chip.
     juce::ComboBox ampVoiceBox_, oversampleBox_;
     std::unique_ptr<ComboAttach> ampVoiceAttach_, oversampleAttach_;
+    ChipButton themeChip_;
+    skin::ThemeMode themeMode_{skin::ThemeMode::Auto};
 
     // INPUT card.
     NeuKnob inputTrim_;
@@ -203,7 +225,8 @@ private:
     // Per-voice presentation state.
     int ampModel_ = 0;
     juce::String ampWordmark_{"Clean 120"}, ampEyebrow_{"Solid State · Stereo"};
-    juce::Colour ampAccent_{skin::accentClean};
+    skin::AccentId ampAccentId_{skin::AccentId::Clean};
+    juce::Colour ampAccent_{skin::accent(skin::AccentId::Clean)};
     std::vector<NeuKnob*> ampPrimaryKnobs_;  // ordered tone knobs for this voice
     std::vector<NeuKnob*> ampModKnobs_;      // speed/depth (chorus/tremolo), if any
     juce::String modCaption_;                // "Chorus" / "Tremolo" / ""

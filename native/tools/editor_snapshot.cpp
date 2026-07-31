@@ -217,6 +217,49 @@ int main(int argc, char** argv) {
     shoot(*editor, outDir, "native_parity_twin_tremolo.png",
           "Twin tremolo row - same divider band");
 
+    // ---- 4. BOTH THEMES x every amp voice (visual pass 3) --------------------
+    // The editor ships the web's two token contexts. The mode is set with
+    // persist=false so photographing them never rewrites the user's own setting.
+    // The board carries two pedals so the pinned-dark chassis (which must NOT move
+    // between themes) and its cast shadow on the rail are in every frame.
+    {
+        proc.setChainOrder({PEDAL_RAT, PEDAL_SD});
+        editor->setSize(1360, 640);
+        setParam(proc.apvts, pid::chorusMode, 1.0f);
+        struct ThemeShot {
+            clipper::native::skin::ThemeMode mode;
+            const char* tag;
+        };
+        const ThemeShot themes[] = {{clipper::native::skin::ThemeMode::Light, "light"},
+                                    {clipper::native::skin::ThemeMode::Dark, "dark"}};
+        for (const auto& t : themes) {
+            editor->setThemeMode(t.mode, /*persist=*/false);
+            for (const auto& v : voices) {
+                setParam(proc.apvts, pid::ampModel, (float)v.index);
+                const juce::String file =
+                    juce::String("native_theme_") + t.tag + "_" +
+                    juce::String(v.file).replace("clipper_native_", "");
+                shoot(*editor, outDir, file.toRawUTF8(),
+                      (juce::String(v.label) + " - " + t.tag + " theme").toRawUTF8());
+            }
+        }
+        // The full six-pedal board in each theme: the rail, the edge veils, the
+        // cables and the pedal cast shadows all have to survive the flip.
+        proc.setChainOrder(full);
+        setParam(proc.apvts, pid::ampModel, 1.0f);
+        for (const auto& t : themes) {
+            editor->setThemeMode(t.mode, /*persist=*/false);
+            editor->refreshFromState();
+            editor->resized();
+            editor->setBoardScroll(0.5);
+            shoot(*editor, outDir,
+                  (juce::String("native_theme_") + t.tag + "_board.png").toRawUTF8(),
+                  (juce::String("6-pedal board mid-scroll - ") + t.tag + " theme")
+                      .toRawUTF8());
+        }
+        editor->setThemeMode(clipper::native::skin::ThemeMode::Light, /*persist=*/false);
+    }
+
     editor = nullptr;
     return failures == 0 ? 0 : 1;
 }
