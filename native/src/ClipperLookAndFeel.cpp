@@ -118,6 +118,11 @@ juce::Colour accent(AccentId id) {
         // Gold takes the DARK token in BOTH themes — see the header: it only ever
         // paints on the pinned-dark chassis, where #8F6A22 measures ~2.8:1.
         case AccentId::Gold:   return juce::Colour(0xffD9B36B);
+        // Wah "Weeper" (docs §58) — TEAL, --accent-wah. Light #17868F / dark
+        // #3ED0DD, verbatim from tokens.css. Deliberately the furthest hue from
+        // the six dirt/mod accents: this is the first pedal of a new family and
+        // the board should read that at a glance.
+        case AccentId::Wah:    return d ? juce::Colour(0xff3ED0DD) : juce::Colour(0xff17868F);
         case AccentId::Jcm:    return d ? juce::Colour(0xffE8B84B) : juce::Colour(0xffA87A18);
         case AccentId::Twin:   return d ? juce::Colour(0xff7FB4E8) : juce::Colour(0xff4E7BA8);
         case AccentId::Ac30:   return d ? juce::Colour(0xffE08A4A) : juce::Colour(0xffB4612C);

@@ -20,6 +20,7 @@
 .pedal[data-pedal-type="tuner"] { --pedal-accent: var(--accent-tuner); --pedal-accent-glow: var(--accent-tuner-glow); }
 .pedal[data-pedal-type="phaser"] { --pedal-accent: var(--accent-phaser); --pedal-accent-glow: var(--accent-phaser-glow); }
 .pedal[data-pedal-type="gold"]  { --pedal-accent: var(--accent-gold);  --pedal-accent-glow: var(--accent-gold-glow); }
+.pedal[data-pedal-type="wah"]   { --pedal-accent: var(--accent-wah);   --pedal-accent-glow: var(--accent-wah-glow); }
 .pedal.raised {
   background:
     linear-gradient(160deg, var(--chassis-tint, transparent), var(--chassis-tint, transparent)),
@@ -371,3 +372,67 @@
 /* The big round stomp low-center — larger than the standard RAT stomp. */
 .pedal[data-face="wide"] .fsw-zone { margin-top: 22px; }
 .pedal[data-face="wide"] .fsw { width: 104px; height: 104px; }
+
+/* ---- WAH 'rocker' face: the treadle pedal (post-v1.1, docs §58) ----
+   The lineup's first FILTER pedal is also the first whose real enclosure is not a
+   box you press but a ROCKING TREADLE you stand on, hinged at the heel. That is
+   its morphology cue, and it is the whole point of giving it its own layout
+   rather than reusing the SD-1's 'compact' pad: the SD-1's treadle is a flat
+   rubber pad occupying the lower body, while a wah's footplate IS the enclosure —
+   full width, deeply RIBBED for grip, and tilted. Wider and LOWER than every
+   other face so the silhouette reads apart in grayscale.
+   Accent: TEAL (--accent-wah), the furthest hue from the six dirt/mod pedals. */
+.pedal[data-face="rocker"] {
+  width: 360px;
+  padding-top: 20px;
+}
+.pedal[data-face="rocker"] .pedal-model { letter-spacing: .2em; }
+.pedal[data-face="rocker"] .knob-row {
+  --kd: 48px;            /* small knobs on a strip across the top edge */
+  gap: 26px;
+  justify-content: center;
+  margin: 10px 0 18px;
+}
+.pedal[data-face="rocker"] .k-name { letter-spacing: .14em; font-size: 9px; }
+.rocker-zone { margin-top: 14px; margin-bottom: 0; }
+
+/* The footplate. Dark rubber over a cast body, hinged at the BACK (top edge): the
+   top edge keeps a visible hinge line and stays put, the toe end carries the ribs
+   and drops when stomped. Ribs run ACROSS the plate (the real grip pattern) and
+   are far coarser than the SD-1's toe strip — that difference is deliberate and
+   is what separates the two silhouettes. */
+.fsw-rocker {
+  width: 100%;
+  height: 178px;
+  border-radius: 16px 16px 22px 22px;
+  background: linear-gradient(168deg, #2b2e34 0%, #23262b 26%, #15161a 100%);
+  box-shadow: 7px 10px 22px var(--sh-dark), -6px -6px 14px var(--sh-light),
+    inset 0 2px 0 rgba(255, 255, 255, 0.05);
+  display: flex; align-items: flex-end; justify-content: center;
+  padding-bottom: 18px;
+  overflow: hidden;
+}
+.fsw-rocker::before { /* the hinge line at the heel, plus the plate's tread face */
+  content: ""; position: absolute; inset: 5px 5px 5px 5px; border-radius: 12px 12px 18px 18px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.05) 0 2px, transparent 2px 5px,
+                            rgba(0,0,0,.45) 5px 7px, transparent 7px),
+    linear-gradient(168deg, #232529 0%, #191b1f 40%, #101114 100%);
+  box-shadow: inset 1px 2px 4px rgba(255, 255, 255, 0.035),
+    inset 0 -5px 12px rgba(0, 0, 0, 0.6); }
+.fsw-rocker::after { /* the ribbed footplate — coarse ridges across the whole toe */
+  content: ""; position: absolute; left: 16px; right: 16px; top: 58px; bottom: 12px;
+  border-radius: 8px;
+  background: repeating-linear-gradient(180deg,
+    rgba(0, 0, 0, 0.55) 0 3px,
+    rgba(255, 255, 255, 0.045) 3px 5px,
+    transparent 5px 13px);
+  opacity: .6; }
+.fsw-rocker:active, .fsw-rocker.stomped {
+  /* the TOE drops — the plate rocks about the heel rather than sinking flat */
+  transform: perspective(520px) rotateX(3.2deg);
+  transform-origin: top center;
+  box-shadow: 3px 5px 11px var(--sh-dark), -3px -3px 8px var(--sh-light),
+    inset 2px 3px 8px rgba(0, 0, 0, 0.62); }
+.pedal[data-face="rocker"] .treadle-wordmark { font-size: 19px; letter-spacing: .10em; }
+.pedal[data-face="rocker"]:not(.on) .treadle-wordmark { opacity: .55; }

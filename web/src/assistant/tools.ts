@@ -255,14 +255,24 @@ export const TOOLS = [
       "'phaser' (a script-era 4-stage phaser — the classic swirling/whooshing " +
       'modulation with ONE knob, SPEED: placed AFTER the dirt it gives the vocal ' +
       'EVH swoosh, before the dirt it is subtler; slow = tape-warble, fast = ' +
-      "Leslie-ish shimmer), and 'tuner' (a chromatic tuner — no " +
+      "Leslie-ish shimmer), " +
+      "'wah' (the 'Weeper' — a Cry-Baby-style WAH and the rig's first FILTER " +
+      'pedal: a sharp resonant peak sweeping ~450 Hz to ~2.25 kHz, the vowel/voice ' +
+      'effect. Its knobs are POSITION (heel 0 -> toe 100 — the treadle itself, an ' +
+      'ordinary parameter you can set or automate), SENSE (0 = a plain manual wah; ' +
+      'above 0 an ENVELOPE FOLLOWER sweeps the same filter from your picking, i.e. ' +
+      'an auto-wah/envelope filter) and VOICE (how NARROW the peak is — the classic ' +
+      '"vocal mod": low = broad and vowel-less, high = sharp and talkative). ' +
+      'Placement matters: BEFORE the dirt is the classic funk/rhythm wah, AFTER the ' +
+      'dirt is the screaming lead wah), ' +
+      "and 'tuner' (a chromatic tuner — no " +
       'tone, but when stomped ON it MUTES the rig so the player can tune in ' +
       'silence; put it first in the chain by convention). Omit `position` to ' +
       'append at the end (just before the amp), or give a 0-based slot to insert.',
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'phaser', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'phaser', 'wah', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -303,6 +313,9 @@ const PEDAL_PARAM: Record<string, string> = {
   dist: 'distortion',
   drive: 'distortion', // SD-1 Drive shares the distortion slot (id 0)
   speed: 'distortion', // phaser SPEED is the one knob — also slot 0
+  position: 'distortion', // wah POSITION (heel->toe) shares slot 0
+  sense: 'filter', // wah SENSITIVITY (0 = manual pedal) shares slot 1
+  voice: 'level', // wah VOICE (peak width, the "vocal mod") shares slot 2
   sustain: 'distortion', // Muff SUSTAIN shares the distortion slot (id 0)
   filter: 'filter',
   tone: 'filter', // SD-1/Muff Tone shares the filter slot (id 1)
@@ -339,6 +352,9 @@ const PARAM_LABEL: Record<string, string> = {
   middle: 'Mid',
   treble: 'Treble',
   speed: 'Speed',
+  position: 'Position',
+  sense: 'Sense',
+  voice: 'Voice',
   depth: 'Depth',
   reverb: 'Reverb',
   gain: 'Gain',
@@ -441,13 +457,14 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'phaser' | 'tuner' =
+    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'phaser' | 'wah' | 'tuner' =
       input.type === 'tuner' ? 'tuner'
       : input.type === 'sd1' ? 'sd1'
       : input.type === 'ts' ? 'ts'
       : input.type === 'muff' ? 'muff'
       : input.type === 'gold' ? 'gold'
       : input.type === 'phaser' ? 'phaser'
+      : input.type === 'wah' ? 'wah'
       : 'rat';
     const rawPos = input.position;
     const position =
@@ -460,7 +477,8 @@ export function executeTool(
             : type === 'muff' ? 'Pi Fuzz'
               : type === 'gold' ? 'Myth'
                 : type === 'phaser' ? 'Phaser'
-                  : 'RAT';
+                  : type === 'wah' ? 'Weeper'
+                    : 'RAT';
     return {
       content: JSON.stringify({ applied: { added: type, index } }),
       chip: `+ ${label} #${index + 1}`,

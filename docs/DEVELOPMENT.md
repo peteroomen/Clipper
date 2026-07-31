@@ -9617,3 +9617,592 @@ brighter over that same pair — the 495 Hz pole did not move, the signal reachi
 (§54), `kSumGain = 2.0`, the tone stage, the clean path, the output network, `kRailVolts`,
 every other pedal and every amp. `kDrivePreScale` and `kDriveHpHz` are **deleted** — there
 is nothing left for them to stand in for.
+
+## 58. The first FILTER pedal — a GCB-95-style wah with a derived sweep law, and the same tank driven by an envelope
+
+The lineup's six pedals were all *dirt* (RAT / SD-1 / TS / Muff / GOLD) plus one
+modulation box (the phaser, §22). This is the first **filter**: pedal type `wah`,
+a Dunlop GCB-95-class Cry Baby whose POSITION is an ordinary automatable
+parameter, plus a SENSITIVITY control that hands the same resonator to an
+envelope follower — one resonant primitive covering both Cry Baby and
+Mu-Tron-style envelope-filter territory. Owner-chosen option.
+
+Trademark-safe per the §17 doctrine: wordmark **"Weeper"**, model line
+`FILTER Nº7 · TREADLE`. No Dunlop/Cry Baby/Vox/Mu-Tron wording on any user
+surface.
+
+### 58.1 Research — what was sourced, and what could not be
+
+**Proxy note, up front and honestly.** This session's egress policy returned
+**403 for every one of the primary references**: `electrosmash.com` *and* its
+archive mirror, `geofex.com`, `dafx.de`, `ccrma.stanford.edu`,
+`guitarscience.net`, `web.archive.org`, `en.wikipedia.org`, `grokipedia.com`,
+`cushychicken.github.io`, `delicious-audio.com` and every blogspot mirror of the
+schematic. What *did* work was (a) web-search result summaries, which quote
+those pages' text directly, and (b) `github.com` clones. So the numbers below are
+sourced from search-returned quotations of the primary pages plus one primary
+artefact fetched in full (the Faust library). **The full GCB-95 netlist was NOT
+obtainable**; every place that matters is flagged below.
+
+#### The tank
+
+| Quantity | Value | Source |
+| --- | --- | --- |
+| `L1` inductor | 200 mH…1 H usable, **500 mH typical**, DCR 10–200 Ω (**15 Ω typ**) | ElectroSmash GCB-95 analysis (via search quotation) |
+| `C` tank cap | **0.01 µF** | ElectroSmash GCB-95 analysis |
+| `VR1` wah pot | **100 kΩ**, Dunlop "Hot Potz" | ElectroSmash; Amplified Parts "Potentiometer — Dunlop, Hot Potz II Crybaby, 100 kΩ" |
+| Hot Potz taper | **logarithmic / audio**; an A-taper reads ~10 % of full value at 50 % rotation; the Vox-era part is the custom-audio "ICAR" taper | Reverb (Clarostat Hot Potz 1 listing); pot-taper references via search |
+| `R7` across/into the tank | **33 kΩ**, "adjusts the sharpness of the resonant peak. Reducing its value, the Q factor is reduced, and the filter bell is spread" — the **"Vocal Mod"** raises it to 39 k / 68 k / 100 k | ElectroSmash GCB-95 analysis |
+| Transistors | **MPSA18** (high-hFE small-signal NPN); ElectroSmash's designator set also lists an MPSA13 | ElectroSmash GCB-95 analysis |
+| DC bias network around the gain stage | collector→base **470 kΩ**, base→ground **82 kΩ**, emitter **390 Ω** | ElectroSmash GCB-95 analysis (designator sets differ between mirrors — see the caveat below) |
+
+**Caveat on designators.** Two different ElectroSmash designator sets came back
+through search (one giving `R1 68K / R2 1.5K / R3 33K / R4 470 / R5 82K`, another
+`R1 68K / R2 1.5K / R3 22K / R4 390 / R5 470K`), and the community itself warns
+that "existing online schematics don't always correspond to the actual board with
+100 % accuracy". The *values* recur across both sets; only the letters move. This
+model therefore uses the values and does not cite a designator it could not
+confirm.
+
+#### The measured behaviour (the anchors this model is built on)
+
+- **"The frequency response is characterized by a resonant peak centered in
+  750 Hz (with the variable resistor VR1 at mid position), and the peak sweeps up
+  and down from 450 Hz to 1.6 kHz."** — ElectroSmash.
+- **"At toe down, the band is centered at 1.6 kHz, and at heel down, the band is
+  centered at 450 Hz. These frequencies are boosted at somewhere around 18 dB
+  while everything above and below is rolled off in a bell curve."** —
+  Catalinbread, "Vox Cry Baby".
+- Dunlop's own published spec for the Dimebag Cry Baby From Hell: **"filter
+  center frequency 440 Hz at heel down to 1.5 kHz–2.2 kHz at toe down; max gain
+  at fc 15 dB"**.
+- **The mechanism, named verbatim:** "the resonant frequency of an LC filter made
+  up of a fixed inductor L1 and a fixed capacitor C2 can be changed using a
+  variable resistor VR1 … connecting a complementary reactance (inductor L1) will
+  produce a resonant circuit which is **adjusted by tuning the apparent
+  capacitance of C2**." — ElectroSmash. This sentence is the whole model.
+- Geofex (Mark Hammer / R.G. Keen), "The Technology of Wah Pedals": "the
+  inductor is connected to the base through a 33K resistor"; "all by itself, the
+  inductor/capacitor series filter is very sharp, highly resonant, and by
+  adjusting the series resistance we can tame this resonance down and broaden it".
+
+#### The independent measurement used as the reference
+
+`grame-cncm/faustlibraries` → `vaeffects.lib` → `crybaby`, the **CCRMA / Julius
+Smith digitised CryBaby**, fitted to *three measured GCB-95 frequency responses*
+(reference: `ccrma.stanford.edu/~jos/pasp/vegf.html`). Cloned in full from
+GitHub, so this is a primary artefact rather than a quotation:
+
+```faust
+crybaby(wah) = *(gs) : fi.tf2(1,-1,0,a1s,a2s)
+with {
+  Q  = pow(2.0,(2.0*(1.0-wah)+1.0)); // Resonance "quality factor"
+  fr = 450.0*pow(2.0,2.3*wah);       // Resonance tuning
+  g  = 0.1*pow(4.0,wah);             // gain (optional)
+  ...
+```
+
+So the measured reference says: **fr 450 Hz → 2216 Hz (2.30 octaves)**, and
+**Q 8 → 4 → 2 from heel to toe** — the resonance is *broader at the toe*, not
+sharper. That is the opposite of the "series-RLC damping" intuition, and it
+decided the topology (§58.2).
+
+#### The inductor question (Fasel / halo), and why this model has one number
+
+The only measured comparison that came back is a PedalPCB forum thread ("Wah
+Inductors. No hype. Just measurements."):
+
+| Part | Measured |
+| --- | --- |
+| Dunlop **Red Fasel** (toroid) | 17.5 Ω / **565.2 mH** |
+| Dunlop **Yellow Fasel** (cup core) | 14.7 Ω / *24.26 mH* — **almost certainly a transcription error** for ~542.6 mH; a 24 mH wah inductor would put the tank at 14.5 kHz. Recorded, not used. |
+| **Whipple Halo** | 28.8 Ω / **580.7 mH** |
+| **Sabbadius Soul Halo** | 30.3 Ω / **597.8 mH** |
+
+So the real spread among "famous" inductors is **565 → 598 mH (0.5 dB of centre
+frequency, 0.10 octaves)** and **17.5 → 30.3 Ω of DCR**. The audible difference
+players report is therefore *not* mostly the inductance: it is the **core**
+(toroid vs cup) saturating — "the Fasel inductor showed onset of
+saturation-generated harmonics sooner than a Crybaby inductor, with a second
+harmonic appearing with the third, and the fourth rising with the fifth,
+demonstrating **asymmetric** clipping". **This model does not model core
+saturation** — the tank is linear and the only nonlinearity is the transistor.
+That is a named, deliberate omission (§58.7).
+
+DCR is likewise not the thing that sets Q here: 17.5 Ω against `ω0·L ≈ 2.4 kΩ`
+at 750 Hz is a Q of ~135 on its own, three orders above the measured 4. The
+damping is circuit loading, not the inductor (§58.3).
+
+#### The envelope follower (AUTO)
+
+Geofex, "The Technology of Auto-Wahs / Envelope-Controlled Filters" (Mark
+Hammer, 1999–2000), via search quotation: **"Most commercial
+envelope-controlled products provide an envelope signal that responds with
+maximum swing over a period of 50 msec or less, and drifts back to baseline over
+a period of 500 msec or less."** and a typical precision-rectifier detector
+"yielding an **attack time of about 10 ms and decay of around 500 ms**".
+Mu-Tron III context: optocoupler-controlled, attack ≈ 30–40 ms on the slow
+setting. Those are the numbers §58.5 is built on.
+
+#### What could not be sourced (open gaps, recorded so the next slice does not re-fit them)
+
+1. **The full netlist.** Not obtained. Consequently the *divider* that turns
+   wiper position into apparent-capacitance multiplication is not derived from
+   component values — its span is pinned to the published 450 Hz heel and its
+   shape to one taper exponent (§58.2), and that exponent's honesty check is that
+   it must land inside the documented audio-taper spec. It does.
+2. **The split of the tank's damping** between `R7` and the base/feedback
+   loading. §58.3 derives the *total* effective parallel damping and states the
+   split it implies, but could not confirm it.
+3. **Pot rotation vs treadle angle** (the rack-and-pinion geometry). POSITION is
+   taken as pot rotation. Geofex has a paper on exactly this
+   (`wahrocker.pdf`) — 403 here.
+4. **Core saturation** of the inductor (see above).
+
+### 58.2 The sweep law — DERIVED, and the one fitted number lands inside a published spec
+
+The mechanism is ElectroSmash's sentence: the pot tunes the **apparent
+capacitance** of the tank cap. So the tank's resonance is
+
+```
+    f0(p) = f_LC / sqrt( M(p) ),     M(p) = Ceff/C  (the apparent-capacitance multiplication)
+    f_LC  = 1 / (2*pi*sqrt(L*C))
+```
+
+with `L = 500 mH` and `C = 0.01 µF` **straight off the published component list —
+neither is fitted**:
+
+```
+    f_LC = 1 / (2*pi*sqrt(0.5 * 1e-8)) = 2250.7908 Hz
+```
+
+**That single number is the slice's first real result.** At full toe the pot
+feeds back nothing, so `M = 1` and the peak sits at the bare LC resonance —
+**2250.79 Hz derived from two published component values**, against the CCRMA
+*measured* toe of **2216.06 Hz**: **+1.57 %**. Two entirely independent routes
+(a component list and a measurement of a real pedal) landing 1.6 % apart is what
+says the mechanism is right, and it is why this model's toe is 2250.79 Hz and not
+ElectroSmash's frequently-quoted "1.6 kHz" (see §58.6 for that disagreement).
+
+The bootstrap multiplies `C` by `1 + A*u(p)` where `u(p)` is the pot's normalised
+wiper law (1 at heel, 0 at toe). Pinning the **published heel** (450 Hz — the one
+figure ElectroSmash, Catalinbread and Dunlop's own CBFH spec all agree on, within
+2 %) fixes the span:
+
+```
+    A = (f_LC / 450)^2 - 1 = 24.0175762      (heel multiplies C by 25.02x)
+```
+
+That leaves **exactly one free parameter — the pot taper** — and this is where the
+honesty check lives. Modelling it as the standard log-pot family
+`u(p) = (beta^(1-p) - 1)/(beta - 1)` and least-squaring `beta` in ln(f) against
+the CCRMA measured fit over the whole travel gives
+
+```
+    beta = 23.537247    ->    u(0.5) = 0.17090
+```
+
+i.e. **the fitted taper reads 17.1 % of full pot resistance at half rotation** —
+squarely inside the independently documented audio/log-taper spec ("an A-taper
+pot is at 10 % of the pot value at 50 % rotation", and the Hot Potz is documented
+as a log / custom-audio part). The one fitted number in the sweep law is a pot
+taper, and it came out being a pot taper.
+
+Shipped law vs the CCRMA measured reference (`450*2^(2.3p)`):
+
+| POSITION | u(p) | M(p) | derived f0 (Hz) | CCRMA measured fit (Hz) | error |
+| --- | --- | --- | --- | --- | --- |
+| 0.000 | 1.00000 | 25.018 | 450.00 | 450.00 | +0.00 % |
+| 0.125 | 0.65933 | 16.835 | 548.56 | 549.24 | -0.12 % |
+| 0.250 | 0.42978 | 11.322 | 668.91 | 670.35 | -0.22 % |
+| 0.375 | 0.27511 | 7.608 | 816.05 | 818.18 | -0.26 % |
+| 0.500 | 0.17090 | 5.104 | 996.23 | 998.61 | -0.24 % |
+| 0.625 | 0.10068 | 3.418 | 1217.45 | 1218.83 | -0.11 % |
+| 0.750 | 0.05336 | 2.282 | 1490.10 | 1487.61 | +0.17 % |
+| 0.875 | 0.02148 | 1.516 | 1828.09 | 1815.66 | +0.68 % |
+| 1.000 | 0.00000 | 1.000 | 2250.79 | 2216.06 | +1.57 % |
+
+**rms 0.46 %, worst +1.57 % at the toe.** Total travel **2.322 octaves**,
+450.0 -> 2250.8 Hz. The expectation this slice was handed ("roughly 400 Hz-2.2 kHz
+— confirm, don't assume") is **confirmed**.
+
+**Why the law is not a plain log, and why that matters.** The circuit's own law
+is `f ~ 1/sqrt(1 + A*u)`, which with a LINEAR pot would put the sweep almost
+entirely in the last inch of treadle travel:
+
+| | heel half | toe half |
+| --- | --- | --- |
+| linear pot (counterfactual) | **0.472 octaves** | **1.851 octaves** |
+| shipped (audio taper) | 1.147 octaves | 1.176 octaves |
+
+The audio taper is what *linearises* the sweep in octaves — the pot's compression
+and the circuit's square root very nearly cancel. That cancellation is why
+CCRMA's exponential fit works so well on a real pedal, and it is the single most
+common thing a modelled wah gets wrong: ship the mechanism with a linear control
+law and the pedal feels dead for three quarters of its travel. It is asserted as
+its own test bar.
+
+### 58.3 Q across the sweep — the topology decides, and the measurement agrees
+
+Fixed damping resistance `Rp`, fixed inductance `L`, **variable capacitance** is a
+parallel RLC whose bandwidth is `BW = 1/(2*pi*Rp*Ceff)`. Since `Ceff ~ 1/f0^2`:
+
+```
+    BW ~ f0^2        and        Q = f0/BW = Rp/(2*pi*f0*L)  ~  1/f0
+```
+
+**The resonance is SHARPEST at the heel and BROADEST at the toe.** That is
+counter-intuitive (a toe-down wah *sounds* piercing) and it is what the
+measurement says: CCRMA's fitted Q runs **8 -> 4 -> 2** heel -> mid -> toe, and its
+implied bandwidth exponent `d(lnBW)/d(ln f0)` is **1.870** against this
+topology's exact **2.000**. The alternative topology — a series LCR in the
+degeneration path — predicts constant absolute bandwidth (`Q ~ f0`, exponent 0)
+and is **refuted by the measurement**, so it is not what this model ships.
+
+Scale: fitting the one constant `Q*f0` to CCRMA over the travel gives
+`K = 3997.44 Hz`, hence
+
+```
+    Rp = K * 2*pi*L = 12558.32 ohm
+```
+
+Derived Q against the measured reference:
+
+| POSITION | f0 (Hz) | Q derived | Q CCRMA | error | BW (Hz) |
+| --- | --- | --- | --- | --- | --- |
+| 0.00 | 450.00 | 8.883 | 8.000 | +11.0 % | 50.7 |
+| 0.25 | 668.91 | 5.976 | 5.657 | +5.6 % | 111.9 |
+| 0.50 | 996.23 | 4.013 | 4.000 | **+0.3 %** | 248.3 |
+| 0.75 | 1490.10 | 2.683 | 2.828 | -5.2 % | 555.5 |
+| 1.00 | 2250.79 | 1.776 | 2.000 | -11.2 % | 1267.3 |
+
+The +/-11 % at the ends is the exponent difference (-1.000 derived vs -0.870
+measured) and is **reported, not fitted away** — bending Q to match would mean
+abandoning the topology that produced the sweep law, on the strength of a
+three-point fit.
+
+**VOICE — the "Vocal Mod" as a knob.** ElectroSmash documents `R7 = 33 kOhm` as the
+resistor that "adjusts the sharpness of the resonant peak" and the standard mod
+as raising it to 39 k / 68 k / 100 k. Splitting the derived total damping gives
+the rest of the loading, `Rother` such that `Rother || 33 kOhm = 12558.32 Ohm`, i.e.
+`Rother = 20273.5 Ohm`, and the knob sweeps `R7` **log-centred on the stock value**:
+
+```
+    R7(v) = 10890 * (100000/10890)^v      v = 0.5  ->  33.000 kOhm exactly
+    Rp(v) = R7(v) || 20273.5
+```
+
+| VOICE | R7 | Rp | Q heel | Q mid | Q toe |
+| --- | --- | --- | --- | --- | --- |
+| 0.00 | 10.89 kOhm | 7084 Ohm | 5.011 | 2.264 | 1.002 |
+| 0.50 (stock) | 33.00 kOhm | 12558 Ohm | 8.883 | 4.013 | 1.776 |
+| 1.00 | 100.0 kOhm | 16856 Ohm | 11.923 | 5.386 | 2.384 |
+
+VOICE moves **width only** — the centre frequency and the peak height are
+untouched by construction (§58.4), which is exactly the published description of
+the mod ("the filter bell is spread").
+
+**Peak height is constant across the sweep**, and that is not an assumption: in
+this topology the resonant gain is set by resistors that do not move, and the two
+published measurements agree (Catalinbread quotes ~18 dB at *both* ends). The
+shipped peak boost is the published **+18 dB (7.943x)**, and "the peak height
+does not move across the sweep" is asserted as a test bar rather than assumed.
+
+### 58.4 The implementation — a TPT state variable, because the coefficients move every sample
+
+The resonator is a **topology-preserving-transform (Zavalishin) state-variable
+filter**, not a direct-form biquad, for three reasons that are all load-bearing
+here:
+
+1. Its two integrator states **are** the physical variables — inductor current
+   and capacitor voltage. It is the tank, discretised, not a curve fitted to one.
+2. It is unconditionally stable under **per-sample coefficient modulation**,
+   which is the whole point of a wah: `g = tan(pi*f0/fs)` and `2R = 1/Q` are
+   recomputed EVERY SAMPLE from the smoothed POSITION and the envelope (the
+   phaser's precedent, §22). A direct-form biquad re-derived per sample is not
+   safe under fast modulation; this is.
+3. Its BP output has peak gain exactly `Q` at `f0`, so the **unity-peak**
+   bandpass is `2R*bp` — the peak height is decoupled from Q by construction,
+   which is what §58.3's "VOICE changes width only" bar needs.
+
+`flushDenormal` is applied in the **WHOLE-STATE** form (docs §56.4b): this is a
+second-order recursion, and the house one-liner — guarding only the newest tap —
+provably does not converge above first order. Both integrator states are tested
+and zeroed as a unit.
+
+**The output stage is a real transistor.** `BjtStage` (docs §24/§53) is
+configured as the GCB-95's common-emitter MPSA18-class stage —
+`Vcc 9 V, Rc 22 kOhm, Re 390 Ohm, Rf 470 kOhm (collector->base), Rbg 82 kOhm
+(base->ground), Cin 10 nF`, no feedback cap — and runs inside a **4x oversampled**
+domain like every other nonlinear stage in the project, with a measured alias
+floor (§58.6).
+
+The staging between the two has **no fitted constant**. The pedal's published
+closed-loop resonant gain is +18 dB; the transistor stage's own small-signal gain
+`G0` is *measured from the model itself* in `prepare()` (a 1 kHz probe, then
+`reset()`); so the tank's insertion divider is forced:
+
+```
+    kTankDivider = 10^(18/20) / G0
+```
+
+The stage therefore contributes its real curvature, its real headroom and its
+real clipping ceiling, and the pedal's small-signal resonant boost is the
+published 18 dB by construction. Where the pedal starts to bark is then a
+*prediction*, not a knob (§58.6).
+
+**Ordering caveat, stated because it is a real departure.** In the GCB-95 the
+tank sits in the transistor's feedback path — filter and gain are one stage. This
+model splits them (filter -> divider -> transistor), which is what makes the
+filter's coefficients cheap to modulate per sample and keeps the nonlinearity in
+a small oversampled domain. The cost is that the tank does not see the
+transistor's clipped output, so the resonance does not detune or damp when the
+stage is slammed. **ADR number needed** — recorded there, not fitted around.
+
+### 58.5 AUTO — the same tank, driven by an envelope, and why SENSITIVITY is the mode
+
+There is no second filter and no second law: SENSITIVITY hands the *same*
+`f0(p)` law an envelope-driven position.
+
+```
+    posEff = pos + (1 - pos) * sens * env      env in [0,1]
+```
+
+- **SENS = 0 is EXACTLY the manual pedal** — the envelope term is multiplied by
+  zero, so a treadle wah is bit-for-bit unaffected by the feature. That is a test
+  bar, not a claim.
+- With SENS > 0, POSITION becomes the **resting (heel) frequency** the note falls
+  back to and the envelope opens upward from it — which is how a real envelope
+  filter's "range" control behaves.
+
+There is deliberately **no discrete mode switch hidden in a float parameter
+slot**. A mode encoded as "slot 1 >= 0.5" is a control whose whole travel does
+nothing, which the house rules forbid; a continuous SENSITIVITY is live
+everywhere and is the mode.
+
+**The follower, and why the time constants matter more than the filter.** A
+one-pole peak follower on |x| with asymmetric constants, from Geofex's published
+figures ("maximum swing over a period of 50 msec or less ... drifts back to
+baseline over a period of 500 msec or less"; a typical detector "attack about
+10 ms, decay around 500 ms"):
+
+```
+    tauAttack  =  10.0 ms      (Geofex's stated typical attack)
+    tauRelease = 166.7 ms      (3*tau = 500 ms = Geofex's stated drift-back)
+```
+
+`env` is normalised through a fixed reference level so a normally picked note
+opens the filter usefully; the acceptance number is the **measured octave
+excursion of a real pluck** (§58.6), not the follower's own output — asserting
+that the follower follows would be a tautology.
+
+**Cross-slice note:** a compressor slice was running in parallel on its own
+branch and is also building an envelope follower. Nothing is shared across
+in-flight branches, by design. **Unifying the two followers into one
+`EnvelopeFollower` primitive is a named follow-up** for a later cleanup pass —
+not a drive-by edit here.
+
+### 58.6 Validation — `clipper_wah_tests` (44.1 k and 48 k)
+
+New ctest target, `clipper_add_test_flags()`-registered, **ctest 25 -> 26 entries**.
+Every headline bar is a property of a RENDER; where a bar is only
+implementation-vs-its-own-recipe it says so.
+
+**Measurement note that changed how the suite is written.** The first draft
+measured the response by rendering a steady tone per probe frequency — ~250
+renders per POSITION point, which put the suite past a 10-minute wall clock. It
+now renders ONE tiny impulse (1 mV) per knob setting and takes 200 Goertzel bins
+off the tail, and the impulse's linearity is **proved rather than assumed**: two
+renders a decade apart in level agree to **0.0007 dB**. (At 0.1 V they do not
+agree — that is the pedal barking, and it is measured separately.)
+
+**(a) Sweep law, rendered vs derived vs the independent measurement** (48 k):
+
+| POSITION | derived (Hz) | RENDERED (Hz) | err | CCRMA measured (Hz) | err |
+| --- | --- | --- | --- | --- | --- |
+| 0.000 | 450.00 | 449.23 | -0.17 % | 450.00 | -0.17 % |
+| 0.125 | 548.56 | 548.23 | -0.06 % | 549.24 | -0.18 % |
+| 0.250 | 668.91 | 669.04 | +0.02 % | 670.35 | -0.20 % |
+| 0.375 | 816.05 | 816.48 | +0.05 % | 818.18 | -0.21 % |
+| 0.500 | 996.23 | 996.40 | +0.02 % | 998.61 | -0.22 % |
+| 0.625 | 1217.45 | 1215.97 | -0.12 % | 1218.83 | -0.23 % |
+| 0.750 | 1490.10 | 1489.13 | -0.06 % | 1487.61 | +0.10 % |
+| 0.875 | 1828.09 | 1830.03 | +0.11 % | 1815.66 | +0.79 % |
+| 1.000 | 2250.79 | 2248.97 | -0.08 % | 2216.06 | +1.48 % |
+
+**Worst vs the model's own law 0.17 % (the discretisation bar). Worst vs the
+independent CCRMA measurement 1.48 %, rms 0.59 % (the bar with teeth).**
+
+**(b) Shape.** Travel **2.322 octaves**; halves **1.147 / 1.176** against the
+linear-taper counterfactual's **0.472 / 1.851**, computed in the test rather than
+quoted. The wiper reads **17.09 %** at half rotation — asserted to land inside the
+published audio-taper window (10-20 %), which is the honesty check on the slice's
+single fitted number.
+
+**(c) Resonance height and width:**
+
+| POSITION | peak (dB) | Q rendered | Q derived | Q CCRMA |
+| --- | --- | --- | --- | --- |
+| 0.00 | 17.90 | 8.653 | 8.883 | 8.000 |
+| 0.25 | 17.90 | 5.956 | 5.976 | 5.657 |
+| 0.50 | 17.91 | 3.965 | 4.013 | 4.000 |
+| 0.75 | 17.91 | 2.685 | 2.683 | 2.828 |
+| 1.00 | 17.91 | 1.804 | 1.776 | 2.000 |
+
+**Peak boost 17.90-17.91 dB against the published 18.0, and its spread across the
+whole 2.3-octave travel is 0.010 dB** — the topology's constant-peak prediction,
+measured. Q vs derived worst **2.6 %**; vs the independent measurement worst
+**9.8 %** (the exponent difference of §58.3, reported not fitted).
+
+**(d) VOICE moves width only** (POSITION 0.5): Q **2.253 -> 3.965 -> 5.292** while
+the peak frequency stays at **996.40 Hz on all three** and the height at
+**17.91 dB on all three**.
+
+**(e) AUTO tracking, as a player-observable property.** A real plucked D (146.8 Hz,
+0.30 V) with POSITION parked at 0.10 (527.2 Hz):
+
+| SENSE | rest (Hz) | peak (Hz) | octaves | t to peak | t back to within 10 % |
+| --- | --- | --- | --- | --- | --- |
+| 0.00 | 527.2 | 527.2 | **0.000** | — | — |
+| 0.25 | 527.2 | 686.4 | 0.381 | 82.7 ms | 843 ms |
+| 0.50 | 527.2 | 894.3 | 0.762 | 82.7 ms | 841 ms |
+| 0.75 | 527.2 | 1167.0 | 1.146 | 82.7 ms | 841 ms |
+| 1.00 | 527.2 | 1526.6 | **1.534** | 82.7 ms | 840 ms |
+
+The filter goes **up and comes back**, by an amount that scales with the knob.
+**SENSE = 0 measures EXACTLY 0.000 octaves**, and separately the whole render at
+SENSE 0 is **bit-identical (worst |diff| 0.000e+00)** to a model whose
+sensitivity was never set.
+
+**Honest note on the attack: 82.7 ms to the peak, against a 10 ms follower time
+constant.** That is not a bug and it is not the coefficient: |x| of a 147 Hz note
+passes through zero twice per cycle, so a peak detector gains only during the
+rising part of each cycle and decays for the rest — exactly what a real
+diode-and-cap detector does. It reads as the quack/swell boundary. On a higher
+note it is faster.
+
+**(f) No zipper, measured against its own control** (48 k, 6-20 kHz, carrier
+harmonics excluded):
+
+| stimulus | far-field floor |
+| --- | --- |
+| STATIC POSITION | **-322.8 dB** |
+| pathological per-block 0<->1 slam | **-104.3 dB** |
+| fast full-travel sweep (5 Hz) | -68.8 (3-6 k) / -75.0 / -79.0 / **-81.3** (14-20 k) |
+
+**The sweep skirt is NOT coefficient stepping, and the slice proved that rather
+than asserting it.** Re-aiming POSITION every 64 samples, every 8 samples, and
+every SINGLE sample all measure **identically** (-68.8/-75.0/-79.0/-81.3), so the
+control granularity contributes nothing; the floor DECAYS with frequency (a
+stepping artifact is flat) and drops **8.7-14.4 dB at 96 kHz** — both signatures
+of a discrete time-varying resonator, neither of stepping. The test asserts the
+decay, not just the level.
+
+**(g) Alias floor** (4186 Hz at 1.5 V into the toe, harmonics excluded):
+
+| factor | floor | latency |
+| --- | --- | --- |
+| 1x | -73.0 dB | 0 |
+| 2x | -118.8 dB | 64 |
+| **4x (shipped)** | **-118.8 dB** | **72** |
+| 8x | -156.0 dB | 76 |
+
+**45.8 dB of improvement from 1x to 4x** — the bar is "it MOVES with the factor"
+(the §54 lesson), not merely "it is low".
+
+**(h) DC offset ON SIGNAL:** worst **0.054 % of peak** across POSITION 0/0.5/1,
+against the shared 1 % bar. **Honest note recorded in the test:** the +0.1 V
+input-offset stimulus that `support/DcOffset.h` exists for has **no extra teeth
+here** — the resonator is a bandpass with a zero at DC, so an input offset is
+removed before it can reach anything and the two rows are identical to six
+decimals. The clean row is doing the work.
+
+**(i) reset / guards:** NaN knobs -> **0/4096** non-finite samples; a NaN input
+followed by `reset()` -> **0/4096**; silence in -> exact digital silence out;
+one 8192-sample block vs 64x128 blocks **bit-identical (0.000e+00)**;
+`maxAbsRestingState()` **exactly 0.0** after a 12 s silent tail. The 12 s is
+measured, not padding: 2 s reads 2.7e-06, 6 s 1.0e-16, 10 s 3.9e-27, **12 s
+0.0** — the envelope follower's 166.7 ms release needs 11.4 s to ring from a loud
+note down through the 1e-30 floor.
+
+**(j) Staging, reported not aimed at.** `G0 x kTankDivider = 7.9433` exactly
+(the identity that says nothing was fitted): measured stage gain **39.9082x**,
+divider **0.199039**. On real playing material the pedal is a **CUT, not a level
+bomb** — a plucked low E measures **-6.6 dB RMS** at every input level from 0.1
+to 0.5 V peak, and the output peak stays at ~0.99x the input peak, because the
++18 dB lives at fc while the fundamental and everything above roll off.
+Breakup (THD at resonance, POSITION 0.5): **0.64 % at 0.05 V, 1.32 % at 0.10,
+2.79 % at 0.20, 4.48 % at 0.30, 9.10 % at 0.50, 33.67 % at 1.0 V** — i.e. clean
+on a normal pickup and barking when boosted, which is a prediction of the
+component values rather than a knob.
+
+**CPU:** **14.25x realtime / 7.0 % of one 48 k stream** — cheaper than the Muff
+(3.2x) and far cheaper than the JCM800. Latency **72 samples** at the shipped 4x.
+
+### 58.7 What the slice found, what it refuted, and what is left open
+
+**(1) A 9.6 dB peak-height tilt, and it was the MODEL's coupling cap, not the
+law.** The first build measured the resonant boost at **12.18 dB at the heel and
+21.74 dB at the toe** — a 9.6 dB tilt across a travel where the topology predicts
+none — and pushed the rendered centre frequency +2.82 % out at the toe. Bisected
+to `BjtStage::Config::Cin`: at the 10 nF first guess the stage's input network
+has a **~1.1 kHz corner sitting in the MIDDLE of the sweep**. In the real pedal
+the tank's own capacitor DC-blocks the base and there is no second coupling
+high-pass; `BjtStage`'s topology requires a `Cin`, so it is now 1 µF (corner
+~11 Hz, two decades below the band). After: **17.90-17.91 dB across the whole
+travel, spread 0.010 dB**, and the worst centre-frequency error 0.17 %. The
+constant-peak-height bar is what holds this honest, and the perturbation run
+confirms reverting `Cin` fails it.
+
+**(2) A hypothesis of this slice's own, REFUTED by its own measurement.** The
+POSITION smoother was made a cascaded 2-pole on the theory that the fast-sweep
+far-field floor was the host's per-BLOCK control staircase. It is not: re-aiming
+POSITION per-block, per-8-samples and PER-SAMPLE all floor identically. The
+comment in the source says so. The second pole was **kept anyway, for a different
+and measured reason** — it improves the pathological per-block slam by 23.7 dB
+(-80.6 -> -104.3) for one extra multiply-add.
+
+**(3) Two test bars that could not fail, found by the perturbation run and
+fixed.** Writing the peak-height bar against `WahModel::peakBoostDb()` made it an
+identity: moving the constant to 24 dB left the whole suite green and only
+tripped an unrelated assertion three functions later. It is now a literal 18.0,
+the published figure. And nothing pinned the **shipped 4x oversampling default**
+— `testAliasing` sets the factor explicitly on every row, so dropping the default
+to 1x left the suite green; the default is now asserted through
+`latencySamples() == 72`. Both were caught by perturbing, not by review.
+
+**Perturbation transcript** (patch -> `touch` -> rebuild -> run -> restore ->
+`touch` -> rebuild -> run; six for six):
+
+| perturbation | result |
+| --- | --- |
+| `kTaperBeta` 23.537247 -> 1.0000001 (a LINEAR pot taper) | FAIL `worstRef < 3.0` |
+| Q law flipped parallel-RLC -> series-LCR (`Q ~ f0`) | FAIL `worstQRef < 0.16` |
+| `Cin` 1 µF -> 10 nF (the coupling corner back in the sweep) | FAIL `worstOwn < 1.5` |
+| `kPeakBoostDb` 18 -> 24 | FAIL the published-literal bar |
+| envelope release 166.7 ms -> 10 s | FAIL "the filter comes back" |
+| default oversampling 4x -> 1x | FAIL `latencySamples() == 72` |
+
+The **web** spec was perturbation-proven too: removing the worklet's `wah`
+dispatch (so a wah routes to the RAT) takes the heel-band energy from 5.4e-04 to
+**9.0e-05** and the cross-over bar goes red.
+
+**Open, and named rather than fitted:**
+
+1. **The full GCB-95 netlist** (§58.1 gap 1). The divider that turns wiper
+   position into apparent-capacitance multiplication is pinned to published
+   frequencies, not derived from component values. A slice with the netlist
+   should be able to DERIVE `kTaperBeta` and check it against 23.537247.
+2. **The Q exponent**: derived -1.000, measured -0.870, so +-11 % at the ends.
+   Closing it means finding what else in the loading moves with the pot.
+3. **The tank is not inside the transistor's feedback path** (§58.4), recorded in
+   **ADR 018**. Cost: the resonance does not detune or damp when the stage is slammed.
+4. **Inductor core saturation is not modelled** — the measured Fasel-vs-halo
+   difference is mostly core behaviour, not inductance (§58.1).
+5. **Two envelope followers now exist in this repo** (this one and the parallel
+   compressor slice's). Unifying them into one primitive is a named follow-up for
+   a later cleanup pass; nothing was shared across in-flight branches by design.
+6. **Duplicate instances**: the native engine is one-instance-per-type, so a wah
+   before AND after the dirt works on the web and not in the plugin — the
+   pre-existing `kMaxChain` limitation, and this pedal is the first one where
+   wanting two of them is a normal request.
