@@ -8953,6 +8953,10 @@ expect to re-derive it.
 **Slice:** `docs/work/2026-07-31-ac30-sag.md` · branch `claude/ac30-sag-6f557i` · base
 `7e2a10d`. **Deliberate tone change.** Files: `core/include/clipper/dsp/Ac30PowerAmp.h`,
 `core/src/dsp/Ac30PowerAmp.cpp`, `core/tests/test_ac30_amp.cpp`, `core/CMakeLists.txt`.
+The two departures from the real circuit this slice makes deliberately — the constant
+Thévenin source resistance and the **derived** `kVsupply` — are recorded in
+**ADR 017** (`docs/decisions/017-ac30-supply-source-impedance-and-derived-rail.md`).
+Read it before moving either constant toward a published figure.
 
 ### 55.1 What was actually there
 
