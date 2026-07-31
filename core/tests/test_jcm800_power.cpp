@@ -38,6 +38,7 @@ namespace {
 constexpr double kTwoPi = 6.283185307179586;
 using clipper::dsp::El34Params;
 using clipper::dsp::Jcm800Amp;
+using clipper::dsp::Jcm800Preamp;
 using clipper::dsp::Jcm800PowerAmp;
 using clipper::measure::measureAliasing;
 
@@ -653,6 +654,84 @@ void testAliasing(double fs) {
 }
 
 // ---------------------------------------------------------------------------
+// Test 8 — where the GAIN knob BREAKS UP (docs §51). The 2204's GAIN pot is an
+// audio-taper wiper, and where on its travel the amp starts to distort is a
+// player-observable property of the taper constant, not a free parameter. The
+// owner's field report at unity input trim was "breakup is slightly early — 20
+// sounds like what I want 30 to sound like", so §51 re-derived GAIN's k (4 ->
+// 5.0521652926683824) from gainTaper(0.30) == audioTaper(0.20).
+//
+// Probe: composed Jcm800Amp, 220 Hz, MASTER 0.5, BASS/MID 0.5, TREBLE 0.6,
+// PRESENCE 0.5, at 0.15 V peak — the input level at which the PRE-§51 model's
+// measured onset lands on the knob 0.20 the owner reported (measured before the
+// constant was chosen: 0.05 V -> 0.406, 0.10 V -> 0.272, 0.15 V -> 0.2057,
+// 0.20 V -> 0.165, 0.30 V -> 0.117). Onset convention = THD (2..8) >= 5 %, the
+// same bar the whole 2026-07 field-report round used.
+//
+// Bracketing asserts rather than a bisection: two renders pin the onset into
+// (0.28, 0.34], which is the shipped band. Measured post-§51: 0.3064.
+// PERTURBATION-PROVEN: with kGainTaperK back at 4.0 the onset returns to 0.2057
+// and the knob-0.28 assert fails outright (THD 6.9 % vs the 5 % bar).
+// ---------------------------------------------------------------------------
+void testGainTaperOnset(double fs) {
+    auto thdAtGain = [&](float g) {
+        Jcm800Amp amp;
+        amp.prepare(fs, 128);
+        amp.setOversampling(4);
+        amp.setParameter(Jcm800Amp::PARAM_GAIN, g);
+        amp.setParameter(Jcm800Amp::PARAM_MASTER, 0.5f);
+        amp.setParameter(Jcm800Amp::PARAM_BASS, 0.5f);
+        amp.setParameter(Jcm800Amp::PARAM_MID, 0.5f);
+        amp.setParameter(Jcm800Amp::PARAM_TREBLE, 0.6f);
+        amp.setParameter(Jcm800Amp::PARAM_PRESENCE, 0.5f);
+        amp.setParameter(Jcm800Amp::PARAM_REVERB, 0.0f);
+        auto s = sine(220.0, 0.15f, 0.5, fs);
+        std::vector<float> o(s.size(), 0.0f);
+        amp.process(s.data(), o.data(), static_cast<int>(s.size()));
+        for (float v : o) assert(std::isfinite(v) && "non-finite GAIN-taper probe output");
+        const size_t n = o.size(), w = n / 2, st = n - w;
+        const double f1 = goertzelAmp(o, st, w, 220.0, fs);
+        double hh = 0.0;
+        for (int k = 2; k <= 8; ++k) {
+            const double a = goertzelAmp(o, st, w, k * 220.0, fs);
+            hh += a * a;
+        }
+        return std::sqrt(hh) / (f1 + 1e-12);
+    };
+    const double tLo = thdAtGain(0.28f), tHi = thdAtGain(0.34f);
+    const double tMid = thdAtGain(0.50f), tTop = thdAtGain(0.70f);
+    std::printf("  [ok] GAIN breakup onset @ %.0f Hz: THD %.2f%% @ 0.28 / %.2f%% @ 0.34 "
+                "(onset in (0.28,0.34]; 0.50 %.2f%%, 0.70 %.2f%%)\n",
+                fs, tLo * 100.0, tHi * 100.0, tMid * 100.0, tTop * 100.0);
+    std::fflush(stdout);  // measured numbers before the asserts, so a failure carries them
+    assert(tLo < 0.05 && "JCM800 GAIN breaks up EARLIER than knob 0.28 (taper too hot)");
+    assert(tHi >= 0.05 && "JCM800 GAIN breaks up LATER than knob 0.34 (taper too cold)");
+    assert(tHi > tLo && tMid > tHi && tTop > tMid &&
+           "GAIN travel above the onset is not monotonically dirtier");
+
+    // The taper law itself. Both pots share the shape (e^{kx}-1)/(e^k-1) and differ
+    // ONLY in k since §51: the top of either knob is 1.0 EXACTLY for any k (which is
+    // what pins GAIN 1.0 bit-identical across the re-derivation), and the GAIN
+    // constant is the root of the design equation the field report states.
+    assert(Jcm800Preamp::gainTaper(1.0) == 1.0 && "gainTaper(1) must be exactly 1");
+    assert(Jcm800Preamp::audioTaper(1.0) == 1.0 && "audioTaper(1) must be exactly 1");
+    assert(Jcm800Preamp::gainTaper(0.0) == 0.0 && "gainTaper(0) must be exactly 0");
+    const double remap =
+        std::fabs(Jcm800Preamp::gainTaper(0.30) - Jcm800Preamp::audioTaper(0.20));
+    assert(remap < 1.0e-15 &&
+           "kGainTaperK is not the root of gainTaper(0.30) == audioTaper(0.20)");
+    // MASTER's law is UNCHANGED by §51 — pinned against its own k = 4 value so a
+    // future taper edit cannot quietly move the master pot with the gain pot.
+    assert(std::fabs(Jcm800Preamp::audioTaper(0.5) - 0.11920292202211756) < 1.0e-15 &&
+           "MASTER taper moved off k = 4");
+    assert(Jcm800Preamp::gainTaper(0.5) < Jcm800Preamp::audioTaper(0.5) &&
+           "GAIN taper must sit BELOW the k=4 law over the travel");
+    std::printf("  [ok] taper laws: gainTaper(0.30)-audioTaper(0.20) = %.3e, both tapers "
+                "(1.0) = 1 exactly, MASTER still k = %.1f\n",
+                remap, Jcm800Preamp::kMasterTaperK);
+}
+
+// ---------------------------------------------------------------------------
 // Test 7 — composed full-amp sanity: guitar-in -> normalized-out, finite, and
 // full-scale calibration (fully cranked ≈ 0.9 peak, headroom to 1.0).
 // ---------------------------------------------------------------------------
@@ -704,6 +783,8 @@ int main(int argc, char** argv) {
         testComposedFullScale(fs);
     }
     testCompressionStability(44100.0, 8);
+    // Once, at the shipped rate: four composed-amp renders (docs §51).
+    testGainTaperOnset(48000.0);
     testAliasing(44100.0);
     testAliasing(48000.0);
     testAliasing(96000.0);
