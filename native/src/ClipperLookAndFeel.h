@@ -76,6 +76,26 @@ inline const juce::Colour cable       {0xff35383E};
 inline const juce::Colour cableHi     {0x80FFFFFF};  // rgba(255,255,255,.5)
 inline const juce::Colour cablePlug   {0xffC4C0B8};
 
+// ---------------------------------------------------------------------------
+// Token SCHEMES (visual pass 2). The web resolves every control recipe in a CSS
+// custom-property context, and there are exactly two: the LIGHT bench (:root
+// light values) and the DARK chassis island (pedal.css pins .pedal to the dark
+// values on every theme). The AMP's controls resolve LIGHT on the web — the
+// pinning is .pedal-scoped — which is why the web amp reads as porcelain. The
+// native amp paints in lightBench() since this pass; pedals stay darkIsland().
+// ---------------------------------------------------------------------------
+struct Scheme {
+    juce::Colour capTop, capBot;          // --cap 145deg
+    juce::Colour capEdgeTop, capEdgeBot;  // --cap-edge 145deg
+    juce::Colour well;                    // --well
+    juce::Colour panelTop, panelBot;      // --panel-grad 160deg
+    juce::Colour ink, inkDim, inkFaint;   // --ink / --ink-dim / --ink-faint
+    juce::Colour shDark, shDarker, shLight;  // sculpting shadows
+    juce::Colour arcTrack;                // --arc-track
+};
+const Scheme& darkIsland();   // the pedal chassis (today's constants, unchanged)
+const Scheme& lightBench();   // tokens.css :root light values, verbatim
+
 // Per-section ACCENTS — light-theme root values (readable on the light bench and
 // on the dark chassis). tokens.css :root / [data-theme=light].
 inline const juce::Colour accentRat   {0xffF03B24};  // --led / --accent-rat  (red)
@@ -104,17 +124,36 @@ void fillDiagGradient(juce::Graphics&, juce::Rectangle<float>, juce::Colour from
 // inset light top rim + inset dark edge. `radius` in px.
 void drawChassisCard(juce::Graphics&, juce::Rectangle<float>, float radius);
 
-// A recessed well carved into the dark chassis (inset dark TL + light BR).
-void drawWell(juce::Graphics&, juce::Rectangle<float>, float radius);
+// A raised LIGHT bench card — the web `.raised` recipe verbatim (base.css):
+// --panel-grad body + 10px 10px 24px sh-dark + -10px -10px 22px sh-light + inset
+// top light rim. The amp panel (web parity: the amp is a light panel, not a dark
+// island — amp.css resolves in the light token context).
+void drawBenchCard(juce::Graphics&, juce::Rectangle<float>, float radius);
+
+// A recessed well carved into a surface (inset dark TL + light BR). Defaults to
+// the dark chassis; pass a scheme for a light-bench well (the amp's slots).
+void drawWell(juce::Graphics&, juce::Rectangle<float>, float radius,
+              const Scheme& s = darkIsland());
 
 // A small round jewel/LED. `on` lights it (accent + glow); off is a recessed dot.
 //
-// PAINT ORDER MATTERS: a lit jewel's glow spreads to ~3× its radius, so it must be
-// drawn LAST in its component — after every neighbouring body and, above all, after
-// their juce::DropShadow passes, which are translucent black over a wide blur and
-// will otherwise eat the halo. That inversion is exactly what made the LEDs look
-// "covered over" before native parity (see docs → Native pedal-board parity).
-void drawJewel(juce::Graphics&, juce::Rectangle<float>, juce::Colour accent, bool on);
+// PAINT ORDER MATTERS, twice over. (1) A lit jewel's glow spreads to ~3× its
+// radius, so it must be drawn LAST in its component — after every neighbouring
+// body and, above all, after their juce::DropShadow passes, which will otherwise
+// eat the halo (docs → Native pedal-board parity). (2) JUCE clips a component's
+// paint to its bounds, so the CALLER must leave the glow's spread INSIDE its own
+// component — a jewel parked on a bounds edge renders a square-clipped halo,
+// which is exactly the 2026-07-31 "draw order issues on amp on/off switches"
+// report. glowSpread() says how much head-room a lit jewel of diameter d needs
+// on every side.
+//
+// The glow itself is the web recipe (0 0 16px + 0 0 5px accent-glow) as two
+// smooth radial gradients — the old four stacked alpha discs compounded into
+// visibly banded steps. `off` takes the scheme so the recessed dot mixes into
+// the right well colour.
+float glowSpread(float jewelDiameter);
+void drawJewel(juce::Graphics&, juce::Rectangle<float>, juce::Colour accent, bool on,
+               const Scheme& s = darkIsland());
 
 // A carved side JACK socket (board.css .jack): a recessed ring with a darker bore.
 // Drawn ON TOP of the chassis so a cable end reads as entering the socket.
@@ -197,6 +236,9 @@ public:
     void setName(const juce::String&);
     void setAccent(juce::Colour);
     void setDimmed(bool);  // bypassed → arc + readout dim (.pedal:not(.on))
+    // Which token context the dial paints in (web parity: amp knobs resolve the
+    // LIGHT tokens, pedal knobs the pinned-dark ones). Default dark.
+    void setScheme(const skin::Scheme&);
     juce::Slider& slider() { return slider_; }
     void resized() override;
 
@@ -206,6 +248,8 @@ private:
     juce::Label nameLabel_, valueLabel_;
     juce::Colour accent_{skin::accentRat};
     bool dimmed_{false};
+    const skin::Scheme* scheme_{nullptr};  // set in ctor (darkIsland)
+    double lastTickValue_{0.0};            // ui-sound detent tracking
 };
 
 // The FOOTSWITCH — the pedal's morphology cue, translated from the web recipes in
@@ -241,6 +285,7 @@ public:
 
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;  // the release thunk (web parity)
 
 private:
     void timerCallback() override;
@@ -285,26 +330,39 @@ private:
 };
 
 // A carved-slot lever toggle (the amp Bright/Cab levers): a recessed well with a
-// cap lever that slides down + lights (accent) when on. Caption beneath.
-class LeverToggle : public juce::Component {
+// cap lever that slides down + lights (accent) when on. Caption beneath. Paints
+// in the LIGHT scheme (amp-only widget — amp.css .toggle resolves light on the
+// web). The lever SLIDES with the web's 160 ms overshoot spring
+// (transition: top .16s cubic-bezier(.34,1.56,.64,1)) rather than snapping.
+class LeverToggle : public juce::Component, private juce::Timer {
 public:
     LeverToggle();
     void setAccent(juce::Colour c) { accent_ = c; repaint(); }
-    void setOn(bool o) { on_ = o; repaint(); }
+    void setOn(bool o);
     bool isOn() const { return on_; }
     void setCaption(const juce::String& c) { caption_ = c; repaint(); }
     std::function<void()> onClick;
 
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
 
 private:
+    void timerCallback() override;
     juce::Colour accent_{skin::accentRat};
     bool on_{false};
+    bool everSet_{false};    // the first setOn (session sync) snaps, no animation
+    float leverPos_{0.0f};   // 0 = top (off) … 1 = bottom (on), animated
+    float animFrom_{0.0f};
+    double animStartMs_{0.0};
+    bool animating_{false};
     juce::String caption_{"Bright"};
 };
 
-// The amp POWER control: a glowing jewel over a rocker, caption "Power".
+// The amp POWER control: a glowing jewel over a rocker, caption "Power". Paints
+// in the LIGHT scheme (amp-only — amp.css .power/.rocker/.jewel resolve light).
+// The jewel band reserves skin::glowSpread() of head-room so the lit halo is
+// never clipped by the component bounds (the 2026-07-31 draw-order report).
 class PowerControl : public juce::Component {
 public:
     PowerControl();
@@ -313,8 +371,13 @@ public:
     bool isOn() const { return on_; }
     std::function<void()> onClick;
 
+    // The height the full web anatomy needs: jewel band + gap + 64 px rocker +
+    // caption. layoutAmpCard sizes the cluster from this instead of guessing.
+    static int preferredHeight();
+
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
 
 private:
     juce::Colour accent_{skin::accentRat};
@@ -347,6 +410,7 @@ public:
 
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
 
 private:
     juce::StringArray labels_{"Off", "Chorus", "Vibrato"};

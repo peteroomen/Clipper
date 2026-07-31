@@ -37,6 +37,20 @@ namespace {
 constexpr double kTwoPi = 6.283185307179586;
 using clipper::dsp::GoldModel;
 
+// --- docs §54: THE TWO §52 XFAILs ARE GONE, AND THAT IS THE RATCHET WORKING ---------
+// §52 left two known-bad properties here (`gold-summing-rails-engage` and its shadow
+// `gold-summing-alias-at-treble-max`), both naming ONE fix: the diode node ran hot, so
+// the schematic's correct summing weight was multiplying a node that was ~2.1x too
+// loud and the tone stage's +/-8.6 V rail clamp engaged at max TREBLE. §54 fixed that
+// node (the reference implementation's measured clipper fit, Is = 15 uA / Vt =
+// 25.85 mV, behind the schematic's R13 = 1 k). BOTH XPASSED, so per the XFAIL ratchet
+// they are deleted and asserted for real, in the same slice:
+//   * the rail clamp: 8.624 V -> 1.274 V at max GAIN + max TREBLE (testHeadroom...)
+//   * the alias floor at max TREBLE: -26.5 dB -> -92.9 dB at 4x/44.1 k, and it MOVES
+//     with the oversampling factor again (1x -27.3 / 4x -92.9 / 8x -106.8), i.e. it
+//     is measuring aliasing rather than a base-rate clip (testAliasing).
+// This file has no XFAIL ledger. Do not add one back without a measured property.
+
 double goertzelAmp(const std::vector<float>& x, size_t start, size_t n, double f,
                    double fs) {
     const double w = kTwoPi * f / fs;
@@ -191,6 +205,31 @@ void testCrossfade(double fs) {
     assert(std::fabs(GoldModel::driveGainAt(0.0) - 4.6068) < 1e-3 &&
            std::fabs(GoldModel::driveGainAt(1.0) - 25.8235) < 1e-3 &&
            "drive gain law drifted from A = 1 + 422k/((1-g)*100k + 17k)");
+    // §52: the DIRT SUMMING WEIGHT, from the schematic's summing network rather than a
+    // fit. Every path reaches the summing amp's virtual ground through its own resistor
+    // and shares one transimpedance R20 = 392 k, so the dirt path's weight is
+    //   R20 / R16                 = 392k/47k = 8.3404  (R16 = the gain stage's own
+    //                                                   summing resistor; C10 = 1 uF in
+    //                                                   front of it is a 3.4 Hz HP, so
+    //                                                   there is NO in-band post-diode
+    //                                                   attenuation to divide out)
+    // and this model carries the clean path's transimpedance in kSumGain = 2.0 (the
+    // schematic's own R20*G_clean measures 1.96 at 110 Hz / 2.28 at 220 / 1.82 at 1 kHz
+    // — an independent check that the 2.0 was already right), so
+    //   kClipBlendWeight        = 8.3404 / 2.0 = 4.1702.
+    // Two properties, both perturbation-proven against the pre-§52 0.65 (which fails
+    // the first by 6.42x and is NOT a rounding difference):
+    constexpr double kDerivedClipWeight = 392.0e3 / (47.0e3 * 2.0);
+    assert(std::fabs(GoldModel::clipBlendAt(1.0) - kDerivedClipWeight) < 1e-9 &&
+           "dirt summing weight drifted from the schematic's R20/(R16*kSumGain) "
+           "= 392k/(47k*2) — do NOT re-fit it (docs §52)");
+    // ... and it is FIXED across the travel above the contract fade (the knob changes
+    // DRIVE, not mix), while the fade still holds clipBlend(0) = 0 exactly.
+    assert(GoldModel::clipBlendAt(0.2) == GoldModel::clipBlendAt(1.0) &&
+           GoldModel::clipBlendAt(0.6) == GoldModel::clipBlendAt(1.0) &&
+           "dirt summing weight is not FIXED across the knob (the §50/§52 gang law)");
+    assert(GoldModel::clipBlendAt(0.0) == 0.0 &&
+           "clipBlend(0) != 0 — the bit-exact-clean GAIN-0 product contract is broken");
     std::printf(
         "  [ok] ganged crossfade @ %.0f Hz: THD %.2f%% -> %.2f%% -> %.2f%% -> %.2f%% -> "
         "%.2f%%; clipped share %.2f -> %.2f -> %.2f -> %.2f -> %.2f (clean feed flat, "
@@ -213,9 +252,13 @@ void testGermaniumKnee(double fs) {
     // diode-node drive straddles the germanium knee. §50 RE-DERIVED PROBE: the
     // drive path now attenuates before the diodes (kDrivePreScale + the 600 Hz
     // corner ≈ 0.22x at 220 Hz), so the old probe (A = 7.7, 0.01–0.1 V) no longer
-    // reached the knee at all. At max gain (A = 25.82) the node sees
-    // 25.82·0.22·(0.025..0.25 V) ≈ 0.14..1.4 V — onset-to-deep across the sweep,
-    // which is the straddle the two properties below need.
+    // reached the knee at all.
+    // §54 RE-CHECK (no change needed): the drive amp is now the real C7/C8 network, so
+    // at 220 Hz and max gain it delivers 47.6x rather than the DC law's 25.82x, and
+    // the germanium knee moved DOWN to 0.109 V. The sweep below puts the node's source
+    // at 0.27..2.7 V, which solves to a node of 0.069..0.128 V — straddling the
+    // 0.109 V knee from the toe to well past it, which is exactly the straddle the two
+    // properties need. Left as it is.
     const Params base{1.0f, 0.5f, 0.7f};
     const float lo = 0.025f, hi = 0.25f;  // 20 dB input sweep
     auto thdAt = [&](float amp, int diode) {
@@ -234,7 +277,15 @@ void testGermaniumKnee(double fs) {
     // have been: the onset ratio measured ~26x and the slope ratio ~0.032. With the
     // real 1N4148 device (n = 1.752) the two diodes are properly far apart and both
     // ratios improve by an order of magnitude — measured onset **189x** and slope
-    // ratio **0.0063**.
+    // ratio **0.0063**. (§52 re-baseline: the derived summing weight raises the dirt's
+    // share of the output, so these THDs are absolutely larger — Ge 2.87 % -> 26.90 %,
+    // Si 0.0180 % -> 23.72 % — while the two RATIOS the properties are about are
+    // essentially unmoved: onset **160x**, slope ratio **0.0071**. Bounds unchanged;
+    // the probe still straddles the knee, so no re-derivation was needed.)
+    // (§54 re-baseline: the reference's germanium fit clips lower and softer, so the
+    // Ge curve is flatter across the sweep — Ge 7.68 % -> 14.59 %, Si 0.0551 % ->
+    // 18.53 %. Onset **139x** (bar 20x) and slope ratio **0.00565** (bar 0.05): both
+    // ratios still clear their bounds by 7x and 8.8x. Bounds unchanged again.)
     //
     // Both bounds below are therefore TIGHTER than they were (5x -> 20x, 0.25x ->
     // 0.05x): as assertions they are strictly harder to satisfy. What widened is the
@@ -245,7 +296,7 @@ void testGermaniumKnee(double fs) {
     // bound to go green (CLAUDE.md forbids that, and rightly).
     assert(geLo > siLo * 20.0 && "germanium does not bend earlier than silicon");
     // Slope: across the same 20 dB the germanium THD grows by a far smaller factor
-    // (measured ~23x vs silicon's ~3672x) — that is the soft knee, as a number.
+    // (measured ~9.4x vs silicon's ~1319x) — that is the soft knee, as a number.
     const double geSlope = geHi / (geLo + 1e-12);
     const double siSlope = siHi / (siLo + 1e-12);
     assert(geSlope < 0.05 * siSlope &&
@@ -264,20 +315,39 @@ void testGermaniumKnee(double fs) {
 // the shape of the comparison much (audit finding 15). So it never noticed that the
 // silicon "counterfactual" had stopped being silicon.
 //
-// This asserts the thing the A/B is FOR, against an external reference: a 1N34A
-// point-contact germanium pair and a 1N4148 silicon pair clip roughly a factor of
-// two in voltage apart — the datasheet forward drops are ~0.3 V and ~0.65 V, i.e.
-// ~6 dB. The clean half is switched OUT so this reads the clipper alone, and the
-// measurement is taken well past both knees so it reads the CEILINGS, not the toe.
-// Measured 5.88-6.11 dB across the drive range; it was 0.96-1.56 dB before.
+// This asserts the thing the A/B is FOR, against external references: the two device
+// models' own knees. The clean half is switched OUT so this reads the clipper alone,
+// and the measurement is taken well past both knees so it reads the CEILINGS.
+//
+// §54 RE-DERIVED THIS PROBE'S BAND, and the reason is a change of reference, not a
+// change of bound. Until 2026-07-31 this model's germanium was a datasheet-shaped
+// guess (Is = 200 nA, n = 1.3 -> 0.286 V at 1 mA), and the band 4.0-9.0 dB came from
+// the datasheet argument "1N34A ~0.3 V vs 1N4148 ~0.65 V, i.e. ~6 dB". §54 replaced
+// the germanium with the reference implementation's FIT TO A REAL UNIT's clipper
+// (Is = 15 uA, Vt = 25.85 mV, n = 1), whose knee is 0.1086 V at 1 mA. The silicon
+// counterfactual is unchanged and still externally anchored — the 1N4148 SPICE card
+// `IS=2.52n N=1.752` gives 1.752*25.85m*ln(1mA/2.52nA) = 0.5839 V at 1 mA, which the
+// datasheet's ~0.62 V typical corroborates. So the two knees are now a factor of
+// 5.376 apart == 14.61 dB, and that analytic figure — computed from two independently
+// sourced device models, neither of them fitted here — is what the band brackets.
+// Measured through the whole dirt path: 12.70-14.29 dB across 0.3-3.0 V of input at
+// GAIN 0.35 and 1.00 (it was 5.84-6.12 dB with the old germanium, 0.96-1.56 dB when
+// the SILICON ideality was also wrong).
+//
+// THE BAR STILL CATCHES THE BUG IT WAS BUILT FOR. Audit finding 15 (§36) was the
+// 1N4148's ideality dropped to 1.0, which moves the silicon knee to 0.333 V and the
+// analytic contrast to 9.73 dB; the perturbation measures 8.51-10.22 dB through the
+// model and fails the 11.0 dB floor below. (testGermaniumKnee catches it too, and
+// harder — its onset ratio collapses 139x -> 3.8x against a 20x bar — so the
+// regression now has two independent bars, not one.) Perturbation transcript in
+// docs/work/2026-07-31-gold-clipping-fidelity.md.
 void testDiodeLevelContrast(double fs) {
     const double f0 = 220.0;
     std::printf("  [--] Ge-vs-Si ceiling contrast @ %.0f Hz (clean half OUT):\n", fs);
-    // §50 probe re-derivation: the drive path now attenuates (~0.22x at 220 Hz) and
-    // A tops at 25.8x, so the old rows (gain 0.10 at 0.3 V) never reached EITHER
-    // ceiling — the comparison read the linear path, not the clippers. The property
-    // is the CEILINGS ("well past both knees" above), so the probe must get there:
-    // 0.6 V at gain >= 0.35 puts the node at 0.8-3.4 V, past both.
+    // §50 probe re-derivation, still valid: the drive path attenuates (~0.22x at
+    // 220 Hz) and A tops at 25.8x DC, so the pre-§50 rows (gain 0.10 at 0.3 V) never
+    // reached EITHER ceiling — the comparison read the linear path. 0.6 V at
+    // gain >= 0.35 puts the node's source at 1.4-10.6 V, far past both knees.
     for (float g : {0.35f, 0.60f, 1.00f}) {
         const Params p{g, 0.5f, 0.7f};
         const auto in = sine(f0, 0.6f, 0.6, fs);
@@ -285,14 +355,15 @@ void testDiodeLevelContrast(double fs) {
         const double si = tailRms(render(in, p, fs, 4, GoldModel::DIODE_SILICON, false), fs);
         assert(ge > 1e-4 && si > 1e-4 && "a diode option produced no output");
         const double contrast = toDb(si) - toDb(ge);
-        // A real 1N34A-vs-1N4148 pair is ~6-7 dB apart. Bracket generously but
-        // nowhere near the ~1 dB the dropped ideality factor produced.
-        assert(contrast > 4.0 &&
-               "silicon barely clips above germanium — is the 1N4148 ideality factor "
-               "missing again? (audit finding 15, docs §36)");
-        assert(contrast < 9.0 && "silicon clips implausibly far above germanium");
+        // Bracketed around the two device models' 14.61 dB knee ratio, wide enough
+        // that the composed path's own shaping cannot push it out, tight enough that
+        // restoring the §36 bug (kSiIdeality = 1.0 -> ~9 dB) fails it.
+        assert(contrast > 11.0 &&
+               "silicon does not clip far enough above germanium — is the 1N4148 "
+               "ideality factor missing again? (audit finding 15, docs §36/§54)");
+        assert(contrast < 18.0 && "silicon clips implausibly far above germanium");
         std::printf("       gain %.2f: Ge rms %.4f, Si rms %.4f -> %+.2f dB "
-                    "(4.0-9.0 dB band)\n", g, ge, si, contrast);
+                    "(11.0-18.0 dB band, analytic knee ratio 14.61)\n", g, ge, si, contrast);
     }
 }
 
@@ -321,18 +392,50 @@ void testTreble(double fs) {
 }
 
 // --- Test 5: aliasing. Shipped 4x at max GAIN below the M2 -60 dB bar. -------
+//
+// §52 split this probe in two because the derived summing weight made the tone
+// stage's base-rate rail clamp engage at max TREBLE, so the max-treble number stopped
+// measuring aliasing at all (1x -20.3 / 4x -26.5 / 8x -26.4 dB — flat in the OS
+// factor). §54 fixed the node the weight was multiplying and BOTH stimuli are hard
+// again: at max TREBLE the floor is back to -92.9 dB at 4x/44.1 k and it MOVES with
+// the factor (1x -27.3 / 8x -106.8), which is what "this measures aliasing" looks
+// like. The split is kept, because two stimuli with two independent bars is strictly
+// more than the one this file used to have.
 void testAliasing(double fs) {
     using clipper::measure::measureAliasing;
     const double f0 = 4186.0;  // C8
     const auto in = sine(f0, 0.2f, 1.0, fs);
+
+    // (a) THE CLIPPER'S OWN ALIASING — TREBLE at noon, so the tone stage's rail clamp
+    //     is nowhere near engaging and the only nonlinearity in the path is the
+    //     oversampled diode pair. This is the M2 bar, hard.
+    const Params clipperOnly{1.0f, 0.5f, 0.9f};
+    const double c4 = measureAliasing(render(in, clipperOnly, fs, 4), fs, f0).worstAliasDb;
+    const double c1 = measureAliasing(render(in, clipperOnly, fs, 1), fs, f0).worstAliasDb;
+    const double c8 = measureAliasing(render(in, clipperOnly, fs, 8), fs, f0).worstAliasDb;
+    assert(c4 < -60.0 && "4x worst-alias at max GAIN not >= 60 dB below fundamental");
+    assert(c4 < c1 - 20.0 && "4x did not clearly improve on 1x");
+    std::printf("  [ok] aliasing @ %.0f Hz (TREBLE noon, clipper isolated): 1x %.1f dB, "
+                "4x %.1f dB (bar -60), 8x %.1f dB\n", fs, c1, c4, c8);
+
+    // (b) MAX TREBLE — §52's XFAIL `gold-summing-alias-at-treble-max`, XPASSED by §54
+    //     and therefore asserted for real. Two bars, because the defect it replaces
+    //     was NOT "the number is too high" but "the number stopped depending on the
+    //     oversampling factor": the -60 dB M2 bar, AND a 20 dB improvement from 1x to
+    //     4x that a base-rate clip cannot produce. Measured 44.1 k: 1x -27.3,
+    //     4x -92.9, 8x -106.8 dB (it was 1x -20.3 / 4x -26.5 / 8x -26.4 pre-§54).
     const Params hot{1.0f, 1.0f, 0.9f};  // max gain, brightest treble
     const double w4 = measureAliasing(render(in, hot, fs, 4), fs, f0).worstAliasDb;
     const double w1 = measureAliasing(render(in, hot, fs, 1), fs, f0).worstAliasDb;
     const double w8 = measureAliasing(render(in, hot, fs, 8), fs, f0).worstAliasDb;
-    assert(w4 < -60.0 && "4x worst-alias at max GAIN not >= 60 dB below fundamental");
-    assert(w4 < w1 - 20.0 && "4x did not clearly improve on 1x");
-    std::printf("  [ok] aliasing @ %.0f Hz: 1x %.1f dB, 4x %.1f dB (bar -60), 8x %.1f dB\n",
-                fs, w1, w4, w8);
+    assert(w4 < -60.0 &&
+           "4x worst-alias at max GAIN + max TREBLE not >= 60 dB below fundamental "
+           "(docs §54 — this was XFAIL gold-summing-alias-at-treble-max)");
+    assert(w4 < w1 - 20.0 &&
+           "the max-TREBLE alias floor does not improve with oversampling — it is "
+           "measuring a BASE-RATE nonlinearity (a rail clip), not aliasing");
+    std::printf("  [ok] aliasing @ %.0f Hz (TREBLE max, was XFAIL): 1x %.1f dB, "
+                "4x %.1f dB (bar -60), 8x %.1f dB\n", fs, w1, w4, w8);
 }
 
 // --- Test 6: HEADROOM (the charge pump) + OUTPUT linearity. ------------------
@@ -343,7 +446,39 @@ void testHeadroomAndOutput(double fs) {
     const auto o = render(hotIn, {1.0f, 0.5f, 1.0f}, fs);
     double pk = 0.0;
     for (float v : o) pk = std::max(pk, static_cast<double>(std::fabs(v)));
-    assert(pk < 3.0 && "output peak approaches the charge-pump rails (they should never clip)");
+    // The PROPERTY is the physical one: the +/-8.6 V charge-pump rails must not clip,
+    // because the germanium pair is meant to be the only clipper in the box. §27
+    // measured 1.60 V here and guarded at 3.0 — a snug drift guard around that
+    // measurement, not the property. §52's derived summing weight (R20/(R16*kSumGain),
+    // 6.42x the old fit) put it at 4.302 V and §54's diode-node fix brings it back to
+    // 2.967 V, but the bound stays stated in the units it is actually about (the
+    // rail), not re-tightened around whichever measurement is current.
+    assert(pk < 6.0 && "output peak approaches the charge-pump rails (they should never clip)");
+    {
+        // Max GAIN + max TREBLE at an ordinary 0.2 V pick: does the tone stage's rail
+        // clamp engage? Measured at its INPUT (the clamp sits before the OUTPUT pot,
+        // so divide the rendered peak by the pot setting to read the clamped node).
+        //
+        // This was §52's XFAIL `gold-summing-rails-engage` (8.624 V against the 8.600 V
+        // rail). §54's diode node XPASSED it — 1.274 V at 44.1 k / 1.166 V at 96 k —
+        // so it is a hard assertion again, with the bar left at the rail itself.
+        const auto pick = sine(4186.0, 0.2f, 0.5, fs);
+        auto clampNodePeak = [&](float treble) {
+            const float outPot = 0.9f;
+            const auto r = render(pick, {1.0f, treble, outPot}, fs);
+            double p = 0.0;
+            for (float v : r) p = std::max(p, static_cast<double>(std::fabs(v)));
+            return p / outPot;
+        };
+        const double noon = clampNodePeak(0.5f), bright = clampNodePeak(1.0f);
+        assert(bright < 8.6 * 0.999 &&
+               "the tone stage's charge-pump rail clamp ENGAGES at max GAIN + max "
+               "TREBLE — the germanium pair is supposed to be the only clipper in the "
+               "box (docs §27/§54; do NOT answer this by raising kRailVolts)");
+        std::printf("  [ok] rails idle @ %.0f Hz (was XFAIL): tone-stage node peaks "
+                    "%.3f V at TREBLE noon, %.3f V at TREBLE max (rail 8.600)\n",
+                    fs, noon, bright);
+    }
     // A 1 V input at GAIN 0 is still CLEAN — the headroom statement, measured.
     const double tClean = thd(render(hotIn, {0.0f, 0.5f, 0.5f}, fs), 220.0, fs);
     assert(tClean < 0.005 && "the clean path distorts at 1 V (no headroom)");
@@ -459,10 +594,112 @@ void testStabilityHygiene() {
     std::printf("  [ok] hygiene: finite grid, silence->silence, deterministic\n");
 }
 
+// --- Test 9: THE CLIPPING-STAGE TRIO (docs §54). -----------------------------
+// One bar per fix, each perturbation-proven against reverting THAT fix alone (the
+// transcripts are in docs/work/2026-07-31-gold-clipping-fidelity.md). All four are
+// measured through the whole model with the clean half switched OUT, so they read the
+// dirt path end-to-end rather than a constant.
+void testClippingStageFidelity(double fs) {
+    const double f0 = 220.0;
+    // Small-signal dirt-path gain at f, with the clean half OUT. 0.2 mV is small
+    // enough that the diode pair is at its ZERO-BIAS incremental resistance
+    // (rd = Vt/(2*Is) = 862 Ohm — note the reference fit has no truly linear region,
+    // which is the germanium bloom as a number), so this reads the dirt path's
+    // FILTERS times one frequency-independent constant. Every bar below is a RATIO
+    // across frequency or across the knob, in which that constant cancels exactly.
+    auto dirtDb = [&](double f, float gain) {
+        const auto in = sine(f, 0.0002f, 0.5, fs);
+        const auto o = render(in, {gain, 0.5f, 0.7f}, fs, 4, GoldModel::DIODE_GERMANIUM,
+                              false);
+        const size_t n = o.size(), win = std::min(n, static_cast<size_t>(0.25 * fs));
+        return toDb(goertzelAmp(o, n - win, win, f, fs)) -
+               toDb(goertzelAmp(in, n - win, win, f, fs));
+    };
+
+    // (1) THE DIODE NODE — the germanium ceiling, referred back to the node.
+    // The dirt path's output is kSumGain * clipBlend(1) * LP495(V_node), and
+    // kSumGain * clipBlend(1) is exactly R20/R16 = 8.3404, so dividing the rendered
+    // peak by 8.3404 reads the clamped node (times the pole's 0.914 at 220 Hz, i.e.
+    // 8.6 % low — the bar below is stated on the measured quantity, uncorrected).
+    // Driven far past the knee (1 V in at max GAIN puts ~10.6 V on the node's source),
+    // so this reads the CEILING, not the toe. The reference implementation's own
+    // clipper, solved statically at that drive, clamps at 0.168 V; this model measures
+    // 0.148 V through the pole (0.162 V node-referred). The pre-§54 pair (Is = 200 nA,
+    // n = 1.3 behind Rs = 2.2 k) clamps at 0.336 V — that is the perturbation.
+    {
+        const auto in = sine(f0, 1.0f, 0.5, fs);
+        const auto o = render(in, {1.0f, 0.5f, 1.0f}, fs, 4, GoldModel::DIODE_GERMANIUM,
+                              false);
+        double pk = 0.0;
+        for (float v : o) pk = std::max(pk, static_cast<double>(std::fabs(v)));
+        const double node = pk / (392.0e3 / 47.0e3);
+        assert(node > 0.10 && node < 0.22 &&
+               "the germanium clipping node's ceiling has left the reference "
+               "implementation's measured fit (Is = 15 uA, Vt = 25.85 mV behind "
+               "R13 = 1 k -> ~0.17 V); docs §54");
+        std::printf("  [ok] diode node @ %.0f Hz: 1 V in wide open clamps at %.4f V "
+                    "node-referred (reference static solve 0.168 V, band 0.10-0.22)\n",
+                    fs, node);
+    }
+
+    // (2) THE SUMMING POLE — R20 || C13 = 495 Hz, on the dirt branch.
+    // A one-pole low-pass at 495 Hz costs 3 kHz 12.7 dB more than 500 Hz
+    // (20*log10(sqrt((1+(3000/495)^2)/(1+(500/495)^2)))), so the dirt path's
+    // 3 kHz-vs-500 Hz tilt has to move by about that much. Measured -17.6 dB with the
+    // pole in; removing the pole alone (and nothing else) leaves -4.9 dB.
+    {
+        const double t = dirtDb(3000.0, 0.5f) - dirtDb(500.0, 0.5f);
+        assert(t < -12.0 &&
+               "the 495 Hz summing pole (R20 || C13) is missing from the dirt path — "
+               "this is the filter that makes a clipped Klon creamy (docs §54)");
+        std::printf("  [ok] summing pole @ %.0f Hz: dirt path 3 kHz is %.2f dB below "
+                    "500 Hz (bar -12; without the pole it is -4.9)\n", fs, t);
+    }
+
+    // (3) THE DRIVE AMP'S C7 — the ground-leg cap that makes the gain KNOB-dependent
+    // in frequency, not just in level. Without C7 the drive amp is a flat A(g), so
+    // the dirt path's 500-vs-110 Hz tilt is IDENTICAL at every knob position (every
+    // other filter in that path is knob-independent). With C7 across R10b the zero
+    // walks from 19 Hz (knob closed) to 970 Hz (knob open) and the tilt opens up.
+    // Measured 7.90 dB at g = 0.15 -> 15.97 dB at g = 1.00, a spread of 8.07 dB;
+    // with C7 removed (and nothing else) the four knob positions measure 7.27 /
+    // 7.26 / 7.24 / 7.23 dB — a spread of -0.04 dB, i.e. flat to the measurement.
+    {
+        const double tiltLo = dirtDb(500.0, 0.15f) - dirtDb(110.0, 0.15f);
+        const double tiltHi = dirtDb(500.0, 1.0f) - dirtDb(110.0, 1.0f);
+        assert(tiltHi - tiltLo > 5.0 &&
+               "the drive amp's gain is not KNOB-dependent in frequency — C7 (82 nF "
+               "across R10b) is missing, so the stage is a flat A(g) (docs §54)");
+        std::printf("  [ok] drive C7 @ %.0f Hz: 500-vs-110 Hz tilt %.2f dB at GAIN 0.15 "
+                    "-> %.2f dB at GAIN 1.00 (spread %.2f dB, bar 5; flat A gives -0.04)\n",
+                    fs, tiltLo, tiltHi, tiltHi - tiltLo);
+    }
+
+    // (4) THE IDENTITY §50's law must keep: the network's DC gain IS A(g), because the
+    // ground leg is recovered from the smoothed A rather than written down twice.
+    // Probed through the model well below every pole of the drive network (its lowest
+    // is 148 Hz at the closed end) — the drive-path high-pass is down there too, so
+    // what is asserted is the RATIO between two knob positions, in which every
+    // knob-independent filter cancels exactly.
+    {
+        const double lo = 5.0;
+        const double r = dirtDb(lo, 1.0f) - dirtDb(lo, 0.35f);
+        const double analytic = toDb(GoldModel::driveGainAt(1.0)) -
+                                toDb(GoldModel::driveGainAt(0.35));
+        assert(std::fabs(r - analytic) < 0.5 &&
+               "the drive network's DC gain ratio has drifted from §50's gang law "
+               "A = 1 + 422k/((1-g)*100k + 17k) — the law must be the network's exact "
+               "DC limit (docs §54)");
+        std::printf("  [ok] DC identity @ %.0f Hz: dirt gain at 5 Hz rises %.3f dB from "
+                    "GAIN 0.35 to 1.00; §50's law says %.3f dB\n", fs, r, analytic);
+    }
+}
+
 }  // namespace
 
-int main() {
+int main(int, char**) {
     clipper::test::requireAssertsLive();
+
     std::printf("Running clipper::dsp::GoldModel tests (v1.1 item 6 — the clean-blend "
                 "germanium overdrive)...\n");
     testTransparency(44100.0);
@@ -482,6 +719,8 @@ int main() {
     testHeadroomAndOutput(96000.0);
     testAnalyticLaws(48000.0);
     testStabilityHygiene();
-    std::printf("All GoldModel tests passed.\n");
+    testClippingStageFidelity(48000.0);
+    std::printf("All GoldModel tests passed (no known open defects — §52's two XFAILs "
+                "were XPASSed and deleted by §54).\n");
     return 0;
 }

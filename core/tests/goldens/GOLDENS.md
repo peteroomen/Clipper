@@ -46,6 +46,19 @@ All five: 2.0 s standard pluck, 16-bit mono 48 kHz.
 ## 2026-07-31 — 1 golden(s) re-blessed
 
 - **Blessed by:** Claude
+- **On top of:** `bed7722` fix: re-derive the JCM800 GAIN pot taper so breakup lands at 30, not 20
+
+| Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |
+| --- | --- | --- | --- | --- |
+| `rat_jcm800` | CHANGED | -1.08 dB | 4.50 dB @ 2016 Hz | 11 |
+| `sd1_twin_reverb` | UNCHANGED | +0.00 dB | 0.02 dB @ 3200 Hz | 12 |
+| `muff_twin` | UNCHANGED | +0.00 dB | 0.01 dB @ 252 Hz | 13 |
+| `ts_ac30` | UNCHANGED | +0.00 dB | 0.00 dB @ 2016 Hz | 8 |
+| `clean120_chorus` | UNCHANGED | -0.00 dB | 0.11 dB @ 252 Hz | 7 |
+
+**Justification:** The JCM800 GAIN taper re-derivation (docs §51): the owner's round-3 report ("20 sounds like what I want 30 to sound like; 100 is perfect right where it is") became the design equation — gainTaper(0.30) == the old audioTaper(0.20), k 4 → 5.052 on the GAIN pot only. The rig renders at GAIN 0.7, which now delivers 2.6 dB less drive (the power section returns about half), hence −1.08 dB RMS with the worst band 4.50 dB @ 2016 Hz — the intended knob-feel change at the golden's fixed knob position, not a voicing drift; GAIN 1.0 is bit-identical by render hash and MASTER is byte-identical. The other four goldens are UNCHANGED (scope check). Owner authorized blessing on 2026-07-31 ("let's merge 29,30 and bless") with the table presented in PR #29 and in-chat; same hand-run ritual as the earlier 2026-07-31 entries (no /dev/tty — --golden-report verified against the approved figures before --update-goldens).
+
+- **Blessed by:** Claude
 - **On top of:** `8809984` fix: the Muff clip stages' series base resistors — finding 16's bass half (docs §49)
 
 | Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |

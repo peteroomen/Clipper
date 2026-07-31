@@ -120,7 +120,7 @@ constexpr clipper::test::XfailDecl kXfControlRateBlockSize{
     "control-rate-param-sampling-block-size",
     "2026-07-24 audit, Medium/DSP: 'control-rate parameter sampling defeats the 5 ms "
     "smoother at DAW block sizes' (OverdriveEngine.cpp:147, MuffModel.cpp:161, "
-    "GoldModel.cpp:351)",
+    "GoldModel.cpp:487)",
     "a dirt pedal's output does not depend on the host block size AT ALL, including during "
     "the initial parameter snap — the smoothers advance per sample but only the CHUNK-END "
     "value is kept, so the trajectory differs with chunk size (worst: Muff, 1.6 absolute at "
@@ -398,11 +398,17 @@ std::vector<Gear> allGear() {
     // A4 level-sanity windows (RMS delta dB, standard pluck at defaults), each
     // measured value ± ~10 dB. Measured 2026-07 @ 48 kHz (input RMS −33.5 dBFS):
     //   rat +18.6   sd1 +15.6   ts +13.1   muff +27.7 (fuzz sustain wall — by design;
-//   was +29.4 pre-§53, before the clip stages' DC-blocking diode caps)
-    //   gold +7.3 (was +13.2 pre-§50: the gang law puts default drive at
-    //   A(0.35) = 6.1× where the old linear law had 24.3× — see docs §50)
-    //   clean120 −6.0   jcm800 +1.7   twin −13.8   ac30 +1.6 (0.4 opening volume;
-    //   see docs §23 second amendment — the AC30 gain-structure fix moved it +13.3 dB)
+    //   was +29.4 pre-§53, before the clip stages' DC-blocking diode caps)
+    //   gold +12.5 (was +19.3 after §52, +7.3 after §50 and +13.2 before it: §52
+    //   replaced the FITTED dirt summing weight 0.65 with the schematic's
+    //   R20/(R16·kSumGain) = 4.1702 and the pedal got LOUDER, which was the opposite
+    //   of the field report — §54 then fixed the node that weight multiplies and it
+    //   came back down 6.8 dB. The window itself did NOT need re-centring: 12.5 sits
+    //   comfortably inside the 9..29 §52 opened, so it is left alone)
+    //   clean120 −6.0   jcm800 −2.5 (was +1.7 pre-§51: the re-derived GAIN taper
+    //   delivers 4.1 dB less drive at the 0.5 default — docs §51)   twin −13.8
+    //   ac30 +1.6 (0.4 opening volume; see docs §23 second amendment — the AC30
+    //   gain-structure fix moved it +13.3 dB)
     auto window = [&](const char* name, double lo, double hi) {
         for (auto& g : gear)
             if (g.name == name) { g.lvlDeltaLo = lo; g.lvlDeltaHi = hi; }
@@ -478,8 +484,11 @@ std::vector<Gear> allGear() {
     window("sd1", 4.0, 24.0);
     window("ts", 1.0, 21.0);
     window("muff", 18.0, 38.0);
-    window("gold", -3.0, 17.0);  // §50 gang law: measured +7.3 dB at its defaults
-                                 // (re-centred from 3..23; pre-§50 measured +13.2)
+    window("gold", 9.0, 29.0);  // §52 summing network re-centred this from −3..17
+                                // (itself re-centred from 3..23 by §50) on a measured
+                                // +19.3 dB. §54's clipping-stage trio measures +12.5,
+                                // still inside it — LEFT ALONE rather than re-snugged
+                                // around the newest number (docs §54.6).
     window("clean120", -17.0, 3.0);
     window("jcm800", -10.0, 10.0);
     window("twin", -25.0, -5.0);
@@ -512,14 +521,20 @@ bool isDirtPedal(const Gear& g) { return g.isPedal; }
 //                                  (§53 re-baseline: 1.69 / 1.41 before the
 //                                  DC-blocked diode branch.)
 //   amp peak ceiling  1.05        amps are normalized, 1.0 == full scale; hottest
-//                                  measured at defaults: jcm800 0.126.
+//                                  measured at defaults: jcm800 0.095 (was 0.126
+//                                  pre-§51 — the re-derived GAIN taper, docs §51).
 //   LEVEL knob at min             must actually attenuate ≥ 6 dB below default —
 //                                  measured: every level/volume/master pot (and
 //                                  the JCM's preamp-volume GAIN) kills to −240.
 //   Defaults RMS per gear: rat −16.6, sd1 −19.6, ts −22.1, muff −7.4 (§53: was
-//   −5.8), gold −27.8
-//   (§50: was −22.0 under the pre-gang-law drive),
-//   clean120 −41.1, jcm800 −33.5, twin −49.0, ac30 −33.6 dBFS (ac30 was −46.9
+//   −5.8, before the clip stages' DC-blocking diode caps), gold −22.6
+//   (§52 took it −27.8 → −15.9 with the derived summing weight; §54's clipping-stage
+//   trio takes it back to −22.6, because the reference implementation's measured
+//   germanium fit clamps the diode node 5.7–8.5 dB lower than this model's old
+//   datasheet-shaped pair and the 495 Hz summing pole trims the dirt's harmonics.
+//   Default peak 1.285 → 0.443 V, well inside the 2.0 V pedal ceiling),
+//   clean120 −41.1, jcm800 −37.6 (was −33.5 pre-§51: −4.1 dB of GAIN-taper drive
+//   at the 0.5 default, docs §51), twin −49.0, ac30 −33.6 dBFS (ac30 was −46.9
 //   before the §23 second amendment: its PI was starved, so the VOLUME knob
 //   could not reach the power section — see docs §23).
 // ---------------------------------------------------------------------------
@@ -577,7 +592,9 @@ void testMinKnobUsability(const std::vector<Gear>& gear) {
 //   ts   min −33.1 / def −38.2 dB     muff min −47.5 / def −55.4 dB (re-measured
 //        2026-07-31 twice: docs §49's series base resistors, then docs §53's
 //        DC-blocked diode branch — still 19+ dB inside the bar)
-//   gold min −30.1 / def −32.0 dB  ← the TIGHTEST, and necessarily so: at GAIN 0
+//   gold min −30.1 / def −35.6 dB (§54: the default row was −39.6 under §52's hotter
+//        diode node; the min row is UNCHANGED and always will be — GAIN 0 is bit-exact
+//        by contract)  ← the TIGHTEST at min, and necessarily so: at GAIN 0
 //        this pedal is a LINEAR buffer, so it can only PRESERVE the input's own
 //        −30 dB hum-to-note ratio (−30.1 measured == the physical ceiling for a
 //        transparent pedal, 2.1 dB of margin). Turning up improves it, because the
@@ -634,17 +651,26 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //                stages a real bias to clip around, so the knob BOTTOM finally
 //                cleans up: 2.6 → 0.4 % at SUSTAIN 0, with kClipDriveMax un-fitted
 //                6.0 → 1.0 and the taper floor re-derived −70 → −65)
-//                jcm800 0.2→10.8→48.5 (was 0.0→9.3→48.5 post-§45; the §47 bright
-//                cap tilts the drive spectrum into the clippers at low/mid gain —
-//                brighter drive, slightly more measured harmonic energy mid-knob)
-//                gold 0.0→2.3→15.3 (0.0 % at GAIN 0 is the crossfade: the clipped
+//                jcm800 0.2→6.9→48.5 (was 0.2→10.8→48.5 post-§47, and 0.0→9.3→48.5
+//                post-§45; §51 re-derived the GAIN taper — knob 0.5 now delivers
+//                the drive the k=4 law delivered at 0.40, so the mid-knob THD
+//                falls while GAIN 1.0 is bit-identical: taper(1) = 1 for any k)
+//                gold 0.0→4.2→13.1 (0.0 % at GAIN 0 is the crossfade: the clipped
 //                half is switched OUT, not merely quiet. §50: was 0.0→23.4→30.6 —
 //                the gang law A = 1+422k/((1−g)·100k+17k) spans 4.6→25.8×, 6.1×
 //                at the 0.35 default, where the linear law hit 24.3× there — the
-//                real unit's knob-0.99 drive at the shipped default)
+//                real unit's knob-0.99 drive at the shipped default. §52: 0.0→2.3
+//                →15.3 → 0.0→3.6→19.6, the derived summing weight raising the
+//                dirt's share of the sum. §54: → 0.0→4.2→13.1 — the reference's
+//                germanium fit clamps 8.4 dB lower and the 495 Hz summing pole
+//                takes the harmonics down harder than the fundamental, while the
+//                drive amp's C7 network raises the mid-knob drive: max THD falls,
+//                mid-knob THD rises slightly)
 //   LEVEL dBFS (0/0.5/1): rat −240→−15.6→−9.6   sd1 −240→−12.8→−6.8
 //                ts −240→−14.9→−8.9   muff −240→−6.4→−0.4 (§53: was −7.0→−1.0)
-//                clean120 −240→−25.9→−23.0   jcm master −240→−18.4→−8.9
+//                clean120 −240→−25.9→−23.0   jcm master −240→−21.9→−7.5 (§51: the
+//                master pot's own law is untouched at k = 4 — what moved is the
+//                GAIN drive reaching it at the 0.5 default)
 //                twin −240→−34.5→−16.3   ac30 −240→−17.8→−9.7 (docs §23 second
 //                amendment: the AC30 volume travel moved up ~12 dB when the
 //                starved phase inverter was fixed — the knob reaches the EL84s now)
@@ -653,11 +679,17 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //                ts −17.4→−6.2   muff −12.8→−4.1 (§53: was −5.0→+10.1 — the clip
 //                stages' 470 pF Miller caps now work against a real base-node
 //                impedance, so the pedal is less shrill overall; same +8.7 dB of
-//                knob authority)   gold treble −25.9→−15.3
+//                knob authority)   gold treble −29.4→−18.9
 //                (§50: was −17.9→−5.7 — less clipped harmonic energy overall at
-//                max gain, same +10.6 dB of knob authority)
+//                max gain, same +10.6 dB of knob authority. §52: −25.9→−15.3 →
+//                −22.9→−12.3, +3.0 dB from the derived summing weight. §54:
+//                → −29.4→−18.9, i.e. −6.5 dB of HF harmonic energy, which is the
+//                495 Hz summing pole doing exactly the job it is in the circuit
+//                for. The knob's authority is STILL exactly +10.6 dB, at every
+//                one of the four re-baselines — it is a linear tilt after the
+//                nonlinearity, so nothing upstream can move it)
 //   TONE, amps  (3 kHz level dB, dark→bright; bar ≥ +4):
-//                clean120 treble −36.7→−27.3   jcm800 treble −30.3→−15.7
+//                clean120 treble −36.7→−27.3   jcm800 treble −29.3→−14.1 (§51)
 //                twin treble −52.3→−21.0   ac30 treble −45.1→−21.8
 //                ac30 CUT −35.9→−25.5 (inverted knob: 1 = darker — docs §23)
 // ---------------------------------------------------------------------------
@@ -729,7 +761,9 @@ void testKnobMonotonicity(const std::vector<Gear>& gear) {
             // fully open — clearly audible, and it fails a knob whose upper half is dead,
             // which is a real class of defect in this codebase (the audit measured JCM800
             // BASS at "+9.5 dB lower half / +0.2 dB upper half"). Measured across the rig:
-            // rat/muff/gold +6.0, jcm master +9.5, ac30 +8.1, twin +18.2, and clean120 the
+            // rat/muff/gold +6.0, jcm master +14.4 (was +9.5 pre-§51 — a less-driven
+            // power section decompresses, so the master's top half is worth MORE now),
+            // ac30 +8.1, twin +18.2, and clean120 the
             // tightest at +2.9 dB (its volume runs into a compressive output stage).
             assert(lv[2] > lv[1] * 1.2589 &&
                    "LEVEL knob gained under 2 dB from noon to fully open (dead top half)");
@@ -797,7 +831,7 @@ void testKnobMonotonicity(const std::vector<Gear>& gear) {
 // Measured Δ RMS at defaults (2026-07, 48 kHz, pluck peak −20 dBFS / RMS −33.5):
 //   rat +18.6   sd1 +15.6   ts +13.1   muff +27.7 (§53: was +29.4; the sustain wall lifts a
 //   DECAYING pluck's RMS by design — a fuzz that did NOT would be the bug)
-//   clean120 −6.0   jcm800 +1.7   twin −13.8   ac30 +1.6 (0.4 opening volume —
+//   clean120 −6.0   jcm800 −2.5 (docs §51)   twin −13.8   ac30 +1.6 (0.4 opening volume —
 //   +13.3 dB vs the pre-§23-second-amendment −11.7: the Thirty's opening volume
 //   now sits at its edge-of-breakup sweet spot instead of 15 dB below it, which
 //   is exactly what a real AC30 at "4" does; it now sits level with the JCM)

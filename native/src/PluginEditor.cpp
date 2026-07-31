@@ -145,6 +145,9 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     };
 
     // ---- AMP knobs (superset; per-voice visibility set in updateAmpFace) -------
+    // Web parity (visual pass 2): the amp's controls resolve the LIGHT token
+    // context on the web (the dark pinning is .pedal-scoped) — amp knobs paint as
+    // porcelain on the light amp panel.
     knob(volume_, volumeAttach_, pid::volume, "Vol", skin::accentClean);
     knob(bass_, bassAttach_, pid::bass, "Bass", skin::accentClean);
     knob(middle_, middleAttach_, pid::middle, "Mid", skin::accentClean);
@@ -155,6 +158,9 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     knob(reverb_, reverbAttach_, pid::reverb, "Reverb", skin::accentClean);
     knob(modSpeed_, modSpeedAttach_, pid::chorusSpeed, "Speed", skin::accentClean);
     knob(modDepth_, modDepthAttach_, pid::chorusDepth, "Depth", skin::accentClean);
+    for (NeuKnob* k : {&volume_, &bass_, &middle_, &treble_, &presence_, &master_, &gain_,
+                       &reverb_, &modSpeed_, &modDepth_})
+        k->setScheme(skin::lightBench());
 
     // Levers + power + chorus mode.
     bright_.setCaption("Bright");
@@ -626,6 +632,10 @@ void ClipperAudioProcessorEditor::layoutAmpCard(juce::Rectangle<int> card) {
     // The Bright/Cab/Power cluster gives ground when the card is narrow, so the tone
     // knobs never get starved into a single column.
     const int clusterWant = showBright_ ? 168 : 116;
+    // The cluster's HEIGHT comes from the power control's real anatomy (glow
+    // head-room + jewel + full 46x64 rocker + caption) — the old max(cellH, 84)
+    // squished the rocker to a sliver and clipped the jewel's halo square.
+    const int clusterH = PowerControl::preferredHeight();
     auto cluster = in.removeFromRight(juce::jlimit(96, clusterWant, in.getWidth() / 3));
     in.removeFromRight(kGap);
     auto knobArea = in;
@@ -676,12 +686,19 @@ void ClipperAudioProcessorEditor::layoutAmpCard(juce::Rectangle<int> card) {
     int primaryBottom = startY + rows * cellH + (rows - 1) * 6;
 
     // Right cluster (Bright?/Cab/Power) aligned with the FIRST primary knob row.
+    // The levers' visual weight sits in their top 70 px; the power control needs
+    // its full anatomy height (see clusterH above).
     {
-        auto c = cluster.withY(startY).withHeight(juce::jmax(cellH, 84));
+        auto c = cluster.withY(startY).withHeight(clusterH);
         int slot = c.getWidth() / (showBright_ ? 3 : 2);
-        if (showBright_) bright_.setBounds(c.removeFromLeft(slot).reduced(4, 0));
-        cab_.setBounds(c.removeFromLeft(slot).reduced(4, 0));
-        power_.setBounds(c.reduced(4, 0));
+        // The power jewel sits glowSpread(16) below its bounds top (halo head-room);
+        // the web aligns the toggle slots' tops with the JEWEL, so the levers drop
+        // by the same amount.
+        const int leverDrop = (int)skin::glowSpread(16.0f);
+        if (showBright_)
+            bright_.setBounds(c.removeFromLeft(slot).reduced(2, 0).withTrimmedTop(leverDrop));
+        cab_.setBounds(c.removeFromLeft(slot).reduced(2, 0).withTrimmedTop(leverDrop));
+        power_.setBounds(c.reduced(2, 0));
     }
 
     // Modulation sub-row (Chorus/Tremolo): a divider centred in its own gap, then
@@ -785,12 +802,17 @@ void ClipperAudioProcessorEditor::paint(juce::Graphics& g) {
         }
     }
 
+    // The AMP is a LIGHT bench-style panel (web parity, visual pass 2): amp.css
+    // resolves the light token context — the dark pinning is .pedal-scoped. The
+    // wordmark takes the amp accent (the JCM/Twin/AC30 winks); Clean 120's
+    // wordmark is plain ink, exactly like the web default .amp-name.
     auto drawCard = [&](juce::Rectangle<int> card, const juce::String& eyebrow,
                         const juce::String& wordmark, juce::Colour accent, float wordSize) {
         if (card.isEmpty()) return;
-        skin::drawChassisCard(g, card.toFloat(), 24.0f);
+        const skin::Scheme& sc = skin::lightBench();
+        skin::drawBenchCard(g, card.toFloat(), 26.0f);
         auto head = card.reduced(18, 14);
-        g.setColour(skin::inkFaint);
+        g.setColour(sc.inkFaint);
         g.setFont(skin::monoFont(9.5f));
         g.drawText(eyebrow.toUpperCase(), head.getX(), head.getY(), head.getWidth(), 14,
                    juce::Justification::centredLeft);
@@ -817,7 +839,8 @@ void ClipperAudioProcessorEditor::paint(juce::Graphics& g) {
                        16.0f);
     }
 
-    drawCard(cardAmp_, ampEyebrow_, ampWordmark_, ampAccent_, 26.0f);
+    drawCard(cardAmp_, ampEyebrow_, ampWordmark_,
+             ampModel_ == 0 ? skin::lightBench().ink : ampAccent_, 26.0f);
     if (!cardAmp_.isEmpty())
         skin::drawJack(g, {(float)cardAmp_.getX(),
                            (float)cardAmp_.getY() + cardAmp_.getHeight() * 0.42f},
@@ -828,10 +851,11 @@ void ClipperAudioProcessorEditor::paint(juce::Graphics& g) {
     // knobs' floating value arcs nor the mode switch can touch it.
     if (!ampModRowCaption_.isEmpty()) {
         auto cap = ampModRowCaption_;
-        g.setColour(skin::shDarker);
+        const skin::Scheme& sc = skin::lightBench();
+        g.setColour(sc.shDarker);  // .amp-chorus border-top on the light panel
         g.drawLine((float)cap.getX(), (float)ampModDividerY_,
                    (float)cardAmp_.getRight() - 24, (float)ampModDividerY_, 1.0f);
-        g.setColour(skin::inkFaint);
+        g.setColour(sc.inkFaint);
         g.setFont(skin::wordmarkFont(15.0f));
         g.drawText(modCaption_.toUpperCase(), cap.getX(), cap.getCentreY() - 10,
                    cap.getWidth(), 20, juce::Justification::centredLeft);

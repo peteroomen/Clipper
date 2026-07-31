@@ -258,6 +258,10 @@ if(NOT EMSCRIPTEN)
     target_include_directories(clipper_gold_tests PRIVATE tools)
     clipper_add_test_flags(clipper_gold_tests)
     add_test(NAME clipper_gold_tests COMMAND clipper_gold_tests)
+    # No XFAIL ledger: §52's two entries (gold-summing-rails-engage and its shadow
+    # gold-summing-alias-at-treble-max) both XPASSed when §54 fixed the diode node —
+    # exactly the slice they named — and are now hard assertions in the suite.
+
     # --- M10.2: AC30 (Vox top boost) amp tests --------------------------------
     add_executable(clipper_ac30_tests tests/test_ac30_amp.cpp)
     target_link_libraries(clipper_ac30_tests PRIVATE clipper_dsp)
