@@ -8948,6 +8948,374 @@ expect to re-derive it.
 
 ---
 
+## §55 — The AC30 dynamic supply: retiring the static sag saturator (audit finding 4)
+
+**Slice:** `docs/work/2026-07-31-ac30-sag.md` · branch `claude/ac30-sag-6f557i` · base
+`7e2a10d`. **Deliberate tone change.** Files: `core/include/clipper/dsp/Ac30PowerAmp.h`,
+`core/src/dsp/Ac30PowerAmp.cpp`, `core/tests/test_ac30_amp.cpp`, `core/CMakeLists.txt`.
+The two departures from the real circuit this slice makes deliberately — the constant
+Thévenin source resistance and the **derived** `kVsupply` — are recorded in
+**ADR 017** (`docs/decisions/017-ac30-supply-source-impedance-and-derived-rail.md`).
+Read it before moving either constant toward a published figure.
+
+### 55.1 What was actually there
+
+Audit finding 4 says "the AC30 'sag' is a static saturator". It was worse than that
+phrasing suggests. Step 6b of `processSampleOS` built a demand envelope from
+`|ipUp − ipDown|` and multiplied the **OT secondary** by `1/(1 + kSagCompGain·(Idemand −
+Iidle))`. Since `vSec ∝ (ipUp − ipDown)`, that is algebraically
+
+    y = x / (1 + k·|x|)
+
+— a memoryless soft clipper behind a 2.6 ms/40 ms envelope follower, sitting *after* the
+transformer, where no supply can reach. Three measurements taken on the pre-fix binary
+before it was removed:
+
+| probe | pre-fix |
+| --- | --- |
+| small-signal step, 0.05 → 0.10 V at the PI grid (6.02 dB in) | **5.02 dB out** — a full dB of "sag" on a dead-clean signal |
+| drive sweep 0.5 → 25 V at the PI grid (34 dB in) | 0.395 → 0.434 peak = **0.82 dB out** — a brick wall |
+| THD at 82.41 Hz as a ratio to THD at 440 Hz (composed, VOL 0.70/0.80/0.85) | **1.77× / 1.62× / 1.53×** |
+
+The third row is the mechanism behind the owner's low-end report: the envelope rides a
+full-wave-rectified signal, so it ripples at 2·f₀, and for a low E (82.41 Hz → 165 Hz
+ripple) that is inside its own passband. It amplitude-modulated exactly the notes an AC30
+is played on.
+
+### 55.2 What replaced it
+
+The saturator is **retired outright**, not shrunk — with the supply modelled for real
+there is nothing left for it to stand in for, and a shrunken copy would be a fitted
+constant sitting on physics that already covers it. Two coupled parts, both backward-Euler
+per oversampled sample, both read by the tubes on the next sample (ms constants against a
+µs step — the JCM/Twin decoupling):
+
+**(a) The supply.** A Thévenin HT source behind a **constant** series resistance charging
+the reservoir, discharged by the total cathode current. Every term sourced:
+
+| constant | value | source |
+| --- | --- | --- |
+| `kRrectGz34` | 75.6 Ω | Philips/Mullard GZ34 published drop, 17 V @ 225 mA |
+| `kRptSecondary` | 59.0 Ω | AC30 PT HT winding measures 118 Ω end-to-end; a full-wave CT rectifier conducts through one half |
+| `kRsupply` | 134.6 Ω | the sum |
+| `kCreservoir` | 32 µF | common later-spec AC30 HT smoothing (τ = 4.3 ms) |
+| `kVsupply` | 335.1131 V | **derived to preserve the pre-slice idle point** — see below |
+
+The soft "rectifier knee" (`Reff = kRsupply·(1 + kRectKnee·I)`) is **gone**, and that is a
+measured call: a GZ34's own drop is *sub*-linear in current (space charge, ≈ I^⅔ — 75.6 Ω
+at 225 mA falling toward ~50 Ω at 250 mA) while a capacitor-input supply's shrinking
+conduction angle adds effective resistance that *rises* with load. Over this amp's
+190–260 mA window they very nearly cancel, so a constant Thévenin resistance is the honest
+model and the growing knee was a voicing knob with a physics label on it.
+
+**A correction this slice made against its own first draft.** The draft had 78 Ω here,
+the published 7 H / 260 mA / **78 Ω DCR** AC30 choke. Two things are wrong with that: the
+7 H/78 Ω unit is the "Brian May / Dave Peterson" spec (a mod, not the stock part), and
+decisively, **in a stock AC30 the OT centre tap is fed from the reservoir *before* the
+choke** — the OT primary's red lead lands on the same filter cap as GZ34 pin 8, and the
+choke feeds the screen/preamp node downstream. Putting the choke DCR in the plate path
+would have been modelling somebody's modification and calling it the amp.
+
+**`kVsupply` is derived, and deliberately not measured off a real amp.** A published AC30
+idles with its OT centre tap at 342 V; this model idles at 309.49. Moving `kVsupply` to
+close that gap would be calibrating one constant to cover another's known error — audit
+finding 9's EL84 screen fit runs ~3× hot (12.67 mA/tube against a real 3–5), so the whole
+draw is already wrong in a way finding 9 owns, and that is precisely the failure mode that
+put two factor-of-2 mistakes inside `kFullScaleSecV`. So the idle point is **preserved
+exactly** and the source impedance becomes the derived value:
+
+    kVsupply = 309.4904457 V + 0.1903616816 A × 134.6 Ω = 335.1131 V
+
+Verified: idle rail 309.4904457 → **309.4904201 V**, Vk 9.5180841 → **9.5180832 V**,
+Ip 34.92347 → **34.92347 mA/tube**, Ig2 12.66695 → **12.66695 mA/tube**. Seven figures.
+Every difference this slice measures is therefore **dynamics**, not operating point.
+
+**(b) The shared cathode**, and two component corrections that belong to it:
+
+- `kCkCathode` **50 µF → 250 µF**. The AC30's cathode network is one 50 Ω resistor shared
+  by all four EL84s bypassed by 250 µF (JMI original; 220 µF later). τ = Rk·Ck goes
+  **2.5 ms → 12.5 ms**, and that is load-bearing rather than cosmetic: a 2.5 ms bias
+  constant *tracks* a low-E note's own envelope (82.41 Hz = a 12.1 ms period) and
+  modulates it; 12.5 ms integrates across several cycles and lets the note stand up.
+- `kCoupRg` **1 MΩ → 220 kΩ**, the AC30's actual EL84 grid-leak value and the one both
+  sibling power sections already carry. The stale megohm looks like it was picked to make
+  the blocking τ read "22 ms" so it matched the Twin's comment (the Twin gets 22 ms from
+  220 k × 0.1 µF; copying the *number* rather than the *resistor* at the AC30's 0.022 µF
+  needs a megohm). Perturbation-measured both ways, peak Vk on the burst sweep:
+
+  | grid V | 1 | 2 | 4 | 8 | 16 | 32 | 64 |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 220 k | 9.628 | 9.660 | 9.710 | 9.765 | 9.928 | 10.222 | **10.347** |
+  | 1 MΩ | 9.625 | 9.661 | 9.685 | 9.744 | 9.779 | 9.966 | **10.104** |
+
+  The megohm suppresses the class-A bias rise by about a third above 4 V (deeper grid
+  blocking pushes the grids negative and takes back the extra average draw that is
+  supposed to charge Ck) while *adding* output-envelope compression (1.65–2.03 dB against
+  220 k's 1.02–1.08). The stale value was buying "sag" from the wrong mechanism. The
+  correct resistor is kept and the lost dB is reported, not compensated.
+
+`kFullScaleSecV` **12.2 → 18.733**, re-derived on the identical §46 probe (VOLUME 1.0,
+0.5 V at 110 Hz through the composed `Ac30Amp`, whole-render peak). Cranked secondary
+measures **16.858 V at 48 kHz** (16.860 at 44.1, 16.863 at 96 — rate-independent to
+0.03 %); 16.860 / 0.9 = 18.733 and the peak measures back at 0.8999 / 0.9000 / 0.9002.
+*Honest note:* on this slice's base that same probe measures **8.169 V**, i.e. the shipped
+12.2 was already leaving cranked at peak 0.6696 rather than the ~0.9 §46 recorded when it
+chose the value. That pre-existing 2.8 V drift is not explained by this slice and was not
+caused by it; it is simply swept up by the re-derivation.
+
+### 55.3 Measured results
+
+**Sag / bias / rail** (400 Hz burst, DRIVE 1.0, PI grid = 2× the listed input; the shared
+JCM/Twin convention):
+
+| | pre-fix | post-fix |
+| --- | --- | --- |
+| AC30 output-envelope depth | 6.03 dB | **1.07 dB** |
+| Twin / JCM depth (unchanged) | 1.16 / 1.76 dB | 1.16 / 1.76 dB |
+| AC30 rail droop | 1.6 V | **1.9 V** |
+| Twin / JCM rail droop | 13.4 / 37.3 V | 13.4 / 39.1 V |
+| AC30 Vk under drive (4 V grid) | 9.518 → 10.270 | 9.518 → **9.710** |
+| cathode recovery τ vs Rk·Ck | 1.50 ms vs 2.50 | **5.44 ms vs 12.50** |
+| small-signal step (6.02 dB in) | 5.02 dB | **5.98 dB** |
+| dynamic range 0.5 → 25 V grid | 0.82 dB | **2.37 dB** |
+
+**Low-end**, composed amp, low-E pluck (82.41 Hz + 2nd/3rd partials, 0.30 V peak, 900 ms
+decay; band 82–220 Hz, attack peak vs the 300 ms settled level):
+
+| VOL | band RMS dBFS | attack pk dBFS | settled 300 ms | compression dB | full RMS dBFS |
+| --- | --- | --- | --- | --- | --- |
+| 0.70 pre | −14.31 | −5.40 | −11.26 | 5.86 | −14.08 |
+| 0.70 post | **−12.13** | **−3.56** | −9.21 | 5.65 | −12.03 |
+| 0.80 pre | −13.66 | −3.59 | −10.37 | 6.78 | −13.23 |
+| 0.80 post | **−10.88** | **−3.22** | −7.51 | 4.29 | −10.48 |
+| 0.85 pre | −13.60 | −2.88 | −10.17 | 7.28 | −13.03 |
+| 0.85 post | **−10.97** | **−3.17** | −7.41 | 4.24 | −10.36 |
+
+**And the honesty correction that goes with it.** The owner's report was "the low end is
+thin", and a thin low end could equally have been a steady-state *level* tilt. It was not,
+and this slice does **not** fix one. Per-frequency fundamental level (one steady 0.25 V
+sine at a time, composed amp, knobs noon), expressed as dB relative to the 440 Hz row:
+
+| VOL | 82 Hz pre → post | 110 Hz pre → post | 165 Hz pre → post |
+| --- | --- | --- | --- |
+| 0.70 | −2.64 → **−2.97** | −1.63 → −1.80 | −0.73 → −0.78 |
+| 0.80 | −3.43 → **−3.52** | −2.25 → −2.30 | −1.11 → −1.16 |
+| 0.85 | −3.81 → **−3.91** | −2.52 → −2.62 | −1.27 → −1.37 |
+
+The tilt is **0.1–0.3 dB deeper**, not shallower. What the low end gains here is dynamic,
+not spectral: less low-frequency-specific distortion (THD at 82 Hz as a ratio to THD at
+440 Hz, **1.77/1.62/1.53× → 1.52/1.36/1.33×**), a pick attack that survives, and **6.8 dB**
+of restored dynamic range — the 0.05 → 25 V drive sweep spanned 13.1 dB of output and now
+spans 19.9. If a steady-state low-end tilt is still wanted
+after listening, it is the tone stack's or the OT's, and it is a different slice.
+
+### 55.4 The protected property — the owner's words, and the honesty gate
+
+The slice's brief protected the high-volume distortion character ("the distortion sounds
+better on our one than logic pros"): each of h2..h8 to move less than ~1 dB, and any larger
+movement to be **reported, not fitted**. Composed amp, 220 Hz, 0.15 V peak, knobs noon,
+steady-state 400–900 ms window, dBc re the fundamental.
+
+**At fixed input — the player's view (same guitar, same knob):**
+
+| VOL | | f0 dBFS | h2 | h3 | h4 | h5 | h6 | h7 | h8 | THD% |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.60 | pre | −11.32 | −24.94 | −45.89 | −53.07 | −60.31 | −73.72 | −76.69 | −94.80 | 5.69 |
+| 0.60 | post | −11.01 | −24.68 | −61.81 | −55.52 | −62.84 | −81.04 | −92.11 | −100.83 | 5.84 |
+| 0.60 | **Δ** | +0.31 | **+0.26** | −15.92 | −2.45 | −2.53 | −7.32 | −15.42 | −6.03 | +0.15 |
+| 0.85 | pre | −8.38 | −11.43 | −20.76 | −23.65 | −30.69 | −25.22 | −34.75 | −31.48 | 29.94 |
+| 0.85 | post | −5.19 | −11.12 | −17.38 | −18.81 | −32.68 | −26.34 | −35.69 | −30.35 | 33.58 |
+| 0.85 | **Δ** | +3.19 | **+0.31** | +3.38 | +4.84 | −1.99 | −1.12 | −0.94 | +1.13 | +3.64 |
+
+**THE GATE FIRED**, at h3/h4 at VOLUME 0.85 (+3.4 / +4.8 dB) and at h3/h5/h7 at VOLUME
+0.60 (−15.9 / −2.5 / −15.4 dB). Nothing was fitted back. What the numbers say:
+
+- **h2 — the harmonic that *is* the AC30's character, and the one the whole §46 chime
+  argument rests on — moved +0.26 dB and +0.31 dB.** Inside the 1 dB gate at both
+  volumes. It is 6–8 dB above everything else at VOL 0.85 and 21 dB above at 0.60.
+- The harmonics that collapsed at VOL 0.60 are **h3, h5 and h7 — the odd ladder**, and
+  that is the expected signature of removing `y = x/(1+k|x|)`, which is an odd function
+  and therefore generated exactly those. The model stopped making distortion it had no
+  circuit reason to make.
+- The rises at VOL 0.85 are the amp running **3.2 dB louder at the same knob** because the
+  brick wall came off. That is the point of the slice, not a side effect.
+
+**Level-matched control** (input bisected so f0 lands on the pre-slice level — isolates
+character from loudness):
+
+| VOL | | input V | h2 | h3 | h4 | h5 | h6 | h7 | h8 | THD% |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.60 | pre | 0.15007 | −24.93 | −45.88 | −53.06 | −60.30 | −73.71 | −76.69 | −94.79 | 5.70 |
+| 0.60 | post | 0.14446 | −24.95 | −61.25 | −56.60 | −64.00 | −82.27 | −93.63 | −102.03 | 5.66 |
+| 0.85 | pre | 0.07519 | −17.16 | −25.56 | −31.96 | −29.21 | −35.31 | −42.78 | −52.24 | 15.55 |
+| 0.85 | post | 0.02820 | −21.50 | −52.15 | −45.04 | −50.46 | −62.11 | −72.58 | −75.87 | 8.44 |
+
+Level-matched, **every** harmonic falls, because the amp is 8.5 dB louder and therefore
+needs 8.5 dB less input to reach the same output. This table is reported for completeness;
+the fixed-input table above is the one that describes what a player hears.
+
+**Fizz at max volume** (recorded only — out of scope): VOLUME 1.0, 220 Hz at 0.30 V. The
+5–16 kHz *harmonic* content moves −30.36 → **−28.18 dBc** and the non-harmonic (alias/IM)
+floor −124.57 → **−119.71 dBc**. The sag did **not** incidentally tame the fizz; both
+rose ~2–5 dB with the extra drive that removing the wall released. Alias floor at max
+volume from `testAliasing` is unmoved in kind: 4× measures −73.5 / −70.4 / −76.6 dB at
+44.1 / 48 / 96 kHz against the −60 bar.
+
+### 55.5 Tests
+
+`testSag` is **rewritten**, and the change is a reversal, so read the reasoning before
+touching it. The old assertions were "AC30 output-envelope sag depth is in a 4–8 dB window
+and is the DEEPEST of the three (Twin < JCM < AC30)". Both halves were measuring the
+retired saturator. The correct physics is the other way round: the JCM is fixed-bias class
+AB behind a 150 Ω/50 µF supply and drops its rail 39.1 V on this burst, the Twin drops
+13.4 V, and the AC30 is class A (near-constant total draw) behind a GZ34 — the stiffest
+valve rectifier — and drops 1.9 V. Five bars now, with the perturbation transcript
+(restore step 6b in a scratch copy, `touch`, rebuild):
+
+| bar | post-fix | perturbed | verdict |
+| --- | --- | --- | --- |
+| A small-signal linearity, 6.02 dB in → out > 5.5 dB | 5.98 | **4.96** | **RED** |
+| B dynamic range 0.5 → 25 V grid > 1.5 dB | 2.37 | **0.84** | **RED** |
+| C Vk rises monotonically with drive | 9.518→9.710→9.928→10.347 | monotonic | PASS (mechanism guard, not a saturator discriminator — documented as such) |
+| D rail droop AC30 < Twin < JCM, in volts | 1.9 < 13.4 < 39.1 | 1.7 < 13.3 < 39.0 | PASS (a *fixed reference* — true on both circuits, so not a bound chosen to pass) |
+| E envelope depth AC30 < Twin < JCM | 1.07 < 1.16 < 1.76 | **6.05 / 1.16 / 1.77** | **RED** |
+
+Three of five go red under the perturbation; C and D are documented in the test as
+mechanism/reference bars rather than discriminators. `testOperatingPoints`' analytic
+shared-cathode mirror dropped the same `kRectKnee` factor the circuit did.
+
+**One new XFAIL — `finding4-ac30-bias-swing-short`.** Retiring the saturator made the bias
+swing measurable against a published real-amp number for the first time, and the model
+falls short: a real AC30's shared cathode goes **10.0 V → 12.5 V (+25 %)** at full output,
+ours reaches **9.518 → 10.347 V (+8.7 %)** when driven to absurdity (64 V at the PI grid).
+The cathode network is already the published 50 Ω ∥ 250 µF; what is short is how much
+extra **average** current the tube model draws when driven. Attribution from the idle point
+this model already had: **34.92 mA plate + 12.67 mA screen** per tube against a real
+~45 + ~5. The *total* is nearly right (190.4 mA vs the published 200) and the *split* is
+badly wrong — finding 9's ~3× hot screen fit — so a quarter of the standing draw sits in a
+screen term whose curvature does not grow with drive the way the plate term's does, and the
+class-A average-current rise that charges Ck is suppressed in the same proportion. Owned by
+findings 9 and 10 (the screen fits, the plate load line). **Do not chase it with a gain
+term on the cathode integrator.** Repo ledgers 3 → 4; ctest 24 → 25 entries.
+
+**The audit said this first, and it is worth reading its exact words next to the
+measurement.** `docs/audits/2026-07-24-project-audit.md:182`: *"At full grid drive the EL84
+screen draws 32.5 mA → 9.3 W, 4.6× its limit; real EL84 idle screen current at 35 mA plate
+is 3–5 mA. `Ac30PowerAmp.h:49-50` says kg1/kg2 were 'trimmed to land the ~35 mA/tube idle'
+— the trim hit the plate target by wrecking the screen. Since the screen node drives sag and
+total supply draw, the AC30 sags ~3.6× too deeply."* The attribution here was arrived at
+independently, from the idle currents, and lands on the same constant. **One nuance the
+audit could not see, because the saturator was in the way when it was written:** the screen
+error inflates the *standing* draw (which is why the total lands near the published 200 mA
+despite a cold plate) while *suppressing the incremental* one, so with a real supply in
+place the AC30 does not sag "3.6× too deeply" — it sags about a third as much as it should.
+Same defect, opposite sign, and only visible once the waveshaper stopped supplying a
+number of its own.
+
+### 55.5b The `ts_ac30` golden — the table for the bless decision
+
+**NOT blessed. Nothing was written.** `core/tests/goldens/` is untouched by this slice and
+`clipper_player_expectations_tests` is therefore RED at exactly one assert
+(`compareGolden`'s `|rmsDeltaDb| < 1.0` on `ts_ac30`) and nowhere else — core ctest is
+**24 of 25**, with the four `_xfail_ledger` entries Skipped as designed. The other four
+goldens are **UNCHANGED**, which is the scope check:
+
+    GOLDEN-DELTA rat_jcm800      UNCHANGED +0.00  0.00 @  252 Hz  (12 bands)
+    GOLDEN-DELTA sd1_twin_reverb UNCHANGED +0.00  0.02 @ 3200 Hz  (12 bands)
+    GOLDEN-DELTA muff_twin       UNCHANGED +0.00  0.00 @ 5080 Hz  (12 bands)
+    GOLDEN-DELTA ts_ac30         CHANGED   -1.86  3.12 @  200 Hz  ( 8 bands)
+    GOLDEN-DELTA clean120_chorus UNCHANGED -0.00  0.11 @  252 Hz  ( 7 bands)
+
+Full third-octave table for `ts_ac30` (Screamer → AC30 + clean212 cab), every band within
+55 dB of the golden's loudest:
+
+| band (Hz) | golden dB | new dB | Δ |
+| --- | --- | --- | --- |
+| 200 | 31.19 | 28.07 | **−3.12** |
+| 400 | 21.81 | 18.97 | −2.85 |
+| 635 | 13.73 | 11.09 | −2.64 |
+| 800 | 7.09 | 4.62 | −2.47 |
+| 1008 | 1.13 | −1.20 | −2.33 |
+| 1270 | −4.25 | −6.46 | −2.21 |
+| 1600 | −12.81 | −14.63 | −1.82 |
+| 2016 | −20.18 | −21.95 | −1.76 |
+| **broadband RMS** | | | **−1.86** |
+
+Every band moves the same way and the movement shrinks monotonically with frequency — this
+is the `kFullScaleSecV` re-normalization (−3.72 dB) partly given back by the amp's larger
+real swing, plus the 0.1–0.3 dB of extra low tilt §55.3 already records. There is no band
+that moves *up*, and no band that moves in isolation, so the rig's *voice* is intact and
+its *level* dropped. Whether that is worth blessing is the owner's call.
+
+### 55.5c M11 rows re-baselined, and a rot correction
+
+`ac30`'s A4 level-sanity row was recorded as **+1.6 dB**. The pre-§55 code measures
+**−4.09 dB** on the same probe, so that figure had rotted before this slice touched it; the
+slice's own contribution is **−3.4 dB**, to **−7.46**. Crucially it lands only on the clean
+end of the knob:
+
+| VOLUME | A4 delta pre | post |
+| --- | --- | --- |
+| 0.30 | −11.25 | −14.87 |
+| 0.40 | −4.09 | **−7.46** |
+| 0.50 | +2.53 | −0.34 |
+| 0.70 | +13.64 | **+13.36** |
+
+At 0.70 the amp moves **0.28 dB**. It did not get quieter; it got a **wider knob** — the
+same fact the drive sweep reports as 0.82 → 2.37 dB. The `ac30` window is re-centred
+**−8..+12 → −18..+2** (the file's own convention is the measurement ± ~10 dB; the old
+window left 0.5 dB of margin, which is not a guard). Noted in passing and **not fixed
+here**: `twin`'s recorded −13.8 has rotted to −18.8 the same way, which is not this slice's
+doing and belongs to whoever next touches the Twin.
+
+### 55.6 Denormals, reset, real-time safety
+
+**No new recursive state was added** — `vRail_`, `vScreen_` and `vk_` already existed and
+are already in `parkState()` / `reset()`; the retired `iSagEnv_` and its two envelope
+coefficients were **removed** from the class and from `parkState()`. `clipper_nan_guard_tests`
+block C therefore needs nothing new, and passes.
+
+Per ADR 006's scope rule, none of the three gets a `flushDenormal`, and the comment now
+carries the measured resting values rather than an assertion: at idle and again after a
+20 s silent tail at 48 kHz / 4×, `vRail_` = **309.4904 V**, `vScreen_` = **285.6766 V**,
+`vk_` = **9.5181 V**. A flush at 1e-30 on a 300 V node is unreachable code in the hottest
+loop in the file. The states that *do* rest at zero on this stage (TOP CUT, OT) keep their
+flushes and are unchanged.
+
+No allocation, no branch on a new envelope, and one fewer `fabs` + divide per oversampled
+sample than before. Latency is unchanged: this touches nothing in the oversampling
+topology, and `latencySamples()` still forwards `os_.latencySamples()`.
+
+### 55.7 CPU — no measurable difference, and the noise floor is the story
+
+Interleaved same-machine A/B, the §35 discipline: two `clipper-bench` binaries built from
+the two source trees, alternated, **and order-balanced** (each pair run once as
+AFTER-then-BEFORE and once as BEFORE-then-AFTER) because a first pass at this measured a
+clean-looking 7-point "regression" that was entirely an artifact of which binary ran first.
+Twelve runs, `ac30` row, % of one 48 kHz stream:
+
+| pair | first | second |
+| --- | --- | --- |
+| 1A | AFTER 32.25 | BEFORE 38.31 |
+| 1B | BEFORE 30.34 | AFTER 38.85 |
+| 2A | AFTER 39.26 | BEFORE 36.04 |
+| 2B | BEFORE 36.93 | AFTER 38.98 |
+| 3A | AFTER 34.87 | BEFORE 38.94 |
+| 3B | BEFORE 42.97 | AFTER 36.57 |
+
+**AFTER mean 36.80 % (range 32.25–39.26); BEFORE mean 37.26 % (range 30.34–42.97).** The
+difference is **0.46 points, with AFTER marginally cheaper** — against a within-binary
+spread of **12.6 points on BEFORE alone**, i.e. the noise is ~25× the effect. The
+defensible claim is **no measurable CPU change**, which is also what the code predicts: the
+slice deletes a `fabs`, a compare-select, a multiply-add and a divide per oversampled
+sample and adds nothing. Latency is unchanged — nothing in the oversampling topology moved,
+and `latencySamples()` still forwards `os_.latencySamples()`.
+
+Two cautions for whoever benchmarks this file next. Absolute columns are machine-dependent
+and not citable elsewhere (the standing rule in CLAUDE.md). And **do not run an unbalanced
+A/B here** — the first sample taken in this session, before balancing, read "BEFORE 31 % /
+AFTER 38 %" and would have been written up as a regression; the second, also unbalanced,
+read the opposite. Only the balanced set is meaningful.
 ## 56. The GOLD drive pre-filter — the reference's real H_pre, and a noise floor found on the way
 
 **Branch:** `claude/gold-prefilter-6f557i` · **Plan:** `docs/work/2026-07-31-gold-prefilter.md`

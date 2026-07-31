@@ -1,7 +1,8 @@
 // Plain-assert tests for the M10.2 Vox AC30 "top boost" amp — the CLASS-A CHIME.
 // Covers the Ac30Preamp (one 12AX7 + the interactive top-boost tone stack + volume),
 // the Ac30PowerAmp (hot 12AX7 LTP PI → TOP CUT → CATHODE-BIASED EL84 quad → OT → NO
-// NFB → deep GZ34 sag), and the composed Ac30Amp (preamp → power → spring reverb).
+// NFB → the GZ34/reservoir/cathode dynamic supply, docs §55), and the composed Ac30Amp
+// (preamp → power → spring reverb).
 // No framework: int main + <cassert>. Every assert compares a MEASURED number
 // against an ANALYTIC target derived IN THE TEST (load-line DC, the EL84 Koren fixed
 // point, the shared-cathode self-bias fixed point, the complex nodal top-boost H(jω),
@@ -41,7 +42,19 @@ constexpr double kTwoPi = 6.283185307179586;
 // when the §46 gain-structure slice completed the top-boost channel (V2 + cathode
 // follower + the corrected stack + the re-derived volume law) — all five deleted,
 // their unchanged bars hard assertions in testChime / testBreakupOrdering. This
-// suite currently carries ZERO known-bad properties (no --xfail-ledger in CMake).
+// The suite carried ZERO known-bad properties between 2026-07-30 and 2026-07-31; the
+// §55 dynamic-sag slice opened exactly one, `finding4-ac30-bias-swing-short`, when
+// replacing the static saturator with the real supply made the shared cathode's bias
+// swing measurable against a published number for the first time (it falls short — see
+// testSag). The --xfail-ledger registration is back in CMake for that one entry.
+constexpr clipper::test::XfailDecl kXfailAc30BiasSwing{
+    "finding4-ac30-bias-swing-short",
+    "2026-07-24 audit findings 9 + 10, surfaced by finding 4's fix (docs §55)",
+    "the shared EL84 cathode must reach the published +25 % bias shift at full output "
+    "(a real AC30 measures 10.0 V idle -> 12.5 V), which is the class-A bloom's depth",
+    "the EL84 screen-current re-fit (finding 9) + the plate load line (finding 10) — the "
+    "cathode network here is already the published 50 ohm || 250 uF; what is short is how "
+    "much extra AVERAGE current the tube model draws when driven"};
 using clipper::dsp::Ac30Amp;
 using clipper::dsp::Ac30PowerAmp;
 using clipper::dsp::Ac30Preamp;
@@ -170,14 +183,15 @@ void testOperatingPoints(double fs) {
     pa.setOversampling(4);
 
     // EL84 analytic shared-cathode fixed point: bisect vk so nTot·(ip+ig2) = vk/Rk,
-    // with the rail from the soft-knee source and the screen settled — the SAME system
-    // the solver uses, re-derived here.
+    // with the rail from the CONSTANT Thévenin source and the screen settled — the SAME
+    // system the solver uses, re-derived here. (docs §55: the source resistance is now
+    // constant — the growing "rectifier knee" that used to multiply kRsupply here is
+    // retired, so this analytic mirror drops the same factor.)
     const auto p = pa.tube();
     const int nTot = 2 * Ac30PowerAmp::kTubesPerSide;
     auto residual = [&](double vk, double& ip, double& ig2, double& rail, double& scr) {
         const double iTarget = vk / Ac30PowerAmp::kRkCathode;
-        const double Reff = Ac30PowerAmp::kRsupply * (1.0 + Ac30PowerAmp::kRectKnee * iTarget);
-        rail = Ac30PowerAmp::kVsupply - iTarget * Reff;
+        rail = Ac30PowerAmp::kVsupply - iTarget * Ac30PowerAmp::kRsupply;
         scr = rail;
         for (int k = 0; k < 60; ++k) {
             ig2 = clipper::dsp::el34ScreenCurrent(-vk, scr, p);
@@ -446,32 +460,47 @@ void testTopCut(double fs) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6 — SAG ordering + window: the AC30's GZ34 sag is DEEPER than the JCM800's
-// and MUCH deeper than the Twin's (Twin < JCM < AC30), in the documented 4–8 dB
-// window. Same hard burst / attack-vs-settle metric into all three power sections.
+// Test 6 — SAG: the AC30's compression is a SUPPLY effect, and this test pins the
+// properties a supply has that a waveshaper does not.
+//
+// REWRITTEN 2026-07-31 (docs §55, audit finding 4). WHAT THIS TEST USED TO ASSERT, and
+// why it had to go: "AC30 output-envelope sag depth is in a 4–8 dB window and is the
+// DEEPEST of the three amps (Twin < JCM < AC30)". Both halves were measuring the static
+// saturator that finding 4 removed — a memoryless y = x/(1+k|x|) on the OT secondary
+// behind a demand envelope — not a supply. With the real supply in place the same metric
+// reads AC30 1.07 dB against the Twin's 1.16 and the JCM's 1.76, i.e. the AC30 is the
+// LEAST compressing of the three on an output-envelope measure, and that is correct
+// physics rather than a regression: the JCM is fixed-bias class AB behind a 150 Ω/50 µF
+// supply and drops its rail 39.1 V on this burst; the Twin drops 13.4 V; the AC30 is
+// class A (near-constant total draw) behind a GZ34, the STIFFEST valve rectifier, and
+// drops 1.9 V. The old ordering was an artifact, and re-blessing it by loosening a
+// window is exactly what the XFAIL ratchet exists to prevent — so the bars below moved
+// to the mechanism, and the one number the model still cannot reach is LEDGERED.
+//
+// The five bars, three of them chosen because the RETIRED circuit fails them (perturbation
+// transcript in docs §55 — restoring step 6b in a scratch copy turns A, B and E red):
+//   A  SMALL-SIGNAL LINEARITY. A supply cannot compress a signal that draws no extra
+//      current. Doubling a clean drive must double the output. Pre-fix this measured
+//      5.02 dB for a 6.02 dB input step — a full dB of "sag" on a dead-clean signal,
+//      because the demand envelope keyed off the instantaneous current rather than a
+//      real reservoir. Post-fix: 5.98 dB.
+//   B  DYNAMIC RANGE. 0.5 V → 25 V at the PI grid is a 34 dB drive increase; the
+//      output must still MOVE. Pre-fix 0.395 → 0.434 peak = 0.82 dB, a brick wall with
+//      no touch sensitivity left. Post-fix 2.36 dB.
+//   C  THE BLOOM IS THE BIAS. Vk must rise monotonically with drive — the class-A
+//      average-current mechanism, integrated on Rk·Ck. (Its RECOVERY is testCathodeBias.)
+//   D  RAIL-DROOP ORDERING AC30 < Twin < JCM, in volts. This is the physical claim, it
+//      is about the three SUPPLIES rather than the three output stages, and it held on
+//      the pre-fix circuit too (1.6 / 13.4 / 37.3 V) — so it is a fixed reference, not
+//      a bound chosen to make this slice pass.
+//   E  The output-envelope depth ordering, REVERSED and asserted, with the derivation
+//      above. This is the bar that goes red if anybody reintroduces a waveshaper.
 // ---------------------------------------------------------------------------
 void testSag(double fs) {
-    // The burst is 2.0 V into the PI-grid trim at noon (DRIVE 1.0 -> ×2, i.e. 4 V at the
-    // grid), not the 45 V it was before 2026-07-29 (docs §42) — a PROBE re-derivation, in
-    // the spirit of §23's cathode-bias and TOP CUT probes, with every bound left alone.
-    // 45 V × 2 = 90 V at the grid is ~30× the inverter's clipping onset; it was chosen
-    // when two of the three inverters were 5.7 dB deaf, and at that level the envelope
-    // ratio measures the output CEILING instead of the rail. Measured after the tail fix:
-    // at 90 V the JCM's rail droops 57.4 V and the Twin's 50.5 V — the JCM sags harder,
-    // exactly as their supply impedances (150 Ω / 50 µF vs 80 Ω / 100 µF) predict — yet
-    // the metric reported Twin 2.63 > JCM 2.26 dB, because both outputs are pinned to
-    // their clipping ceiling at attack and at settle. At 4 V at the grid it tracks the
-    // rail again, and the burst is still hard (the JCM's attack peak is 0.74 of full
-    // scale, the AC30 clips):
-    //   probe (grid V)     Twin        JCM        AC30
-    //   4 V, pre-fix       1.03 dB     1.96 dB    5.74 dB   ordering + windows OK
-    //   4 V, post-fix      1.16 dB     1.95 dB    6.03 dB   ordering + windows OK
-    //   90 V, pre-fix      2.09        3.56       5.80      OK (ceiling-limited)
-    //   90 V, post-fix     2.63        2.26       5.89      INVERTED
-    // Holding on the PRE-fix circuit too is the check that this is a fixed reference and
-    // not a number chosen to pass. Rail droops at the 4 V probe: Twin 13.4 V, JCM 37.3 V,
-    // AC30 1.6 V (the AC30's "sag" is its static cathode-bias saturator — finding 4).
-    auto sagDepth = [&](auto& amp) {
+    // The shared burst metric (unchanged from the JCM/Twin convention, docs §42): a
+    // 400 Hz burst at 2.0 V into the PI-grid trim at noon (DRIVE 1.0 → ×2 = 4 V at the
+    // grid), attack envelope (first three periods) vs settled envelope.
+    auto sagDepth = [&](auto& amp, double& railDroop) {
         amp.setParameter(std::decay_t<decltype(amp)>::PARAM_DRIVE, 1.0f);
         const double f0 = 400.0;
         const int nsil = static_cast<int>(0.02 * fs), nb = static_cast<int>(0.30 * fs),
@@ -479,8 +508,17 @@ void testSag(double fs) {
         std::vector<float> in(static_cast<size_t>(n), 0.0f), out(static_cast<size_t>(n), 0.0f);
         for (int i = 0; i < nb; ++i)
             in[static_cast<size_t>(nsil + i)] = static_cast<float>(2.0 * std::sin(kTwoPi * f0 * i / fs));
-        amp.process(in.data(), out.data(), n);
+        // Chunked so the rail can be sampled while the burst runs.
+        double railMin = amp.railIdle();
+        int off = 0;
+        while (off < n) {
+            const int b = std::min(64, n - off);
+            amp.process(in.data() + off, out.data() + off, b);
+            railMin = std::min(railMin, amp.railNow());
+            off += b;
+        }
         for (float v : out) assert(std::isfinite(v) && "non-finite in the sag burst");
+        railDroop = amp.railIdle() - railMin;
         const int per = static_cast<int>(fs / f0);
         std::vector<double> env;
         for (int i = nsil; i + per <= nsil + nb; i += per) {
@@ -492,15 +530,111 @@ void testSag(double fs) {
         for (size_t k = 0; k < env.size() && k < 3; ++k) attack = std::max(attack, env[k]);
         return toDb(attack / env.back());
     };
+
+    // A steady sine straight into the power section; returns the settled output peak.
+    auto peakAt = [&](double gridV) {
+        Ac30PowerAmp pa; pa.prepare(fs, 128); pa.setOversampling(4);
+        pa.setParameter(Ac30PowerAmp::PARAM_DRIVE, 0.5f);   // trim ×1: gridV IS the grid volts
+        const int n = static_cast<int>(0.25 * fs);
+        std::vector<float> in(static_cast<size_t>(n)), out(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i)
+            in[static_cast<size_t>(i)] = static_cast<float>(gridV * std::sin(kTwoPi * 1000.0 * i / fs));
+        pa.process(in.data(), out.data(), n);
+        double pk = 0.0;
+        for (int i = n / 2; i < n; ++i) pk = std::max(pk, std::fabs(static_cast<double>(out[i])));
+        return pk;
+    };
+
+    // --- A. SMALL-SIGNAL LINEARITY -----------------------------------------------
+    // 0.05 → 0.10 V at the grid is 6.02 dB of input. The EL84 grids move ~±1.6 V against
+    // a −9.52 V self-bias there: nothing about that draws extra supply current, so
+    // nothing about it may compress.
+    const double smallStepDb = toDb(peakAt(0.10) / peakAt(0.05));
+    assert(smallStepDb > 5.5 &&
+           "the power section compresses a DEAD-CLEAN signal — a supply cannot do that "
+           "(this is the static-saturator signature: it read 5.02 dB pre-fix)");
+
+    // --- B. DYNAMIC RANGE ---------------------------------------------------------
+    // A 34 dB drive increase must still move the output. The bar is deliberately LOW
+    // (1.5 dB) because the AC30 genuinely does compress hard up here — the point is that
+    // it is not a WALL. Pre-fix this measured 0.82 dB and fails.
+    const double bigRangeDb = toDb(peakAt(25.0) / peakAt(0.5));
+    assert(bigRangeDb > 1.5 &&
+           "the output is a BRICK WALL above the clipping point (0.5 V → 25 V at the grid "
+           "moves it less than 1.5 dB) — there is no touch sensitivity left");
+
+    // --- C. THE BLOOM IS THE BIAS: Vk rises monotonically with drive ---------------
+    auto vkAfterBurst = [&](double gridV) {
+        Ac30PowerAmp pa; pa.prepare(fs, 128); pa.setOversampling(4);
+        pa.setParameter(Ac30PowerAmp::PARAM_DRIVE, 0.5f);
+        const int n = static_cast<int>(0.30 * fs);
+        std::vector<float> in(static_cast<size_t>(n)), out(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i)
+            in[static_cast<size_t>(i)] = static_cast<float>(gridV * std::sin(kTwoPi * 400.0 * i / fs));
+        double vkMax = pa.cathodeIdle();
+        int off = 0;
+        while (off < n) {
+            const int b = std::min(64, n - off);
+            pa.process(in.data() + off, out.data() + off, b);
+            vkMax = std::max(vkMax, pa.cathodeNow());
+            off += b;
+        }
+        return vkMax;
+    };
+    Ac30PowerAmp ref; ref.prepare(fs, 128); ref.setOversampling(4);
+    const double vk0 = ref.cathodeIdle();
+    const double vk4 = vkAfterBurst(4.0), vk16 = vkAfterBurst(16.0), vk64 = vkAfterBurst(64.0);
+    assert(vk4 > vk0 && vk16 > vk4 && vk64 > vk16 &&
+           "the shared cathode bias does not rise monotonically with drive — the class-A "
+           "bloom mechanism is broken");
+
+    // --- D + E. the three supplies, side by side ----------------------------------
     TwinPowerAmp tpa; tpa.prepare(fs, 128); tpa.setOversampling(4);
     Jcm800PowerAmp jpa; jpa.prepare(fs, 128); jpa.setOversampling(4);
     Ac30PowerAmp apa; apa.prepare(fs, 128); apa.setOversampling(4);
-    const double twinSag = sagDepth(tpa), jcmSag = sagDepth(jpa), ac30Sag = sagDepth(apa);
-    assert(twinSag < jcmSag && "ordering broken: Twin sag not < JCM sag");
-    assert(jcmSag < ac30Sag && "ordering broken: JCM sag not < AC30 sag (AC30 must be the saggiest)");
-    assert(ac30Sag > 4.0 && ac30Sag < 8.0 && "AC30 sag not in the documented 4–8 dB window");
-    std::printf("  [ok] sag @ %.0f Hz: Twin %.2f < JCM %.2f < AC30 %.2f dB (4–8 window; GZ34 class-A bloom)\n",
-                fs, twinSag, jcmSag, ac30Sag);
+    double twinDroop = 0.0, jcmDroop = 0.0, ac30Droop = 0.0;
+    const double twinSag = sagDepth(tpa, twinDroop);
+    const double jcmSag = sagDepth(jpa, jcmDroop);
+    const double ac30Sag = sagDepth(apa, ac30Droop);
+
+    // D — the physical ordering, in volts of rail. True on the pre-fix circuit too.
+    assert(ac30Droop < twinDroop && twinDroop < jcmDroop &&
+           "rail-droop ordering broken: the AC30 (class A behind a stiff GZ34) must droop "
+           "LEAST and the JCM (fixed-bias class AB behind 150 Ω) MOST");
+
+    // E — the output-envelope ordering, REVERSED from the pre-2026-07-31 assertion.
+    assert(ac30Sag < twinSag && twinSag < jcmSag &&
+           "output-envelope compression ordering broken — if the AC30 is the DEEPEST "
+           "again, something is compressing its output that is not its supply (docs §55: "
+           "this is where the retired static saturator shows up)");
+
+    // The one number this model still cannot reach, LEDGERED rather than fitted. The
+    // published AC30 measurement is a shared cathode at 10.0 V idle rising to 12.5 V at
+    // full output — a +25 % bias shift. Ours reaches +8.7 % when driven to absurdity.
+    // The cathode network itself is the published circuit (50 Ω ∥ 250 µF); what is short
+    // is how much extra AVERAGE current these tubes draw, and that traces to the EL84
+    // fits: idle is 34.92 mA plate + 12.67 mA screen per tube against a real ~45 + ~5,
+    // so a quarter of the standing draw sits in a screen term whose curvature does not
+    // grow with drive the way the plate term's does. Findings 9 and 10 own that.
+    const double swingFrac = (vk64 - vk0) / vk0;
+    clipper::test::expectXfail(
+        swingFrac >= 0.25, kXfailAc30BiasSwing,
+        [&] {
+            static char buf[220];
+            std::snprintf(buf, sizeof(buf),
+                          "@%.0f Hz: Vk %.3f V idle -> %.3f V at 64 V of PI-grid drive = "
+                          "+%.1f %% (published real AC30: 10.0 -> 12.5 V = +25 %%); "
+                          "intermediate 4 V %.3f / 16 V %.3f",
+                          fs, vk0, vk64, 100.0 * swingFrac, vk4, vk16);
+            return buf;
+        }());
+
+    std::printf("  [ok] sag @ %.0f Hz: small-signal step %.2f dB (>5.5, was 5.02 pre-fix); "
+                "0.5→25 V range %.2f dB (>1.5, was 0.82); Vk %.3f→%.3f→%.3f→%.3f V monotonic; "
+                "rail droop AC30 %.1f < Twin %.1f < JCM %.1f V; envelope depth AC30 %.2f < "
+                "Twin %.2f < JCM %.2f dB (REVERSED 2026-07-31, docs §55)\n",
+                fs, smallStepDb, bigRangeDb, vk0, vk4, vk16, vk64,
+                ac30Droop, twinDroop, jcmDroop, ac30Sag, twinSag, jcmSag);
 }
 
 // ---------------------------------------------------------------------------
@@ -876,14 +1010,19 @@ void testAliasing(double fs) {
 // (chime, breakup-onset, breakup-vs-twin, mid-thd, mid-vs-twin) XPASSed 2026-07-30
 // when the §46 gain-structure slice landed the missing top-boost stage, the corrected
 // stack and the re-derived volume law — all five deleted, their bars hard assertions
-// in testChime/testBreakupOrdering/testCharacterGuard. This suite currently carries
-// ZERO known-bad properties, so it has no --xfail-ledger registration in CMake.
+// in testChime/testBreakupOrdering/testCharacterGuard. The suite then carried ZERO
+// known-bad properties until 2026-07-31, when the §55 dynamic-sag slice retired the
+// static saturator and made the shared cathode's bias swing measurable against a
+// published number for the first time — it falls short, so the ledger (and the CMake
+// --xfail-ledger registration) is back with exactly one entry.
+const clipper::test::XfailDecl kLedger[] = {kXfailAc30BiasSwing};
 
 }  // namespace
 
 int main(int argc, char** argv) {
     clipper::test::requireAssertsLive();
-    const int ledger = clipper::test::ledgerMain(argc, argv, nullptr, 0,
+    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
+                                                 sizeof kLedger / sizeof kLedger[0],
                                                  "clipper_ac30_tests");
     if (ledger >= 0) return ledger;
 

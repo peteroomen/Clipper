@@ -46,6 +46,46 @@ All five: 2.0 s standard pluck, 16-bit mono 48 kHz.
 ## 2026-07-31 — 1 golden(s) re-blessed
 
 - **Blessed by:** Claude
+- **On top of:** `189b33e` Merge remote-tracking branch 'origin/main' into claude/ac30-sag-6f557i
+
+| Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |
+| --- | --- | --- | --- | --- |
+| `ts_ac30` | CHANGED | -1.86 dB | 3.12 dB @ 200 Hz | 8 |
+| `rat_jcm800` | UNCHANGED | +0.00 dB | 0.00 dB @ 252 Hz | 12 |
+| `sd1_twin_reverb` | UNCHANGED | +0.00 dB | 0.02 dB @ 3200 Hz | 12 |
+| `muff_twin` | UNCHANGED | +0.00 dB | 0.00 dB @ 5080 Hz | 12 |
+| `clean120_chorus` | UNCHANGED | -0.00 dB | 0.11 dB @ 252 Hz | 7 |
+
+Per-band table for `ts_ac30` (every band down, monotonically less with frequency):
+
+| Hz | 200 | 400 | 635 | 800 | 1008 | 1270 | 1600 | 2016 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Δ dB | -3.12 | -2.85 | -2.64 | -2.47 | -2.33 | -2.21 | -1.82 | -1.76 |
+
+**Justification:** The AC30's dynamic supply (docs §55, ADR 017 — audit finding 4). The old
+"sag" multiplied the OT *secondary* by `1/(1+k·(Idemand−Iidle))`, which since
+`vSec ∝ (ipUp−ipDown)` is algebraically `y = x/(1+k|x|)` — a memoryless soft clipper behind
+the transformer, taking 5.02 dB of output from a 6.02 dB input step on a dead-clean signal
+and compressing a 34 dB drive increase into 0.82 dB. It is replaced by a real GZ34 +
+reservoir supply and the published shared-cathode network, and the level drop recorded here
+is that wall coming off: the render is quieter because the model has stopped manufacturing
+output it had no circuit reason to make. The monotonic, gently frequency-dependent shape of
+the per-band table is the signature of a level change with the voice intact — not a
+redistribution. Corroborated by the property that was deliberately protected: **h2, the
+harmonic the AC30's character and the whole §46 chime argument rest on, moved only +0.26 dB
+at VOLUME 0.60 and +0.31 dB at 0.85**, and it sits 6–21 dB above every other harmonic. The
+idle operating point is preserved to seven figures (rail 309.4904457 → 309.4904201 V), so
+this is dynamics rather than a moved bias. The other four goldens are UNCHANGED and only
+`ts_ac30.wav` changed on disk — the scope check, confirmed at file level. Owner authorized
+explicitly on 2026-07-31 ("bless and merge") after being shown this exact table; same
+hand-run ritual as the other 2026-07-31 entries (no /dev/tty in this environment — clean
+tree verified, `--golden-report` table checked against the approved figures immediately
+before `--update-goldens`).
+
+
+## 2026-07-31 — 1 golden(s) re-blessed
+
+- **Blessed by:** Claude
 - **On top of:** `9cf36cf` Merge remote-tracking branch 'origin/main' into claude/muff-dc-diodes-6f557i
 
 | Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |

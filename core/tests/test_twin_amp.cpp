@@ -608,11 +608,16 @@ void testHeadroomSagStability(double fs) {
     // (JCM 2.26 dB vs Twin 2.63 dB) — because both outputs are hard against their
     // clipping ceiling at attack AND at settle, so the ratio measures the ceiling.
     // At 4 V at the grid the metric tracks the rail again (Twin droop 13.4 V / 1.16 dB,
-    // JCM 37.3 V / 1.96 dB, AC30 1.6 V / 6.03 dB — the AC30's "sag" is its cathode-bias
-    // saturator, audit finding 4) and the burst is still LOUD: the JCM's attack peak is
-    // 0.74 of full scale. The ordering and both windows hold on the PRE-fix circuit at
-    // this probe as well (Twin 1.03 < JCM 1.96 < AC30 5.74), which is the check that
-    // this is a fixed reference and not a fudge. Bounds unchanged.
+    // JCM 39.1 V / 1.76 dB) and the burst is still LOUD: the JCM's attack peak is
+    // 0.74 of full scale. Both windows hold on the PRE-fix circuit at this probe as
+    // well, which is the check that this is a fixed reference and not a fudge. Bounds
+    // unchanged. NOTE 2026-07-31 (docs §55): this comment used to cite "AC30 1.6 V /
+    // 6.03 dB" alongside, as the deepest of the three. That figure was the AC30's
+    // memoryless output saturator (audit finding 4), which is now retired — the AC30
+    // measures 1.9 V of droop and 1.07 dB of envelope depth, i.e. the LEAST compressing
+    // of the three, which is what class A behind a stiff GZ34 should do. The AC30
+    // comparison is asserted in test_ac30_amp.cpp's testSag; nothing in THIS test's
+    // Twin-vs-JCM claim depends on it.
     auto sagDepth = [&](auto& amp) {
         amp.setParameter(std::decay_t<decltype(amp)>::PARAM_DRIVE, 1.0f);
         const double f0 = 400.0;

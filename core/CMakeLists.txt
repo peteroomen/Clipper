@@ -269,11 +269,15 @@ if(NOT EMSCRIPTEN)
     target_include_directories(clipper_ac30_tests PRIVATE tools)
     clipper_add_test_flags(clipper_ac30_tests)
     add_test(NAME clipper_ac30_tests COMMAND clipper_ac30_tests)
-    # XFAILs (2026-07-29, finding 7, docs §42): the AC30's leg-balance XFAIL XPASSed once
-    # the tail became 10 kΩ to a −10 V reference instead of 2.2 kΩ to ground, and was
-    # deleted — but balancing the legs removed the even-harmonic leakage that §23's
-    # breakup-ordering guard was measuring, so its four bars are ledgered here until an
-    # AC30 gain-structure slice gives that voice the drive to earn them.
+    # XFAILs. History: the 2026-07-29 finding-7 leg-balance entry and the five voicing
+    # entries it created were all XPASSed and deleted by the §46 gain-structure slice, and
+    # this registration came off with them. It is BACK as of 2026-07-31 (docs §55) with
+    # exactly one entry — `finding4-ac30-bias-swing-short`. Retiring the static sag
+    # saturator made the shared cathode's bias swing measurable against a published real-amp
+    # number for the first time, and the model reaches +8.7 % where a real AC30 measures
+    # +25 %. The cathode network is already the published 50 Ω ∥ 250 µF; the shortfall is in
+    # how much extra AVERAGE current the EL84 fits draw under drive, which is findings 9/10.
+    clipper_add_xfail_ledger(clipper_ac30_tests)
 
     # --- M11: Player Expectations Suite ---------------------------------------
     # Tests the PLAYER'S expectations, not the circuit (docs §26): universal gear
