@@ -8945,3 +8945,307 @@ Web: the `gold worklet` Playwright spec passes unchanged, but note its `pushedH3
 alone (the property is real, and lowering it would be loosening a bound to go green), but it
 is now the tightest guard on this pedal and the next slice to touch the dirt path should
 expect to re-derive it.
+
+---
+
+## 56. The GOLD drive pre-filter — the reference's real H_pre, and a noise floor found on the way
+
+**Branch:** `claude/gold-prefilter-6f557i` · **Plan:** `docs/work/2026-07-31-gold-prefilter.md`
+· **Oracle:** `github.com/jatinchowdhury18/KlonCentaur`, `ChowCentaur/GainStageProcessors/PreAmpStage.{h,cpp}`
+
+§54 closed with a named piece of unfinished business. Its `kDrivePreScale` / `kDriveHpHz`
+pair — a scalar 0.65 into a one-pole 600 Hz high-pass — had been **re-scoped, not
+changed**: §50 fitted it, §52 validated it against `H_pre·H_amp/A(g)` because the model had
+no amp network to separate it from, and §54 re-pointed it at `H_pre` alone once
+`AmpStageNetwork` carried `H_amp` exactly. §54 reported it as "within ±1.3 dB across the
+guitar core band" and named the refit as a candidate. This is that refit.
+
+### 56.1 The netlist, derived
+
+The reference's `PreAmpWDF` is a divider: the input coupling cap in series with two shunt
+legs, output taken across the shunt pair (`voltage(Vbias) + voltage(R6)` = the voltage
+across `S1` = the voltage across the parallel node).
+
+```
+     in --||-- +------------------+------------------+
+          C3   |                  |                  |
+               |  R6 || C5        |  R7              |
+               |     |            |   |              |
+               |  gang-1 (g·R_pot)|  R19 || C16      |   out = V across this node
+               |     |            |   |              |
+              GND   GND          GND GND
+```
+
+Every value is the reference's own: `C3 = 0.1 µF`, `C5 = 68 nF`, `C16 = 1 µF`,
+`R6 = 10 kΩ`, `R7 = 1.5 kΩ`, `R19 = 15 kΩ` (its `ResVs Vbias2`), and the shunt leg
+`g·100 kΩ` (its `ResVs Vbias`, set by `setGain`). With
+
+```
+  Z_S1 = (R6 ‖ 1/sC5) + g·R_pot        Z_S2 = R7 + (R19 ‖ 1/sC16)
+  H_pre(s) = Zp / (Zc3 + Zp),          Zp = Z_S1 ‖ Z_S2
+```
+
+and `n1 = (R6+Rg) + s·C5·R6·Rg`, `n2 = (R7+R19) + s·C16·R19·R7`, `a = C5·R6`, `b = C16·R19`:
+
+```
+  num = s·C3·n1·n2                                  (a zero at DC)
+  den = n1·(1+s·b) + n2·(1+s·a) + s·C3·n1·n2
+```
+
+So **H_pre is third order and knob-dependent** — the GAIN pot is dual-ganged and its
+*other* half is this divider's shunt leg. That is why no scalar-times-one-pole was ever
+going to sit inside a dB of it, and it is also why the fix costs no new knob state: the
+model already recovers the drive amp's ground leg from the smoothed `A` (§54's identity),
+and the divider's half is that leg's complement, `g·R_pot = (R_pot + Rleg) − leg`. One
+wiper, two networks, `driveLegOhms()` shared between them.
+
+Discretized with the plain bilinear transform at `K = 2·fs` — the same map the reference's
+own trapezoidal WDF capacitors use.
+
+### 56.2 Table 1 — |H_pre| against the reference, before → after
+
+Measured at 48 kHz × 4 (the shipped 192 kHz oversampled rate). The **oracle** is the
+reference's own WDF tree, rebuilt on this repo's pinned `chowdsp_wdf` and driven sample by
+sample — an independent solver, not an analytic restatement of our own netlist. The
+**model** column is recovered end to end through `GoldModel` (dirt path, clean half out,
+20 µV probe so the germanium pair is at its zero-bias incremental resistance) as
+`stand-in × 10^((dirt_after − dirt_before)/20)`, which is exact because the pre-filter is
+the only thing that changed between the two builds.
+
+| f (Hz) | stand-in | ref g=0.15 | model | err | *was* | ref g=0.35 | model | err | *was* | ref g=0.90 | model | err | *was* |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 41 | 0.04388 | 0.09370 | 0.09370 | −0.000 | *−6.59* | 0.09802 | 0.09802 | +0.000 | *−6.98* | 0.10085 | 0.10086 | +0.001 | *−7.23* |
+| 82 | 0.08715 | 0.11292 | 0.11292 | −0.000 | *−2.25* | 0.11674 | 0.11673 | −0.001 | *−2.54* | 0.11916 | 0.11915 | −0.001 | *−2.72* |
+| 110 | 0.11607 | 0.12755 | 0.12756 | +0.000 | *−0.82* | 0.13167 | 0.13167 | +0.000 | *−1.10* | 0.13425 | 0.13426 | +0.000 | *−1.26* |
+| 220 | 0.22158 | 0.19611 | 0.19611 | +0.000 | *+1.06* | 0.20268 | 0.20268 | +0.000 | *+0.77* | 0.20656 | 0.20657 | +0.000 | *+0.61* |
+| 500 | 0.41205 | 0.37780 | 0.37779 | −0.000 | *+0.75* | 0.39207 | 0.39208 | +0.000 | *+0.43* | 0.39931 | 0.39931 | +0.000 | *+0.27* |
+| 1000 | 0.55192 | 0.62191 | 0.62190 | −0.000 | *−1.04* | 0.64092 | 0.64092 | +0.000 | *−1.30* | 0.64946 | 0.64947 | +0.000 | *−1.41* |
+| 3000 | 0.63114 | 0.92084 | 0.92084 | +0.000 | *−3.28* | 0.92799 | 0.92798 | −0.000 | *−3.35* | 0.93092 | 0.93092 | −0.000 | *−3.38* |
+| 6000 | 0.64045 | 0.97837 | 0.97839 | +0.000 | *−3.68* | 0.98051 | 0.98052 | +0.000 | *−3.70* | 0.98136 | 0.98136 | +0.000 | *−3.71* |
+| 10000 | 0.64248 | 0.99214 | 0.99213 | −0.000 | *−3.77* | 0.99293 | 0.99292 | −0.000 | *−3.78* | 0.99325 | 0.99324 | −0.000 | *−3.78* |
+
+**Worst |error| over 41 Hz – 10 kHz × three knob points: 7.23 dB → 0.0006 dB.** Restricted
+to §54's own core band (82 Hz – 3 kHz): **3.38 dB → 0.0006 dB.** The ±1.3 dB §54 quoted was
+the 82 Hz – 1 kHz window at one knob position; the honest whole-band figure was 7.23.
+
+**Phase (table 2), against the continuous-time divider: worst 0.06° across the same grid**
+(41 Hz +34.68° / 220 Hz +54.90° / 6 kHz +10.38° at g = 0.35). This matters and is not
+decoration — see 56.5.
+
+### 56.3 Two convention traps in the oracle, both artifacts of how the reference *reads* its tree
+
+Anyone re-running the comparison will hit these, and both look like disagreements about the
+circuit until they are measured.
+
+1. **Polarity.** `PreAmpStage::processSample` returns `voltage(Vbias) + voltage(R6)` from
+   inside a `PolarityInverterT` subtree, so its output is the physical divider **negated**:
+   measured phase difference **180.08° at 41 Hz**, magnitudes agreeing to **0.0000 dB**.
+   There is no inverting element between the input cap and this node in the real pedal, so
+   the model is right to be non-inverting — and it is load-bearing, because the dirt branch
+   is *summed* with the clean feed, so a sign error would change the sum.
+2. **One sample of delay.** The same function reads its element voltages *between*
+   `Vin.incident(...)` and `I1.incident(...)`, so it reports the previous sample's
+   solution. After removing the 180°, the residual phase error is **0.077° at 41 Hz, 0.41°
+   at 220 Hz, 5.63° at 3 kHz, 18.75° at 10 kHz — exactly 360·f/192000 at every point**,
+   i.e. one sample at the oversampled rate. This model has no such delay.
+
+### 56.4 The thing this slice found that was not on the list: a −73 dBFS noise floor
+
+The netlist network is **third order**, and its slowest pole (the C3/node corner, ~60 Hz)
+runs at the **oversampled** rate. At 192 kHz that pole sits at radius 0.998, and a direct
+form amplifies its own state rounding by roughly `(1−r)^−order`. With `float` state — which
+is what the first cut of this slice had, following `AmpStageNetwork`'s existing style — the
+model emits **audible broadband hiss**, and no other bar in the gold suite can see it,
+because every one of them is a single Goertzel bin while the noise is broadband.
+
+Measured against an otherwise identical **long-double**-state build, 0.15 V / 220 Hz, added
+noise floor (rms over the settled second):
+
+| rate × OS | float state | double state |
+|---|---|---|
+| 48 kHz ×4 (**shipped**) | **−73.4 dBFS** | **−136.2 dBFS** |
+| 48 kHz ×8 | −56.3 | −129.7 |
+| 96 kHz ×4 | −51.8 | −130.4 |
+| 96 kHz ×8 (worst) | **−32.0** | **−112.5** |
+
+So the shipped state type is `double`, and the same reasoning was then applied to §54's
+`AmpStageNetwork`, which had carried `float` state since it landed: isolated measurement
+(pre-amp double in both arms, amp float vs double) puts its own cost at **−120.1 dBFS on
+the shipped path and −101.7 dBFS at 96 kHz × 8** — right on, and then past, the project's
+own −120 dBFS gate. Widening it is one word and it is taken here under the slice's
+drive-path latitude. It is **not** bit-identical, and the residual it removes *is* the
+noise; GAIN 0 never runs either network, so the transparency contract is untouched.
+
+**Honest residual:** −112.5 dBFS at 96 kHz × 8 is still above the −120 dBFS gate. The
+structural cure is a cascade of first-order sections — every pole *and* every zero of this
+network is real (`num = s·C3·n1·n2` factors, and a passive RC ladder has no complex poles),
+so it factors exactly — and it is **deliberately not taken here** so this slice keeps one
+isolated change per proof. Named follow-up.
+
+### 56.4b The second thing it found: `flushDenormal` does not converge above first order
+
+`clipper_denormal_tests` went red on `testPedalSilenceIsExactlySilent<GoldModel>` — "pedal
+never settled to EXACT digital silence within 7 s of silence" — and it was **right**, on a
+defect the usual one-liner hides.
+
+The house anti-denormal idiom is `y1 = flushDenormal(y)`: guard the newest recursive tap.
+For a **one-pole** that is complete, because the newest tap *is* the state. For a
+direct-form recursion of order N it is not: the older taps keep whatever they held when
+they were newest, and the recursion re-injects them with coefficients whose magnitudes are
+around 3. So `y1` gets zeroed, the next sample computes `y = −a2·y2 − a3·y3` which is
+*larger* than either, and the state **pumps itself back over the floor and stays there**.
+
+Measured on the GOLD before the fix: the output plateaus and never reaches digital silence —
+**3.373e-27 at 2 s of silence, 6.364e-27 at 4 s, 1.531e-26 at 8 s, 3.300e-27 at 16 s.** Not
+decaying; sitting. Bisected two ways: bypassing the divider settles in **1.523 s** (HEAD
+settles in 1.481 s), and keeping the divider but zeroing the whole state together settles in
+**1.501 s**. It is the flush, not the network.
+
+Both networks now test **all** their recursive taps and zero the state as a unit when every
+one of them is under the floor. `AmpStageNetwork` was not actually failing — its poles are
+decades higher (148 Hz – 1.10 kHz) so its ring-down passes through the floor fast enough to
+hide the hazard — but it is written correctly rather than luckily. Still bit-transparent:
+the floor is 1e-30, ~600 dB below any audio, and the GAIN-0 hashes and every field row are
+unchanged by the change.
+
+**Generalize this before writing the next high-order filter in this repo.** `Denormal.h`'s
+`flushDenormal` is a scalar guard and its contract is per-value; the *policy* ("guard every
+recursive state whose rest value is zero") is what the one-liner only satisfies at first
+order. Any DF1/DF2 of order ≥ 2 needs the whole-state form.
+
+### 56.5 Field rows — reported, not aimed at
+
+0.15 V peak, 220 Hz, TREBLE 0.5, OUTPUT 0.5, 48 kHz × 4.
+
+| GAIN | THD % before | THD % after | RMS dBFS before | RMS dBFS after |
+|---|---|---|---|---|
+| 0.00 | 0.000 | 0.000 | −19.499 | −19.499 |
+| 0.10 | 2.860 | 2.267 | −14.054 | −14.132 |
+| 0.15 | 3.620 | 2.996 | −11.969 | −12.071 |
+| 0.25 | 4.058 | 3.481 | −11.667 | −11.686 |
+| **0.35** (default) | **4.586** | **4.020** | **−11.329** | **−11.302** |
+| 0.50 | 5.617 | 5.029 | −10.744 | −10.669 |
+| 0.75 | 8.251 | 7.638 | −9.456 | −9.314 |
+| 1.00 | 14.588 | 13.563 | −7.905 | −7.521 |
+
+Breakup onset (bisected on THD at the same anchor): **5 % at GAIN 0.4163 → 0.4963**,
+**10 % at 0.8682 → 0.9023**.
+
+The owner's standing note was context, not a target: *"potentially still a bit gainy by a
+touch but let's not change for now."* This refit moves in that direction — about 0.6 points
+of THD off the default and a whole 0.08 of knob travel added before 5 % breakup — **by
+accident of the component values, and nothing was tuned to produce it**. The mechanism is
+in table 1: at the 220 Hz probe the real divider is 0.6–0.8 dB *quieter* than the stand-in
+was, so slightly less signal reaches the diodes. Above 1 kHz it is 1.3–3.8 dB *louder*,
+which is the same change reading the other way — the drive path is now treble-weighted the
+way a Klon's is, rather than shelved flat from 600 Hz up.
+
+**GAIN 0 is BIT-EXACT.** Six render hashes (sine and noise × TREBLE 0/0.5/1) identical
+before and after: `a0c5464fd80df762` / `55796eb6d0d9100c` / `bc7f8af7af3b75e2` /
+`0dfffa814cb19735` / `0a168e72781032a1` / `b4b142672d039bcf`. **All five goldens UNCHANGED**
+(`--golden-report`: rat_jcm800 +0.00, sd1_twin_reverb +0.00 / worst band 0.02, muff_twin
++0.00, ts_ac30 +0.00, clean120_chorus −0.00) — GOLD is in no golden rig, and the scope
+check holds.
+
+### 56.6 The web spec's `pushedH3` bar — §54's prediction came true, and the re-derivation
+
+§54 closed by warning that `pushedH3 > 0.1·pushedF1` measured **0.1056** — 5.6 % of margin —
+and that "the next slice to touch the dirt path should expect to re-derive it". It did:
+post-refit the same case measures **0.09774**, and the bar is crossed.
+
+The interesting part is *why*, because it is not "less distortion". Reproducing the spec's
+exact case in the core (0.5 s at 48 kHz, GAIN 0.9, 0.3 V at 220 Hz, OUTPUT 0.5, the spec's
+own unwindowed Goertzel from 0.12 s):
+
+* `f1` **0.738968 → 0.771566 (+0.375 dB)** — the fundamental got **louder**
+* `h3` **0.077826 → 0.075409 (−0.274 dB)** — the third harmonic barely moved
+
+`pushedF1` is the **vector sum** of the dirt branch and the parallel clean core. Decomposing
+it (clean 0.299684 ∠+154.81°, dirt 0.525684 ∠−150.01°) reproduces the measured total to
+**−0.0000 dB**, so the decomposition is exact. The refit rotates the dirt branch by
+**−15.48°** and scales it by −0.6094 dB, and the rotation alone makes the *denominator*
+bigger. The bar was measuring a phase relationship, not a distortion level.
+
+The new constant is that predicted movement and nothing more, computed from the netlist plus
+**pre-refit measurements only** — no post-refit number enters the derivation, so the check
+against the post-refit measurement is a prediction rather than a fit:
+
+| step | value |
+|---|---|
+| `H_pre(220 Hz, g=0.90)`, reference vs stand-in | 0.20656 ∠+54.39° vs 0.22158 ∠+69.86° |
+| correction `r` | ×0.93225 (−0.6094 dB), ∠−15.477° |
+| clipper's own compression over that drive change (measured pre-refit) | f1 ×0.98332, h3 ×0.97614 |
+| predicted post-refit `f1` | 0.771613 (**measured 0.771566, +0.0005 dB**) |
+| predicted post-refit `h3` | 0.076203 (**measured 0.075409, +0.091 dB**) |
+| predicted `h3/f1` | 0.09876 (**measured 0.09774, +0.09 dB**) |
+| predicted bar move | 0.1 × 0.93773 = **0.09377** |
+
+Shipped bar: **0.0938**, rounded *up* from the derivation, i.e. strictly harder than it. The
+measurement clears it by **4.2 %** against the old 5.3 %. The contrast clause
+(`pushedH3 > cleanH3 × 20`) is untouched and got no easier: GAIN 0 is bit-exact, so
+`cleanH3` is unmoved and it measures **167×** against a bar of 20×.
+
+### 56.7 The M11 ragged-block window — re-derived, and made harder
+
+`clipper_player_expectations_tests` block B went red on `gold_ ABI` at 100-frame blocks:
+settled 1.22e-02 against a 2e-03 bar. The stream is **not** corrupted — the difference
+decays to **exactly 0** by 400 ms:
+
+```
+   50 ms 1.3e-2 | 110 ms 1.4e-3 | 200 ms 1.3e-5 | 300 ms 2.0e-7 | 400 ms EXACTLY 0
+```
+
+`kBlockSettleSecs` was 0.05 s, justified as "past every parameter smoother's ~5–8 ms
+settle". That derivation is **measurably incomplete**: what has to settle is not the
+smoother, it is the slowest recursive *state* the differing parameter trajectory excites on
+its way through, and §56's divider carries a 1 µF cap across 15 kΩ — a ~30 ms corner, five
+times anything the old stand-in had. Re-derived to **0.25 s**, which is three orders of
+magnitude inside the bar for the slowest unit in the file.
+
+Widening a window can only make a test easier, so the same change adds the bar that
+actually separates "smoothed differently" from "stream corrupted", and which the old test
+never had: **the difference must CONVERGE.** Over the final quarter of every render, every
+unit measures **exactly 0.0** — all four amp voices, the phaser, the convolver, the reverb
+and four of the five dirt pedals — with one exception, the **Muff at 3.34e-05**, which is
+physics already on the record: §53's 1 µF series-diode caps discharge only through diode
+leakage (τ ≈ 5 s), so a trajectory difference cannot wash out inside a 1 s render. Bar set
+at **1e-4**: 20× tighter than the settled bar, 3× above the one non-zero unit, and
+unreachable by a stream that never converges at all. Post-change `gold_ ABI` measures
+settled **1.47e-06**, tail **0.00e+00**.
+
+### 56.8 Tests, and the perturbations that prove them
+
+`testClippingStageFidelity` bars (1)–(3) are §54's and are unchanged in kind; bar (2)'s
+printed reference moved from −17.6 dB to **−13.92 dB** because the divider is +3.7 dB
+brighter over that same pair — the 495 Hz pole did not move, the signal reaching it did.
+
+* **(4) the gang identity, restated and harder.** §54 asserted "the drive amp's DC gain IS
+  A(g)" on the argument that every other filter in the dirt path is knob-independent and
+  cancels. §56 breaks that argument on purpose. The bar is now the *product* of both gang
+  halves' published laws, each written from component values in the test
+  (`refPreAmpMag()`), against a 0.5 dB tolerance. Measured **13.756** vs a prediction of
+  **13.764**; §50's drive law alone predicts 12.468.
+  Perturbations: revert the divider to the stand-in → **12.480** (fails by 1.284 dB);
+  recover the divider's half as `R10b` instead of its complement, i.e. the two gang halves
+  wired backwards with each network still individually well-formed → **7.212** (fails by
+  6.552 dB).
+* **(5) the divider itself**, two one-sided absolute bars because the stand-in was wrong in
+  *opposite* directions at the two ends of the band, each placed at the midpoint of the
+  two measured values:
+  * bottom, dirt path 41 Hz vs 500 Hz: **−9.60 dB** now, **−17.01** with the stand-in, bar
+    **−13.3** (the divider's own contribution is −12.04 dB)
+  * top, dirt path 6 kHz vs 1 kHz: **−21.50 dB** now, **−23.90** with the stand-in, bar
+    **−22.7** (the divider's own contribution is +3.69 dB)
+* **(6) `testDrivePathNumericalFloor`**, new, at 44.1 and 48 kHz. Drives a pure tone,
+  projects out every harmonic up to Nyquist, and asserts the residual is below the
+  project's own **−120 dBFS** gate. Measured **−135.4 to −142.4 dBFS**; narrowing either
+  network's state back to `float` measures **−72.4 to −80.1** and fails by 40 dB. GAIN 1.00
+  is deliberately not probed: at max drive the model's own 4× alias floor (−93 dBFS, §54)
+  would dominate, and the bar would be measuring aliasing instead of arithmetic.
+
+### 56.9 What did NOT move
+
+`kClipBlendWeight = 4.1702` (§52), the 495 Hz summing pole and the reference germanium fit
+(§54), `kSumGain = 2.0`, the tone stage, the clean path, the output network, `kRailVolts`,
+every other pedal and every amp. `kDrivePreScale` and `kDriveHpHz` are **deleted** — there
+is nothing left for them to stand in for.

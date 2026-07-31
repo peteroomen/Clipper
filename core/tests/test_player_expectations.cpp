@@ -124,7 +124,9 @@ constexpr clipper::test::XfailDecl kXfControlRateBlockSize{
     "a dirt pedal's output does not depend on the host block size AT ALL, including during "
     "the initial parameter snap — the smoothers advance per sample but only the CHUNK-END "
     "value is kept, so the trajectory differs with chunk size (worst: Muff, 1.6 absolute at "
-    "25 ms; all five converge to <= 1.0e-3 relative after ~50 ms)",
+    "25 ms; four converge to EXACTLY 0 over the render's last quarter and the Muff to "
+    "3.3e-05, its docs-§53 diode caps having a ~5 s discharge; the GOLD needs ~300 ms "
+    "to settle where the others need ~50, its slowest drive-path state)",
     "the control-rate sampling fix: apply the smoothed value PER SAMPLE instead of keeping "
     "the chunk-end value (RatModel's own inner loop is the pattern)"};
 
@@ -399,7 +401,8 @@ std::vector<Gear> allGear() {
     // measured value ± ~10 dB. Measured 2026-07 @ 48 kHz (input RMS −33.5 dBFS):
     //   rat +18.6   sd1 +15.6   ts +13.1   muff +27.7 (fuzz sustain wall — by design;
     //   was +29.4 pre-§53, before the clip stages' DC-blocking diode caps)
-    //   gold +12.5 (was +19.3 after §52, +7.3 after §50 and +13.2 before it: §52
+    //   gold +12.4 (§56, was +12.5 after §54, +19.3 after §52, +7.3 after §50 and
+    //   +13.2 before it: §52
     //   replaced the FITTED dirt summing weight 0.65 with the schematic's
     //   R20/(R16·kSumGain) = 4.1702 and the pedal got LOUDER, which was the opposite
     //   of the field report — §54 then fixed the node that weight multiplies and it
@@ -527,12 +530,13 @@ bool isDirtPedal(const Gear& g) { return g.isPedal; }
 //                                  measured: every level/volume/master pot (and
 //                                  the JCM's preamp-volume GAIN) kills to −240.
 //   Defaults RMS per gear: rat −16.6, sd1 −19.6, ts −22.1, muff −7.4 (§53: was
-//   −5.8, before the clip stages' DC-blocking diode caps), gold −22.6
+//   −5.8, before the clip stages' DC-blocking diode caps), gold −22.7
 //   (§52 took it −27.8 → −15.9 with the derived summing weight; §54's clipping-stage
 //   trio takes it back to −22.6, because the reference implementation's measured
 //   germanium fit clamps the diode node 5.7–8.5 dB lower than this model's old
-//   datasheet-shaped pair and the 495 Hz summing pole trims the dirt's harmonics.
-//   Default peak 1.285 → 0.443 V, well inside the 2.0 V pedal ceiling),
+//   datasheet-shaped pair and the 495 Hz summing pole trims the dirt's harmonics;
+//   §56's netlist input divider then moves it 0.1 dB to −22.7.
+//   Default peak 1.285 → 0.443 → 0.429 V, well inside the 2.0 V pedal ceiling),
 //   clean120 −41.1, jcm800 −37.6 (was −33.5 pre-§51: −4.1 dB of GAIN-taper drive
 //   at the 0.5 default, docs §51), twin −49.0, ac30 −33.6 dBFS (ac30 was −46.9
 //   before the §23 second amendment: its PI was starved, so the VOLUME knob
@@ -592,14 +596,16 @@ void testMinKnobUsability(const std::vector<Gear>& gear) {
 //   ts   min −33.1 / def −38.2 dB     muff min −47.5 / def −55.4 dB (re-measured
 //        2026-07-31 twice: docs §49's series base resistors, then docs §53's
 //        DC-blocked diode branch — still 19+ dB inside the bar)
-//   gold min −30.1 / def −35.6 dB (§54: the default row was −39.6 under §52's hotter
-//        diode node; the min row is UNCHANGED and always will be — GAIN 0 is bit-exact
-//        by contract)  ← the TIGHTEST at min, and necessarily so: at GAIN 0
+//   gold min −30.1 / def −33.6 dB (§56: the default row was −35.6 under §54; the min
+//        row is UNCHANGED and always will be — GAIN 0 is bit-exact by contract)
+//        ← the TIGHTEST at min, and necessarily so: at GAIN 0
 //        this pedal is a LINEAR buffer, so it can only PRESERVE the input's own
 //        −30 dB hum-to-note ratio (−30.1 measured == the physical ceiling for a
-//        transparent pedal, 2.1 dB of margin). Turning up improves it, because the
-//        drive branch's 600 Hz high-pass (§50 — the 106 Hz corner belongs to the
-//        always-on clean path, not the drive path) keeps 60 Hz out of the clipper.
+//        transparent pedal, 2.1 dB of margin). Turning up still improves it, but by
+//        2.0 dB LESS than it used to, and that is docs §56 being honest: §50's
+//        stand-in for the drive path's input network was a 600 Hz one-pole high-pass,
+//        which threw away 7 dB more 41 Hz than the reference divider actually does, so
+//        it was flattering this row. The real network passes more hum to the clipper.
 // Context: the INPUT hum sits 30 dB below the note, and a perfectly linear pedal
 // preserves that — so ~−33 dB at min drive (near-linear SD-1/TS) is the physical
 // ceiling of what "min gain" can do; compression + input filtering IMPROVE it at
@@ -665,7 +671,13 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //                germanium fit clamps 8.4 dB lower and the 495 Hz summing pole
 //                takes the harmonics down harder than the fundamental, while the
 //                drive amp's C7 network raises the mid-knob drive: max THD falls,
-//                mid-knob THD rises slightly)
+//                mid-knob THD rises slightly. §56: → 0.0→3.7→12.3, the netlist
+//                input divider replacing §50's stand-in — it attenuates the 220 Hz
+//                probe 0.6-0.8 dB MORE than the stand-in did, so slightly less
+//                drive reaches the diodes at every knob position. REPORTED, not
+//                aimed at: the owner had said the GOLD is "potentially still a bit
+//                gainy by a touch but let's not change for now", and this moves in
+//                that direction by accident of the component values)
 //   LEVEL dBFS (0/0.5/1): rat −240→−15.6→−9.6   sd1 −240→−12.8→−6.8
 //                ts −240→−14.9→−8.9   muff −240→−6.4→−0.4 (§53: was −7.0→−1.0)
 //                clean120 −240→−25.9→−23.0   jcm master −240→−21.9→−7.5 (§51: the
@@ -685,9 +697,10 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //                −22.9→−12.3, +3.0 dB from the derived summing weight. §54:
 //                → −29.4→−18.9, i.e. −6.5 dB of HF harmonic energy, which is the
 //                495 Hz summing pole doing exactly the job it is in the circuit
-//                for. The knob's authority is STILL exactly +10.6 dB, at every
-//                one of the four re-baselines — it is a linear tilt after the
-//                nonlinearity, so nothing upstream can move it)
+//                for. §56: → −30.2→−19.7, the netlist input divider's slightly
+//                colder 220 Hz drive. The knob's authority is STILL exactly
+//                +10.6 dB, at every one of the FIVE re-baselines — it is a linear
+//                tilt after the nonlinearity, so nothing upstream can move it)
 //   TONE, amps  (3 kHz level dB, dark→bright; bar ≥ +4):
 //                clean120 treble −36.7→−27.3   jcm800 treble −29.3→−14.1 (§51)
 //                twin treble −52.3→−21.0   ac30 treble −45.1→−21.8
@@ -893,24 +906,58 @@ double maxAbsDiff(const std::vector<float>& a, const std::vector<float>& b) {
 //       127 frames:
 //         * phaser, all four amp voices, CabConvolver and ReverbModel are EXACTLY 0 at
 //           every block size from 1 to 256 -> asserted bit-identical here too.
-//         * the five DIRT PEDALS diverge, but ONLY during the first ~25 ms, and converge to
-//           <= 1.0e-3 relative afterwards. That is the audit's Medium/DSP item
+//         * the five DIRT PEDALS diverge during the startup ramp and then CONVERGE (four
+//           to exactly 0, the Muff to 3.3e-05 — see kRaggedTailBar). How long that takes
+//           is set by the slowest recursive state the
+//           differing parameter trajectory excites, not by the smoother: four of them are
+//           inside 1.0e-3 relative by ~50 ms, and the GOLD needs ~300 ms because docs §56
+//           put a 1 uF/15 k (~30 ms) corner in its drive path. That is the audit's
+//           Medium/DSP item
 //           "control-rate parameter sampling defeats the 5 ms smoother at DAW block sizes":
 //           the smoother advances per sample but only its CHUNK-END value is kept, so the
 //           parameter TRAJECTORY during the initial snap depends on the chunk size. Worst
 //           case measured: Muff, 1.6 absolute at 25 ms. So the SETTLED output is asserted
-//           for real, and the startup transient is an XFAIL naming that item.
+//           for real, the CONVERGENCE is asserted separately and much harder (the bar that
+//           actually rules out finding 3's class), and the startup transient is an XFAIL
+//           naming that item.
 struct LiveDiff {
     double whole = 0.0;     // max |Δ| over the entire render
     double settled = 0.0;   // max |Δ| past kBlockSettleSecs
     double relative = 0.0;  // settled, relative to the reference's own peak there
+    double tail = 0.0;      // max |Δ| over the last kBlockTailFrac, relative
 };
-constexpr double kBlockSettleSecs = 0.05;  // past every parameter smoother's ~5-8 ms settle
+// The settle window. RE-DERIVED 2026-07-31 (docs §56) — it was 0.05 s, justified as
+// "past every parameter smoother's ~5-8 ms settle", and that derivation was measurably
+// INCOMPLETE. What has to settle is not the smoother: it is the slowest RECURSIVE STATE
+// that the differing parameter trajectory excites on its way through. The GOLD's §56
+// drive-path input divider carries a 1 uF cap (C16) across R19 = 15 k, a ~30 ms time
+// constant — five times anything the old 0.65*HP600 stand-in had — so its trajectory
+// difference needs ~7 tau to wash out, not one. Measured on the GOLD, 100-frame blocks
+// vs one big call, max |Δ| relative to the reference's own peak in 10 ms buckets:
+//     50 ms 1.3e-2 | 110 ms 1.4e-3 | 200 ms 1.3e-5 | 300 ms 2.0e-7 | 400 ms EXACTLY 0
+// so 0.25 s is ~3 orders of magnitude inside the bar for the slowest unit in the file.
+constexpr double kBlockSettleSecs = 0.25;
 
 // The settled bar: 2e-3 relative is about -54 dB, tight enough that finding 3's class of
 // bug (error larger than the signal) is caught by three orders of magnitude, and loose
-// enough to cover the residual smoother-trajectory difference. Worst measured: 1.0e-3.
+// enough to cover the residual smoother-trajectory difference.
 constexpr double kRaggedSettledBar = 2e-3;
+
+// ...and because widening a window can only ever make a test easier, the same change
+// adds a bar that makes it HARDER overall, and which is the one that actually separates
+// "smoothed differently" from "stream corrupted": the difference must CONVERGE. A
+// finding-3-class defect (a permanently misaligned stream) never decays, so it fails
+// this at any window length, where a trajectory transient decays to nothing.
+// Measured over the final quarter of every render in this file: EXACTLY 0.0 for every
+// unit — all four amp voices, the phaser, the convolver, the reverb, and four of the
+// five dirt pedals — with ONE exception, the Muff at 3.34e-05. That exception is
+// physics and it is already documented: docs §53 put a 1 uF cap in series with the
+// clip stages' diodes, and it can only discharge through the diodes' own leakage
+// (tau ~ 5 s), so a trajectory difference cannot wash out inside a 1 s render. The bar
+// is therefore 1e-4: 20x tighter than the settled bar, 3x above the one unit that is
+// not exactly zero, and unreachable by a stream that never converges at all.
+constexpr double kBlockTailFrac = 0.25;
+constexpr double kRaggedTailBar = 1e-4;
 
 LiveDiff liveVsRef(const char* name, const std::vector<float>& in,
                    const std::function<void(const float*, float*, int)>& refProc,
@@ -936,9 +983,18 @@ LiveDiff liveVsRef(const char* name, const std::vector<float>& in,
         pk = std::max(pk, std::fabs(static_cast<double>(ref[i])));
     }
     d.relative = pk > 0.0 ? d.settled / pk : 0.0;
+    // Convergence: the same comparison over the FINAL kBlockTailFrac of the render.
+    const int tailStart = n - static_cast<int>(kBlockTailFrac * n);
+    double tailD = 0.0, tailPk = 0.0;
+    for (int i = std::max(0, tailStart); i < n; ++i) {
+        tailD = std::max(tailD, std::fabs(static_cast<double>(ref[i]) - live[i]));
+        tailPk = std::max(tailPk, std::fabs(static_cast<double>(ref[i])));
+    }
+    d.tail = tailPk > 0.0 ? tailD / tailPk : 0.0;
 
     std::printf("  [B ] %-24s in-place/%4d-frame vs big-block: max |Δ| %.3e (settled %.3e = "
-                "%.2e rel)\n", name, blockSize, d.whole, d.settled, d.relative);
+                "%.2e rel, tail %.2e rel)\n", name, blockSize, d.whole, d.settled,
+                d.relative, d.tail);
     std::fflush(stdout);
 
     if (expectBitExact) {
@@ -952,6 +1008,10 @@ LiveDiff liveVsRef(const char* name, const std::vector<float>& in,
     assert(d.relative <= kRaggedSettledBar &&
            "RAGGED BLOCK SIZE: the SETTLED output depends on the host block size — the "
            "stream is being corrupted, not merely smoothed differently (finding 3's class)");
+    assert(d.tail <= kRaggedTailBar &&
+           "RAGGED BLOCK SIZE: the block-size difference does NOT converge — it is still "
+           "there at the end of the render, so it is a misaligned stream (finding 3's "
+           "class), not a parameter-trajectory transient (docs §56)");
     if (startupXfail) {
         char detail[256];
         std::snprintf(detail, sizeof detail,
