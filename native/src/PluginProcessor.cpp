@@ -136,6 +136,16 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::goldTreble, "Myth Treble", 0.5f));
     layout.add(knob(pid::goldLevel, "Myth Output", 0.7f));
 
+    // Post-v1.1 — the "Weeper" wah. Defaults mirror the web's WAH_KNOB_DEFAULTS:
+    // POSITION 0.35 (a low-mid vowel), SENSE 0.0 (opens as a MANUAL wah — the
+    // envelope contributes exactly nothing until asked for), VOICE 0.5 (the stock
+    // 33 kOhm R7). All three are ordinary automatable knobs; POSITION in
+    // particular is meant to be automated, which is how a DAW plays a wah.
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::wahOn, 1}, "Weeper On", true));
+    layout.add(knob(pid::wahPosition, "Weeper Position", 0.35f));
+    layout.add(knob(pid::wahSense, "Weeper Sense", 0.0f));
+    layout.add(knob(pid::wahVoice, "Weeper Voice", 0.5f));
+
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::ampOn, 1}, "Amp Power", true));
     // M9.4 amp voice (default index 0 == Clean 120).
     layout.add(std::make_unique<Choice>(juce::ParameterID{pid::ampModel, 1},
@@ -384,6 +394,10 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.goldGain = f(pid::goldGain);
     p.goldTreble = f(pid::goldTreble);
     p.goldLevel = f(pid::goldLevel);
+    p.wahOn = f(pid::wahOn) >= 0.5f;
+    p.wahPosition = f(pid::wahPosition);
+    p.wahSense = f(pid::wahSense);
+    p.wahVoice = f(pid::wahVoice);
 
     // The board: unpack the lock-free snapshot the message thread published (never
     // touch the ValueTree here — this runs on the audio thread).

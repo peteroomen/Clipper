@@ -65,6 +65,7 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   muff: 'Pi fuzz (violet, big box)',
   gold: 'Myth overdrive (gold, transparent)',
   phaser: 'Script phaser',
+  wah: 'Weeper wah / envelope filter',
   tuner: 'Chromatic tuner',
 };
 const AMP_TYPE_LABEL: Record<string, string> = {
