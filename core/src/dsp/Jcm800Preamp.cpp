@@ -192,10 +192,22 @@ void MarshallToneStack::process(const float* in, float* out, int numFrames) {
 // Jcm800Preamp
 // ===========================================================================
 
-double Jcm800Preamp::audioTaper(double x) {
+// The shared audio/log pot law. k is per-pot since docs §51 (see the header for the
+// GAIN constant's derivation); the arithmetic is unchanged, so MASTER at
+// k = kMasterTaperK = 4.0 evaluates byte-for-byte as the pre-§51 single-law code did.
+static double taperLaw(double x, double k) {
     x = clampParam01(x);  // NaN-rejecting (ParamGuard.h)
-    constexpr double k = 4.0;  // ~12% at noon (a musical audio/log taper)
     return (std::exp(k * x) - 1.0) / (std::exp(k) - 1.0);
+}
+
+double Jcm800Preamp::audioTaper(double x) {
+    return taperLaw(x, kMasterTaperK);  // MASTER: k = 4, ~12% at noon (unchanged)
+}
+
+double Jcm800Preamp::gainTaper(double x) {
+    // GAIN: k = 5.0521652926683824, the root of gainTaper(0.30) == audioTaper(0.20)
+    // — the owner's "20 sounds like what I want 30 to sound like" (docs §51).
+    return taperLaw(x, kGainTaperK);
 }
 
 Jcm800Preamp::Jcm800Preamp() { configureStages(); }
@@ -356,7 +368,7 @@ void Jcm800Preamp::setParameter(int paramId, float value) {
 }
 
 double Jcm800Preamp::gainInterstageScale() const {
-    return kGainDivider * audioTaper(gain_);
+    return kGainDivider * gainTaper(gain_);  // GAIN's own taper since docs §51
 }
 double Jcm800Preamp::masterScale() const { return audioTaper(master_); }
 

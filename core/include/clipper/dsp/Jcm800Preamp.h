@@ -210,9 +210,39 @@ public:
     static constexpr double kGainPotOhms = 1.0e6;
     static constexpr double kBrightCapF = 470.0e-12;
     double masterScale() const;           // tone-stack out -> output (MASTER)
-    // Audio taper law for the GAIN / MASTER pots: (e^{k x} - 1)/(e^k - 1), k = 4
-    // (~12% at noon). Exposed so tests reproduce it.
-    static double audioTaper(double x);
+    // Audio taper law for the two pots: (e^{k x} - 1)/(e^k - 1). ONE law, TWO
+    // constants since docs §51 — the GAIN pot and the MASTER pot no longer share k.
+    // Both are exposed so tests reproduce them.
+    //
+    // MASTER keeps the original k = 4 (~12 % of travel at noon) — byte-for-byte the
+    // pre-§51 law, and the owner's report was about GAIN only.
+    static constexpr double kMasterTaperK = 4.0;
+    // GAIN's k, DERIVED (docs §51) rather than chosen: the owner's measured field
+    // report at unity input trim was "breakup is slightly early — 20 sounds like
+    // what I want 30 to sound like", i.e. a pure knob remap of the drive the pot
+    // delivers. The design equation is therefore
+    //
+    //     gainTaper(0.30) == audioTaper_{k=4}(0.20) = 0.022865358743438216
+    //
+    // whose root is k = 5.0521652926683824 (bisected to full double precision;
+    // residual 4.6e-16 relative). Nothing else in the network moves: the GAIN pot's
+    // wiper is the ONLY thing this knob controls (the §47 bright-cap coefficients
+    // are rebuilt from the same wiper), so a render at the new GAIN 0.30 reproduces
+    // the pre-§51 render at GAIN 0.20 to within that residual, and audioTaper(1) = 1
+    // for ANY k pins the top of the knob EXACTLY (verified by render hash — the
+    // owner's "100 is perfect right where it is").
+    //
+    // Measured onset (THD >= 5 %, 220 Hz, MASTER 0.5, composed Jcm800Amp):
+    //   0.15 V peak in (the level at which the owner's reported onset reproduces):
+    //     knob 0.2057 -> 0.3064   <- the field report, answered
+    //   0.10 V peak in (the docs §45 probe level, the round's reporting convention):
+    //     knob 0.2717 -> 0.3763
+    // The knob-space map is level-independent (it is a remap of the wiper, not of
+    // the circuit); the whole travel below 1.0 drops 0.9 dB (knob 0.9) to 7.0 dB
+    // (knob 0.05), 4.1 dB at the 0.5 default.
+    static constexpr double kGainTaperK = 5.0521652926683824;
+    static double audioTaper(double x);  // MASTER law, k = kMasterTaperK
+    static double gainTaper(double x);   // GAIN law, k = kGainTaperK (docs §51)
 
     // White-box: peak |grid drive| seen by V1B during the last process() call
     // (V1B's linear window before cutoff/grid conduction ~= its cathode bias).
