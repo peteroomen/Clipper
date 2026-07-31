@@ -83,6 +83,7 @@ target_sources(Clipper PRIVATE
     src/ClipperEngine.cpp
     src/PluginProcessor.cpp
     src/ClipperLookAndFeel.cpp
+    src/UiSound.cpp
     src/PedalCard.cpp
     src/PluginEditor.cpp)
 
