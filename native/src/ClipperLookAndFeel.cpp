@@ -126,6 +126,10 @@ juce::Colour accent(AccentId id) {
         case AccentId::Jcm:    return d ? juce::Colour(0xffE8B84B) : juce::Colour(0xffA87A18);
         case AccentId::Twin:   return d ? juce::Colour(0xff7FB4E8) : juce::Colour(0xff4E7BA8);
         case AccentId::Ac30:   return d ? juce::Colour(0xffE08A4A) : juce::Colour(0xffB4612C);
+        // M10.3 Orange OR120 — the tolex wink. Verbatim from tokens.css
+        // (--accent-orange), and deliberately more saturated / less brown than
+        // Ac30's copper so the two amps never read as the same voice.
+        case AccentId::Orange: return d ? juce::Colour(0xffFF9A2E) : juce::Colour(0xffC85A00);
         case AccentId::Clean:  return d ? juce::Colour(0xffFF4A34) : juce::Colour(0xffF03B24);
     }
     return d ? juce::Colour(0xffFF4A34) : juce::Colour(0xffF03B24);

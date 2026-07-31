@@ -30,16 +30,28 @@ export const AMP_PARAM_REVERB = 9;
 export const AMP_PARAM_JCM_GAIN = 10;
 export const AMP_PARAM_JCM_PRESENCE = 11;
 export const AMP_PARAM_JCM_MASTER = 12;
+// M10.3 Orange OR120: the F.A.C. six-position rotary (13). A NEW id rather than a
+// reused knob slot, because no other voice has a switch there and a stale rig
+// state must never silently mean something else. Everything else the OR120 needs
+// is a documented reuse: volume (0), bass (1), treble (3), presence (11) as its
+// HF DRIVE, reverb (9). Must mirror kAmpParamOrangeFac in clipper_c_api.cpp.
+export const AMP_PARAM_ORANGE_FAC = 13;
 
 // The worklet's amp-model index (mirrors AmpModelId in clipper_c_api.cpp). M10.1
 // adds the Twin as voice 2 (purely additive; clean120/jcm800 indices unchanged).
 // v1.1 adds the AC30 "top boost" as voice 3 (additive; reuses the STABLE amp_*
 // exports and the shared presence id 11 routed as its top CUT).
-export const AMP_MODEL_INDEX: Record<'clean120' | 'jcm800' | 'twin' | 'ac30', number> = {
+// M10.3 adds the Orange OR120 as voice 4 (additive; clean120/jcm800/twin/ac30
+// indices unchanged).
+export const AMP_MODEL_INDEX: Record<
+  'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange',
+  number
+> = {
   clean120: 0,
   jcm800: 1,
   twin: 2,
   ac30: 3,
+  orange: 4,
 };
 
 // Chorus mode enum (mirrors ChorusModel::Mode). Kept as plain numbers so it flows
@@ -72,6 +84,8 @@ export const AMP_PARAM_ID = {
   gain: AMP_PARAM_JCM_GAIN,
   presence: AMP_PARAM_JCM_PRESENCE,
   master: AMP_PARAM_JCM_MASTER,
+  // M10.3 Orange OR120.
+  fac: AMP_PARAM_ORANGE_FAC,
 } as const;
 
 // Valid oversampling factors for the nonlinear stage (default 4x). Other values

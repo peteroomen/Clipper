@@ -24,6 +24,13 @@ std::vector<float> generateDefaultCab2x12IR(double sampleRate);
 // recipe and M6.6 peak normalization as the 2x12.
 std::vector<float> generateBrit4x12IR(double sampleRate);
 
+// Generate the Orange 4x12 cab IR (M10.3, docs §57): the same sealed 4x12 family
+// as the Brit, voiced the other way — a LOWER low cut (bigger, woolier bottom)
+// and a pronounced UPPER-MID bark around 1.2 kHz instead of the greenback's
+// 200 Hz chunk and early top rolloff. Pairs with the OR120. Same deterministic
+// modal recipe and M6.6 peak normalization as the other two.
+std::vector<float> generateOrange4x12IR(double sampleRate);
+
 // Peak-normalize an arbitrary IR (e.g. a user-uploaded cab) to UNITY SPECTRAL
 // PEAK (max |H(f)| == 1 over the audio band) IN PLACE. The engine NEVER trusts a
 // file's level (M6.6): a cab may color the tone but must never boost any band

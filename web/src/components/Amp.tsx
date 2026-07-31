@@ -24,6 +24,9 @@
 //     no gain/master/presence (this amp makes clean headroom, not preamp gain) and
 //     no chorus mode. Cab lever + Power rocker stay.
 //
+//   Orange (amp.type === 'orange'): the OR120 "Overdrive" head — the MID-FORWARD
+//   voice. VOLUME (no master), BASS/TREBLE (no mid — a James stack), F.A.C., HF
+//   DRIVE (the shared 'presence' slot) and REVERB. Docs §57.
 //   AC30 (amp.type === 'ac30'): the Vox AC30 "top boost" class-A CHIME/JANGLE combo —
 //     a knowing homage "Thirty" (model line COMBO Nº4 · TOP-BOOST) · a warm COPPER
 //     accent · the control row VOLUME · BASS · TREBLE · CUT · REVERB. VOLUME is the
@@ -536,6 +539,94 @@ function Ac30Face({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
   );
 }
 
+// The Orange OR120 face — an early-70s "Overdrive" HEAD, the MID-FORWARD voice
+// (docs §57). A knowing homage: "Overdrive" (model line HEAD Nº5 · ONE-TWENTY) ·
+// a saturated ORANGE accent (--accent-orange). Control row: VOLUME · BASS ·
+// TREBLE · F.A.C. · HF DRIVE · REVERB.
+//
+// What the face DOES NOT have is as load-bearing as what it does: there is NO
+// MASTER (the OR120 has none — VOLUME is the whole amp and the power section is
+// the overdrive), NO MID (the James/Baxandall stack is bass + treble only), and
+// NO BRIGHT switch (the brightness control is HF DRIVE, inside the feedback
+// loop). Hidden accordingly: middle, gain, master, bright, chorus.
+//
+// F.A.C. is a SIX-POSITION rotary on the real amp; the knob is continuous here
+// and the core snaps it to the nearest of six detents, so every part of the
+// travel selects a real filter (measured: 17.2 dB of low-E across the switch).
+// HF DRIVE binds to the shared 'presence' param — the C ABI routes id 11 to the
+// Orange's HF DRIVE — but is LABELED "HF".
+function OrangeFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
+  const { params } = amp;
+  return (
+    <div
+      className={`amp raised orange${amp.engaged ? ' on' : ''}`}
+      data-testid="amp"
+      data-engaged={amp.engaged}
+      data-amp-type="orange"
+    >
+      <div className="amp-head">
+        <div className="amp-name display" data-testid="amp-name">
+          Overdrive<small>Head Nº5 · One-Twenty</small>
+        </div>
+      </div>
+
+      <div className="amp-controls">
+        <Knob
+          name="Vol"
+          ariaLabel="Volume"
+          value={params.volume}
+          defaultValue={AMP_KNOB_DEFAULTS.volume}
+          onChange={(v) => onParam('volume', v)}
+          testId="knob-volume"
+        />
+        <Knob
+          name="Bass"
+          ariaLabel="Bass"
+          value={params.bass}
+          defaultValue={AMP_KNOB_DEFAULTS.bass}
+          onChange={(v) => onParam('bass', v)}
+          testId="knob-bass"
+        />
+        <Knob
+          name="Treble"
+          ariaLabel="Treble"
+          value={params.treble}
+          defaultValue={AMP_KNOB_DEFAULTS.treble}
+          onChange={(v) => onParam('treble', v)}
+          testId="knob-treble"
+        />
+        <Knob
+          name="F.A.C."
+          ariaLabel="Frequency Analysing Control"
+          value={params.fac}
+          defaultValue={AMP_KNOB_DEFAULTS.fac}
+          onChange={(v) => onParam('fac', v)}
+          testId="knob-fac"
+        />
+        <Knob
+          name="HF"
+          ariaLabel="HF Drive"
+          value={params.presence}
+          defaultValue={AMP_KNOB_DEFAULTS.presence}
+          onChange={(v) => onParam('presence', v)}
+          testId="knob-presence"
+        />
+        <Knob
+          name="Reverb"
+          ariaLabel="Reverb"
+          value={params.reverb}
+          defaultValue={AMP_KNOB_DEFAULTS.reverb}
+          onChange={(v) => onParam('reverb', v)}
+          testId="knob-reverb"
+        />
+
+        {/* Cab lever + Power rocker only — no Bright (the OR120 has none). */}
+        <AmpRight amp={amp} onToggle={onToggle} onTogglePower={onTogglePower} showBright={false} />
+      </div>
+    </div>
+  );
+}
+
 export function Amp(props: AmpProps) {
   return (
     <div className="amp-wing">
@@ -545,6 +636,8 @@ export function Amp(props: AmpProps) {
         <TwinFace {...props} />
       ) : props.amp.type === 'ac30' ? (
         <Ac30Face {...props} />
+      ) : props.amp.type === 'orange' ? (
+        <OrangeFace {...props} />
       ) : (
         <Clean120Face {...props} />
       )}

@@ -78,6 +78,8 @@ inline constexpr const char* ampModel    = "ampModel";
 inline constexpr const char* jcmGain     = "jcmGain";
 inline constexpr const char* jcmMaster   = "jcmMaster";
 inline constexpr const char* jcmPresence = "jcmPresence";
+// M10.3 Orange OR120 F.A.C. — a 0..1 knob the core snaps to six detents.
+inline constexpr const char* orangeFac   = "orangeFac";
 inline constexpr const char* oversampling = "oversampling";
 }  // namespace pid
 

@@ -1523,6 +1523,9 @@ test('rig state: JSON round-trips exactly and restores from localStorage', async
           gain: 0.55,
           presence: 0.35,
           master: 0.7,
+          // M10.3 Orange F.A.C. — a real AmpParams field, so it is part of the
+          // normalized shape for every voice and sits last.
+          fac: 0.45,
         },
       },
       oversampling: 8,

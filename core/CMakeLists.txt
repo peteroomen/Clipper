@@ -93,6 +93,9 @@ add_library(clipper_dsp STATIC
     src/dsp/Ac30Preamp.cpp
     src/dsp/Ac30PowerAmp.cpp
     src/dsp/Ac30Amp.cpp
+    src/dsp/OrangePreamp.cpp
+    src/dsp/OrangePowerAmp.cpp
+    src/dsp/OrangeAmp.cpp
 )
 target_include_directories(clipper_dsp PUBLIC include)
 target_link_libraries(clipper_dsp PUBLIC chowdsp_wdf)
@@ -285,6 +288,15 @@ if(NOT EMSCRIPTEN)
     # +25 %. The cathode network is already the published 50 Ω ∥ 250 µF; the shortfall is in
     # how much extra AVERAGE current the EL84 fits draw under drive, which is findings 9/10.
     clipper_add_xfail_ledger(clipper_ac30_tests)
+
+    # --- M10.3: Orange OR120 amp tests ----------------------------------------
+    add_executable(clipper_orange_tests tests/test_orange_amp.cpp)
+    target_link_libraries(clipper_orange_tests PRIVATE clipper_dsp)
+    # Shared measurement infra (aliasing metric) under tools/measure.
+    target_include_directories(clipper_orange_tests PRIVATE tools)
+    clipper_add_test_flags(clipper_orange_tests)
+    add_test(NAME clipper_orange_tests COMMAND clipper_orange_tests)
+    # No XFAIL ledger: the voice ships with zero known-bad properties.
 
     # --- M11: Player Expectations Suite ---------------------------------------
     # Tests the PLAYER'S expectations, not the circuit (docs §26): universal gear
