@@ -101,9 +101,6 @@ void Ac30PowerAmp::setOversampling(int factor) {
     };
     otHpA_ = onePoleA(kOtLfHz);
     otLpA_ = onePoleA(kOtHfHz);
-    // GZ34 demand-current envelope: asymmetric one-pole (fast attack, slow release).
-    gSagAtk_ = 1.0 - std::exp(-2.0 * M_PI * kSagAtkHz / osRate_);
-    gSagRel_ = 1.0 - std::exp(-2.0 * M_PI * kSagRelHz / osRate_);
 
     // TOP CUT corner: log map kTopCutHiHz (knob 0) -> kTopCutLoHz (knob 1), applied to
     // the SKEWED knob (knob^kTopCutSkew) so the default 0.5 is a MILD cut (docs §23).
@@ -123,8 +120,7 @@ void Ac30PowerAmp::parkState() {
     vRail_ = vRailIdle_;
     vScreen_ = vScreenIdle_;
     vk_ = vkIdle_;
-    iIdleTotal_ = 2.0 * kTubesPerSide * (iqTube_ + ig2qTube_);  // envelope floor
-    iSagEnv_ = iIdleTotal_;
+    iIdleTotal_ = 2.0 * kTubesPerSide * (iqTube_ + ig2qTube_);  // introspection / tests
     vCcUp_ = ltp_.quiescentPlate1();   // grid DC-referenced to GROUND (0), so the
     vCcDown_ = ltp_.quiescentPlate2(); // idle coupling-cap voltage = the PI plate V.
     vgUp_ = vgDown_ = 0.0;             // grid warm starts at idle (leak to ground)
@@ -151,8 +147,8 @@ void Ac30PowerAmp::solveOperatingPoint() {
     // robust where the fixed-point iteration oscillates (the cathode loop is tight).
     auto currentsAt = [&](double vk, double& ip, double& ig2, double& rail, double& scr) {
         const double iTarget = vk / kRkCathode;               // cathode current for this vk
-        const double Reff = kRsupply * (1.0 + kRectKnee * iTarget);  // GZ34 soft knee
-        rail = kVsupply - iTarget * Reff;                     // rail droop from the draw
+        // Constant Thévenin source (docs §55): GZ34 75.6 Ω + HT winding half 59 Ω.
+        rail = kVsupply - iTarget * kRsupply;                 // rail droop from the draw
         scr = rail;
         for (int k = 0; k < 40; ++k) {                        // settle the screen node (damped)
             ig2 = el34ScreenCurrent(-vk, scr, tubeEl84_);
@@ -322,47 +318,54 @@ inline float Ac30PowerAmp::processSampleOS(float xf) {
         vSec = vSec - vLp2;
     }
 
-    // 6a. Physical rail + screen + CATHODE integration (backward Euler). The plate rail
-    //     droops modestly from the near-constant class-A B+ draw (the soft-knee on the
-    //     actual cathode current); the cathode cap charges/discharges on the summed
-    //     cathode current with τ = Rk·Ck — the measured DYNAMIC BIAS SHIFT (bloom).
+    // 6. THE DYNAMIC SUPPLY (docs §55, audit finding 4). Rewritten 2026-07-31: this is
+    //    now the WHOLE sag model. The old step 6b — a demand-envelope multiplier on
+    //    vSec that was algebraically the memoryless clipper y = x/(1+k|x|) — is RETIRED
+    //    OUTRIGHT (the header's §6 records the three measurements that condemned it:
+    //    1.0 dB of gain reduction on a DEAD-CLEAN signal — a 6.02 dB step at the PI grid
+    //    came out 5.02 — only 0.82 dB of output for the 50× drive increase from 0.5 to
+    //    25 V, and a 2·f₀ envelope ripple that put 1.77× more THD at 82 Hz than at
+    //    440 Hz). Nothing replaces it downstream of the OT: sag is a supply effect,
+    //    and it now acts where a supply acts — on the rail, the screens, and the bias
+    //    the tubes themselves see.
+    //
+    //    All three nodes integrate backward-Euler from THIS sample's currents and are
+    //    read by the tubes on the NEXT one (ms time constants against a µs step — the
+    //    accurate decoupling the JCM and Twin power sections also use).
     const double iCath = static_cast<double>(kTubesPerSide) *
                          (ipUp + ipDown + ig2Up + ig2Down);
     const double iScr = static_cast<double>(kTubesPerSide) * (ig2Up + ig2Down);
-    const double Reff = kRsupply * (1.0 + kRectKnee * iCath);
-    vRail_ = (gRes_ * vRail_ + kVsupply / Reff - iCath) / (gRes_ + 1.0 / Reff);
+    //    (a) Reservoir: Cres·dV/dt = (kVsupply − V)/kRsupply − iCath. kRsupply is the
+    //        GZ34's published source impedance (75.6 Ω) plus the conducting half of
+    //        the HT secondary winding (59 Ω) and is CONSTANT — the header's §6(a)
+    //        records why the old growing "rectifier knee" was a voicing knob rather
+    //        than physics, and why the smoothing choke is NOT in this path.
+    vRail_ = (gRes_ * vRail_ + kVsupply / kRsupply - iCath) / (gRes_ + 1.0 / kRsupply);
+    //    (b) Screen node follows the sagging rail through the dropper, on its own
+    //        slower cap — and pentode gain leans on the screen, so this is leverage.
     vScreen_ = (gScr_ * vScreen_ + vRail_ / kRscreen - iScr) /
                (gScr_ + 1.0 / kRscreen);
-    // SHARED cathode node: Ck·dVk/dt + Vk/Rk = iCath  (backward Euler). Vk RISES under
-    // sustained drive as the average cathode current grows → bias cools → the bloom.
+    //    (c) SHARED cathode: Ck·dVk/dt + Vk/Rk = iCath. Vk RISES as the average cathode
+    //        current grows under sustained drive → every tube's bias COOLS → the gain
+    //        compresses, and it recovers on τ = Rk·Ck = 12.5 ms when the drive falls.
+    //        This is the AC30's bloom. In the REAL amp it is the dominant compressor —
+    //        the published measurement is a cathode moving 10.0 → 12.5 V (a 25 % colder
+    //        bias) while the same amp's B+ barely moves, because a GZ34 is the stiffest
+    //        of the valve rectifiers. In THIS model it moves the right way and only a
+    //        third as far (+8.7 % driven to absurdity), because the EL84 fits draw too
+    //        little extra AVERAGE current — measured, attributed to audit findings 9/10
+    //        and ledgered as `finding4-ac30-bias-swing-short`, NOT compensated with a
+    //        gain term here. See the header's §6 "REFUTED 1".
+    //
+    //    NO anti-denormal guard on any of the three, deliberately (Denormal.h / audit
+    //    finding 11 / ADR 006): their REST VALUES ARE NOT ZERO. Measured at idle and
+    //    again after a 20 s silent tail, 48 kHz / 4×: vRail_ = 309.4879 V, vScreen_ =
+    //    285.6742 V, vk_ = 9.5180 V. A flush at 1e-30 on a 300 V node is unreachable
+    //    code in the hottest loop in this file. Same for the PI→EL84 coupling states
+    //    vCcUp_/vCcDown_ and the Newton warm starts vgUp_/vgDown_. The measured
+    //    silent-tail cliff on this stage came entirely from the TOP CUT and OT states
+    //    above, which DO rest at zero and are flushed there. Measured — see docs §33.
     vk_ = (gCk_ * vk_ + iCath) / (gCk_ + 1.0 / kRkCathode);
-
-    // 6b. GZ34 SAG (§6). A BALANCED class-A push-pull draws a near-CONSTANT total B+
-    //     current, so its PLATE rail barely sags — the deep AC30 sag is the valve
-    //     rectifier failing to supply the DELIVERED SIGNAL CURRENT (the differential
-    //     push-pull current into the OT primary, which swells with output). We model
-    //     that as a demand-envelope COMPRESSION of the delivered output (a documented
-    //     voicing of the rectifier's peak-current limit — the rail's lost headroom
-    //     applied to the secondary, decoupled from the tube DC bias so the class-A
-    //     bloom above is preserved). Demand = idle draw + |differential current|; a
-    //     fast-attack / slow-release envelope drives the compression, which recovers
-    //     on the release RC (the audible bloom → squash → recover).
-    const double iDemand = iIdleTotal_ +
-        static_cast<double>(kTubesPerSide) * std::fabs(ipUp - ipDown);
-    const double aEnv = (iDemand > iSagEnv_) ? gSagAtk_ : gSagRel_;
-    // NO anti-denormal guard here, deliberately (Denormal.h / audit finding 11). This
-    // is a recursive accumulator, but its REST VALUE IS NOT ZERO: with no signal
-    // iDemand == iIdleTotal_, a class-A idle draw of tens of milliamps, so iSagEnv_
-    // relaxes onto iIdleTotal_ and can never approach the subnormal range. Same for
-    // vRail_, vScreen_ and vk_ below (a B+ rail, a screen node and a cathode node, all
-    // parked at hundreds of volts / milliamps by the DC operating point) and for the
-    // PI→EL84 coupling states vCcUp_/vCcDown_ and the Newton warm starts
-    // vgUp_/vgDown_. A flush at 1e-30 on a 300 V node is unreachable code, and the
-    // measured 1.29x silent-tail cliff on this stage came entirely from the TOP CUT and
-    // OT states above, which do rest at zero. Measured, not assumed — see docs §33.
-    iSagEnv_ += aEnv * (iDemand - iSagEnv_);
-    const double sagComp = 1.0 / (1.0 + kSagCompGain * (iSagEnv_ - iIdleTotal_));
-    vSec *= sagComp;
 
     const double outNorm = vSec / kFullScaleSecV;
     lastOutPeak_ = std::max(lastOutPeak_, std::fabs(outNorm));

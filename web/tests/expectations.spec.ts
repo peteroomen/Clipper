@@ -45,6 +45,19 @@ const DIRT_PEDALS = [
 //     out at 31 W — an OWNER-ACCEPTED level change (RAT/ADR-008 precedent: honest
 //     level, un-compensated; whole-lineup level staging is its own future slice),
 //     which is why this window was re-centred rather than the twin re-gained.
+//     RE-MEASURED 2026-07-31 (docs §55, the AC30 dynamic supply): clean120 −28.2,
+//     jcm800 −26.2, twin −42.8, ac30 −29.8 dBFS. Three of four are where they were;
+//     the AC30 moved −9.2 dB, of which docs §55.5c attributes −3.4 to this slice
+//     (kFullScaleSecV 12.2 → 18.733, re-derived on the §42.6 cranked-swing probe once
+//     the memoryless output saturator stopped flattening the swing) and the rest to
+//     the recorded figure having rotted, exactly as the native suite's ac30 row had
+//     (recorded +1.6, pre-slice code measures −4.09).
+//     DECISION — the window is NOT re-centred, and that is deliberate rather than
+//     lazy (the §42 precedent is to re-centre only when the measurement has left the
+//     window or the guard has lost its teeth). −29.8 sits 21.2 dB above the floor and
+//     18.2 dB below the ceiling, i.e. mid-range for the four voices this one window
+//     covers, and it is the LOUD end that this guard exists to catch. Re-centring on
+//     one voice's move would tighten it around a spread that has not changed.
 // Windows are the measured spread ± ~8 dB — the next "no balls" or
 // "blows the mix apart" drift fails loudly.
 const PEDAL_RMS_DB = { lo: -32, hi: -4 };

@@ -407,8 +407,17 @@ std::vector<Gear> allGear() {
     //   comfortably inside the 9..29 §52 opened, so it is left alone)
     //   clean120 −6.0   jcm800 −2.5 (was +1.7 pre-§51: the re-derived GAIN taper
     //   delivers 4.1 dB less drive at the 0.5 default — docs §51)   twin −13.8
-    //   ac30 +1.6 (0.4 opening volume; see docs §23 second amendment — the AC30
-    //   gain-structure fix moved it +13.3 dB)
+    //   ac30 −7.5 (0.4 opening volume). RE-BASELINED 2026-07-31 (docs §55, the dynamic
+    //   supply). Two things to know before reading the move as a loss. (1) The
+    //   previously-recorded "+1.6" had ROTTED: the pre-§55 code measures −4.1 here, so
+    //   the slice's own contribution is −3.4 dB, not −9.1. (2) That −3.4 is almost
+    //   entirely the §42.6 re-normalization (kFullScaleSecV 12.2 → 18.733 = −3.72 dB),
+    //   and it lands ONLY on the clean end of the knob: at VOLUME 0.70 the same probe
+    //   moves +13.64 → +13.36, i.e. 0.28 dB. The amp did not get quieter, it got a
+    //   WIDER knob — which is the same fact the drive sweep reports as 0.82 → 2.37 dB
+    //   of dynamic range. Measured A4 delta vs VOLUME, pre → post:
+    //     0.30  −11.25 → −14.87   0.40  −4.09 → −7.46
+    //     0.50   +2.53 →  −0.34   0.70 +13.64 → +13.36
     auto window = [&](const char* name, double lo, double hi) {
         for (auto& g : gear)
             if (g.name == name) { g.lvlDeltaLo = lo; g.lvlDeltaHi = hi; }
@@ -492,7 +501,11 @@ std::vector<Gear> allGear() {
     window("clean120", -17.0, 3.0);
     window("jcm800", -10.0, 10.0);
     window("twin", -25.0, -5.0);
-    window("ac30", -8.0, 12.0);
+    window("ac30", -18.0, 2.0);  // §55: re-centred on the measured −7.5 (was −8..+12
+                                 // around a stale +1.6 that the pre-slice code already
+                                 // measured at −4.1). The file's convention is the
+                                 // measurement ± ~10 dB; the old window left 0.5 dB of
+                                 // margin, which is not a guard.
     return gear;
 }
 
@@ -673,7 +686,10 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //                GAIN drive reaching it at the 0.5 default)
 //                twin −240→−34.5→−16.3   ac30 −240→−17.8→−9.7 (docs §23 second
 //                amendment: the AC30 volume travel moved up ~12 dB when the
-//                starved phase inverter was fixed — the knob reaches the EL84s now)
+//                starved phase inverter was fixed — the knob reaches the EL84s now.
+//                §55 leaves the TRAVEL essentially alone: the dynamic supply costs the
+//                clean end ~3.4 dB and the driven end 0.28 dB, so the knob's authority
+//                grew rather than moved.)
 //   TONE, pedals (HF harmonic energy dB, dark→bright, gain maxed; bar ≥ +6):
 //                rat filter −19.8→−10.6 (inverted knob)   sd1 −16.0→−4.2
 //                ts −17.4→−6.2   muff −12.8→−4.1 (§53: was −5.0→+10.1 — the clip
@@ -831,10 +847,12 @@ void testKnobMonotonicity(const std::vector<Gear>& gear) {
 // Measured Δ RMS at defaults (2026-07, 48 kHz, pluck peak −20 dBFS / RMS −33.5):
 //   rat +18.6   sd1 +15.6   ts +13.1   muff +27.7 (§53: was +29.4; the sustain wall lifts a
 //   DECAYING pluck's RMS by design — a fuzz that did NOT would be the bug)
-//   clean120 −6.0   jcm800 −2.5 (docs §51)   twin −13.8   ac30 +1.6 (0.4 opening volume —
-//   +13.3 dB vs the pre-§23-second-amendment −11.7: the Thirty's opening volume
-//   now sits at its edge-of-breakup sweet spot instead of 15 dB below it, which
-//   is exactly what a real AC30 at "4" does; it now sits level with the JCM)
+//   clean120 −6.0   jcm800 −2.5 (docs §51)   twin −18.8   ac30 −7.5 (0.4 opening volume;
+//   docs §55 re-baselined this — see the note in allGear(). The §55 supply slice moved it
+//   −3.4 dB, all of it on the CLEAN end of the knob: at VOLUME 0.70 the same probe moves
+//   0.28 dB. The recorded "+1.6" had rotted — the pre-§55 code measures −4.1 — and the
+//   twin's recorded "−13.8" has rotted the same way to −18.8, which is NOT this slice's
+//   doing and is left for whoever next touches the Twin.)
 // One symmetric global bound cannot hold that honest spread, so the windows are
 // PER GEAR (measured ± ~10 dB, set in allGear()) — tight enough that the next
 // "no balls" (−20 dB drift) or blowout still fails loudly.
