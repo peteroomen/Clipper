@@ -40,9 +40,11 @@ constexpr int   kCabPrepareSpinLimit = 1000000;
 constexpr int   kJcmOversampling = 4;
 constexpr int   kTwinOversampling = 4;  // matches the C ABI (docs §20: 4× ships)
 constexpr int   kAc30Oversampling = 4;  // matches the C ABI (docs §23: 4× ships)
+constexpr int   kOrangeOversampling = 4;  // matches the C ABI (docs §57: 4× ships)
 constexpr int   kAmpJcm800 = 1;  // Params::ampModel value for the JCM
 constexpr int   kAmpTwin = 2;    // Params::ampModel value for the Twin
 constexpr int   kAmpAc30 = 3;    // Params::ampModel value for the AC30
+constexpr int   kAmpOrange = 4;  // Params::ampModel value for the Orange OR120
 }  // namespace
 
 float trimKnobToGain(float knob01) {
@@ -158,6 +160,18 @@ void ClipperEngine::applyParamsToModels() {
     ac30_.setParameter(X::PARAM_TREBLE, p.treble);
     ac30_.setParameter(X::PARAM_TOPCUT, p.jcmPresence);  // presence slot reused as TOP CUT
     ac30_.setParameter(X::PARAM_REVERB, p.reverb);
+
+    // Orange OR120 (M10.3): reuses volume + bass/treble + reverb from the shared
+    // fields and REUSES the presence field as its HF DRIVE (docs §57). It has NO
+    // mid control (a James stack is bass + treble), so 'middle' never routes here,
+    // and NO master (VOLUME is the whole amp). Its one own field is the F.A.C.
+    using O = clipper::dsp::OrangeAmp;
+    orange_.setParameter(O::PARAM_VOLUME, p.volume);
+    orange_.setParameter(O::PARAM_BASS, p.bass);
+    orange_.setParameter(O::PARAM_TREBLE, p.treble);
+    orange_.setParameter(O::PARAM_FAC, p.orangeFac);
+    orange_.setParameter(O::PARAM_HF_DRIVE, p.jcmPresence);  // presence slot = HF DRIVE
+    orange_.setParameter(O::PARAM_REVERB, p.reverb);
 }
 
 void ClipperEngine::setParams(const Params& p) {
@@ -196,6 +210,7 @@ bool ClipperEngine::chainEditPending() const {
 
 void ClipperEngine::updateParams(const Params& p) {
     using clipper::dsp::Ac30Amp;
+    using clipper::dsp::OrangeAmp;
     using clipper::dsp::AmpModel;
     using clipper::dsp::GoldModel;
     using clipper::dsp::Jcm800Amp;
@@ -230,6 +245,7 @@ void ClipperEngine::updateParams(const Params& p) {
         amp_.setParameter(AmpModel::PARAM_VOLUME, p.volume);
         twin_.setParameter(TwinAmp::PARAM_VOLUME, p.volume);
         ac30_.setParameter(Ac30Amp::PARAM_VOLUME, p.volume);
+        orange_.setParameter(OrangeAmp::PARAM_VOLUME, p.volume);
     }
     // bass/treble are SHARED across ALL FOUR amp voices; middle feeds all but the AC30
     // (top-boost has no mid) — update every tone stack so the inactive voices are
@@ -239,6 +255,7 @@ void ClipperEngine::updateParams(const Params& p) {
         jcm_.setParameter(Jcm800Amp::PARAM_BASS, p.bass);
         twin_.setParameter(TwinAmp::PARAM_BASS, p.bass);
         ac30_.setParameter(Ac30Amp::PARAM_BASS, p.bass);
+        orange_.setParameter(OrangeAmp::PARAM_BASS, p.bass);
     }
     if (p.middle != o.middle) {
         amp_.setParameter(AmpModel::PARAM_MIDDLE, p.middle);
@@ -251,6 +268,7 @@ void ClipperEngine::updateParams(const Params& p) {
         jcm_.setParameter(Jcm800Amp::PARAM_TREBLE, p.treble);
         twin_.setParameter(TwinAmp::PARAM_TREBLE, p.treble);
         ac30_.setParameter(Ac30Amp::PARAM_TREBLE, p.treble);
+        orange_.setParameter(OrangeAmp::PARAM_TREBLE, p.treble);
     }
     // BRIGHT feeds clean120 + twin.
     if (p.bright != o.bright) {
@@ -278,6 +296,7 @@ void ClipperEngine::updateParams(const Params& p) {
         jcm_.setParameter(Jcm800Amp::PARAM_REVERB, p.reverb);
         twin_.setParameter(TwinAmp::PARAM_REVERB, p.reverb);
         ac30_.setParameter(Ac30Amp::PARAM_REVERB, p.reverb);
+        orange_.setParameter(OrangeAmp::PARAM_REVERB, p.reverb);
     }
 
     // JCM800-only knobs. The presence field is SHARED: it is the JCM's presence AND
@@ -287,7 +306,12 @@ void ClipperEngine::updateParams(const Params& p) {
     if (p.jcmPresence != o.jcmPresence) {
         jcm_.setParameter(Jcm800Amp::PARAM_PRESENCE, p.jcmPresence);
         ac30_.setParameter(Ac30Amp::PARAM_TOPCUT, p.jcmPresence);  // reused as TOP CUT
+        orange_.setParameter(OrangeAmp::PARAM_HF_DRIVE, p.jcmPresence);  // …and HF DRIVE
     }
+
+    // M10.3 Orange-only knob: the F.A.C. rotary.
+    if (p.orangeFac != o.orangeFac)
+        orange_.setParameter(OrangeAmp::PARAM_FAC, p.orangeFac);
 
     // Oversampling change: reset only the pedals' OS filter state (like the web
     // worklet's per-node setOversampling), not a full re-prepare.
@@ -360,8 +384,11 @@ void ClipperEngine::loadCurrentCabIntoPair(int pair) {
         // low mantissa bits of an IR the identical-core test renders bit-exactly.
         clipper::dsp::peakNormalizeIR(ir, sampleRate_);
     } else {
-        ir = cabSource_ == CAB_BRIT412 ? clipper::dsp::generateBrit4x12IR(sampleRate_)
-                                       : clipper::dsp::generateDefaultCab2x12IR(sampleRate_);
+        // The native CabChoice ids and the C ABI's built-in ids diverge at 2 (see
+        // the enum's comment) — mapped HERE, in code, rather than by index maths.
+        ir = cabSource_ == CAB_BRIT412   ? clipper::dsp::generateBrit4x12IR(sampleRate_)
+           : cabSource_ == CAB_ORANGE412 ? clipper::dsp::generateOrange4x12IR(sampleRate_)
+                                         : clipper::dsp::generateDefaultCab2x12IR(sampleRate_);
     }
     if (ir.empty()) return;
     const int len = static_cast<int>(ir.size());
@@ -372,7 +399,9 @@ void ClipperEngine::loadCurrentCabIntoPair(int pair) {
 }
 
 bool ClipperEngine::prepareCabBuiltin(int which) {
-    const int w = (which == CAB_BRIT412) ? CAB_BRIT412 : CAB_CLEAN212;
+    const int w = (which == CAB_BRIT412)     ? CAB_BRIT412
+                : (which == CAB_ORANGE412)  ? CAB_ORANGE412
+                                            : CAB_CLEAN212;
     if (!beginCabPrepare()) return false;
     cabSource_ = w;
     loadCurrentCabIntoPair(activeCabPair_.load(std::memory_order_relaxed) ^ 1);
@@ -471,6 +500,8 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     // the pedal OS selector — matches the C ABI.
     ac30_.setOversampling(kAc30Oversampling);
     ac30_.prepare(sampleRate_, maxBlock_);
+    orange_.setOversampling(kOrangeOversampling);
+    orange_.prepare(sampleRate_, maxBlock_);
 
     setPedalOversampling(params_.oversampling);
 
@@ -568,6 +599,10 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
             // The AC30 is a mono combo head → dual-mono into the identical cab pair.
             ac30_.process(cur, outL, numFrames);
             for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
+        } else if (p.ampModel == kAmpOrange) {
+            // The OR120 is a mono HEAD → dual-mono into the identical cab pair.
+            orange_.process(cur, outL, numFrames);
+            for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
         } else {
             amp_.processStereo(cur, outL, outR, numFrames);
         }
@@ -655,6 +690,7 @@ int ClipperEngine::latencySamples() const {
     if (p.ampOn && p.ampModel == kAmpJcm800) n += jcm_.latencySamples();
     if (p.ampOn && p.ampModel == kAmpTwin) n += twin_.latencySamples();
     if (p.ampOn && p.ampModel == kAmpAc30) n += ac30_.latencySamples();
+    if (p.ampOn && p.ampModel == kAmpOrange) n += orange_.latencySamples();
     if (p.ampOn && p.cab) n += kCabPartition;      // cab adds one partition (128)
     n += limiter_.latencySamples();                // lookahead (64)
     return n;

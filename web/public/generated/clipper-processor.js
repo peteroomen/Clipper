@@ -203,10 +203,13 @@ class ClipperProcessor extends AudioWorkletProcessor {
     this._pending = null; // { nodes, removed } waiting for the fade-out zero
     // Cab expansion: a pending cab swap (built-in select or custom-IR load) that
     // is applied at the SAME declick fade-out zero as a chain edit (M6.4), so the
-    // IR change is click-free. { builtin } or { irPtr, irLen }.
+    // IR change is click-free. { builtin } or { irPtr, irLen }. Built-in indices
+    // mirror CabBuiltin in clipper_c_api.cpp: 0 = Clean 2x12, 1 = Brit 4x12,
+    // 2 = Orange 4x12 (M10.3).
     this._pendingCab = null;
-    // M9.4/M10.1/v1.1: a pending amp-model swap (0 = Clean 120, 1 = JCM800,
-    // 2 = Twin, 3 = AC30), applied at the SAME declick fade-out zero, so switching
+    // M9.4/M10.1/v1.1/M10.3: a pending amp-model swap (0 = Clean 120, 1 = JCM800,
+    // 2 = Twin, 3 = AC30, 4 = Orange OR120), applied at the SAME declick fade-out
+    // zero, so switching
     // amps mid-signal is click-free. The index is passed through opaquely to
     // _amp_set_model.
     this._pendingAmpModel = null;

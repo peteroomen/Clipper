@@ -84,6 +84,7 @@
 #include <vector>
 
 #include "clipper/dsp/Ac30Amp.h"
+#include "clipper/dsp/OrangeAmp.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
@@ -127,7 +128,15 @@ enum CabChoice : int {
     CAB_CLEAN212 = 0,  // the procedural closed-back 2x12 (generateDefaultCab2x12IR)
     CAB_BRIT412  = 1,  // the greenback-ish 4x12 (generateBrit4x12IR)
     CAB_CUSTOM   = 2,  // a user .wav IR, decoded + resampled by the shell
-    CAB_CHOICE_COUNT = 3,
+    // M10.3: the Orange 4x12 (generateOrange4x12IR) is APPENDED at 3 and therefore
+    // does NOT match the C ABI's built-in index for it (which is 2 — the ABI has no
+    // 'custom' slot in that enum). That divergence is DELIBERATE: this value is
+    // stored in the APVTS `cabModel` choice parameter and in saved sessions, and
+    // inserting a new cab at 2 would silently turn every session that says "Custom
+    // IR" into "Orange 4x12". The engine maps the two spaces in code
+    // (loadCurrentCabIntoPair), never by assuming they are the same integer.
+    CAB_ORANGE412 = 3,
+    CAB_CHOICE_COUNT = 4,
 };
 
 // The short, stable key each type serializes as in the APVTS chain-order state
@@ -196,7 +205,8 @@ struct Params {
     int   chain[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0};
     int   chainLength = 2;
 
-    // Amp voice (M9.4/M10.1/M10.2): 0 = Clean 120, 1 = JCM800, 2 = Twin, 3 = AC30.
+    // Amp voice (M9.4/M10.1/M10.2/M10.3): 0 = Clean 120, 1 = JCM800, 2 = Twin,
+    // 3 = AC30, 4 = Orange OR120.
     // Selects which head process() drives; all are always kept current so a live
     // switch is instant.
     int   ampModel = 0;
@@ -223,6 +233,13 @@ struct Params {
     float jcmGain = 0.5f;
     float jcmMaster = 0.4f;
     float jcmPresence = 0.5f;
+
+    // M10.3 Orange OR120: it reuses volume/bass/treble/reverb from the shared
+    // fields and REUSES jcmPresence as its HF DRIVE (both are power-amp HF
+    // controls in a feedback loop — the same slot-reuse the AC30 makes for TOP
+    // CUT). The ONE thing it needs of its own is the F.A.C. rotary: a 0..1 knob
+    // the core snaps to the nearest of six detents.
+    float orangeFac = 0.2f;
 
     // Nonlinear-stage oversampling for the dirt pedals (1/2/4/8, default 4).
     int oversampling = 4;
@@ -291,7 +308,7 @@ public:
     // arms, because activating a pair that was not prepared would splice in the
     // previous IR plus its stale convolution tail (the C ABI's invariant).
     //
-    // `which` is CAB_CLEAN212 / CAB_BRIT412. The custom form takes MONO samples;
+    // `which` is CAB_CLEAN212 / CAB_BRIT412 / CAB_ORANGE412. The custom form takes MONO samples;
     // the engine peak-normalizes them itself (M6.6 — the engine never trusts a
     // file's level), exactly like amp_prepare_cab_custom.
     bool prepareCabBuiltin(int which);
@@ -377,6 +394,7 @@ private:
     clipper::dsp::Jcm800Amp jcm_;     // JCM800 2204 (mono head, M9.4)
     clipper::dsp::TwinAmp twin_;      // Fender blackface Twin (mono combo, M10.1)
     clipper::dsp::Ac30Amp ac30_;      // Vox AC30 top boost (mono combo, M10.2)
+    clipper::dsp::OrangeAmp orange_;  // Orange OR120 Overdrive (mono head, M10.3)
     // THE DOUBLE-BUFFERED CAB. cab_[pair][0] is the left side, cab_[pair][1] the
     // right. Exactly one pair is live at a time; the message thread only ever
     // touches the other one. Both are plain members, so the "swap" is an index and

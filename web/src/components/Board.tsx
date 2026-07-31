@@ -72,10 +72,12 @@ const AMP_TYPE_LABEL: Record<string, string> = {
   jcm800: 'JCM800 (Marshall style)',
   twin: 'Twin Sixty-Five (Fender style)',
   ac30: 'AC30 (Vox top boost)',
+  orange: 'Overdrive 120 (Orange style)',
 };
-const CAB_LABEL: Record<'clean212' | 'brit412', string> = {
+const CAB_LABEL: Record<'clean212' | 'brit412' | 'orange412', string> = {
   clean212: 'Clean 2×12 (JC platform)',
   brit412: 'Brit 4×12 (Marshall-style)',
+  orange412: 'Orange 4×12 (barky, big bottom)',
 };
 
 interface Segment {

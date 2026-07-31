@@ -110,6 +110,9 @@ EMCC_ARGS=(
     "$CORE_DIR/src/dsp/Ac30Preamp.cpp"
     "$CORE_DIR/src/dsp/Ac30PowerAmp.cpp"
     "$CORE_DIR/src/dsp/Ac30Amp.cpp"
+    "$CORE_DIR/src/dsp/OrangePreamp.cpp"
+    "$CORE_DIR/src/dsp/OrangePowerAmp.cpp"
+    "$CORE_DIR/src/dsp/OrangeAmp.cpp"
     -I "$CORE_DIR/include"
     -isystem "$WDF_INC"
     -O3

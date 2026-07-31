@@ -9,9 +9,14 @@ namespace {
 // The cab/IR picker's choice parameter. Index order == clipper::native::CabChoice
 // == the C ABI's built-in indices == web/src/rig.ts CabChoice, so the same integer
 // means the same cab everywhere.
+// NOTE the ORDER: "Orange 4x12" is APPENDED last (index 3), not inserted next to
+// the other built-ins, because this array indexes a stored APVTS choice parameter
+// and inserting would re-point every saved session that says "Custom IR".
+// clipper::native::CabChoice carries the same reasoning.
 const juce::StringArray kCabChoices{juce::String::fromUTF8("Clean 2\xc3\x97" "12"),
                                     juce::String::fromUTF8("Brit 4\xc3\x97" "12"),
-                                    "Custom IR"};
+                                    "Custom IR",
+                                    juce::String::fromUTF8("Orange 4\xc3\x97" "12")};
 // The APVTS state child holding the custom IR's file path.
 const juce::Identifier kCabNode{"cab"};
 const juce::Identifier kCabCustomPath{"customIr"};
@@ -22,7 +27,8 @@ constexpr int kOversampleFactors[] = {1, 2, 4, 8};
 const juce::StringArray kChorusChoices{"Off", "Chorus", "Vibrato"};
 // M9.4/M10.1/M10.2 amp voice: choice index 0 == Clean 120, 1 == JCM800, 2 == Twin,
 // 3 == AC30 (matches Params::ampModel).
-const juce::StringArray kAmpModelChoices{"Clean 120", "JCM800", "Twin Sixty-Five", "AC30"};
+const juce::StringArray kAmpModelChoices{"Clean 120", "JCM800", "Twin Sixty-Five",
+                                        "AC30", "Overdrive 120"};
 
 // A plain 0..1 knob parameter (the core owns the taper law, so the host sees a
 // linear normalized position — identical to the web knobs).
@@ -157,6 +163,10 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::jcmMaster, "JCM Master", 0.4f));
     layout.add(knob(pid::jcmPresence, "JCM Presence", 0.5f));
 
+    // M10.3 Orange OR120-only knob. Default 0.2 == F.A.C. position 2 of 6, the same
+    // opening position the web's AMP_KNOB_DEFAULTS uses.
+    layout.add(knob(pid::orangeFac, "Orange F.A.C.", 0.2f));
+
     layout.add(std::make_unique<Choice>(juce::ParameterID{pid::chorusMode, 1},
                                         "Chorus Mode", kChorusChoices, 0));
     layout.add(knob(pid::chorusSpeed, "Chorus Speed", 0.3f));
@@ -278,7 +288,8 @@ bool ClipperAudioProcessor::loadCustomIrFile(const juce::File& file) {
 
 juce::String ClipperAudioProcessor::cabLabel() const {
     switch (cabChoice()) {
-        case CAB_BRIT412: return kCabChoices[CAB_BRIT412];
+        case CAB_BRIT412:   return kCabChoices[CAB_BRIT412];
+        case CAB_ORANGE412: return kCabChoices[CAB_ORANGE412];
         case CAB_CUSTOM:  return customIrLabel_.isNotEmpty() ? customIrLabel_
                                                              : juce::String("Custom IR");
         default:          return kCabChoices[CAB_CLEAN212];
@@ -399,6 +410,7 @@ Params ClipperAudioProcessor::snapshotParams() const {
     }
     p.ampOn = f(pid::ampOn) >= 0.5f;
     p.ampModel = static_cast<int>(f(pid::ampModel));  // choice index == model id
+    p.orangeFac = f(pid::orangeFac);
     p.volume = f(pid::volume);
     p.bass = f(pid::bass);
     p.middle = f(pid::middle);

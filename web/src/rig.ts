@@ -47,28 +47,44 @@ export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'phaser' | 'tun
 // voice): VOLUME is the overdrive (crank it for the class-A grind), bass/treble drive
 // the top-boost stack, and the shared 'presence' param (id 11) is REUSED as the AC30's
 // top CUT control. Reuses existing knobs (no new AmpParams).
-export type AmpType = 'clean120' | 'jcm800' | 'twin' | 'ac30';
+// M10.3 adds 'orange' — an early-70s Orange OR120 "Overdrive" head (the
+// MID-FORWARD voice): a James/passive-Baxandall stack with BASS + TREBLE and no
+// mid, the six-position F.A.C. rotary (its own param, `fac`), NO master volume
+// (VOLUME is the whole amp — the power section is the overdrive), and the shared
+// 'presence' param (id 11) REUSED as its HF DRIVE. Docs §57.
+export type AmpType = 'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange';
 
 // Cab expansion: which speaker cabinet IR the amp runs. 'clean212' is the
 // built-in Clean 2x12 (the JC-120 platform), 'brit412' the darker/thicker Brit
 // 4x12 (pairs with a Marshall-style amp), and 'custom' a user-uploaded IR (its
 // samples live in a SEPARATE localStorage key, never in the rig/preset JSON —
 // see cab.ts; the rig only records the choice + a short label).
-export type CabChoice = 'clean212' | 'brit412' | 'custom';
+export type CabChoice = 'clean212' | 'brit412' | 'orange412' | 'custom';
 // The two BUILT-IN cabs offered in the amp menu (and the ones the assistant may
 // switch between). 'custom' is reached only via Upload IR, never listed here.
-export const AVAILABLE_CABS: readonly ('clean212' | 'brit412')[] = ['clean212', 'brit412'];
+export const AVAILABLE_CABS: readonly ('clean212' | 'brit412' | 'orange412')[] = [
+  'clean212',
+  'brit412',
+  'orange412',
+];
 // The worklet's built-in cab index (mirrors CabBuiltin in clipper_c_api.cpp).
-export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412', number> = {
+export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412' | 'orange412', number> = {
   clean212: 0,
   brit412: 1,
+  orange412: 2,
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
 export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'phaser', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
-export const AVAILABLE_AMP_TYPES: readonly AmpType[] = ['clean120', 'jcm800', 'twin', 'ac30'];
+export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
+  'clean120',
+  'jcm800',
+  'twin',
+  'ac30',
+  'orange',
+];
 
 export type ParamName = 'distortion' | 'filter' | 'level';
 export type AmpParamName =
@@ -85,7 +101,9 @@ export type AmpParamName =
   // M9.4 JCM800-only knobs (ignored by clean120).
   | 'gain'
   | 'presence'
-  | 'master';
+  | 'master'
+  // M10.3 Orange-only knob (ignored by every other voice).
+  | 'fac';
 
 export interface PedalParams {
   distortion: number; // 0..1 knob position
@@ -139,6 +157,9 @@ export interface AmpParams {
   gain: number; // 0..1 JCM preamp GAIN (drive)
   presence: number; // 0..1 JCM power-amp presence
   master: number; // 0..1 JCM MASTER volume
+  // M10.3 Orange OR120 F.A.C.: a 0..1 knob that the core rounds to one of SIX
+  // detents. Its own param rather than a reused slot — see params.ts.
+  fac: number;
 }
 
 export interface AmpState {
@@ -260,6 +281,9 @@ export const AMP_KNOB_DEFAULTS: AmpParams = {
   gain: 0.5,
   presence: 0.5,
   master: 0.4,
+  // M10.3: F.A.C. position 2 of 6 (knob 0.2) — the fat, usable setting an OR120
+  // spends most of its life on; clicking right thins it out.
+  fac: 0.2,
 };
 
 // Default input trim: unity (0 dB).
@@ -391,7 +415,9 @@ export function normalizeRig(raw: unknown): RigState {
   // custom IR data actually EXISTS is resolved at load time (App falls back to
   // clean212 with a note if it's missing) — the rig JSON alone can't know.
   const cabModel: CabChoice =
-    a.cabModel === 'brit412' || a.cabModel === 'custom' ? a.cabModel : 'clean212';
+    a.cabModel === 'brit412' || a.cabModel === 'orange412' || a.cabModel === 'custom'
+      ? a.cabModel
+      : 'clean212';
   const customCabLabel =
     typeof a.customCabLabel === 'string' ? a.customCabLabel : undefined;
 
@@ -402,6 +428,7 @@ export function normalizeRig(raw: unknown): RigState {
     a.type === 'jcm800' ? 'jcm800'
     : a.type === 'twin' ? 'twin'
     : a.type === 'ac30' ? 'ac30'
+    : a.type === 'orange' ? 'orange'
     : 'clean120';
 
   return {
@@ -432,6 +459,7 @@ export function normalizeRig(raw: unknown): RigState {
         gain: clamp01(ar.gain, d.amp.params.gain),
         presence: clamp01(ar.presence, d.amp.params.presence),
         master: clamp01(ar.master, d.amp.params.master),
+        fac: clamp01(ar.fac, d.amp.params.fac),
       },
     },
     oversampling,
