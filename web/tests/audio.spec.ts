@@ -526,6 +526,141 @@ test('gold worklet: transparent at min gain, harmonics + touch response when pus
   expect(dynamics).toBeGreaterThan(2.5);
 });
 
+// M13.1: the "Squash" OTA compressor, proved THROUGH THE WORKLET rather than
+// only in the core. Two properties, both player-observable and both specific to a
+// FEED-BACK compressor (docs §59):
+//
+//   (a) It COMPRESSES: a 26.02 dB step in picking strength (an oscillator through
+//       a GainNode, so the step is exact by construction) comes out as a couple of
+//       dB. Nothing else in the lineup does this.
+//   (b) SUSTAIN is NOT a threshold: raising it 0.30 -> 1.00 raises the QUIET-note
+//       gain a lot while leaving the LOUD-note output essentially where it was,
+//       because the threshold is a fixed junction drop the knob is not in front of.
+//
+// This is also the parity check that the worklet routes the 'comp' type to the
+// _comp_* C-ABI prefix and hands slot 0/2 through as SUSTAIN/LEVEL.
+test('comp worklet: compresses 26 dB of input to a few dB, and SUSTAIN is not a threshold', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    // Long enough for the ~1.5 s release loop to have settled well before we look.
+    const seconds = 2.0;
+
+    async function render(sustain: number, amp: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      let ctx: OfflineAudioContext | null = null;
+      for (let attempt = 0; attempt < 4 && !ctx; attempt++) {
+        const c = new OfflineAudioContext(1, length, sampleRate);
+        try {
+          await Promise.race([
+            c.audioWorklet.addModule('/generated/clipper-processor.js'),
+            new Promise((_r, rej) => setTimeout(() => rej(new Error('addModule timeout')), 6000)),
+          ]);
+          ctx = c;
+        } catch {
+          /* fresh context, retry */
+        }
+      }
+      if (!ctx) throw new Error('addModule failed after retries');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 6000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') { clearTimeout(t); resolve(); }
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true }); // pure pedal proof
+        node.port.postMessage({
+          type: 'chain',
+          pedals: [{ id: 'c', type: 'comp', engaged: true, params: { distortion: sustain, filter: 0.5, level: 1.0 } }],
+        });
+        node.port.postMessage({ type: 'oversampling', factor: 4 });
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: amp });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+
+    // Measure the SETTLED tail only — the last 0.4 s, well past the attack and
+    // past enough of the release for the loop to have parked.
+    function tailRms(data: Float32Array, sr: number): number {
+      const start = Math.max(0, data.length - Math.floor(sr * 0.4));
+      let sum = 0, n = 0;
+      for (let i = start; i < data.length; i++) { sum += data[i] * data[i]; n++; }
+      return Math.sqrt(sum / n);
+    }
+
+    const soft = 0.02;  // a very light touch
+    const loud = 0.4;   // 20x = 26.02 dB harder, BY CONSTRUCTION (an oscillator
+                        // through a GainNode) — no bypass render is needed to
+                        // establish the input step, and not spending two contexts
+                        // on one matters: Chromium's OfflineAudioContext starts
+                        // returning SILENCE once enough contexts exist in one
+                        // browser process (playwright.config.ts says so, and this
+                        // spec was observed tripping it at six). FOUR renders.
+    return {
+      midSoft: tailRms(await render(0.5, soft), sampleRate),
+      midLoud: tailRms(await render(0.5, loud), sampleRate),
+      maxSoft: tailRms(await render(1.0, soft), sampleRate),
+      maxLoud: tailRms(await render(1.0, loud), sampleRate),
+    };
+  });
+
+  const db = (x: number) => 20 * Math.log10(Math.max(x, 1e-30));
+
+  // (a) HARNESS GATE, checked before any DSP claim: every render must have
+  // produced audio. Chromium's known silent-render flake would otherwise surface
+  // as a -563 dB "compression ratio", which reads like a DSP result and is not
+  // one. Failing here says plainly that the browser, not the pedal, misbehaved.
+  for (const v of [result.midSoft, result.midLoud, result.maxSoft, result.maxLoud])
+    expect(v, 'a render came back silent (Chromium OfflineAudioContext flake)').toBeGreaterThan(1e-6);
+
+  // (b) The input step is 26.02 dB by construction. ENGAGED, it comes out as a
+  // handful of dB: measured 5.2 dB at SUSTAIN 0.50 and 0.4 dB at 1.00 — a
+  // near-limiter, which is what a feed-back compressor with a FIXED junction
+  // threshold is, and nothing else in this lineup does it.
+  const inputSpan = 20 * Math.log10(0.4 / 0.02);  // 26.02
+  const midSpan = db(result.midLoud) - db(result.midSoft);
+  const maxSpan = db(result.maxLoud) - db(result.maxSoft);
+  expect(midSpan).toBeLessThan(inputSpan - 12.0);
+  expect(maxSpan).toBeLessThan(midSpan);
+  expect(maxSpan).toBeLessThan(4.0);
+
+  // (c) SUSTAIN IS NOT A THRESHOLD. Turning it up from 0.50 to 1.00 lifts the
+  // QUIET note a lot (it is buying gain in front of the detector) while the LOUD
+  // note lands in essentially the same place (the detector's turn-on has not
+  // moved, because it is a base-emitter drop and the knob is not in front of it).
+  //
+  // The bar is 6 dB, and the reason it is not the core suite's ~15.8 dB is worth
+  // knowing: this render goes through the WHOLE worklet, so the rig's output
+  // LIMITER is in the path and it takes back some of the lift on the quiet note
+  // (which at SUSTAIN 1.0 is pushed to nearly full scale). Measured here: quiet
+  // +9.82 dB, loud +0.3 dB. A threshold-style reimplementation would move the
+  // loud column with the knob and collapse the ratio clause below.
+  const quietLift = db(result.maxSoft) - db(result.midSoft);
+  const loudLift = db(result.maxLoud) - db(result.midLoud);
+  console.log(`[comp] quiet lift ${quietLift.toFixed(2)} dB, loud lift ${loudLift.toFixed(2)} dB, ` +
+              `spans mid ${midSpan.toFixed(2)} / max ${maxSpan.toFixed(2)} dB of ${inputSpan.toFixed(2)} in`);
+  expect(quietLift).toBeGreaterThan(6.0);
+  expect(Math.abs(loudLift)).toBeLessThan(2.5);
+  expect(quietLift).toBeGreaterThan(4 * Math.abs(loudLift));
+});
+
 // M5: amp tone is audibly measurable through the FULL chain (pedal -> amp ->
 // cab). Treble at max vs min changes the 5 kHz content (treble shelf @ 3.5 kHz).
 test('amp: treble knob changes 5 kHz content through the full chain', async ({ page }) => {

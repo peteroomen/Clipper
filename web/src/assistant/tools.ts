@@ -252,6 +252,16 @@ export const TOOLS = [
       'high gain it is thick but still articulate. Knobs are GAIN, TREBLE, OUTPUT; ' +
       'huge headroom, so it is the classic always-on pedal and the classic way to shove ' +
       'an already-breaking-up amp over the edge), ' +
+      "'comp' (the 'Squash' COMPRESSOR — the only DYNAMICS pedal here, not a dirt " +
+      'box: an OTA compressor of the classic red-box/Ross school with just two ' +
+      'knobs, SUSTAIN and LEVEL. It evens out volume, makes quiet notes bigger and ' +
+      'loud ones smaller, and adds long, singing sustain — the country/funk chicken-' +
+      'picking pop, and the "every note the same size" clean lead. It is a LIMITER ' +
+      'more than a gentle studio compressor: above its threshold the output barely ' +
+      'moves. SUSTAIN is NOT a threshold — it sets how much gain sits in front of a ' +
+      'FIXED threshold, so turning it up buys more squash, more make-up gain AND ' +
+      'more hiss together, and it also squashes the pick attack harder. Put it ' +
+      "FIRST in the chain, before the dirt), " +
       "'phaser' (a script-era 4-stage phaser — the classic swirling/whooshing " +
       'modulation with ONE knob, SPEED: placed AFTER the dirt it gives the vocal ' +
       'EVH swoosh, before the dirt it is subtler; slow = tape-warble, fast = ' +
@@ -262,7 +272,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'phaser', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'phaser', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -441,12 +451,13 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'phaser' | 'tuner' =
+    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'phaser' | 'tuner' =
       input.type === 'tuner' ? 'tuner'
       : input.type === 'sd1' ? 'sd1'
       : input.type === 'ts' ? 'ts'
       : input.type === 'muff' ? 'muff'
       : input.type === 'gold' ? 'gold'
+      : input.type === 'comp' ? 'comp'
       : input.type === 'phaser' ? 'phaser'
       : 'rat';
     const rawPos = input.position;
@@ -459,8 +470,9 @@ export function executeTool(
           : type === 'ts' ? 'Screamer'
             : type === 'muff' ? 'Pi Fuzz'
               : type === 'gold' ? 'Myth'
-                : type === 'phaser' ? 'Phaser'
-                  : 'RAT';
+                : type === 'comp' ? 'Squash'
+                  : type === 'phaser' ? 'Phaser'
+                    : 'RAT';
     return {
       content: JSON.stringify({ applied: { added: type, index } }),
       chip: `+ ${label} #${index + 1}`,

@@ -136,6 +136,14 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::goldTreble, "Myth Treble", 0.5f));
     layout.add(knob(pid::goldLevel, "Myth Output", 0.7f));
 
+    // M13.1 — the "Squash" OTA compressor. TWO knobs, because the pedal has two:
+    // SUSTAIN (which is NOT a threshold — it sets the OTA's idle bias current) and
+    // LEVEL. Defaults mirror the web's COMP_KNOB_DEFAULTS: 0.5 / 0.4, and 0.4
+    // measures unity at a normal playing level (docs §59).
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::compOn, 1}, "Squash On", true));
+    layout.add(knob(pid::compSustain, "Squash Sustain", 0.5f));
+    layout.add(knob(pid::compLevel, "Squash Level", 0.4f));
+
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::ampOn, 1}, "Amp Power", true));
     // M9.4 amp voice (default index 0 == Clean 120).
     layout.add(std::make_unique<Choice>(juce::ParameterID{pid::ampModel, 1},
@@ -384,6 +392,9 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.goldGain = f(pid::goldGain);
     p.goldTreble = f(pid::goldTreble);
     p.goldLevel = f(pid::goldLevel);
+    p.compOn = f(pid::compOn) >= 0.5f;
+    p.compSustain = f(pid::compSustain);
+    p.compLevel = f(pid::compLevel);
 
     // The board: unpack the lock-free snapshot the message thread published (never
     // touch the ValueTree here — this runs on the audio thread).

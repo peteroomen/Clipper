@@ -63,11 +63,11 @@ struct PedalFace {
         const char* name;
         const char* paramId;
     };
-    std::vector<Knob> knobs;  // 1..3, in display order
+    std::vector<Knob> knobs;  // 1..3, in display order (Squash carries 2)
     const char* onParamId;    // the engaged-flag parameter
 };
 
-// The face for a PedalType (PEDAL_RAT..PEDAL_GOLD).
+// The face for a PedalType (PEDAL_RAT..PEDAL_COMP).
 const PedalFace& pedalFace(int type);
 // The human label used in the gear tray / swap menus.
 juce::String pedalMenuLabel(int type);

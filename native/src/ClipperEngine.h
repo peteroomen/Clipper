@@ -2,7 +2,7 @@
 //
 // This is the SINGLE place the native plugin composes the portable C++ core into
 // the rig signal chain. It uses the core classes DIRECTLY (RatModel, SdModel,
-// TsModel, MuffModel, PhaserModel, GoldModel, AmpModel + owned ChorusModel,
+// TsModel, MuffModel, PhaserModel, GoldModel, CompModel, AmpModel + owned ChorusModel,
 // CabConvolver x2, OutputLimiter) — NOT the C ABI. The chain mirrors
 // web/worklet/clipper-processor.js exactly:
 //
@@ -25,7 +25,7 @@
 //
 // NATIVE PARITY (was: a FIXED two-pedal chain, RAT then SD-1). The board is now
 // DYNAMIC, exactly like the web app: any of the six audio pedal types (RAT, SD-1,
-// TS, Muff, Phaser, Gold) may sit on it, in ANY user-chosen order, each engaged or
+// TS, Muff, Phaser, Gold, Comp) may sit on it, in ANY user-chosen order, each engaged or
 // true-bypassed independently. Each type is instantiable ONCE (the board is a subset
 // + permutation of the six), which keeps every DSP instance a plain member — no
 // allocation, no handle table, and a reorder is a memcpy of six ints.
@@ -87,6 +87,7 @@
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
+#include "clipper/dsp/CompModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/MuffModel.h"
@@ -112,7 +113,10 @@ enum PedalType : int {
     // inserted — these integers are the packed-snapshot encoding, and renumbering
     // an existing type would silently re-point a board mid-session.
     PEDAL_GOLD = 5,
-    PEDAL_TYPE_COUNT = 6,
+    // M13.1: the "Squash" OTA compressor — the first DYNAMICS pedal. APPENDED for
+    // the same reason: these integers ARE the packed-snapshot encoding.
+    PEDAL_COMP = 6,
+    PEDAL_TYPE_COUNT = 7,
 };
 
 // Each type is instantiable once, so the board can never be longer than this.
@@ -184,6 +188,14 @@ struct Params {
     float goldGain = 0.35f;
     float goldTreble = 0.5f;
     float goldLevel = 0.7f;
+
+    // "Squash" OTA compressor (M13.1) — the first non-dirt, non-modulation pedal
+    // on the board. TWO knobs only: the shared slot-1 (filter) has no meaning for
+    // a compressor and is not exposed, exactly as the phaser exposes only SPEED.
+    // Defaults mirror web COMP_KNOB_DEFAULTS: SUSTAIN 0.5, LEVEL 0.4 (unity).
+    bool  compOn = true;
+    float compSustain = 0.5f;
+    float compLevel = 0.4f;
 
     // THE BOARD: which pedal types are on it, in signal order (guitar -> chain[0]
     // -> ... -> amp). Each type appears at most once. This is the parity feature —
@@ -373,6 +385,7 @@ private:
     clipper::dsp::MuffModel muff_;
     clipper::dsp::PhaserModel phaser_;
     clipper::dsp::GoldModel gold_;    // the "Myth" transparent overdrive (v1.1 item 6)
+    clipper::dsp::CompModel comp_;    // the "Squash" OTA compressor (M13.1)
     clipper::dsp::AmpModel amp_;      // Clean 120
     clipper::dsp::Jcm800Amp jcm_;     // JCM800 2204 (mono head, M9.4)
     clipper::dsp::TwinAmp twin_;      // Fender blackface Twin (mono combo, M10.1)

@@ -20,6 +20,7 @@
 .pedal[data-pedal-type="tuner"] { --pedal-accent: var(--accent-tuner); --pedal-accent-glow: var(--accent-tuner-glow); }
 .pedal[data-pedal-type="phaser"] { --pedal-accent: var(--accent-phaser); --pedal-accent-glow: var(--accent-phaser-glow); }
 .pedal[data-pedal-type="gold"]  { --pedal-accent: var(--accent-gold);  --pedal-accent-glow: var(--accent-gold-glow); }
+.pedal[data-pedal-type="comp"]  { --pedal-accent: var(--accent-comp);  --pedal-accent-glow: var(--accent-comp-glow); }
 .pedal.raised {
   background:
     linear-gradient(160deg, var(--chassis-tint, transparent), var(--chassis-tint, transparent)),
@@ -371,3 +372,15 @@
 /* The big round stomp low-center — larger than the standard RAT stomp. */
 .pedal[data-face="wide"] .fsw-zone { margin-top: 22px; }
 .pedal[data-face="wide"] .fsw { width: 104px; height: 104px; }
+
+
+/* ---- M13.1 "Squash" compressor: a two-knob MXR-format box ----
+   It shares the 'stack' anatomy (hero wordmark, knob row, round stomp) with the
+   RAT, but it carries TWO knobs rather than three, and `.knob-row`'s default
+   `space-between` would fling them to the enclosure edges. Centre them with the
+   spacing a real two-knob box has. */
+.pedal[data-pedal-type="comp"] .knob-row {
+  justify-content: center;
+  gap: 30px;
+}
+.pedal[data-pedal-type="comp"] .k-name { letter-spacing: .16em; }

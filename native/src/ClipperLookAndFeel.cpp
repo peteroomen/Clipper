@@ -118,6 +118,7 @@ juce::Colour accent(AccentId id) {
         // Gold takes the DARK token in BOTH themes — see the header: it only ever
         // paints on the pinned-dark chassis, where #8F6A22 measures ~2.8:1.
         case AccentId::Gold:   return juce::Colour(0xffD9B36B);
+        case AccentId::Comp:   return d ? juce::Colour(0xff3ECFC0) : juce::Colour(0xff17786F);
         case AccentId::Jcm:    return d ? juce::Colour(0xffE8B84B) : juce::Colour(0xffA87A18);
         case AccentId::Twin:   return d ? juce::Colour(0xff7FB4E8) : juce::Colour(0xff4E7BA8);
         case AccentId::Ac30:   return d ? juce::Colour(0xffE08A4A) : juce::Colour(0xffB4612C);

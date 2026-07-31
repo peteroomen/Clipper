@@ -49,6 +49,14 @@ const PedalFace kFaces[PEDAL_TYPE_COUNT] = {
      Footswitch::Shape::Round, PedalFace::Layout::Plate, 30.0f,
      {{"Gain", pid::goldGain}, {"Treble", pid::goldTreble}, {"Output", pid::goldLevel}},
      pid::goldOn},
+    // SQUASH — M13.1, the first DYNAMICS pedal and the first non-dirt box. Its
+    // morphology cue is simply that it has TWO knobs where every dirt box has
+    // three: a small MXR-format enclosure over a round stomp. Teal accent (the
+    // real pedal is red, and Rat owns red here). No MXR/Dyna Comp/Ross text.
+    {"Dynamics N\xc2\xba""7 \xc2\xb7 Squash", "Squash", skin::AccentId::Comp,
+     Footswitch::Shape::Round, PedalFace::Layout::Stack, 34.0f,
+     {{"Sustain", pid::compSustain}, {"Level", pid::compLevel}},
+     pid::compOn},
 };
 }  // namespace
 
@@ -64,6 +72,7 @@ juce::String pedalMenuLabel(int type) {
         case PEDAL_MUFF:   return "Pi - big-box fuzz";
         case PEDAL_PHASER: return "Ninety - script phaser";
         case PEDAL_GOLD:   return "Myth - gold transparent overdrive";
+        case PEDAL_COMP:   return "Squash - OTA compressor";
         default:           return "Pedal";
     }
 }

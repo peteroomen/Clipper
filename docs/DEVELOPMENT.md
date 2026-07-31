@@ -9617,3 +9617,405 @@ brighter over that same pair — the 495 Hz pole did not move, the signal reachi
 (§54), `kSumGain = 2.0`, the tone stage, the clean path, the output network, `kRailVolts`,
 every other pedal and every amp. `kDrivePreScale` and `kDriveHpHz` are **deleted** — there
 is nothing left for them to stand in for.
+
+## 59. M13.1 — the "Squash" OTA compressor (the first DYNAMICS processor)
+
+The lineup's first pedal that is neither dirt nor modulation: an MXR Dyna Comp /
+Ross-style **CA3080 OTA compressor**, shipping as pedal type `comp`. Two knobs,
+because the real box has two — SUSTAIN and LEVEL. Files: shared
+`core/include/clipper/dsp/CompressorEngine.h` + `core/src/dsp/CompressorEngine.cpp`;
+thin `core/include/clipper/dsp/CompModel.h` + `core/src/dsp/CompModel.cpp`; tests
+`core/tests/test_comp_model.cpp` (`clipper_comp_tests`); C ABI `comp_*`;
+`--pedal comp` in the render CLI; a `squash` row in `clipper-bench`; worklet
+`comp` dispatch; `rig.ts` / `Pedal.tsx` / `pedal.css` / `tokens.css` / assistant;
+native `ClipperEngine` + APVTS + `PedalCard`. Trademark-safe throughout (no
+MXR / Dyna Comp / Ross text on any user surface; the wordmark is "Squash").
+
+**Built as a config-parameterized engine from the first line**, exactly as §21's
+`OverdriveEngine` serves both the SD-1 and the TS. The optical / LA-2A-style
+voice (M13.3) is a second config plus one `applyGainCell()` case; the noise gate
+(M13.6) is this same detector feeding a different `ControlMap`. The seam is
+written out in full in the `CompressorEngine.h` banner so the next slice does not
+have to guess where it is.
+
+### 59.1 Research — what was reachable, and what was not
+
+**Reachable.** The primary source is a complete **LTspice transcription of the
+whole pedal**, published by Nick Chesney (cushychicken) alongside his write-up
+"Simulating the MXR Dyna Comp Compressor in LTSpice" (2020-11-02), and hosted on
+GitHub at `Cushychicken/ltspice-guitar-pedals` (`mxr-dyna-comp/mxr-dyna-comp.asc`)
+— which is why it was reachable at all (see the gap list below). His schematic is
+in turn traced from **R. G. Keen's Geofex archive** (`dynacomp.gif`). The `.asc`
+was parsed node by node from its `SYMBOL`/`WIRE`/`FLAG` records and the netlist
+reconstructed by hand; that reconstruction is what `CompModel.cpp` encodes, and
+every reference designator in that file follows the LTspice numbering.
+
+Component values were **cross-checked against an independent source**: the
+ElectroSmash "MXR Dyna Comp Analysis" component list, reached through search-result
+extracts (the site itself 403s here — see the gaps). Its designators differ but
+its values agree: the 500 kΩ sensitivity pot, the 50 kΩ output pot, the 2 kΩ
+trimmer, the 27 kΩ bias-setting resistor, the 150 kΩ pair, the 10 µF caps, the
+1 nF, the 1N914/1N4148 clamp diodes, the 2N3904s, the CA3080.
+
+Two further cross-checks that landed, both worth recording because they validate
+the *model*, not just the transcription:
+
+* **The bias rail.** `CompModel.cpp` computes it as `9 V · 27 k/(56 k + 27 k) =
+  2.9277 V`, from the divider. The schematic's own net for that node is named
+  `V3P0`. Nothing was assumed.
+* **The whole control loop, against an independent simulation.** Chesney's SPICE
+  run reports that with the sensitivity pot at 10 kΩ the bias current starts at
+  "just under 200 µA" and, on a 100 mV 1 kHz sine, "stabilizes at about 16 µA".
+  This model, at the SUSTAIN position that gives the same 37 kΩ total, measures
+  **199.85 µA idle and 16.54 µA settled**. That is a 4 % and 3 % agreement on a
+  number produced by the gain cell, the load, the phase splitter, the rectifier,
+  the envelope integrator and the control map all in series, from a simulator
+  this code has never seen. It is the strongest absolute check available for a
+  pedal with no published transfer curve.
+
+**Not reachable from this environment, recorded as gaps.** The proxy in this
+container permits **github.com only**; every other host returns 403 at the CONNECT
+stage, so `WebFetch` failed uniformly and `WebSearch` result extracts were the
+only other channel.
+
+* **Kröger & Zölzer / DAFx-11, "Analysis and Simulation of an Analog Guitar
+  Compressor"** — the state-space analysis of this exact pedal. `recherche.ircam.fr`
+  and `dafx.de` both 403. This is the biggest gap: it is the one source that would
+  have given an independent set of derived equations to check the gain cell and the
+  detector against.
+* **ElectroSmash's analysis page and the CA3080 datasheet / AN6668** — 403 direct;
+  used only through search extracts. The OTA laws below (`gm = Iabc/2Vt`,
+  `Iout = Iabc·tanh(Vd/2Vt)`) are therefore **derived from bipolar differential-pair
+  theory**, not quoted, though the extracts do confirm the qualitative statement
+  ("transconductance is directly proportional to the amplifier bias current").
+* **coda-effects.com** — 403, as CLAUDE.md already records.
+* **A published static compression curve or ratio for a real unit.** None found.
+  Every curve in §59.4 is this model's own; there is no absolute reference to
+  check the ratio against, and that is stated rather than papered over.
+* **The SUSTAIN pot's taper letter.** Not sourced anywhere. Shipped as a plain
+  linear rheostat; the measured consequence is in §59.4 and is reported, not fitted.
+* **Attack/release figures.** A review measurement ("attack fixed at 5 ms,
+  release ~1 second") was the only quantitative claim found, and it is a review,
+  not a manufacturer spec. Treated accordingly: it is used as a soft anchor with a
+  3–9 ms window, never as a fitting target.
+
+### 59.2 The three things the brief said must be modelled, not approximated
+
+**1. The CA3080 gain cell.** Not `gain = f(envelope)`. The cell is the bipolar
+differential pair it physically is:
+
+```
+    Iout = Iabc · tanh( Vd / (2·Vt) )        Vt = 25.85 mV
+    gm   = dIout/dVd |_0 = Iabc / (2·Vt)
+```
+
+`Iabc` is a real current computed from real node voltages (§59.3), and the tanh is
+the CA3080's own soft limit, which is a large part of why the pedal colours the
+tone. At the shipped SUSTAIN 0.5 idle, `Iabc` = 27.70 µA → `gm` = 535.7 µS.
+
+**2. The detector time constants — derived, because they ARE the pedal.** There is
+no attack knob and no release knob because there are no parts for them:
+
+| what | components | derived | measured |
+| --- | --- | --- | --- |
+| release | `R18·C9` = 150 kΩ × 10 µF | **1.500 s** | **1.496 s** (SUSTAIN 0.5), 1.448 s (1.0) |
+| attack | peak detector: `C7/C8` 10 nF into `R16/R17` 1 MΩ, clamped by `D1/D2`, driving `Q3/Q4`'s base | not a single RC — it is a *current-starved discharge* whose rate is set by how much base current the phase splitter can push through the clamp | **14 / 10 / 5 / 3 ms** at SUSTAIN 0.30 / 0.50 / 0.80 / 1.00 |
+| clamp settling | `C7·R16` = 10 nF × 1 MΩ | 10 ms | (the DC-restorer corner) |
+
+The attack is *not constant across the knob*, which falls out of the circuit
+rather than being designed: more idle gain puts the detector over its turn-on
+sooner. The published ~5 ms lands at SUSTAIN 0.80.
+
+**3. Feed-forward vs feed-back — settled from the netlist.** The detector taps
+`V_comp_out`, the phase splitter's emitter, which is **after** the gain cell.
+The Dyna Comp is therefore **FEED-BACK**. This is encoded as a config field with a
+measurement hook (`setDetectorTap`) rather than a comment, and
+`clipper_comp_tests` proves the claim is load-bearing: at SUSTAIN 1.0 over 26 dB
+of input, feed-back gives **216:1** and the same code tapping the cell's input
+gives **3.3:1**.
+
+That one fact explains the pedal's whole character. In a feed-back compressor the
+loop drives the OUTPUT to wherever the detector turns on, so the threshold is an
+absolute output level fixed by a base-emitter drop — it does not move for any
+knob, and above it the ratio is enormous.
+
+### 59.3 The circuit → the model, stage by stage
+
+```
+in -[C2 10n]-[R4 10k]- Q1 emitter follower -[C3 1u]-> CA3080 (-in)
+                                                          |
+    (+in) AC-terminated by R12 15k || C4 10n in series with C5 1u,
+    bridged to (-in) by the 2k offset TRIMMER  <-- THE input attenuator
+                                                          |
+                             Iout = Iabc·tanh(Vd/2Vt)     v
+                     R13 150k || C6 1n  (to the 2.93 V bias rail)
+                                                          |
+                                            Q2 phase splitter (R14 = R15 = 10k)
+                                             /                          \
+                              EMITTER = audio out              COLLECTOR (anti-phase)
+                                             \                          /
+                       [C7/C8 10n] -> nodes with [R16/R17 1M] to ground,
+                       [D1/D2 1N4148] clamping the NEGATIVE excursion,
+                       Q3/Q4 grounded-emitter, collectors on the envelope node
+                                                          |
+                                          C9 10u, R18 150k to +9 V
+                                                          |
+                              Q5 follower -> RV1 500k SUSTAIN rheostat -> R23 27k
+                                                          |
+                                                    Iabc (back to the OTA)
+out <- RV2 50k LEVEL <- R20 10k <- C10 50n <- (the same splitter emitter)
+```
+
+**The finding that is in no prose source: the OTA sees only ~12 % of the signal,
+and the network that does it is second order.** The 2 kΩ offset trimmer bridges
+the two OTA inputs while the non-inverting input is AC-terminated in 15 kΩ, so the
+*differential* drive is a divider, not the raw signal. Its transfer function is
+
+```
+  Zterm(s) = R8 || [ R12/(1 + s·R12·C4) + 1/(s·C5) ]
+  H(s)     = −Rtrim / (Rtrim + Zterm(s))
+```
+
+with **real, hugely separated roots** — zeros at 0.157 Hz and 1077 Hz, poles at
+9.29 Hz and 9105 Hz, `|H| → 1` at infinity and 0.002 at DC. `CompModel.cpp`
+computes those roots from the component values rather than pasting them in.
+
+This matters twice over:
+
+* **Tonally.** `|H_d|` RISES with frequency (0.118 at 100 Hz, 0.160 at 1 kHz,
+  0.492 at 5 kHz) while the 150 kΩ ∥ 1 nF load pole at **1210 Hz** FALLS. They
+  very nearly cancel: the composed small-signal response is flat within **1.74 dB
+  from 110 Hz to 5 kHz**. That is why a Dyna Comp reads as "not very bright"
+  without sounding filtered, and it is why neither network may be simplified away
+  without the other.
+* **Numerically.** A 9.29 Hz pole at the oversampled 192 kHz sits at radius
+  0.99970. Docs §56 measured exactly that shape emitting audible hiss out of a
+  `float` direct form, and §56.4b showed the house `flushDenormal` one-liner
+  cannot converge a direct form of order ≥ 2 *at all*. So the network ships as a
+  **cascade of two first-order sections in `double`** — the cure §56 named,
+  applied at the first opportunity rather than after the fact.
+
+**Everything else, and where each number comes from.** The 2N3904 card is ON
+Semi's SPICE model verbatim (`IS = 6.734f`, `BF = 416.4`, `ISE = 6.734f`,
+`NE = 1.259`); the 1N4148 is the project's own post-§36 card (`Is = 2.52 nA`,
+`n = 1.752`) — the ideality factor is **not** dropped back to 1.0 here either.
+The **Gummel-Poon low-current (ISE/NE) term is modelled deliberately**, and it is
+the one modelling choice in this slice that needed an argument: the detector
+transistors' base current is what loads the clamp network, so their hFE at ~0.2 mA
+is what sets the attack. With `betaF` alone a 2N3904 reports hFE = 416; with the
+ISE term the *same published card* yields **hFE = 106 at 0.23 mA**, which is the
+datasheet's own low-current figure, obtained with nothing fitted.
+
+The CA3080's Iabc pin is taken as **0.7 V** above the negative rail (one
+diode-connected mirror junction). Note for anyone comparing against the LTspice
+transcription: it substitutes an LM13700, whose bias node sits at ~1.3 V, moving
+the maximum control current by 8 %. The pedal has a CA3080.
+
+Two documented simplifications, both named rather than buried:
+
+1. **The discharge transistors' saturation** is a smooth `Vce/(Vce + 0.1)` factor
+   rather than Ebers-Moll's reverse term. It only ever acts when the envelope node
+   is already bottomed, and the measured worst-case discharge moves the node
+   0.01 V per sample, so it effectively never binds.
+2. **The supply compliance** is applied to the load node *after* its pole rather
+   than inside the RC. It uses the existing `AsymSoftClipper` (ADAA), and it is
+   genuinely asymmetric on a single supply: +5.07 V up, +1.93 V down around the
+   2.93 V rail.
+
+### 59.4 What SUSTAIN actually is — measured
+
+**It is not a threshold.** It is a rheostat in the control-current path, so it
+sets the gain cell's IDLE bias current, i.e. how much gain the loop has to give
+away before it settles. The threshold is a base-emitter drop and no knob is in
+front of it. Measured at 1 kHz, LEVEL 1.0, settled:
+
+| SUSTAIN | idle Iabc | small-signal gain | settled output peak above the knee |
+| --- | --- | --- | --- |
+| 0.00 | 14.63 µA | **+11.25 dB** | 0.383 V |
+| 0.30 | 20.41 µA | **+14.14 dB** | 0.386 V |
+| 0.50 | 27.70 µA | **+16.79 dB** | 0.390 V |
+| 0.80 | 59.89 µA | **+23.49 dB** | 0.396 V |
+| 1.00 | 270.5 µA | **+36.58 dB** | 0.400 V |
+
+**The gain column moves 25.33 dB. The output column moves 0.28 dB.** That pair of
+numbers is the whole answer, and it is what a `gain = f(env)` fake would get
+wrong. The 25.33 dB is the circuit's own span: `Iabc = 7.1 V/(R + 27 k)` over a
+500 kΩ rheostat is a 19.5× range = 25.8 dB, and `gm ∝ Iabc`.
+
+The static curve at SUSTAIN 0.50 (input dBV peak → output dBV peak):
+
+| in | −53.98 | −46.02 | −40.00 | −33.98 | −26.02 | −20.00 | −13.98 | −7.96 | −1.94 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| out | −37.19 | −29.23 | −23.21 | −17.20 | −9.54 | −8.39 | −8.17 | −8.14 | −8.22 |
+| gain | +16.79 | +16.79 | +16.79 | +16.78 | +16.48 | +11.61 | +5.81 | −0.18 | −6.28 |
+
+Slope below the knee **0.9992** (linear, to four figures). Ratio over the top
+18 dB of input **106:1**. The 3 dB-of-gain-reduction knee sits at **−20.0 dBV**.
+It is a limiter, not a gentle studio compressor, and that is correct for the
+circuit.
+
+**The knob law, reported not fitted.** With the pot as a plain linear rheostat
+(its taper letter could not be sourced), `Iabc = 7.1/(R + 27 k)` is strongly
+top-heavy: 12.24 dB of the 25.33 dB total lives in the last 20 % of travel. That
+is measured and left alone. If the owner wants it re-tapered, that is a §43-style
+owner decision with a stated design equation, not something to fit here.
+
+### 59.5 Sustain extension — the reason the pedal exists
+
+Level-matched, because "it lasts longer" only means something at equal loudness:
+a decaying 220 Hz note (0.30 V peak, τ = 0.7 s), the bypassed reference scaled so
+both envelopes agree 0.3 s in, then the time each stays within 20 dB of that point.
+
+| SUSTAIN | compressed holds | level-matched bypass | extension |
+| --- | --- | --- | --- |
+| 0.00 | 2.26 s | 1.90 s | **+0.36 s** (1.19×) |
+| 0.30 | 2.46 s | 1.90 s | **+0.56 s** (1.29×) |
+| 0.50 | 2.64 s | 1.90 s | **+0.74 s** (1.39×) |
+| 0.80 | 3.14 s | 1.90 s | **+1.24 s** (1.65×) |
+| 1.00 | 4.16 s | 1.90 s | **+2.26 s** (2.19×) |
+
+### 59.6 The honest expectations — REPORTED, not designed out
+
+A real Dyna Comp squashes the attack, hisses at full sensitivity and colours the
+tone at every setting. None of that was "fixed"; a better-behaved compressor would
+be a different pedal. Each is measured, and each is **asserted in the direction
+that says this is still a Dyna Comp**, so a future slice that quietly improves one
+turns the suite red and has to argue the change.
+
+**Attack-transient loss** (1 kHz burst, the first 50 ms vs settled):
+
+| SUSTAIN | 0.30 | 0.50 | 0.80 | 1.00 |
+| --- | --- | --- | --- | --- |
+| loss | **7.72 dB** | **10.00 dB** | **15.18 dB** | **20.00 dB** |
+
+**Noise.** This project synthesises no noise anywhere, so what is measured is the
+mechanism: the GAIN the pedal applies to whatever floor arrives. On a −84.75 dBFS
+input noise floor at LEVEL 1.0 — SUSTAIN 0.00 **+8.22 dB**, 0.50 **+13.76 dB**,
+1.00 **+33.56 dB**. Turning the knob up costs **25.34 dB** of noise gain, bought
+with the same turn as the compression. That is the pedal's famous hiss, stated as
+a number rather than simulated.
+
+**Tone colour**, small-signal, dB re 1 kHz (SUSTAIN 0.5):
+
+| Hz | 20 | 41 | 82 | 110 | 220 | 440 | 1000 | 2000 | 5000 | 10000 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| dB | −15.21 | −6.59 | **−2.42** | −1.57 | −0.65 | −0.32 | 0.00 | +0.17 | −0.58 | **−2.88** |
+
+The low end really is thinned — three high-passes sit between input and output
+(input 30.5 Hz, output 51.9 Hz, and the drive network's own 9.29 Hz pole), the
+smallest coupling cap in the path being 10 nF. Low E is down 2.42 dB and 20 Hz is
+down 15.21 dB. The top rolls off 2.88 dB by 10 kHz, which is the "keeps the white
+noise down" characterisation of the Ross/Dyna Comp family, measured.
+
+**And it inverts phase.** The signal drives the OTA's inverting input, so the
+pedal is phase-inverting, like the real one. Documented, not corrected.
+
+### 59.7 Hygiene, cost, and the numbers the conventions require
+
+| property | measured |
+| --- | --- |
+| aliasing, single 9 kHz tone at 0.3 V, SUSTAIN 1.0 | 1× **−7.61 dB** → 2× −28.99 → **4× −62.37** → 8× −97.73 |
+| DC offset ON SIGNAL (220 Hz 0.2 V, and with +0.1 V input offset) | 0.0000 % of peak both cases |
+| block-size invariance (128 vs ragged 100/37/256/1/411) | **exactly 0.0** |
+| rate independence (settled level, 44.1 / 48 / 88.2 / 96 kHz) | spread **0.014 dB** |
+| latency | 72 samples at 4× (the shared oversampler figure) |
+| `reset()` | re-parks at the cached quiescent point **exactly** (matches a fresh model to < 1e-9 V); one NaN poisons 245/256 samples, after `reset()` **0/48000** |
+| denormals | `maxAbsRestingState()` **exactly 0.0** after a silent tail; output exactly 0.0f |
+| knob zipper vs the signal's own slew | SUSTAIN **1.66×**, LEVEL **0.93×** |
+| CPU, 4× at 48 kHz | signal **8.24× realtime / 12.1 % of a stream**; silence 16.5× / 6.1 % |
+
+The aliasing measurement needed a correction worth recording, because the first
+attempt was wrong in an instructive way: a **two-tone** stimulus reported −25 dB
+flat across 1×…8×, which looked like a bad alias floor and was not aliasing at
+all. A compressor's gain is modulated by its own detector, so two tones fill the
+spectrum with legitimate intermodulation sidebands. The tell is exactly §54's:
+**a real alias floor moves with the oversampling factor.** With a single tone the
+envelope is constant and everything below the fundamental is fold-back — and the
+floor then moves 54.76 dB from 1× to 4×.
+
+**Silence is CHEAPER than signal** (6.1 % vs 12.1 %), which is the §33/§34 check:
+the detector's Newton solve early-outs on its residual at the parked node instead
+of burning its iteration budget, and the denormal policy is doing its job.
+
+The denormal scope rule (ADR 006) was applied by measurement, not by pattern:
+
+* **Guarded** — the six linear filter states (input and output coupling
+  high-passes, the two drive-network sections, the load pole). All rest at exactly
+  zero; `maxAbsRestingState()` covers exactly these and asserts 0.0.
+* **NOT guarded, envelope node** — rests at **8.9684 V at SUSTAIN 0 / 8.6353 V at
+  SUSTAIN 1.0**. A real DC operating point; it can never be subnormal.
+* **NOT guarded, the two clamp caps and their Newton warm starts** — and this one
+  is a finding rather than an application of the rule. Their *physical* rest is
+  −4.90e-272 V (the node's equilibrium against the clamp diode's own reverse
+  saturation current), which IS below the flush floor — but the **solver cannot
+  resolve it**: Newton exits at `kNewtonResidualTolA`, so the node floors at
+  `tol × (Rsrc + T/C)` ≈ **1.9e-11 V** and the cap settles inside that. Measured
+  after a 40 s silent tail: ~1e-11 V, not decaying. That is 297 decades above the
+  subnormal range, so a guard there would be unreachable code in the hottest loop
+  in the file — the exact thing §33 found was the wrong thing to ship. Comment,
+  not flush.
+
+### 59.8 A bug this slice made, and how it was caught
+
+The first implementation put the **collector** current in the clamp node's KCL.
+Only base current flows into that node; the collector current flows from the
+envelope cap to ground and never touches the base. The wrong version made the node
+~β times too stiff, which starved the discharge by two orders of magnitude, and
+the symptoms were: attack **500–650 ms** instead of 3–14 ms, the output never
+properly pinned (ratio 9:1 at SUSTAIN 1.0 instead of >100:1), and — the tell — the
+independent LTspice cross-check off by **3.6×** (58.4 µA settled against the
+reference sim's 16 µA) while the *idle* current agreed to 4 %. An error that
+shows up only under signal, and only against an outside number, is exactly what a
+self-consistent test suite cannot catch; this is the case for keeping an absolute
+reference in the loop.
+
+### 59.9 Perturbation proofs
+
+Every load-bearing bar was proven by reverting the thing it names in a scratch
+copy of the source, rebuilding (with `touch` after **both** patch and restore —
+docs §29's trap), and confirming the suite goes red. `git stash` was NOT used:
+CLAUDE.md records that stashes are repo-global across worktrees and have already
+caused one cross-agent collision.
+
+| # | perturbation | result | first assertion to fail |
+| --- | --- | --- | --- |
+| baseline | — | GREEN | — |
+| P1 | `detectorFromOutput = true → false` (feed-forward) | **RED** | `squashed < idle * 0.6` — the loop stops giving gain away |
+| P2 | `C6` 1 nF → 1 pF (the load pole deleted) | **RED** | `hi - lo < 3.0` — the core band stops being flat, 1.74 → 6.6 dB |
+| P3 | `C9` 10 µF → 1 µF (release 1.5 s → 0.15 s) | **RED** | `rel > 1.20 && rel < 1.80` |
+| P4 | `ISE = 0` (Gummel-Poon low-current term removed; hFE 106 → 416) | **RED** | `attackMs > 3.0 && attackMs < 9.0` — attack 5.00 → 2.00 ms |
+| P5 | `Rtrim` 2 kΩ → 2 Ω (the OTA input attenuator shorted) | **RED** | `pinSpread < 1.5` — the threshold stops being knob-independent |
+| restore | — | GREEN | — |
+
+P4 is worth a note: the first version of the suite **stayed green** under it,
+because the wide 0.5–30 ms attack window accepted both 5 ms and 2 ms. Rather than
+narrowing a bar around the perturbation, the fix was to add a bar against an
+**absolute reference** — the published ~5 ms figure, with a 3–9 ms window that
+reflects how weakly sourced that figure is (§59.1). The model measures 5.00 ms at
+SUSTAIN 0.80, dead centre, and P4 then fails at 2.00 ms.
+
+### 59.10 Integration and goldens
+
+One param shape, additive registries: `rig.ts` `PedalType` + gear tray +
+`COMP_KNOB_DEFAULTS` (SUSTAIN 0.5, LEVEL 0.4 — **0.4 measures unity**: a 0.15 V
+peak 220 Hz note comes out at 0.1565 V, +0.37 dB); worklet `comp` dispatch behind
+the `_comp` C-ABI prefix; `Pedal.tsx` FACES entry; `tokens.css` `--accent-comp`;
+native `PEDAL_COMP = 6` (appended, never inserted — those integers are the packed
+snapshot encoding, and the 4-bit slots §27's board widening bought are exactly the
+headroom this seventh type needed), three APVTS parameters, a `PedalCard` face and
+an `identical_core_test` case (`Squash -> Screamer -> Twin`). Assistant:
+`add_pedal` gains `'comp'`, and the coach gets a real block — including that
+SUSTAIN is not a threshold, that the pedal belongs FIRST in the chain (a
+compressor after a distortion has nothing left to do, since distortion is already
+a compressor, and will mostly raise the noise floor between notes), and the four
+honest expectations stated as facts rather than apologies.
+
+**Visual identity (doctrine §17).** Dark chassis both themes, **TEAL** accent, the
+'stack' anatomy with exactly **TWO** knobs over a round stomp — two knobs where
+every dirt box has three is the morphology cue. The real pedal is red; red is the
+RAT's accent here and two red boxes on one board is a usability bug, so the colour
+is chosen for distinguishability and the identity is carried by the face. Wordmark
+"Squash", model line `DYNAMICS Nº7 · SQUASH`. No trademarks.
+
+**Goldens: all five UNCHANGED at ±0.00 dB, and nothing was blessed.** The
+compressor is in no golden rig, and it touches no other model.

@@ -50,6 +50,7 @@
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
+#include "clipper/dsp/CompModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/MuffModel.h"
@@ -298,6 +299,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     MuffModel muff;
     PhaserModel phaser;
     GoldModel gold;      // the "Myth" transparent overdrive
+    CompModel comp;      // the "Squash" OTA compressor (M13.1)
     AmpModel amp;        // Clean 120
     Jcm800Amp jcm;       // JCM800 head
     TwinAmp twinAmp;     // Twin combo
@@ -322,6 +324,8 @@ void renderReference(const Params& p, const std::vector<float>& in,
     gold.setParameter(GoldModel::PARAM_GAIN, p.goldGain);
     gold.setParameter(GoldModel::PARAM_TREBLE, p.goldTreble);
     gold.setParameter(GoldModel::PARAM_OUTPUT, p.goldLevel);
+    comp.setParameter(CompModel::PARAM_SUSTAIN, p.compSustain);
+    comp.setParameter(CompModel::PARAM_LEVEL, p.compLevel);
 
     if (jcm800) {
         // Mirror ClipperEngine::applyParams' JCM order exactly.
@@ -370,6 +374,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     muff.prepare(kFs, kBlock);
     phaser.prepare(kFs);   // linear: no block-size scratch
     gold.prepare(kFs, kBlock);
+    comp.prepare(kFs, kBlock);
     amp.prepare(kFs, kBlock);
     // The JCM runs at its fixed 4x internally (set BEFORE prepare so its stages size
     // to it), independent of the pedal OS selector — matches ClipperEngine.
@@ -415,6 +420,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
                 case clipper::native::PEDAL_MUFF:   muff.process(cur, other, n); break;
                 case clipper::native::PEDAL_PHASER: phaser.process(cur, other, n); break;
                 case clipper::native::PEDAL_GOLD:   gold.process(cur, other, n); break;
+                case clipper::native::PEDAL_COMP:   comp.process(cur, other, n); break;
                 default: continue;
             }
             std::swap(cur, other);
@@ -457,6 +463,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
             case clipper::native::PEDAL_TS:   pedalLatency += ts.latencySamples(); break;
             case clipper::native::PEDAL_MUFF: pedalLatency += muff.latencySamples(); break;
             case clipper::native::PEDAL_GOLD: pedalLatency += gold.latencySamples(); break;
+            case clipper::native::PEDAL_COMP: pedalLatency += comp.latencySamples(); break;
             default: break;  // the phaser is linear — no group delay
         }
     }
@@ -537,6 +544,30 @@ void renderPlugin(const Params& p, const std::vector<float>& in,
 
 // Run the full identical-core comparison for one parameter set (one amp voice).
 // Returns true on PASS.
+// NATIVE PARITY case 5 (M13.1) — a board carrying the "Squash" OTA compressor:
+// Squash -> Screamer -> Twin. The compressor goes FIRST, which is where a player
+// actually puts one, and it is the first non-dirt pedal to reach this test: it
+// has TWO knobs (slot 1 is not written at all), it carries a feed-back detector
+// loop whose state must not be perturbed by the wrapping, and it oversamples, so
+// its group delay has to land in the reported latency like any dirt box.
+Params compBoardParams() {
+    Params p;
+    p.inputTrim = 0.5f;
+    p.chain[0] = clipper::native::PEDAL_COMP;
+    p.chain[1] = clipper::native::PEDAL_TS;
+    p.chainLength = 2;
+    p.compOn = true;  p.compSustain = 0.7f; p.compLevel = 0.45f;
+    p.tsOn = true;    p.tsDrive = 0.35f; p.tsTone = 0.5f; p.tsLevel = 0.6f;
+    p.ratOn = true;   // ON, but NOT on the board — must be inaudible
+    p.goldOn = true;  // likewise
+    p.muffOn = true;  // likewise
+    p.ampModel = kAmpTwin;
+    p.ampOn = true;  p.volume = 0.55f; p.bass = 0.5f; p.middle = 0.5f; p.treble = 0.6f;
+    p.bright = false; p.cab = true;
+    p.chorusMode = 0;
+    return p;
+}
+
 bool runCase(const char* label, const Params& p, const std::vector<float>& in) {
     std::printf("\n--- case: %s ---\n", label);
 
@@ -628,6 +659,7 @@ int main() {
                   reorderedBoardParams(), in);
     // v1.1 item 6: the GOLD "Myth" overdrive on the native board.
     ok &= runCase("Board: Gold -> (RAT bypassed) -> Phaser -> AC30", goldBoardParams(), in);
+    ok &= runCase("Board: Squash -> TS -> Twin", compBoardParams(), in);
 
     if (ok) {
         std::printf(

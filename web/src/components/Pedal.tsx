@@ -133,6 +133,28 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Output', aria: 'Output', param: 'level', testId: 'knob-output' },
     ],
   },
+  // M13.1 "Squash": the first DYNAMICS pedal and the first non-dirt box on the
+  // board. Morphology cue is the small MXR-format enclosure with exactly TWO
+  // knobs side by side over a big round stomp — it shares the 'stack' anatomy
+  // with the RAT but reads instantly different because two knobs is a compressor
+  // and three is a dirt box. TEAL accent: the real pedal is red, but the RAT
+  // already owns red here and two red boxes on one board is a usability bug, so
+  // the colour is chosen for distinguishability (see tokens.css). Wordmark
+  // "Squash" is the wink at what the pedal is famous for doing; the model line
+  // names the type. No MXR/Dyna Comp/Ross text anywhere.
+  comp: {
+    layout: 'stack',
+    model: 'DYNAMICS Nº7 · SQUASH',
+    wordmark: 'Squash',
+    knobs: [
+      // TWO real knobs. Slot 0 (distortion) is SUSTAIN — which is NOT a
+      // threshold: it sets the OTA's idle bias current, so it buys compression,
+      // make-up gain and noise together. Slot 2 (level) is the output pot. Slot 1
+      // is carried and unused, exactly as the phaser carries slots 1/2.
+      { name: 'Sustain', aria: 'Sustain', param: 'distortion', testId: 'knob-sustain' },
+      { name: 'Level', aria: 'Level', param: 'level', testId: 'knob-level' },
+    ],
+  },
   phaser: {
     // The iconic ONE-KNOB face: a single big centered SPEED knob on a dark chassis
     // with an ORANGE accent (the orange box, instantly read). "Ninety" is the wink

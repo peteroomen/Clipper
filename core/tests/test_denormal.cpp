@@ -31,6 +31,7 @@
 #include "clipper/dsp/Ac30Preamp.h"
 #include "clipper/dsp/Biquad.h"
 #include "clipper/dsp/Denormal.h"
+#include "clipper/dsp/CompModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/Jcm800Preamp.h"
 #include "clipper/dsp/OnePoleSmoother.h"
@@ -489,6 +490,15 @@ int main() {
         u.setParameter(GoldModel::PARAM_GAIN, 0.6f);
         u.setParameter(GoldModel::PARAM_TREBLE, 0.5f);
         u.setParameter(GoldModel::PARAM_OUTPUT, 0.7f);
+    });
+    // M13.1's compressor: six linear filter states rest at zero and are flushed;
+    // its ENVELOPE node deliberately is not (it rests at ~8.5 V - ADR 006's scope
+    // rule), which is why maxAbsRestingState() excludes it. The bar here is the
+    // same as every other pedal's: EXACTLY zero, and exactly silent.
+    testPedalSilenceIsExactlySilent<CompModel>("Squash compressor (M13.1)", [](CompModel& u) {
+        u.prepare(kFs, kBlock);
+        u.setParameter(CompModel::PARAM_SUSTAIN, 1.0f);  // worst case: most gain
+        u.setParameter(CompModel::PARAM_LEVEL, 1.0f);
     });
     testPedalSilenceIsExactlySilent<SdModel>("SD-1 output DC blocker", [](SdModel& u) {
         u.prepare(kFs, kBlock);

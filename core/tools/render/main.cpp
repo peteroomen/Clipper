@@ -30,6 +30,7 @@
 #include "clipper/dsp/SdModel.h"
 #include "clipper/dsp/TsModel.h"
 #include "clipper/dsp/MuffModel.h"
+#include "clipper/dsp/CompModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/AmpModel.h"
@@ -180,7 +181,8 @@ struct OldSpringReverb {
         "M2 flags: --os 1|2|4|8 (oversampling, default 4), --stage2 wdf|adaa (default wdf),\n"
         "          --alias-report (print the aliasing metric table for os=1/2/4/8 and exit).\n"
         "M6.5:     --ideal-opamp (bypass the op-amp model: ideal op-amp A/B),\n"
-        "M8/v1.1:  --pedal rat|sd1|ts|muff|gold|phaser (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
+        "M8/v1.1:  --pedal rat|sd1|ts|muff|gold|phaser|comp (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
+        "          comp = the M13.1 OTA compressor (2 knobs: --distortion = SUSTAIN, --level = LEVEL);\n"
         "          gold = the GOLD 'transparent' overdrive (parallel clean/dirt blend +\n"
         "          germanium clippers; --distortion=GAIN, --filter=TREBLE, --level=OUTPUT;\n"
         "          A/B hooks --gold-silicon (silicon diodes) and --gold-no-clean (clean half out));\n"
@@ -733,6 +735,17 @@ int main(int argc, char** argv) {
         model.setParameter(clipper::dsp::GoldModel::PARAM_OUTPUT, a.level);
         if (!input.empty())
             model.process(input.data(), out.data(), static_cast<int>(input.size()));
+    } else if (a.pedal == "comp") {
+        // M13.1: the "Squash" OTA compressor. TWO knobs — flags map positionally:
+        // --distortion -> SUSTAIN, --level -> LEVEL. --filter is carried and
+        // unused (the phaser precedent); a compressor has no tone control.
+        clipper::dsp::CompModel model;
+        model.prepare(fs, 128);
+        model.setOversampling(a.os);
+        model.setParameter(clipper::dsp::CompModel::PARAM_SUSTAIN, a.distortion);
+        model.setParameter(clipper::dsp::CompModel::PARAM_LEVEL, a.level);
+        if (!input.empty())
+            model.process(input.data(), out.data(), static_cast<int>(input.size()));
     } else if (a.pedal == "muff") {
         // v1.1 item 4: the four-transistor Muff fuzz. Knob flags map positionally:
         // --distortion -> SUSTAIN, --filter -> TONE (the mid-scoop), --level -> VOLUME.
@@ -844,6 +857,11 @@ int main(int argc, char** argv) {
             "output=%.2f os=%dx diodes=%s clean-blend=%s)\n  peak=%.4f  rms=%.4f\n",
             out.size(), fs, a.outFile.c_str(), a.distortion, a.filter, a.level, a.os,
             a.goldSilicon ? "silicon" : "germanium", a.goldNoClean ? "OFF" : "on", peak, rms);
+    } else if (a.pedal == "comp") {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (pedal=comp sustain=%.2f level=%.2f "
+            "os=%dx)\n  peak=%.4f  rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.distortion, a.level, a.os, peak, rms);
     } else if (a.pedal == "muff") {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (pedal=muff sustain=%.2f tone=%.2f "

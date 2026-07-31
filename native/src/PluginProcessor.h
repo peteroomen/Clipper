@@ -49,6 +49,12 @@ inline constexpr const char* goldOn      = "goldOn";
 inline constexpr const char* goldGain    = "goldGain";
 inline constexpr const char* goldTreble  = "goldTreble";
 inline constexpr const char* goldLevel   = "goldLevel";
+// M13.1: the "Squash" OTA compressor. TWO knobs only — the shared slot-1 has no
+// meaning for a compressor, and exposing an inert host parameter would be lying
+// about what the pedal does (the phaser precedent).
+inline constexpr const char* compOn      = "compOn";
+inline constexpr const char* compSustain = "compSustain";
+inline constexpr const char* compLevel   = "compLevel";
 inline constexpr const char* ampOn       = "ampOn";
 inline constexpr const char* volume      = "volume";
 inline constexpr const char* bass        = "bass";
@@ -122,7 +128,9 @@ public:
     // from 3 bits when the GOLD pedal made the board six deep: 3-bit slots would
     // still have fitted six types, but only just, and a seventh would have silently
     // aliased. Four bits keeps a whole spare type per slot and still fits a single
-    // uint32 — so the publish stays ONE relaxed atomic store, never a lock.
+    // uint32 — so the publish stays ONE relaxed atomic store, never a lock. M13.1's
+    // compressor is that seventh type, and it fits the 4-bit slots unchanged, which
+    // is exactly the headroom the widening was for.
     std::vector<int> chainOrder() const;
     void setChainOrder(const std::vector<int>& types);
     // Bumped on every board change (including a host state load), so the editor can
