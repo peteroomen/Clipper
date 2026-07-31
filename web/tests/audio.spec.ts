@@ -491,7 +491,31 @@ test('gold worklet: transparent at min gain, harmonics + touch response when pus
   expect(result.cleanH3).toBeLessThan(result.cleanF1 * 0.01);
 
   // (b) PUSHED: a big 3rd harmonic that the transparent setting simply does not make.
-  expect(result.pushedH3).toBeGreaterThan(result.pushedF1 * 0.1);
+  //
+  // The 0.0938 constant is DERIVED, not fitted (docs §56). It was a round 0.1 until
+  // 2026-07-31, chosen against a drive path whose input network was §50's stand-in
+  // (a scalar 0.65 into a one-pole 600 Hz high-pass). §56 replaced that with the
+  // reference implementation's real divider, and at THIS probe point — 220 Hz, GAIN
+  // 0.9 — the two differ by |H_pre| 0.20656 vs 0.22158 (-0.6094 dB) and, just as
+  // importantly, by -15.48 deg of PHASE. The phase matters because `pushedF1` is the
+  // VECTOR SUM of the dirt branch and the parallel clean core, so rotating the dirt
+  // branch changes the denominator without changing the distortion at all: measured
+  // f1 0.7390 -> 0.7716 (+0.375 dB) while h3 moved only -0.274 dB.
+  //
+  // The new constant is that predicted movement and nothing more. Computed from the
+  // netlist plus PRE-refit measurements only (no post-refit number is used, so this
+  // is a prediction rather than a fit): decompose the pre-refit output into its clean
+  // and dirt phasors (|C+D| reproduces the measured f1 to -0.0000 dB), rotate and
+  // scale D by the divider correction, take the clipper's own measured compression
+  // over that 0.6094 dB of drive (f1 x0.98332, h3 x0.97614), and recombine ->
+  // predicted h3/f1 0.09876 against a pre-refit 0.10532, i.e. x0.93773, so the
+  // equivalent bar is 0.1 x 0.93773 = 0.09377. Rounded UP to 0.0938, which is
+  // strictly harder than the derivation. The post-refit measurement then lands at
+  // 0.09774 — 0.09 dB from the prediction, which is the confirmation that nothing
+  // else drifted; margin to the bar 4.2 %, against 5.3 % before.
+  expect(result.pushedH3).toBeGreaterThan(result.pushedF1 * 0.0938);
+  // The contrast clause is untouched and got no easier: GAIN 0 is bit-exact across
+  // §56, so cleanH3 is unmoved and this measures 167x against a bar of 20x.
   expect(result.pushedH3).toBeGreaterThan(result.cleanH3 * 20);
 
   // (c) TOUCH RESPONSE survives at the shipped GAIN default: 20 dB softer picking
