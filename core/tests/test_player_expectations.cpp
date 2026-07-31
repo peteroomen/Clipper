@@ -400,8 +400,10 @@ std::vector<Gear> allGear() {
     //   rat +18.6   sd1 +15.6   ts +13.1   muff +29.4 (fuzz sustain wall — by design)
     //   gold +7.3 (was +13.2 pre-§50: the gang law puts default drive at
     //   A(0.35) = 6.1× where the old linear law had 24.3× — see docs §50)
-    //   clean120 −6.0   jcm800 +1.7   twin −13.8   ac30 +1.6 (0.4 opening volume;
-    //   see docs §23 second amendment — the AC30 gain-structure fix moved it +13.3 dB)
+    //   clean120 −6.0   jcm800 −2.5 (was +1.7 pre-§51: the re-derived GAIN taper
+    //   delivers 4.1 dB less drive at the 0.5 default — docs §51)   twin −13.8
+    //   ac30 +1.6 (0.4 opening volume; see docs §23 second amendment — the AC30
+    //   gain-structure fix moved it +13.3 dB)
     auto window = [&](const char* name, double lo, double hi) {
         for (auto& g : gear)
             if (g.name == name) { g.lvlDeltaLo = lo; g.lvlDeltaHi = hi; }
@@ -509,13 +511,15 @@ bool isDirtPedal(const Gear& g) { return g.isPedal; }
 //                                  1.69 V; muff defaults 1.41 V (a Muff is LOUD —
 //                                  the downstream limiter owns the ceiling).
 //   amp peak ceiling  1.05        amps are normalized, 1.0 == full scale; hottest
-//                                  measured at defaults: jcm800 0.126.
+//                                  measured at defaults: jcm800 0.095 (was 0.126
+//                                  pre-§51 — the re-derived GAIN taper, docs §51).
 //   LEVEL knob at min             must actually attenuate ≥ 6 dB below default —
 //                                  measured: every level/volume/master pot (and
 //                                  the JCM's preamp-volume GAIN) kills to −240.
 //   Defaults RMS per gear: rat −16.6, sd1 −19.6, ts −22.1, muff −5.8, gold −27.8
 //   (§50: was −22.0 under the pre-gang-law drive),
-//   clean120 −41.1, jcm800 −33.5, twin −49.0, ac30 −33.6 dBFS (ac30 was −46.9
+//   clean120 −41.1, jcm800 −37.6 (was −33.5 pre-§51: −4.1 dB of GAIN-taper drive
+//   at the 0.5 default, docs §51), twin −49.0, ac30 −33.6 dBFS (ac30 was −46.9
 //   before the §23 second amendment: its PI was starved, so the VOLUME knob
 //   could not reach the power section — see docs §23).
 // ---------------------------------------------------------------------------
@@ -627,9 +631,10 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //                muff 2.6→34.9→38.5 (probes 0/0.6/1.0; the §49 series base resistors
 //                made the wall ARTICULATE — max fell 147.7 → 38.5 because the
 //                fundamental survives now — and the §43 floor re-derived −84 → −70)
-//                jcm800 0.2→10.8→48.5 (was 0.0→9.3→48.5 post-§45; the §47 bright
-//                cap tilts the drive spectrum into the clippers at low/mid gain —
-//                brighter drive, slightly more measured harmonic energy mid-knob)
+//                jcm800 0.2→6.9→48.5 (was 0.2→10.8→48.5 post-§47, and 0.0→9.3→48.5
+//                post-§45; §51 re-derived the GAIN taper — knob 0.5 now delivers
+//                the drive the k=4 law delivered at 0.40, so the mid-knob THD
+//                falls while GAIN 1.0 is bit-identical: taper(1) = 1 for any k)
 //                gold 0.0→2.3→15.3 (0.0 % at GAIN 0 is the crossfade: the clipped
 //                half is switched OUT, not merely quiet. §50: was 0.0→23.4→30.6 —
 //                the gang law A = 1+422k/((1−g)·100k+17k) spans 4.6→25.8×, 6.1×
@@ -637,7 +642,9 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //                real unit's knob-0.99 drive at the shipped default)
 //   LEVEL dBFS (0/0.5/1): rat −240→−15.6→−9.6   sd1 −240→−12.8→−6.8
 //                ts −240→−14.9→−8.9   muff −240→−7.0→−1.0
-//                clean120 −240→−25.9→−23.0   jcm master −240→−18.4→−8.9
+//                clean120 −240→−25.9→−23.0   jcm master −240→−21.9→−7.5 (§51: the
+//                master pot's own law is untouched at k = 4 — what moved is the
+//                GAIN drive reaching it at the 0.5 default)
 //                twin −240→−34.5→−16.3   ac30 −240→−17.8→−9.7 (docs §23 second
 //                amendment: the AC30 volume travel moved up ~12 dB when the
 //                starved phase inverter was fixed — the knob reaches the EL84s now)
@@ -647,7 +654,7 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //                (§50: was −17.9→−5.7 — less clipped harmonic energy overall at
 //                max gain, same +10.6 dB of knob authority)
 //   TONE, amps  (3 kHz level dB, dark→bright; bar ≥ +4):
-//                clean120 treble −36.7→−27.3   jcm800 treble −30.3→−15.7
+//                clean120 treble −36.7→−27.3   jcm800 treble −29.3→−14.1 (§51)
 //                twin treble −52.3→−21.0   ac30 treble −45.1→−21.8
 //                ac30 CUT −35.9→−25.5 (inverted knob: 1 = darker — docs §23)
 // ---------------------------------------------------------------------------
@@ -719,7 +726,9 @@ void testKnobMonotonicity(const std::vector<Gear>& gear) {
             // fully open — clearly audible, and it fails a knob whose upper half is dead,
             // which is a real class of defect in this codebase (the audit measured JCM800
             // BASS at "+9.5 dB lower half / +0.2 dB upper half"). Measured across the rig:
-            // rat/muff/gold +6.0, jcm master +9.5, ac30 +8.1, twin +18.2, and clean120 the
+            // rat/muff/gold +6.0, jcm master +14.4 (was +9.5 pre-§51 — a less-driven
+            // power section decompresses, so the master's top half is worth MORE now),
+            // ac30 +8.1, twin +18.2, and clean120 the
             // tightest at +2.9 dB (its volume runs into a compressive output stage).
             assert(lv[2] > lv[1] * 1.2589 &&
                    "LEVEL knob gained under 2 dB from noon to fully open (dead top half)");
@@ -787,7 +796,7 @@ void testKnobMonotonicity(const std::vector<Gear>& gear) {
 // Measured Δ RMS at defaults (2026-07, 48 kHz, pluck peak −20 dBFS / RMS −33.5):
 //   rat +18.6   sd1 +15.6   ts +13.1   muff +29.4 (the sustain wall lifts a
 //   DECAYING pluck's RMS by design — a fuzz that did NOT would be the bug)
-//   clean120 −6.0   jcm800 +1.7   twin −13.8   ac30 +1.6 (0.4 opening volume —
+//   clean120 −6.0   jcm800 −2.5 (docs §51)   twin −13.8   ac30 +1.6 (0.4 opening volume —
 //   +13.3 dB vs the pre-§23-second-amendment −11.7: the Thirty's opening volume
 //   now sits at its edge-of-breakup sweet spot instead of 15 dB below it, which
 //   is exactly what a real AC30 at "4" does; it now sits level with the JCM)

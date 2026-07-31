@@ -7927,6 +7927,34 @@ report is the honest derivation source; the full before/after table lives in the
 and the constant's comment. Golden `sd1_twin_reverb` −0.83 dB RMS / 6.02 dB @ 504 Hz —
 owner-blessed (GOLDENS.md) before merge; every other rig renders reverb 0 and is byte-stable.
 
+### §48 amendment — "the top half is too strong to ever use" is the instrument, not the model
+
+*Date: 2026-07-31 · Branch: `claude/reverb-coaching-6f557i` · docs + prompt only, zero DSP change*
+
+Follow-up report after the trim above landed: the top half of the reverb knob is still
+"too strong to ever use." The owner commissioned research before touching `kWetGain` a
+second time, and it came back saying the knob is behaving like the real amp. On a blackface
+Fender the usable range **is** the bottom third: real owners run reverb **1-2.5 out of 10**,
+past **3-4** it takes off into Dick Dale surf territory, and there is a whole **dwell-mod
+industry** (tank swaps, dwell/mix pot mods) for players who want the top of the dial to do
+something else. Against that, our measured parity point — wet reaching parity with dry at
+knob **~0.60** — is if anything **polite**: a real Twin is drenched by ~0.35.
+
+**Decision (owner, 2026-07-31): keep the authentic law. No DSP change.** `kWetGain = 1.5`,
+the squared equal-power knob law and the bit-exact dry at 0 all stand exactly as §48 left
+them, and no golden moves. Re-tapering to make the top half "usable" would be modeling a
+modded amp while claiming a stock one, and it would put a second taste constant on top of
+the one the field report already calibrated.
+
+The fix moved to the **assistant** instead: the coach now says where the knob is usable
+(15-35 for classic spring presence, ~40+ as deliberate surf/drip), and says that this
+matches real Twin behavior rather than apologizing for it. The text is appended to the
+Twin's `reverb` bullet in the **stable** `SYSTEM_PROMPT` block of
+`web/src/assistant/prompt.ts` — no new tool, no volatile rig-state change, so the
+`cache_control` prefix is undisturbed — and it closes by noting that the same spring model
+backs the reverb knob on all four heads. Plan file:
+`docs/work/2026-07-31-reverb-coaching.md`.
+
 ## 49. The Muff clip stages' series base resistors — the blowout was the missing bass
 
 *Date: 2026-07-31 (overnight) · Branch: `claude/muff-series-rs-6f557i` · ADR 009's deferred half, minimal slice*
@@ -8033,3 +8061,108 @@ muff_twin) with ts_ac30/clean120_chorus UNCHANGED. The GAIN-0 path is bit-exact
 unchanged (transparency contract), so the web "transparent at min gain" spec is
 untouched by construction. Deliberate tone change at every other knob position,
 argued against the schematic law + the reference THD rows above.
+
+## 51. The JCM800 GAIN pot's taper — breakup moved from "20" to "30", the top pinned
+
+*Date: 2026-07-31 · Branch: `claude/jcm-gain-taper-6f557i` · Owner field report, round 3*
+
+The last knob-feel item of the 2026-07 field-report round, and the first one the owner
+made at **unity input trim** with §45 (Ra2) and §47 (the bright cap) already in the
+build: *"Breakup is still slightly early. 20 sounds like what I want 30 to sound like.
+I like the total saturation though, 100 is perfect right where it is."* No circuit
+change — the 2204's GAIN network is now schematic-correct — so this is purely the pot
+law, and the sentence is itself the design equation.
+
+### 51.1 The derivation
+
+Both JCM pots ran the same audio taper `(e^{kx} − 1)/(e^k − 1)` with `k = 4`. GAIN's
+`k` is now its own constant, derived rather than dialled:
+
+    gainTaper(0.30) == audioTaper_{k=4}(0.20) = 0.022865358743438216
+    →  kGainTaperK = 5.0521652926683824   (bisected; residual 4.6e-16 relative)
+
+`kMasterTaperK` stays 4.0, byte-for-byte (verified: the IEEE-754 bit fingerprint of
+`audioTaper` over 101 knob positions is `572cafc287be552a` before and after). The GAIN
+pot's wiper is the **only** thing the knob controls — the §47 bright-cap coefficients
+are rebuilt from that same wiper — so the remap is exact end-to-end: the new GAIN 0.30
+render reproduces the pre-§51 GAIN 0.20 render to **−147.0 dBFS absolute / −119.6 dB
+relative to peak**, i.e. inside the project's own −120 dBFS solver gate (§25). And
+`taper(1) = 1` for *any* k, so the top of the knob is untouched **by construction** —
+render hash `484ed0c37929dc69` at GAIN 1.0, identical across the change, which is the
+owner's "100 is perfect" honoured exactly. GAIN 0.0 is likewise byte-identical.
+
+Across the travel the wiper drops 7.0 dB (knob 0.05), 6.2 (0.20), 4.1 (0.50), 2.6
+(0.70), 0.9 (0.90), 0.0 (1.00) — a reshape of the lower travel, not an attenuator.
+
+### 51.2 Measured — THD vs GAIN, composed `Jcm800Amp`
+
+The §45 probe convention (220 Hz, MASTER 0.5, BASS/MID 0.5, TREBLE 0.6, PRESENCE 0.5,
+48 kHz, 4×, THD = harmonics 2..8), at the §45 level of 0.10 V peak:
+
+| knob | THD before | THD after | | knob | THD before | THD after |
+|------|-----------|-----------|-|------|-----------|-----------|
+| 0.05 | 0.71 % | 0.43 % | | 0.55 | 16.42 % | 9.96 % |
+| 0.10 | 1.35 % | 0.73 % | | 0.60 | 22.16 % | 13.14 % |
+| 0.15 | 2.15 % | 1.11 % | | 0.65 | 27.87 % | 18.87 % |
+| 0.20 | 3.18 % | 1.61 % | | 0.70 | 32.96 % | 25.82 % |
+| 0.25 | 4.43 % | 2.28 % | | 0.75 | 37.39 % | 32.17 % |
+| 0.30 | 5.73 % | **3.18 %** | | 0.80 | 41.20 % | 37.60 % |
+| 0.35 | 6.92 % | 4.32 % | | 0.85 | 44.45 % | 42.16 % |
+| 0.40 | 8.13 % | 5.61 % | | 0.90 | 47.14 % | 45.90 % |
+| 0.45 | 9.70 % | 6.85 % | | 0.95 | 49.23 % | 48.78 % |
+| 0.50 | 12.18 % | 8.15 % | | 1.00 | **50.60 %** | **50.60 %** |
+
+Monotonic before and after. The bolded pair is the remap reading itself back: the new
+0.30 row *is* the old 0.20 row (3.178 % / −31.00 dBFS, to every printed digit), and the
+1.00 row is bit-identical.
+
+### 51.3 The onset, and an honest correction to the plan's assumption
+
+The plan assumed the ≥ 5 % THD onset already sat at knob 0.20. **It does not at the
+§45 probe level** — measured first, before any constant was chosen:
+
+| input (V peak) | 0.05 | 0.075 | 0.10 | 0.15 | 0.20 | 0.25 | 0.30 | 0.40 | 0.50 |
+|---|---|---|---|---|---|---|---|---|---|
+| pre-§51 onset knob | 0.406 | 0.324 | 0.272 | **0.2057** | 0.165 | 0.137 | 0.117 | 0.089 | 0.071 |
+
+The owner's reported "20" reproduces at **0.15 V peak** — an ordinary unity-trim
+pickup level — and the §45 0.10 V probe is simply a quieter reference that reads the
+same amp at 0.272. Both are reported, and the shipped constant is derived from the
+owner's sentence rather than from either probe:
+
+- **0.15 V (the field-report anchor): onset 0.2057 → 0.3064.** The bar.
+- **0.10 V (the §45 reporting convention): onset 0.2717 → 0.3764.**
+
+The knob-space map is level-independent (it remaps the wiper, not the circuit), so one
+constant moves every level's onset by the same transform. Choosing k to land the 0.10 V
+onset on 0.30 instead would have delivered only −1.6 dB at knob 0.20 — a quarter of
+what the report asks for — and was rejected: the owner's ear, not the quieter probe,
+is the calibration source, exactly as §48 took "about twice as strong" as −6 dB.
+
+### 51.4 The test bar
+
+`testGainTaperOnset` (`test_jcm800_power.cpp`, run once at 48 kHz) brackets the onset
+with two composed-amp renders at the 0.15 V anchor: **THD 4.27 % at knob 0.28 (< 5)**
+and **5.93 % at 0.34 (≥ 5)**, plus monotonicity through 0.50 / 0.70 and the law
+properties (`gainTaper(1) == 1` and `audioTaper(1) == 1` exactly, `gainTaper(0) == 0`,
+the design-equation residual < 1e-15, MASTER still on k = 4 by value). Perturbation:
+`kGainTaperK` back to 4.0 → **THD 7.10 % at knob 0.28**, `Assertion 'tLo < 0.05 &&
+"JCM800 GAIN breaks up EARLIER than knob 0.28 (taper too hot)"' failed` — restored,
+green again.
+
+### 51.5 Scope, and the golden
+
+Player-expectations reference rows re-baselined (comments only, no bars moved): A1
+defaults RMS −33.5 → −37.6 dBFS and peak 0.126 → 0.095; A3 GAIN THD 0.2→10.8→48.5 →
+**0.2→6.9→48.5**; A3 MASTER level −240→−18.4→−8.9 → **−240→−21.9→−7.5** (the master's
+own law is untouched — what moved is the drive reaching it, and a less-driven power
+section decompresses, so the master's top half is worth **+14.4 dB** where it was
++9.5); A3 treble −30.3→−15.7 → −29.3→−14.1; A4 default-rig delta +1.7 → **−2.5 dB**,
+comfortably inside the unchanged −10..+10 window. The web amp-level drift guard needed
+no re-centring (Playwright green).
+
+Golden **`rat_jcm800`: −1.08 dB RMS, worst band 4.50 dB @ 2016 Hz** — the rig renders
+at GAIN 0.7, where the taper is 2.6 dB colder, and the power section gives back half of
+it. Outside the ±1.0 dB gate, so the bless is the owner's; until authorized the core
+suite is red at that one assert by design (the §36/§47 precedent). The other four
+goldens are UNCHANGED (≤ 0.00/0.11 dB) — the scope check.
