@@ -191,7 +191,7 @@ Full tables in docs §58.6. Headlines:
 - `native/src/ClipperEngine.{h,cpp}`, `native/src/PluginProcessor.{h,cpp}`,
   `native/src/PedalCard.cpp`, `native/src/ClipperLookAndFeel.{h,cpp}`
 - `web/public/generated/{clipper.js,clipper-processor.js,.build-stamp.json}`
-- `docs/DEVELOPMENT.md` §58, `docs/decisions/NNN-wah-filter-and-gain-stage-split.md`,
+- `docs/DEVELOPMENT.md` §58, `docs/decisions/018-wah-filter-and-gain-stage-split.md`,
   this file, `CLAUDE.md`
 
 ## Deferred to next session

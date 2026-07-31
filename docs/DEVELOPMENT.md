@@ -10195,8 +10195,8 @@ dispatch (so a wah routes to the RAT) takes the heel-band energy from 5.4e-04 to
    should be able to DERIVE `kTaperBeta` and check it against 23.537247.
 2. **The Q exponent**: derived -1.000, measured -0.870, so +-11 % at the ends.
    Closing it means finding what else in the loading moves with the pot.
-3. **The tank is not inside the transistor's feedback path** (§58.4). ADR number
-   needed. Cost: the resonance does not detune or damp when the stage is slammed.
+3. **The tank is not inside the transistor's feedback path** (§58.4), recorded in
+   **ADR 018**. Cost: the resonance does not detune or damp when the stage is slammed.
 4. **Inductor core saturation is not modelled** — the measured Fasel-vs-halo
    difference is mostly core behaviour, not inductance (§58.1).
 5. **Two envelope followers now exist in this repo** (this one and the parallel

@@ -1,9 +1,4 @@
-# ADR NNN: The wah's resonant tank is modelled OUTSIDE the transistor's feedback loop
-
-**ADR NUMBER NEEDED.** § and ADR numbers are assigned centrally (CLAUDE.md) and
-017 is already taken, so this file is deliberately named `NNN-` rather than
-guessing. Rename it and update the cross-references in
-`docs/DEVELOPMENT.md` §58.4 and `core/include/clipper/dsp/WahModel.h`.
+# ADR 018: The wah's resonant tank is modelled OUTSIDE the transistor's feedback loop
 
 Date: 2026-07-31
 Status: Proposed (pending its number)
