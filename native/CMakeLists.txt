@@ -148,10 +148,11 @@ target_include_directories(clipper_cab_state_test PRIVATE src)
 enable_testing()
 add_test(NAME clipper_identical_core COMMAND clipper_identical_test)
 add_test(NAME clipper_chain_edit COMMAND clipper_chain_edit_test)
-# NOTE for whoever next touches .github/workflows/ci.yml: the native CI job filters
-# with -R 'clipper_identical_core|clipper_chain_edit' (the native build registers the
-# CORE's tests too, without building them). This entry is NOT matched by that regex,
-# so it runs locally but not yet in CI — add clipper_cab_state to the filter.
+# NOTE for whoever adds a test here: the native CI job filters with
+# -R 'clipper_identical_core|clipper_chain_edit|clipper_cab_state' (the native build
+# registers the CORE's tests too, without building them), AND builds an explicit
+# --target list. A new entry must be added to BOTH or ctest reports it "Not Run" and
+# exits 8 — adding it to the filter alone is what turned this job red on PR #35.
 add_test(NAME clipper_cab_state COMMAND clipper_cab_state_test)
 
 # --- Dev-only editor SNAPSHOT tool (NOT shipped) -----------------------------
