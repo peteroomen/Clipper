@@ -1,7 +1,9 @@
 # ADR 009: The Muff gets its output coupling cap — and why the series base resistor is a SEPARATE decision
 
 Date: 2026-07-25
-Status: Accepted (DC half). The bass half is deferred to ADR 010 — see "Why this is split".
+Status: Accepted (DC half). The bass half was deferred to ADR 010 and is now **closed** —
+docs §49 landed the series base resistor and **ADR 010 / docs §53** landed the DC-blocking
+diode caps that this ADR predicted were the real upstream error. See "Why this is split".
 
 ## Context
 

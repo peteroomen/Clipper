@@ -62,9 +62,27 @@ float onePoleCoeff(double cutoffHz, double sampleRate) {
 constexpr double kInputDrive = 0.5;
 // SUSTAIN drive into Q2 AT MAX (knob = 1). The clipping/compression is developed
 // here, AFTER the pot, by the high-gain Q2→Q3 cascade — so the pot is a true
-// full-range attenuator into the first clipper. ~6× puts several volts into Q2 at
-// max for a healthy wall while Q1 stays clean.
-constexpr double kClipDriveMax = 6.0;
+// full-range attenuator into the first clipper.
+//
+// 6.0 → 1.0 in docs §53, and this is an UN-FITTING, not a re-voicing. A real Big
+// Muff SUSTAIN is a 100 kA pot wired as a passive divider between Q1's coupling
+// cap and Q2's 10 k series base resistor: at the top of its travel the wiper
+// passes Q1's output through, and it can never pass MORE. 6× was 15.6 dB of gain
+// no pot can provide, and it existed to slam clip stages that had no headroom —
+// their diodes conducted at idle and pinned the collector 0.26 V above the base
+// because the DC-blocking cap C6/C7 was missing (docs §53). With the branch
+// blocked, each clip stage biases at Vc = 4.95 V and makes its real ~28 dB
+// (Rc//Rf / Re = 9.8 k / 390), so the compensation comes off. Per CLAUDE.md: the
+// error was found, so the constant fitted around it goes back to the physical
+// value rather than being re-tuned.
+//
+// Measured at the shipped default (0.1 V, 220 Hz, TONE 0.5 / VOLUME 0.6) the
+// voice barely notices — 6.0 gives −4.5 dBFS / 36 % THD, 1.0 gives −4.8 / 33 %,
+// because the diodes set the level, not the drive. What it buys is the bottom of
+// the knob: at 6.0 the whole travel was past the clean window again (knob 0.15 =
+// 23.6 % THD, only 2.3 dB below the wall), at 1.0 it is a tame fuzz with real
+// level authority (9.8 %, 5.8 dB down — see kSustainMinDb).
+constexpr double kClipDriveMax = 1.0;
 // SUSTAIN taper: an audio pot wired as a full-range input attenuator (a real
 // Big-Muff SUSTAIN is a 100 kA pot; at minimum it nearly grounds the clipper input).
 // PIECEWISE decibel-linear, with the break at the shipped default (0.6):
@@ -97,8 +115,24 @@ constexpr double kClipDriveMax = 6.0;
 // (articulate — the fundamental survives now, see the Rs comment in configureStages).
 // The ≥ 0.6 upper law is unchanged; the golden moves ANYWAY because the clip stages
 // changed, so the §43 bit-pin no longer applies (bless held for the owner).
+// §53 RE-DERIVATION (2026-07-31): the clip stages' DC-blocking caps landed, which
+// moved their bias off the diode clamp and gave them their real ~28 dB of gain
+// each, so the knob's low half had to be re-derived a second time — against the
+// SAME §43 player bar (knob ~0.15 at a 0.1 V pluck is a TAME fuzz, the "real Muff
+// at sustain 1-2" feel the field report asked for, which §49 measured at 10.7 %
+// THD). Sweep at kClipDriveMax = 1.0, 220 Hz / 0.1 V / 48 kHz, knob 0.15:
+//   −54  20.2 % THD, 3.0 dB below the wall   (level authority collapses again)
+//   −60  14.9 %, 4.3 dB
+//   −62  12.9 %, 4.8 dB
+//   −65   9.8 %, 5.8 dB   <-- chosen: lands §49's own 10.7 % bar on the new circuit
+//   −70   3.8 %, 8.0 dB   (cleaner than the field report asked for)
+// Note the "below the wall" column: it can no longer reach §43's 15 dB, and that
+// is a property of the CORRECTED circuit, not a loosened bar — see the re-derived
+// assertion in test_muff_model.cpp's testSustainRange. With the diodes clamping
+// around a real bias, Q2→Q3 hold their output near 0.65 V at any drive, so the
+// knob governs saturation far more than level. That is what a Big Muff does.
 constexpr double kSustainFloorDb = -54.0;
-constexpr double kSustainMinDb = -70.0;
+constexpr double kSustainMinDb = -65.0;
 constexpr double kSustainBreak = 0.6;
 // Output trim: the recovery stage (Q4) collector AC is a few volts; scale so the default
 // (SUSTAIN 0.6 / VOLUME 0.6) peaks ~1.0 V, then VOLUME (0..1) rides on top.
@@ -213,6 +247,42 @@ struct MuffModel::Impl {
         // iterations. Q1/Q4 keep Rs = 0: their networks are part of ADR 009's
         // DC-blocked-diode follow-up, not this slice.
         clip.Rs = 10.0e3;
+        // The DC-BLOCKED diode branch + its bias partner (docs §53, ADR 009's
+        // named follow-up — the other half of audit finding 16, and the answer to
+        // "it's still a little gutless, it doesn't scream through").
+        //
+        // Published Big Muff clip stage (ElectroSmash "Big Muff Pi Analysis";
+        // guitarscience.net "A Case Study: Re-engineering the Big Muff π", which
+        // works the same network as RS/RA/RF): the antiparallel feedback diodes
+        // are NOT wired across the collector-base feedback directly — they sit in
+        // series with a 1 µF cap, C6 on the first clip stage and C7 on the second,
+        // and the base carries a 100 k bias resistor RA to ground beside the 470 k
+        // feedback RF and the 10 k series RS. The published network impedance is
+        // RB = RS//RA//RF = 10k//100k//470k = 8.9 k; this model measured ~1.8 k,
+        // which is the discrepancy ADR 009 refused to paper over and sent here.
+        //
+        // C6/C7 are what make that number come out. Without them the branch
+        // carries DC: the idle collector-base voltage clears the diode knee, the
+        // pair CONDUCTS AT IDLE and clamps the collector 0.26 V above the base
+        // (measured Vc = 1.213 V), which both destroys the stage's headroom and
+        // shunts the base node — putting each clip stage's input coupling corner
+        // at ~900 Hz, i.e. audit finding 16's missing bass. With them the DC solve
+        // finds the diodes OFF (Vd = Vb exactly, zero branch current), the stage
+        // biases on RF + RA alone at Vc = 4.95 V / Ic = 0.397 mA — a published
+        // Big Muff clip stage idles near 4 V and ~0.4 mA — and the diodes clip the
+        // AC swing symmetrically about that bias, which is the pedal's real
+        // mechanism. Measured: low E −14.24 → −5.48 dB re 1 kHz, and the ±20 V
+        // slam ledger 5 of 16 at the Newton cap → 0 of 16.
+        //
+        // Rbg IS the plumbed-but-unused Config::Rbg from §49, not a supersession:
+        // §49 measured it parking the stage deeper in the knee, which is exactly
+        // what a bias divider does while the diodes are still shorting the base at
+        // DC. It only makes sense with the cap, and it lands with it.
+        //
+        // Q1/Q4 stay on the 3-node path (no diodes, no branch, Rs/Rbg = 0), so
+        // they are bit-identical to before — verified by render hash.
+        clip.Rbg = 100.0e3;
+        clip.Cdiode = 1.0e-6;
         BjtStage::Config c2 = clip;
         BjtStage::Config c3 = clip;
         q2.configure(c2);

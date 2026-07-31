@@ -397,7 +397,8 @@ std::vector<Gear> allGear() {
     std::vector<Gear> gear;
     // A4 level-sanity windows (RMS delta dB, standard pluck at defaults), each
     // measured value ± ~10 dB. Measured 2026-07 @ 48 kHz (input RMS −33.5 dBFS):
-    //   rat +18.6   sd1 +15.6   ts +13.1   muff +29.4 (fuzz sustain wall — by design)
+    //   rat +18.6   sd1 +15.6   ts +13.1   muff +27.7 (fuzz sustain wall — by design;
+//   was +29.4 pre-§53, before the clip stages' DC-blocking diode caps)
     //   gold +7.3 (was +13.2 pre-§50: the gang law puts default drive at
     //   A(0.35) = 6.1× where the old linear law had 24.3× — see docs §50)
     //   clean120 −6.0   jcm800 +1.7   twin −13.8   ac30 +1.6 (0.4 opening volume;
@@ -506,14 +507,17 @@ bool isDirtPedal(const Gear& g) { return g.isPedal; }
 //                                  "authentically quiet" from "silenced" (a true
 //                                  kill measures −240).
 //   pedal peak ceiling 2.0 V      hottest measured: muff tone=0 (dark, LP leg)
-//                                  1.69 V; muff defaults 1.41 V (a Muff is LOUD —
+//                                  1.637 V; muff defaults 1.170 V (a Muff is LOUD —
 //                                  the downstream limiter owns the ceiling).
+//                                  (§53 re-baseline: 1.69 / 1.41 before the
+//                                  DC-blocked diode branch.)
 //   amp peak ceiling  1.05        amps are normalized, 1.0 == full scale; hottest
 //                                  measured at defaults: jcm800 0.126.
 //   LEVEL knob at min             must actually attenuate ≥ 6 dB below default —
 //                                  measured: every level/volume/master pot (and
 //                                  the JCM's preamp-volume GAIN) kills to −240.
-//   Defaults RMS per gear: rat −16.6, sd1 −19.6, ts −22.1, muff −5.8, gold −27.8
+//   Defaults RMS per gear: rat −16.6, sd1 −19.6, ts −22.1, muff −7.4 (§53: was
+//   −5.8), gold −27.8
 //   (§50: was −22.0 under the pre-gang-law drive),
 //   clean120 −41.1, jcm800 −33.5, twin −49.0, ac30 −33.6 dBFS (ac30 was −46.9
 //   before the §23 second amendment: its PI was starved, so the VOLUME knob
@@ -570,9 +574,9 @@ void testMinKnobUsability(const std::vector<Gear>& gear) {
 //
 // REGRESSION FLOOR: ≥ 28 dB below the note. Measured (2026-07, 48 kHz):
 //   rat  min −36.0 / def −41.6 dB     sd1  min −33.1 / def −39.3 dB
-//   ts   min −33.1 / def −38.2 dB     muff min −50.7 / def −55.7 dB (re-measured
-//        2026-07-31, docs §49: the clip stages' series base resistors changed both
-//        rows — still 22+ dB inside the bar)
+//   ts   min −33.1 / def −38.2 dB     muff min −47.5 / def −55.4 dB (re-measured
+//        2026-07-31 twice: docs §49's series base resistors, then docs §53's
+//        DC-blocked diode branch — still 19+ dB inside the bar)
 //   gold min −30.1 / def −32.0 dB  ← the TIGHTEST, and necessarily so: at GAIN 0
 //        this pedal is a LINEAR buffer, so it can only PRESERVE the input's own
 //        −30 dB hum-to-note ratio (−30.1 measured == the physical ceiling for a
@@ -624,9 +628,12 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //
 // Measured (2026-07, 48 kHz, references for future failures):
 //   GAIN THD %:  rat 0.0→22.4→37.1   sd1 0.1→11.5→36.7   ts 0.1→5.7→31.9
-//                muff 2.6→34.9→38.5 (probes 0/0.6/1.0; the §49 series base resistors
+//                muff 0.4→32.0→35.7 (probes 0/0.6/1.0; §49's series base resistors
 //                made the wall ARTICULATE — max fell 147.7 → 38.5 because the
-//                fundamental survives now — and the §43 floor re-derived −84 → −70)
+//                fundamental survives — and §53's DC-blocked diode branch gave the
+//                stages a real bias to clip around, so the knob BOTTOM finally
+//                cleans up: 2.6 → 0.4 % at SUSTAIN 0, with kClipDriveMax un-fitted
+//                6.0 → 1.0 and the taper floor re-derived −70 → −65)
 //                jcm800 0.2→10.8→48.5 (was 0.0→9.3→48.5 post-§45; the §47 bright
 //                cap tilts the drive spectrum into the clippers at low/mid gain —
 //                brighter drive, slightly more measured harmonic energy mid-knob)
@@ -636,14 +643,17 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //                at the 0.35 default, where the linear law hit 24.3× there — the
 //                real unit's knob-0.99 drive at the shipped default)
 //   LEVEL dBFS (0/0.5/1): rat −240→−15.6→−9.6   sd1 −240→−12.8→−6.8
-//                ts −240→−14.9→−8.9   muff −240→−7.0→−1.0
+//                ts −240→−14.9→−8.9   muff −240→−6.4→−0.4 (§53: was −7.0→−1.0)
 //                clean120 −240→−25.9→−23.0   jcm master −240→−18.4→−8.9
 //                twin −240→−34.5→−16.3   ac30 −240→−17.8→−9.7 (docs §23 second
 //                amendment: the AC30 volume travel moved up ~12 dB when the
 //                starved phase inverter was fixed — the knob reaches the EL84s now)
 //   TONE, pedals (HF harmonic energy dB, dark→bright, gain maxed; bar ≥ +6):
 //                rat filter −19.8→−10.6 (inverted knob)   sd1 −16.0→−4.2
-//                ts −17.4→−6.2   muff −5.0→+10.1   gold treble −25.9→−15.3
+//                ts −17.4→−6.2   muff −12.8→−4.1 (§53: was −5.0→+10.1 — the clip
+//                stages' 470 pF Miller caps now work against a real base-node
+//                impedance, so the pedal is less shrill overall; same +8.7 dB of
+//                knob authority)   gold treble −25.9→−15.3
 //                (§50: was −17.9→−5.7 — less clipped harmonic energy overall at
 //                max gain, same +10.6 dB of knob authority)
 //   TONE, amps  (3 kHz level dB, dark→bright; bar ≥ +4):
@@ -785,7 +795,7 @@ void testKnobMonotonicity(const std::vector<Gear>& gear) {
 // (the RAT field bug) or 15 dB hot fails here before a player ever hears it.
 //
 // Measured Δ RMS at defaults (2026-07, 48 kHz, pluck peak −20 dBFS / RMS −33.5):
-//   rat +18.6   sd1 +15.6   ts +13.1   muff +29.4 (the sustain wall lifts a
+//   rat +18.6   sd1 +15.6   ts +13.1   muff +27.7 (§53: was +29.4; the sustain wall lifts a
 //   DECAYING pluck's RMS by design — a fuzz that did NOT would be the bug)
 //   clean120 −6.0   jcm800 +1.7   twin −13.8   ac30 +1.6 (0.4 opening volume —
 //   +13.3 dB vs the pre-§23-second-amendment −11.7: the Thirty's opening volume
