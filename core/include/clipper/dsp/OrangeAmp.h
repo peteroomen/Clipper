@@ -64,11 +64,13 @@ public:
     OrangePowerAmp& powerAmp() { return power_; }
     double lastOutputPeak() const { return power_.lastOutputPeak(); }
 
-    // The tone-stack-volts → driver-grid trim. DERIVED against an ABSOLUTE
-    // criterion — the amp must reach its rated 120 W when cranked (the docs §42
-    // precedent) — NOT fitted to a breakup target. Sweep table and the honesty
-    // correction that came out of it are in the .cpp.
-    static constexpr double kInterstageScale = 0.12;
+    // The preamp-volts → driver-grid trim. UN-FITTED to 1.0 by the schematic
+    // correction: the preamp now emits V1B's plate AC through the real 68n, the
+    // real F.A.C. cap and the real 100k+100k loop feed into the driver's 1M grid
+    // leak, so the driver grid voltage IS the preamp's output and there is nothing
+    // left for a trim to represent. Sweep table and the two premises it refuted
+    // are in the .cpp.
+    static constexpr double kInterstageScale = 1.0;
 
 private:
     double sampleRate_ = 44100.0;

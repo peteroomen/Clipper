@@ -1,7 +1,8 @@
-// Clipper — OrangePreamp (M10.3, docs §57). See OrangePreamp.h for the topology,
-// the "why this is not a re-skinned JCM800" argument and the PROVENANCE banner.
-// This file is the numerics: the James/F.A.C. MNA, the per-stage TriodeStage
-// configs, V1B's plate source impedance, and the block signal flow.
+// Clipper — OrangePreamp (M10.3, docs §57; SCHEMATIC CORRECTION 2026-07-31).
+// See OrangePreamp.h for the topology, the structural correction and the
+// PROVENANCE banner. This file is the numerics: the James+GAIN+grid MNA, the
+// F.A.C. network, the transcribed TriodeStage configs, the 33k dropper chain and
+// the block signal flow.
 
 #include "clipper/dsp/OrangePreamp.h"
 
@@ -19,87 +20,13 @@ namespace {
 // matrix and its inverse, poisoning every later sample.
 inline double clampR(double r) { return r > 1.0 ? r : 1.0; }
 
-enum { IN = 0, F = 1, A = 2, B = 3, T = 4, U = 5, OUT = 6 };
-}  // namespace
+enum { F = 0, A = 1, W = 2, B = 3, T = 4, U = 5, OUT = 6, G = 7, GRID = 8 };
 
-// ===========================================================================
-// JamesToneStack
-// ===========================================================================
-void JamesToneStack::prepare(double sampleRate) {
-    sampleRate_ = sampleRate > 0.0 ? sampleRate : 44100.0;
-    T_ = 1.0 / sampleRate_;
-    geq1_ = 2.0 * kC1 / T_;
-    geq2_ = 2.0 * kC2 / T_;
-    geq3_ = 2.0 * kC3 / T_;
-    geqF_ = 2.0 * kFacCaps[fac_] / T_;
-    bassSm_.prepare(kKnobSmoothSeconds, sampleRate_);
-    trebleSm_.prepare(kKnobSmoothSeconds, sampleRate_);
-    reset();
-}
-
-void JamesToneStack::reset() {
-    vF_ = iF_ = v1_ = i1_ = v2_ = i2_ = v3_ = i3_ = 0.0;
-    snapKnobs();
-}
-
-void JamesToneStack::snapKnobs() {
-    bassSm_.reset();
-    trebleSm_.reset();
-    bass_ = bassSm_.value();
-    treble_ = trebleSm_.value();
-    knobsMoving_ = false;
-    ctrlCounter_ = 0;
-    rebuild();
-}
-
-void JamesToneStack::setSourceImpedance(double rs) {
-    rs_ = clampR(rs);
-    dirty_ = true;
-}
-
-void JamesToneStack::setKnobs(double bass, double treble) {
-    auto cl = [](double v) { return clampParam(v, 1.0e-3, 1.0 - 1.0e-3); };
-    bassSm_.setTarget(cl(bass));
-    trebleSm_.setTarget(cl(treble));
-    ctrlCounter_ = 0;
-    if (!(bassSm_.settled() && trebleSm_.settled())) knobsMoving_ = true;
-}
-
-// The F.A.C. is a SWITCH, not a knob: there is nothing to smooth between two cap
-// values, and the real rotary steps too. The worklet/plugin bracket a switch
-// position change with the chain declick, exactly like a topology change; the cap
-// STATE is deliberately carried across so the network's stored charge is not
-// discontinuous (which is also what the real switch does).
-void JamesToneStack::setFacPosition(int pos) {
-    const int p = pos < 0 ? 0 : (pos >= kFacPositions ? kFacPositions - 1 : pos);
-    if (p == fac_) return;
-    fac_ = p;
-    geqF_ = 2.0 * kFacCaps[fac_] / T_;
-    dirty_ = true;
-}
-
-void JamesToneStack::rebuild() {
-    std::array<std::array<double, N>, N> G{};
-    auto stamp = [&](int a, int b, double g) {
-        G[a][a] += g;
-        G[b][b] += g;
-        G[a][b] -= g;
-        G[b][a] -= g;
-    };
-    G[IN][IN] += 1.0 / rs_;                                  // source conductance
-    stamp(IN, F, geqF_);                                     // F.A.C. series cap
-    stamp(F, A, 1.0 / kR1);                                  // bass series R
-    stamp(A, OUT, 1.0 / clampR((1.0 - bass_) * kRB));        // bass pot upper
-    stamp(OUT, B, 1.0 / clampR(bass_ * kRB));                // bass pot lower
-    stamp(A, B, geq1_);                                      // C1 across the track
-    G[B][B] += 1.0 / kR3;                                    // bass shunt R to gnd
-    stamp(F, T, geq2_);                                      // treble series cap
-    stamp(T, OUT, 1.0 / clampR((1.0 - treble_) * kRT));      // treble pot upper
-    stamp(OUT, U, 1.0 / clampR(treble_ * kRT));              // treble pot lower
-    G[U][U] += geq3_;                                        // C3 to gnd
-    G[OUT][OUT] += 1.0 / kRL;                                // next grid leak
-
-    std::array<std::array<double, N>, N> Amat = G;
+// Gauss-Jordan inverse of a small dense real matrix with partial pivoting.
+template <int N>
+void invertInPlace(std::array<std::array<double, N>, N>& M,
+                   std::array<std::array<double, N>, N>& out) {
+    std::array<std::array<double, N>, N> Amat = M;
     std::array<std::array<double, N>, N> I{};
     for (int i = 0; i < N; ++i) I[i][i] = 1.0;
     for (int c = 0; c < N; ++c) {
@@ -123,7 +50,133 @@ void JamesToneStack::rebuild() {
             }
         }
     }
-    Ginv_ = I;
+    out = I;
+}
+
+// Solve a complex nodal system by Gauss-Jordan; returns the requested node.
+template <int N>
+std::complex<double> solveComplex(std::complex<double> M[N][N + 1], int node) {
+    using C = std::complex<double>;
+    for (int c = 0; c < N; ++c) {
+        int piv = c;
+        for (int r = c + 1; r < N; ++r)
+            if (std::abs(M[r][c]) > std::abs(M[piv][c])) piv = r;
+        for (int j = 0; j <= N; ++j) std::swap(M[piv][j], M[c][j]);
+        const C d = M[c][c];
+        if (std::abs(d) < 1e-300) return C(0.0, 0.0);
+        for (int j = c; j <= N; ++j) M[c][j] /= d;
+        for (int r = 0; r < N; ++r) {
+            if (r == c) continue;
+            const C f = M[r][c];
+            if (std::abs(f) == 0.0) continue;
+            for (int j = c; j <= N; ++j) M[r][j] -= f * M[c][j];
+        }
+    }
+    return M[node][N];
+}
+
+// The DC operating point of a common-cathode triode with plate load Ra and
+// self-bias Rk, solved on the Koren law alone (no TriodeStage::prepare, which
+// settles ~50k silent samples per call). Used only to converge the 33k dropper
+// chain before the stages are configured once and prepared once.
+// g(ip) = koren(B+ - ip*Ra - ip*Rk, -ip*Rk) - ip is strictly decreasing in ip (more
+// current lowers the plate AND raises the cathode), so BISECTION is exact and
+// unconditionally stable. A damped fixed point is not: the loop gain here measures
+// about -7, so the obvious `ip += k*(f-ip)` oscillates for any k above ~0.25.
+double korenSelfBiasCurrent(double bPlus, double Ra, double Rk,
+                            const TriodeStage::KorenParams& tube) {
+    auto g = [&](double ip) {
+        const double vk = ip * Rk;
+        const double va = bPlus - ip * Ra - vk;
+        return TriodeStage::korenPlateCurrent(va > 0.0 ? va : 0.0, -vk, tube) - ip;
+    };
+    double lo = 0.0, hi = 20.0e-3;
+    for (int it = 0; it < 200; ++it) {
+        const double m = 0.5 * (lo + hi);
+        if (g(m) > 0.0)
+            lo = m;
+        else
+            hi = m;
+    }
+    return 0.5 * (lo + hi);
+}
+}  // namespace
+
+// ===========================================================================
+// JamesToneStack — James network + GAIN pot + 330p grid coupling, one MNA
+// ===========================================================================
+void JamesToneStack::prepare(double sampleRate) {
+    sampleRate_ = sampleRate > 0.0 ? sampleRate : 44100.0;
+    T_ = 1.0 / sampleRate_;
+    geqBu_ = 2.0 * kCbUpper / T_;
+    geqBl_ = 2.0 * kCbLower / T_;
+    geq2_ = 2.0 * kC2 / T_;
+    geq3_ = 2.0 * kC3 / T_;
+    geqg_ = 2.0 * kCg / T_;
+    bassSm_.prepare(kKnobSmoothSeconds, sampleRate_);
+    trebleSm_.prepare(kKnobSmoothSeconds, sampleRate_);
+    gainSm_.prepare(kKnobSmoothSeconds, sampleRate_);
+    reset();
+}
+
+void JamesToneStack::reset() {
+    vBu_ = iBu_ = vBl_ = iBl_ = v2_ = i2_ = v3_ = i3_ = vg_ = ig_ = 0.0;
+    snapKnobs();
+}
+
+void JamesToneStack::snapKnobs() {
+    bassSm_.reset();
+    trebleSm_.reset();
+    gainSm_.reset();
+    bass_ = bassSm_.value();
+    treble_ = trebleSm_.value();
+    gain_ = gainSm_.value();
+    knobsMoving_ = false;
+    ctrlCounter_ = 0;
+    rebuild();
+}
+
+void JamesToneStack::setSourceImpedance(double rs) {
+    rs_ = clampR(rs);
+    dirty_ = true;
+}
+
+void JamesToneStack::setKnobs(double bass, double treble, double gain) {
+    auto cl = [](double v) { return clampParam(v, 1.0e-3, 1.0 - 1.0e-3); };
+    bassSm_.setTarget(cl(bass));
+    trebleSm_.setTarget(cl(treble));
+    gainSm_.setTarget(cl(gain));
+    ctrlCounter_ = 0;
+    if (!(bassSm_.settled() && trebleSm_.settled() && gainSm_.settled()))
+        knobsMoving_ = true;
+}
+
+void JamesToneStack::rebuild() {
+    std::array<std::array<double, N>, N> Gm{};
+    auto stamp = [&](int a, int b, double g) {
+        Gm[a][a] += g;
+        Gm[b][b] += g;
+        Gm[a][b] -= g;
+        Gm[b][a] -= g;
+    };
+    Gm[F][F] += 1.0 / rs_;                                    // V1A plate source
+    stamp(F, A, 1.0 / kR1);                                   // 100k into BASS top
+    stamp(A, W, 1.0 / clampR((1.0 - bass_) * kRB));           // BASS upper section
+    stamp(A, W, geqBu_);                                      // 2n2 across it
+    stamp(W, B, 1.0 / clampR(bass_ * kRB));                   // BASS lower section
+    stamp(W, B, geqBl_);                                      // 22n across it
+    Gm[B][B] += 1.0 / kR3;                                    // 22k to ground
+    stamp(W, OUT, 1.0 / kR2);                                 // 100k wiper -> out
+    stamp(F, T, geq2_);                                       // 1n5 to TREBLE top
+    stamp(T, OUT, 1.0 / clampR((1.0 - treble_) * kRT));       // TREBLE upper
+    stamp(OUT, U, 1.0 / clampR(treble_ * kRT));               // TREBLE lower
+    Gm[U][U] += geq3_;                                        // 10n to ground
+    stamp(OUT, G, 1.0 / clampR((1.0 - gain_) * kRG));         // GAIN upper
+    Gm[G][G] += 1.0 / clampR(gain_ * kRG);                    // GAIN lower to gnd
+    stamp(G, GRID, geqg_);                                    // 330p -> V1B grid
+    Gm[GRID][GRID] += 1.0 / kRgl;                             // V1B grid leak
+
+    invertInPlace<N>(Gm, Ginv_);
     dirty_ = false;
 }
 
@@ -134,110 +187,205 @@ void JamesToneStack::process(const float* in, float* out, int numFrames) {
         if (knobsMoving_) {
             const double b = bassSm_.next();
             const double t = trebleSm_.next();
+            const double g = gainSm_.next();
             if (ctrlCounter_ == 0) {
-                if (b != bass_ || t != treble_) {
+                if (b != bass_ || t != treble_ || g != gain_) {
                     bass_ = b;
                     treble_ = t;
+                    gain_ = g;
                     rebuild();
                 }
-                if (bassSm_.settled() && trebleSm_.settled()) knobsMoving_ = false;
+                if (bassSm_.settled() && trebleSm_.settled() && gainSm_.settled())
+                    knobsMoving_ = false;
             }
             if (++ctrlCounter_ >= kCtrlBlock) ctrlCounter_ = 0;
         }
         const double Vs = static_cast<double>(in[n]);
-        const double IeqF = geqF_ * vF_ + iF_;
-        const double Ieq1 = geq1_ * v1_ + i1_;
+        const double IeqBu = geqBu_ * vBu_ + iBu_;
+        const double IeqBl = geqBl_ * vBl_ + iBl_;
         const double Ieq2 = geq2_ * v2_ + i2_;
         const double Ieq3 = geq3_ * v3_ + i3_;
+        const double Ieqg = geqg_ * vg_ + ig_;
         std::array<double, N> b{};
-        b[IN] = gs * Vs + IeqF;
-        b[F] = -IeqF + Ieq2;
-        b[A] = Ieq1;
-        b[B] = -Ieq1;
+        b[F] = gs * Vs + Ieq2;
+        b[A] = IeqBu;
+        b[W] = -IeqBu + IeqBl;
+        b[B] = -IeqBl;
         b[T] = -Ieq2;
         b[U] = Ieq3;
         b[OUT] = 0.0;
+        b[G] = Ieqg;
+        b[GRID] = -Ieqg;
         std::array<double, N> v{};
         for (int r = 0; r < N; ++r) {
             double acc = 0.0;
             for (int cc = 0; cc < N; ++cc) acc += Ginv_[r][cc] * b[cc];
             v[r] = acc;
         }
-        const double vFn = v[IN] - v[F];
-        const double v1n = v[A] - v[B];
+        const double vBun = v[A] - v[W];
+        const double vBln = v[W] - v[B];
         const double v2n = v[F] - v[T];
         const double v3n = v[U];
-        // Anti-denormal (Denormal.h, docs §33): all eight companions REST AT ZERO,
+        const double vgn = v[G] - v[GRID];
+        // Anti-denormal (Denormal.h, docs §33): all ten companions REST AT ZERO,
         // so a silent tail rings them into double subnormals and they stick — the
-        // same 68x cliff MarshallToneStack measured. Invisible in the float output,
-        // which is exactly why it has to be guarded rather than observed.
-        iF_ = flushDenormal(geqF_ * vFn - IeqF);
-        i1_ = flushDenormal(geq1_ * v1n - Ieq1);
+        // same 68x cliff MarshallToneStack measured. Invisible in the float output.
+        iBu_ = flushDenormal(geqBu_ * vBun - IeqBu);
+        iBl_ = flushDenormal(geqBl_ * vBln - IeqBl);
         i2_ = flushDenormal(geq2_ * v2n - Ieq2);
         i3_ = flushDenormal(geq3_ * v3n - Ieq3);
-        vF_ = flushDenormal(vFn);
-        v1_ = flushDenormal(v1n);
+        ig_ = flushDenormal(geqg_ * vgn - Ieqg);
+        vBu_ = flushDenormal(vBun);
+        vBl_ = flushDenormal(vBln);
         v2_ = flushDenormal(v2n);
         v3_ = flushDenormal(v3n);
-        out[n] = static_cast<float>(v[OUT]);
+        vg_ = flushDenormal(vgn);
+        out[n] = static_cast<float>(v[GRID]);
     }
 }
 
-// Steady-state |H(jw)| straight off the NETLIST (complex nodal solve). Used by the
-// discretization check and by the §57 mid-forward metric. Deliberately written
+// Steady-state |H(jw)| straight off the NETLIST (complex nodal solve). Written
 // from the component constants rather than from the discretized matrix, so it is
 // an independent evaluation of the same netlist — the honest limit of that (it
 // cannot catch a wrong topology) is recorded in docs §57.
 double JamesToneStack::magnitudeAt(double freqHz, double bass, double treble,
-                                   double rs, int facPos) {
+                                   double gain, double rs, Probe probe) {
     using C = std::complex<double>;
-    const int p = facPos < 0 ? 0 : (facPos >= kFacPositions ? kFacPositions - 1 : facPos);
     const C jw(0.0, 2.0 * 3.14159265358979323846 * freqHz);
-    C G[N][N];
-    for (auto& row : G)
+    C M[N][N + 1];
+    for (auto& row : M)
         for (auto& e : row) e = C(0.0, 0.0);
     auto stamp = [&](int a, int b, C g) {
-        G[a][a] += g;
-        G[b][b] += g;
-        G[a][b] -= g;
-        G[b][a] -= g;
+        M[a][a] += g;
+        M[b][b] += g;
+        M[a][b] -= g;
+        M[b][a] -= g;
     };
     const double rsc = rs > 1.0 ? rs : 1.0;
-    G[IN][IN] += C(1.0 / rsc, 0.0);
-    stamp(IN, F, jw * kFacCaps[p]);
+    M[F][F] += C(1.0 / rsc, 0.0);
     stamp(F, A, C(1.0 / kR1, 0.0));
-    stamp(A, OUT, C(1.0 / clampR((1.0 - bass) * kRB), 0.0));
-    stamp(OUT, B, C(1.0 / clampR(bass * kRB), 0.0));
-    stamp(A, B, jw * kC1);
-    G[B][B] += C(1.0 / kR3, 0.0);
+    stamp(A, W, C(1.0 / clampR((1.0 - bass) * kRB), 0.0));
+    stamp(A, W, jw * kCbUpper);
+    stamp(W, B, C(1.0 / clampR(bass * kRB), 0.0));
+    stamp(W, B, jw * kCbLower);
+    M[B][B] += C(1.0 / kR3, 0.0);
+    stamp(W, OUT, C(1.0 / kR2, 0.0));
     stamp(F, T, jw * kC2);
     stamp(T, OUT, C(1.0 / clampR((1.0 - treble) * kRT), 0.0));
     stamp(OUT, U, C(1.0 / clampR(treble * kRT), 0.0));
-    G[U][U] += jw * kC3;
-    G[OUT][OUT] += C(1.0 / kRL, 0.0);
+    M[U][U] += jw * kC3;
+    stamp(OUT, G, C(1.0 / clampR((1.0 - gain) * kRG), 0.0));
+    M[G][G] += C(1.0 / clampR(gain * kRG), 0.0);
+    stamp(G, GRID, jw * kCg);
+    M[GRID][GRID] += C(1.0 / kRgl, 0.0);
+    M[F][N] = C(1.0 / rsc, 0.0);  // unit source behind rs
+    return std::abs(solveComplex<N>(M, probe == Probe::Out ? OUT : GRID));
+}
 
-    C M[N][N + 1];
-    for (int r = 0; r < N; ++r) {
-        for (int c = 0; c < N; ++c) M[r][c] = G[r][c];
-        M[r][N] = C(0.0, 0.0);
-    }
-    M[IN][N] = C(1.0 / rsc, 0.0);  // unit source behind rs
-    for (int c = 0; c < N; ++c) {
-        int piv = c;
-        for (int r = c + 1; r < N; ++r)
-            if (std::abs(M[r][c]) > std::abs(M[piv][c])) piv = r;
-        for (int j = 0; j <= N; ++j) std::swap(M[piv][j], M[c][j]);
-        const C d = M[c][c];
-        if (std::abs(d) < 1e-300) return 0.0;
-        for (int j = c; j <= N; ++j) M[c][j] /= d;
+// ===========================================================================
+// FacNetwork
+// ===========================================================================
+namespace {
+enum { P = 0, Q = 1, GG = 2 };
+}
+
+void FacNetwork::prepare(double sampleRate) {
+    sampleRate_ = sampleRate > 0.0 ? sampleRate : 44100.0;
+    T_ = 1.0 / sampleRate_;
+    geqc_ = 2.0 * kCaps[pos_] / T_;
+    reset();
+}
+
+void FacNetwork::reset() {
+    vc_ = ic_ = 0.0;
+    rebuild();
+}
+
+void FacNetwork::setSourceImpedance(double rs) {
+    rs_ = clampR(rs);
+    dirty_ = true;
+}
+
+// The F.A.C. is a SWITCH, not a knob: there is nothing to smooth between two cap
+// values and the real rotary steps too. The worklet/plugin bracket a position
+// change with the chain declick; the cap STATE is deliberately carried across so
+// the stored charge is not discontinuous (which is what the real switch does).
+void FacNetwork::setPosition(int pos) {
+    const int p = pos < 0 ? 0 : (pos >= kPositions ? kPositions - 1 : pos);
+    if (p == pos_) return;
+    pos_ = p;
+    geqc_ = 2.0 * kCaps[pos_] / T_;
+    dirty_ = true;
+}
+
+void FacNetwork::rebuild() {
+    std::array<std::array<double, N>, N> Gm{};
+    auto stamp = [&](int a, int b, double g) {
+        Gm[a][a] += g;
+        Gm[b][b] += g;
+        Gm[a][b] -= g;
+        Gm[b][a] -= g;
+    };
+    Gm[P][P] += 1.0 / rs_;
+    if (kCaps[pos_] <= 0.0)
+        stamp(P, Q, 1.0 / kShortOhms);  // the straight-through click
+    else
+        stamp(P, Q, geqc_);
+    stamp(Q, GG, 1.0 / kRloop);
+    Gm[GG][GG] += 1.0 / kRgl;
+    invertInPlace<N>(Gm, Ginv_);
+    dirty_ = false;
+}
+
+void FacNetwork::process(const float* in, float* out, int numFrames) {
+    if (dirty_) rebuild();
+    const double gs = 1.0 / rs_;
+    const bool shorted = kCaps[pos_] <= 0.0;
+    for (int n = 0; n < numFrames; ++n) {
+        const double Ieq = shorted ? 0.0 : (geqc_ * vc_ + ic_);
+        std::array<double, N> b{};
+        b[P] = gs * static_cast<double>(in[n]) + Ieq;
+        b[Q] = -Ieq;
+        b[GG] = 0.0;
+        std::array<double, N> v{};
         for (int r = 0; r < N; ++r) {
-            if (r == c) continue;
-            const C f = M[r][c];
-            if (std::abs(f) == 0.0) continue;
-            for (int j = c; j <= N; ++j) M[r][j] -= f * M[c][j];
+            double acc = 0.0;
+            for (int cc = 0; cc < N; ++cc) acc += Ginv_[r][cc] * b[cc];
+            v[r] = acc;
         }
+        if (!shorted) {
+            const double vn = v[P] - v[Q];
+            // Rests at exactly zero (docs §33, ADR 006).
+            ic_ = flushDenormal(geqc_ * vn - Ieq);
+            vc_ = flushDenormal(vn);
+        }
+        out[n] = static_cast<float>(v[GG]);
     }
-    return std::abs(M[OUT][N]);
+}
+
+double FacNetwork::magnitudeAt(double freqHz, int pos, double rs) {
+    using C = std::complex<double>;
+    const int p = pos < 0 ? 0 : (pos >= kPositions ? kPositions - 1 : pos);
+    const C jw(0.0, 2.0 * 3.14159265358979323846 * freqHz);
+    C M[N][N + 1];
+    for (auto& row : M)
+        for (auto& e : row) e = C(0.0, 0.0);
+    auto stamp = [&](int a, int b, C g) {
+        M[a][a] += g;
+        M[b][b] += g;
+        M[a][b] -= g;
+        M[b][a] -= g;
+    };
+    const double rsc = rs > 1.0 ? rs : 1.0;
+    M[P][P] += C(1.0 / rsc, 0.0);
+    if (kCaps[p] <= 0.0)
+        stamp(P, Q, C(1.0 / kShortOhms, 0.0));
+    else
+        stamp(P, Q, jw * kCaps[p]);
+    stamp(Q, GG, C(1.0 / kRloop, 0.0));
+    M[GG][GG] += C(1.0 / kRgl, 0.0);
+    M[P][N] = C(1.0 / rsc, 0.0);
+    return std::abs(solveComplex<N>(M, GG));
 }
 
 // ===========================================================================
@@ -250,29 +398,64 @@ double OrangePreamp::volumeTaper(double x) {
 
 OrangePreamp::OrangePreamp() { configureStages(); }
 
-// Per-stage circuit values. Documented reconstruction on standard British ECC83
-// practice — see the PROVENANCE banner in the header.
+void OrangePreamp::setSupplyCPlus(double cPlus) {
+    cPlus_ = cPlus > 1.0 ? cPlus : kCplusDefault;
+}
+
+// Per-stage circuit values — ALL TRANSCRIBED from the preamp sheet:
+//   "V1A (1/2 ECC83)  Rk 2k2 bypassed by 50uF ;  Ra 220k to D+"
+//   "V1B (1/2 ECC83)  Rk 2k2 bypassed by 50uF ;  Ra 220k to D+"
+// The 220k plate load (against the reconstruction's 100k) is a large part of why
+// an OR120's preamp is both quieter per stage and softer-edged than a 2204's, and
+// it is what makes V1A a genuinely high-Z source for the James stack.
 void OrangePreamp::configureStages() {
-    // V1A: the input stage. Ra 100 k, Rk 820, and — unlike the 2204's 0.68 uF
-    // partial bypass — a FULL 25 uF bypass, so the bottom is not thinned at the
-    // very first stage. Rgl = the volume network (470 k series + 1 M pot).
     TriodeStage::Config& a = cfg_[V1A];
     a = TriodeStage::Config{};
-    a.Ra = 100.0e3;
-    a.Rk = 820.0;
-    a.Ck = 25.0e-6;
-    a.Rgl = 1.47e6;
+    a.bPlus = dPlus_;
+    a.Ra = 220.0e3;
+    a.Rk = 2.2e3;
+    a.Ck = 50.0e-6;
+    a.Rg = 68.0e3;   // the input jacks' transcribed 68k grid stopper
+    a.Cc = 68.0e-9;  // "V1A plate -> 68n -> TONE STACK input"
+    // The load V1A's plate actually sees: the James network's own input
+    // resistance at DC, computed from the transcribed netlist at noon —
+    //   R1 + [(1-b)RB + ((b)RB + R3) || (R2 + RG)] = 100k + 853k = 953k.
+    a.Rgl = 953.0e3;
 
-    // V1B: the second half of the same ECC83, after the volume pot. Also fully
-    // bypassed (the OR120 has no cold clipper stage — the 2204's 10 k unbypassed
-    // V1B is a Marshall trait and is a large part of why a JCM is tighter).
-    // Rgl = the tone stack's input resistance seen through the F.A.C. cap.
     TriodeStage::Config& b = cfg_[V1B];
     b = TriodeStage::Config{};
-    b.Ra = 100.0e3;
-    b.Rk = 820.0;
-    b.Ck = 25.0e-6;
-    b.Rgl = 470.0e3;
+    b.bPlus = dPlus_;
+    b.Ra = 220.0e3;
+    b.Rk = 2.2e3;
+    b.Ck = 50.0e-6;
+    b.Rg = 68.0e3;
+    b.Cc = 68.0e-9;  // "V1B plate -> 68n -> F.A.C. rotary -> OUTPUT AMP"
+    // The F.A.C. network's input resistance with the switch straight through:
+    // 200k loop + 1M driver grid leak.
+    b.Rgl = FacNetwork::kRloop + FacNetwork::kRgl;
+}
+
+// The transcribed dropper chain: C+ -> 33K 2W -> D+ (16uF) feeding V1A and V1B.
+// D+ therefore depends on the two stages' standing current and vice versa, so it
+// is a fixed point. Solved on the Koren law alone (cheap) BEFORE the stages are
+// configured and prepared once — TriodeStage::prepare settles ~50k silent
+// samples per call and cannot be run inside an iteration.
+void OrangePreamp::solveSupply() {
+    const TriodeStage::KorenParams tube{};
+    // Bisect on D+ instead of iterating the map: h(D+) = C+ - 33k*2*Ip(D+) - D+ is
+    // strictly decreasing (a higher rail draws more current, which drops more).
+    auto h = [&](double d) {
+        return cPlus_ - kRdropDplus * (2.0 * korenSelfBiasCurrent(d, 220.0e3, 2.2e3, tube)) - d;
+    };
+    double lo = 0.0, hi = cPlus_;
+    for (int it = 0; it < 200; ++it) {
+        const double m = 0.5 * (lo + hi);
+        if (h(m) > 0.0)
+            lo = m;
+        else
+            hi = m;
+    }
+    dPlus_ = 0.5 * (lo + hi);
 }
 
 void OrangePreamp::prepare(double sampleRate, int maxBlockSize) {
@@ -280,6 +463,7 @@ void OrangePreamp::prepare(double sampleRate, int maxBlockSize) {
     maxBlockSize_ = maxBlockSize > 0 ? maxBlockSize : 128;
     buf_.assign(static_cast<size_t>(maxBlockSize_), 0.0f);
 
+    solveSupply();
     configureStages();
     for (int s = V1A; s <= V1B; ++s) {
         stage_[s].configure(cfg_[s]);
@@ -287,45 +471,42 @@ void OrangePreamp::prepare(double sampleRate, int maxBlockSize) {
         stage_[s].setOversampling(oversampling_);
     }
 
-    // The James stack is driven from V1B's PLATE, not from a cathode follower —
-    // the OR120 has no follower, and that high source impedance is part of the
-    // network's real response (it loads the two branches and softens the treble
-    // corner). rout = Ra || rp, with rp = dVa/dIp from the Koren law at V1B's
-    // operating point (central difference, the same method the JCM uses for its
-    // follower's gm).
-    {
-        const TriodeStage::Config& c = cfg_[V1B];
-        const double Va = stage_[V1B].quiescentPlateVoltage();
-        const double Vk = stage_[V1B].quiescentCathodeVoltage();
-        const double Vgk = -Vk;
+    // Both linear networks are driven from a PLATE, not a cathode follower — the
+    // OR120 has no follower anywhere, and that high source impedance is part of
+    // both networks' real response. rout = Ra || rp, with rp = dVa/dIp from the
+    // Koren law at the stage's operating point (central difference).
+    auto plateRout = [&](int s) {
+        const TriodeStage::Config& c = cfg_[s];
+        const double Va = stage_[s].quiescentPlateVoltage();
+        const double Vk = stage_[s].quiescentCathodeVoltage();
         const double h = 1e-2;
-        const double dIp = (TriodeStage::korenPlateCurrent(Va + h, Vgk, c.tube) -
-                            TriodeStage::korenPlateCurrent(Va - h, Vgk, c.tube)) /
+        const double dIp = (TriodeStage::korenPlateCurrent(Va + h, -Vk, c.tube) -
+                            TriodeStage::korenPlateCurrent(Va - h, -Vk, c.tube)) /
                            (2.0 * h);
         const double rp = dIp > 1e-12 ? 1.0 / dIp : 1.0e6;
-        plateRout_ = 1.0 / (1.0 / c.Ra + 1.0 / rp);
-    }
+        return 1.0 / (1.0 / c.Ra + 1.0 / rp);
+    };
+    plateRoutA_ = plateRout(V1A);
+    plateRoutB_ = plateRout(V1B);
 
     tone_.prepare(sampleRate_);
-    tone_.setSourceImpedance(plateRout_);
-    tone_.setKnobs(bass_, treble_);
-    tone_.setFacPosition(static_cast<int>(
-        std::floor(clampParam01(fac_) * (JamesToneStack::kFacPositions - 1) + 0.5)));
+    tone_.setSourceImpedance(plateRoutA_);
+    tone_.setKnobs(bass_, treble_, volumeWiper());
 
-    volSm_.prepare(kSmoothSeconds, sampleRate_);
-    volSm_.setTarget(volumeScale());
+    fac_.prepare(sampleRate_);
+    fac_.setSourceImpedance(plateRoutB_);
+    fac_.setPosition(static_cast<int>(
+        std::floor(clampParam01(facKnob_) * (FacNetwork::kPositions - 1) + 0.5)));
+
     primed_ = false;
 }
 
-void OrangePreamp::primeSmoothers() {
-    volSm_.reset();
-    tone_.snapKnobs();
-}
+void OrangePreamp::primeSmoothers() { tone_.snapKnobs(); }
 
 void OrangePreamp::reset() {
     for (auto& s : stage_) s.reset();
     tone_.reset();
-    volSm_.reset();
+    fac_.reset();
     lastOutPeak_ = 0.0;
 }
 
@@ -339,23 +520,23 @@ void OrangePreamp::setParameter(int paramId, float value) {
     switch (paramId) {
         case PARAM_VOLUME:
             volume_ = v;
-            volSm_.setTarget(volumeScale());
+            tone_.setKnobs(bass_, treble_, volumeWiper());
             break;
         case PARAM_BASS:
             bass_ = v;
-            tone_.setKnobs(bass_, treble_);
+            tone_.setKnobs(bass_, treble_, volumeWiper());
             break;
         case PARAM_TREBLE:
             treble_ = v;
-            tone_.setKnobs(bass_, treble_);
+            tone_.setKnobs(bass_, treble_, volumeWiper());
             break;
         case PARAM_FAC: {
-            fac_ = v;
+            facKnob_ = v;
             // Six detents across the knob: nearest-position rounding, so 0 and 1
             // land exactly on the two ends of the switch.
             const int pos = static_cast<int>(
-                std::floor(v * (JamesToneStack::kFacPositions - 1) + 0.5));
-            tone_.setFacPosition(pos);
+                std::floor(v * (FacNetwork::kPositions - 1) + 0.5));
+            fac_.setPosition(pos);
             break;
         }
         default:
@@ -363,9 +544,7 @@ void OrangePreamp::setParameter(int paramId, float value) {
     }
 }
 
-double OrangePreamp::volumeScale() const {
-    return kVolumeDivider * volumeTaper(volume_);
-}
+double OrangePreamp::volumeWiper() const { return volumeTaper(volume_); }
 
 void OrangePreamp::process(const float* in, float* out, int numFrames) {
     if (!primed_) {
@@ -377,14 +556,14 @@ void OrangePreamp::process(const float* in, float* out, int numFrames) {
     while (off < numFrames) {
         const int n = std::min(maxBlockSize_, numFrames - off);
         float* w = buf_.data();
+        // THE SCHEMATIC ORDER (docs §57.2): V1A -> stack+GAIN+330p -> V1B -> F.A.C.
+        // The GAIN pot lives inside the tone MNA, so there is no separate scalar
+        // multiply here: the knob is a wiper on a 1M pot that also loads the
+        // network, and per-sample smoothing happens inside the stack (finding 6).
         stage_[V1A].process(in + off, w, n);
-        // VOLUME: a plain smoothed scalar applied PER SAMPLE (audit finding 6).
-        // There is no bright cap to make this frequency-dependent — see the
-        // header; that absence is a modelled feature, not an omission.
-        for (int i = 0; i < n; ++i) w[i] = static_cast<float>(w[i] * volSm_.next());
-        stage_[V1B].process(w, w, n);
-        // F.A.C. + James stack, one network, at base rate (both linear).
         tone_.process(w, w, n);
+        stage_[V1B].process(w, w, n);
+        fac_.process(w, w, n);
         for (int i = 0; i < n; ++i) {
             out[off + i] = w[i];
             lastOutPeak_ =

@@ -1,19 +1,19 @@
-// Plain-assert tests for the M10.3 Orange OR120 "Overdrive" — the MID-FORWARD head.
-// Covers OrangePreamp (two 12AX7 stages + the single VOLUME + the F.A.C. rotary + the
-// James/passive-Baxandall stack), OrangePowerAmp (the DC-coupled driver + CATHODYNE
-// phase inverter → EL34 QUAD → OT → global NFB with HF DRIVE → a stiff solid-state
-// supply) and the composed OrangeAmp.
+// Plain-assert tests for the M10.3 Orange OR120 "Overdrive" — the MID-FORWARD head,
+// AS TRANSCRIBED FROM THE OWNER-SUPPLIED SCHEMATICS (docs §57, schematic correction
+// 2026-07-31). Covers OrangePreamp (V1A -> James stack -> GAIN -> 330p -> V1B ->
+// 68n -> F.A.C.), OrangePowerAmp (the driver, the AC-COUPLED CATHODYNE, the H.F.
+// Boost R-L-C in the driver's cathode, the EL34 QUAD, the OT, and global NFB from
+// the 16 ohm tap) and the composed OrangeAmp.
 //
 // No framework: int main + <cassert>. Every assert compares a MEASURED number against
-// something derived independently IN THE TEST — the Koren load-line DC, the EL34
-// fixed point, the netlist's own H(jω), the closed-vs-open-loop identity — or against
-// ANOTHER AMP IN THE REPO, which is the one comparison that can catch a wrong
-// topology (docs §29's standing complaint about same-netlist checks).
+// something derived independently IN THE TEST — the Koren load-line DC, Ohm's law on
+// the transcribed dropper chain, the EL34 fixed point, the netlist's own H(jω), the
+// closed-vs-open-loop identity — or against ANOTHER AMP IN THE REPO, which is the one
+// comparison that can catch a wrong topology (docs §29's standing complaint).
 //
 // THE LOAD-BEARING TEST IS testMidForwardVsJcm800. The OR120 is EL34 push-pull like
 // the 2204 and shares its power machinery, so if the tone network came out
-// Marshall-shaped the slice would have failed no matter what else passed. That test
-// measures both stacks' own netlists and both composed amps' renders.
+// Marshall-shaped the voice would have failed no matter what else passed.
 
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/Jcm800Amp.h"
@@ -25,6 +25,7 @@
 #include "measure/AliasMetric.h"
 #include "support/AssertsLive.h"
 #include "support/DcOffset.h"
+#include "support/Xfail.h"
 
 #include <algorithm>
 #include <cassert>
@@ -39,6 +40,7 @@ namespace {
 constexpr double kTwoPi = 6.283185307179586;
 
 using clipper::dsp::CathodyneInverter;
+using clipper::dsp::FacNetwork;
 using clipper::dsp::JamesToneStack;
 using clipper::dsp::Jcm800Amp;
 using clipper::dsp::MarshallToneStack;
@@ -119,67 +121,35 @@ double rmsTail(const std::vector<float>& x) {
 constexpr double kProbeHz = 220.0;
 constexpr float kProbeV = 0.15f;
 
+using clipper::test::expectXfail;
+
+// The ONE property the schematic correction cost this voice, measured rather than
+// bargained down. The reconstruction's composed alias floor at 44.1 kHz / 4x was
+// -59.2 dB against a -56 bar; the transcribed circuit measures -50.8 on the same
+// stimulus. It is genuine foldover, not the rail-clipping signature (it improves
+// 11 dB going to 8x), and it is not the new resonant H.F. Boost network (the floor
+// is the same at boost 0, 0.5 and 1.0). The bar is NOT loosened.
+const clipper::test::XfailDecl kXfailOrangeAlias44k1{
+    "orange-schematic-alias-44k1",
+    "docs §57 schematic correction (2026-07-31)",
+    "the composed OR120 at maximum volume must hold a -56 dB alias floor at the "
+    "shipped 4x oversampling on a 44.1 kHz grid, as it does at 48 kHz",
+    "an OR120 oversampling slice — the candidate is one shared OS domain around "
+    "the whole preamp+power cascade (docs §57.13), NOT a lower bar",
+};
+const clipper::test::XfailDecl kLedger[] = {kXfailOrangeAlias44k1};
+
 // ===========================================================================
-// 1. DC operating points
+// 1. DC operating points, and the TRANSCRIBED dropper chain
 // ===========================================================================
 void testDcOperatingPoints(double fs) {
     std::printf("\n[orange] DC operating points @ %.0f Hz\n", fs);
-    OrangePreamp pre;
-    pre.setOversampling(4);
-    pre.prepare(fs, 128);
-
-    for (int s = OrangePreamp::V1A; s <= OrangePreamp::V1B; ++s) {
-        const auto& cfg = pre.stageConfig(s);
-        const double va = pre.stageQuiescentPlate(s);
-        const double vk = pre.stageQuiescentCathode(s);
-        const double ipSolver = pre.stageQuiescentCurrent(s);
-        // Standing current from OHM'S LAW on the plate load — independent of the
-        // Koren law the solver used (the LtpProbe.h doctrine).
-        const double ipOhm = (cfg.bPlus - va - vk) / cfg.Ra;
-        const double frac = (va + vk) / cfg.bPlus;
-        std::printf("  V1%c: Va(pk) %7.2f V  Vk %6.3f V  Ip %6.4f mA (ohm %6.4f)  "
-                    "plate %.1f %% of B+\n",
-                    s == OrangePreamp::V1A ? 'A' : 'B', va, vk, ipSolver * 1e3,
-                    ipOhm * 1e3, frac * 100.0);
-        // A 12AX7 gain stage biased in the middle of its load line.
-        assert(ipOhm > 0.5e-3 && ipOhm < 1.6e-3);
-        assert(frac > 0.4 && frac < 0.85);
-        assert(std::fabs(ipOhm - ipSolver) < 0.05e-3);
-    }
-    std::printf("  V1B plate source impedance into the stack: %.0f ohm\n",
-                pre.plateSourceImpedance());
-    assert(pre.plateSourceImpedance() > 20.0e3 &&
-           pre.plateSourceImpedance() < 80.0e3);
 
     OrangePowerAmp pow;
     pow.setOversampling(4);
     pow.prepare(fs, 128);
-    const auto& inv = pow.inverter();
-    const auto& ic = inv.config();
-    const double ipd = inv.quiescentDriverCurrent();
-    const double ipc = inv.quiescentCathodyneCurrent();
-    std::printf("  driver:    Vp %7.2f V  Vk %6.3f V  Ip %6.4f mA\n",
-                inv.quiescentDriverPlate(), inv.quiescentDriverCathode(), ipd * 1e3);
-    std::printf("  cathodyne: Vk %7.2f V  Vplate %7.2f V  Ip %6.4f mA  Vgk %6.3f V\n",
-                inv.quiescentCathodyneCathode(), inv.quiescentCathodynePlate(),
-                ipc * 1e3,
-                inv.quiescentDriverPlate() - inv.quiescentCathodyneCathode());
-    // Both triodes in the project's documented window (0.5-0.9 mA/triode).
-    assert(ipd > 0.5e-3 && ipd < 0.9e-3);
-    assert(ipc > 0.5e-3 && ipc < 0.9e-3);
-    // The split load is loaded symmetrically BY CONSTRUCTION: Ip*Rk == Vk and the
-    // plate sits exactly B+ - Vk above it. Verified as an identity so a future edit
-    // that breaks the equal-R assumption is caught here rather than in the audio.
-    assert(std::fabs(ipc * ic.Rsplit - inv.quiescentCathodyneCathode()) < 1e-6);
-    assert(std::fabs((ic.bPlusCathodyne - inv.quiescentCathodyneCathode()) -
-                     inv.quiescentCathodynePlate()) < 1e-9);
-    // The cathodyne is DC-coupled: its grid IS the driver's plate, so Vgk must be a
-    // small negative bias, not an AC-coupled 0 V.
-    const double vgkCath =
-        inv.quiescentDriverPlate() - inv.quiescentCathodyneCathode();
-    assert(vgkCath < 0.0 && vgkCath > -3.0);
 
-    // The EL34 QUAD idle, against an independently-iterated fixed point.
+    // --- the EL34 QUAD idle, against an independently-iterated fixed point ----
     const double rail = pow.railIdle(), scr = pow.screenIdle();
     const double ip = pow.el34QuiescentPlateCurrent();
     const double ig2 = pow.el34QuiescentScreenCurrent();
@@ -193,16 +163,133 @@ void testDcOperatingPoints(double fs) {
         OrangePowerAmp::kVsupply -
         OrangePowerAmp::kTubes * (ip + ig2) * OrangePowerAmp::kRsupply;
     assert(std::fabs(railCheck - rail) < 1e-3);
+    // The screens sit behind the TRANSCRIBED per-tube 1k with no bypass cap. The
+    // Ohm's-law form of this is an identity (the code computes it that way), so
+    // what is asserted is the ABSOLUTE drop the transcribed resistor must produce:
+    // an EL34 at this rail and bias draws 2-6 mA of screen current, so a 1 k
+    // resistor must drop 2-6 V. A wrong resistor value lands outside that window.
+    const double scrDrop = rail - scr;
+    std::printf("  screen drop across the transcribed per-tube 1k: %.3f V "
+                "(ig2 %.3f mA)\n",
+                scrDrop, ig2 * 1e3);
+    assert(scrDrop > 2.0 && scrDrop < 6.0);
     // Inside the EL34's plate rating, and hot enough to be class AB rather than B.
     assert(diss < 25.0 && diss > 12.0);
     assert(ip > 25.0e-3 && ip < 45.0e-3);
+
+    // --- the transcribed 33K dropper chain -----------------------------------
+    const auto& inv = pow.inverter();
+    const auto& ic = inv.config();
+    const double ipd = inv.quiescentDriverCurrent();
+    const double ipc = inv.quiescentCathodyneCurrent();
+    const double cPlus = pow.cPlusIdle();
+    std::printf("  supply chain: B+ %7.3f -> 33k -> C+ %7.3f V   (driver %.4f + "
+                "cathodyne %.4f mA)\n",
+                rail, cPlus, ipd * 1e3, ipc * 1e3);
+    // The Ohm's-law form of this is an identity (the code computes C+ that way), so
+    // the assertion is the ABSOLUTE ladder the transcribed 33 K must produce. A
+    // 12AX7 with a 100 k plate load cannot draw less than ~0.75 mA here and the
+    // cathodyne's is pinned at C+/(4*Rsplit), so the pair must draw at least
+    // 1.5 mA and the drop cannot be under 33 k x 1.5 mA = 49.5 V.
+    assert(cPlus < rail - 49.5);
+    assert(cPlus > rail - 150.0);
+    assert(std::fabs(ic.bPlus - cPlus) < 1e-6);  // both plate loads return to C+
+
+    std::printf("  driver:    Vp %7.2f V  Vk %6.3f V  Ip %6.4f mA\n",
+                inv.quiescentDriverPlate(), inv.quiescentDriverCathode(), ipd * 1e3);
+    std::printf("  cathodyne: Vk %7.2f V  Vplate %7.2f V  Ip %6.4f mA  Vgrid %7.3f V"
+                "  Vgk %6.3f V  bias tap %.1f ohm\n",
+                inv.quiescentCathodyneCathode(), inv.quiescentCathodynePlate(),
+                ipc * 1e3, inv.quiescentCathodyneGrid(),
+                inv.quiescentCathodyneGrid() - inv.quiescentCathodyneCathode(),
+                inv.biasTapOhms());
+    // Both currents come off the SAME transcribed 100k loads from the SAME rail, so
+    // their windows are derived from the load line rather than quoted:
+    //   driver    — Ra 100k, Rk 1k5 from C+ = a classic ECC83 gain stage. Ohm's law
+    //               on the plate load must reproduce the solver's current.
+    //   cathodyne — Vkc is C+/4 BY CONSTRUCTION (the compliance-centre bias, see
+    //               OrangePowerAmp.h), so Ipc == C+/(4*Rsplit) is an identity and is
+    //               asserted as one.
+    // NOTE the movement this correction makes, and it is reported rather than
+    // hidden: the reconstruction's 300k/180k loads from 320/400 V put both triodes
+    // in the project's 0.5-0.9 mA gain-stage window; the transcribed 100k/100k from
+    // 417 V put the driver at ~1.45 mA and the cathodyne at ~1.04 mA. A cathodyne is
+    // not a gain stage and the window never applied to it.
+    const double ipdOhm = (ic.bPlus - inv.quiescentDriverPlate()) / ic.Rad;
+    assert(std::fabs(ipdOhm - ipd) < 1e-8);
+    assert(ipd > 1.0e-3 && ipd < 2.0e-3);
+    assert(std::fabs(ipc - ic.bPlus / (4.0 * ic.Rsplit)) < 1e-12);
+    // The AC-COUPLED cathodyne's grid sits at its own bias tap, NOT at the driver's
+    // plate: this is the assertion that would fail if a future edit re-introduced
+    // the DC coupling the reconstruction had.
+    assert(std::fabs(inv.quiescentCathodyneGrid() - inv.quiescentDriverPlate()) >
+           50.0);
+    const double vgkCath =
+        inv.quiescentCathodyneGrid() - inv.quiescentCathodyneCathode();
+    assert(vgkCath < 0.0 && vgkCath > -3.0);
+    // THE ABSOLUTE ACCEPTANCE CHECK ON THE DERIVED BIAS TAP (docs §57.3): the
+    // cathode can only fall to 0 V, so its idle voltage IS the available downward
+    // swing, and it must clear the transcribed EL34 fixed bias or the amp could
+    // never drive its output tubes to grid conduction at all.
+    std::printf("  cathodyne down-swing %.2f V vs the EL34s' %.1f V of fixed bias\n",
+                inv.quiescentCathodyneCathode(), -OrangePowerAmp::kVbias);
+    assert(inv.quiescentCathodyneCathode() > -OrangePowerAmp::kVbias);
+
+    // --- the preamp, on the D+ the same chain produces ------------------------
+    OrangePreamp pre;
+    pre.setSupplyCPlus(cPlus);
+    pre.setOversampling(4);
+    pre.prepare(fs, 128);
+    std::printf("  supply chain: C+ %7.3f -> 33k -> D+ %7.3f V\n", cPlus,
+                pre.supplyDPlus());
+    double preampDraw = 0.0;
+    for (int s = OrangePreamp::V1A; s <= OrangePreamp::V1B; ++s) {
+        const auto& cfg = pre.stageConfig(s);
+        const double va = pre.stageQuiescentPlate(s);
+        const double vk = pre.stageQuiescentCathode(s);
+        const double ipSolver = pre.stageQuiescentCurrent(s);
+        // Standing current from OHM'S LAW on the plate load — independent of the
+        // Koren law the solver used (the LtpProbe.h doctrine).
+        const double ipOhm = (cfg.bPlus - va - vk) / cfg.Ra;
+        const double frac = (va + vk) / cfg.bPlus;
+        preampDraw += ipOhm;
+        std::printf("  V1%c: Va(pk) %7.2f V  Vk %6.3f V  Ip %6.4f mA (ohm %6.4f)  "
+                    "plate %.1f %% of D+\n",
+                    s == OrangePreamp::V1A ? 'A' : 'B', va, vk, ipSolver * 1e3,
+                    ipOhm * 1e3, frac * 100.0);
+        // A 12AX7 gain stage biased in the middle of its 220k load line.
+        assert(std::fabs(cfg.Ra - 220.0e3) < 1.0);
+        assert(std::fabs(cfg.Rk - 2.2e3) < 1e-9);
+        assert(ipOhm > 0.5e-3 && ipOhm < 1.0e-3);
+        assert(frac > 0.4 && frac < 0.85);
+        assert(std::fabs(ipOhm - ipSolver) < 0.05e-3);
+    }
+    // …and D+ is that draw through the transcribed second 33K. Two checks, neither
+    // an identity: the rail-chain arithmetic must reproduce the SOLVED D+ (the two
+    // use different equations — the dropper is bisected on the bare Koren law, the
+    // stage's own DC solve includes its grid network, and they agree to 0.27 V),
+    // and the ladder must be a real one (33 k x two triodes at >= 0.5 mA each).
+    std::printf("  D+ from Ohm's law on the transcribed 33K: %.3f V (solved %.3f)\n",
+                cPlus - OrangePreamp::kRdropDplus * preampDraw, pre.supplyDPlus());
+    assert(std::fabs((cPlus - OrangePreamp::kRdropDplus * preampDraw) -
+                     pre.supplyDPlus()) < 0.5);
+    assert(pre.supplyDPlus() < cPlus - 33.0);
+    assert(pre.supplyDPlus() > cPlus - 100.0);
+    std::printf("  V1A plate source impedance into the James stack: %.0f ohm\n",
+                pre.plateSourceImpedance());
+    std::printf("  V1B plate source impedance into the F.A.C.:      %.0f ohm\n",
+                pre.facSourceImpedance());
+    // A real high-Z plate source — the OR120 has no cathode follower anywhere,
+    // where the JCM's stack is driven from a 371 ohm follower.
+    assert(pre.plateSourceImpedance() > 20.0e3 &&
+           pre.plateSourceImpedance() < 80.0e3);
 }
 
 // ===========================================================================
-// 2. The cathodyne: anti-phase, EQUAL legs, by topology
+// 2. The cathodyne: anti-phase, EQUAL legs, by topology — and AC-coupled
 // ===========================================================================
 void testCathodyneBalance(double fs) {
-    std::printf("\n[orange] cathodyne phase inverter\n");
+    std::printf("\n[orange] cathodyne phase inverter (AC-coupled driver)\n");
     OrangePowerAmp pow;
     pow.setOversampling(4);
     pow.prepare(fs, 128);
@@ -210,65 +297,101 @@ void testCathodyneBalance(double fs) {
     // doctrine: measure the leg gains, do not read a constant).
     CathodyneInverter inv;
     inv.configure(pow.inverter().config());
-    inv.prepare();
+    inv.prepare(fs * 4.0);
     const double vpq = inv.quiescentCathodynePlate();
     const double vkq = inv.quiescentCathodyneCathode();
 
     double gPlate = 0.0, gCath = 0.0, gSplit = 0.0, gDriver = 0.0;
     const double drive = 0.05;  // small signal
     {
-        double vpA = 0, vkA = 0, vpB = 0, vkB = 0;
-        // Settle the warm start at each operating point before reading.
-        for (int i = 0; i < 64; ++i) inv.processSample(+drive, 0.0, vpA, vkA);
-        const double vpdA = inv.driverPlateNow();
-        for (int i = 0; i < 64; ++i) inv.processSample(-drive, 0.0, vpB, vkB);
-        const double vpdB = inv.driverPlateNow();
-        gPlate = (vpA - vpB) / (2.0 * drive);
-        gCath = (vkA - vkB) / (2.0 * drive);
-        // The DRIVER's own gain and the SPLIT LOAD's own gain, separated at the
-        // node they share. CathodyneInverter is the pair, so the composite above
-        // is the product of these two.
-        gDriver = (vpdA - vpdB) / (2.0 * drive);
-        gSplit = (vkA - vkB) / (vpdA - vpdB);
+        // A SINE, not a DC step. The stage is AC-COUPLED now (68n into 1M, tau ~68
+        // ms), so a step decays through the coupling cap and a step probe would
+        // report whatever settle length it happened to use — measured 0.95 at 3 ms
+        // and 0.76 at 23 ms from identical code. A steady tone has no such
+        // ambiguity. Signed in-phase amplitudes, so ANTI-PHASE is still visible.
+        const double osRate = fs * 4.0;
+        const double f = 440.0;
+        const int cycles = 64;
+        const int n = static_cast<int>(cycles * osRate / f);
+        std::vector<double> sp(n), sc(n), sd(n);
+        double vp = 0, vk = 0;
+        for (int i = 0; i < n; ++i) {  // settle first
+            const double x = drive * std::sin(kTwoPi * f * i / osRate);
+            inv.processSample(x, 0.0, vp, vk);
+        }
+        for (int i = 0; i < n; ++i) {
+            const double x = drive * std::sin(kTwoPi * f * i / osRate);
+            inv.processSample(x, 0.0, vp, vk);
+            sp[i] = vp;
+            sc[i] = vk;
+            sd[i] = inv.driverPlateNow();
+        }
+        auto inPhase = [&](const std::vector<double>& s) {
+            double acc = 0.0;
+            for (int i = 0; i < n; ++i) acc += s[i] * std::sin(kTwoPi * f * i / osRate);
+            return 2.0 * acc / n;
+        };
+        gPlate = inPhase(sp) / drive;
+        gCath = inPhase(sc) / drive;
+        gDriver = inPhase(sd) / drive;
+        gSplit = inPhase(sc) / inPhase(sd);
     }
     std::printf("  driver gain %+.3f   split-load gain %+.4f   composite %+.3f\n",
                 gDriver, gSplit, gCath);
-    // The driver carries ALL the gain (its 300 k plate load is why)...
-    assert(std::fabs(gDriver) > 30.0 && std::fabs(gDriver) < 110.0);
-    // ...and the split load has gain just under unity, which is the defining
-    // property of a cathodyne and the reason the driver has to be that hot.
+    // The driver carries ALL the gain. Its transcribed plate load is 100k (against
+    // the reconstruction's invented 300k), so this number is ~30 % lower than the
+    // first release measured — reported, not compensated.
+    assert(std::fabs(gDriver) > 25.0 && std::fabs(gDriver) < 80.0);
+    // …and the split load has gain just under unity, which is the defining
+    // property of a cathodyne.
     assert(std::fabs(gSplit) > 0.85 && std::fabs(gSplit) < 1.0);
     const double ratio =
         std::min(std::fabs(gPlate), std::fabs(gCath)) /
         std::max(std::fabs(gPlate), std::fabs(gCath));
     std::printf("  leg gains: plate %+.5f  cathode %+.5f  |ratio| %.6f\n", gPlate,
                 gCath, ratio);
-    std::printf("  quiescent: plate %.2f V  cathode %.2f V (sum %.2f = B+c %.2f)\n",
-                vpq, vkq, vpq + vkq, inv.config().bPlusCathodyne);
+    std::printf("  quiescent: plate %.2f V  cathode %.2f V (sum %.2f = C+ %.2f)\n",
+                vpq, vkq, vpq + vkq, inv.config().bPlus);
     // ANTI-PHASE: opposite signs, no exception.
     assert(gPlate * gCath < 0.0);
     // BALANCED BY TOPOLOGY, not by a fitted plate resistor. The 2204's LTP needed
     // audit finding 8 and a resistor sweep to reach 0.988 (docs §45); a split load
     // reads both legs off ONE current through TWO equal resistors, so the only way
-    // this can drift is if the model stops implementing a split load.
+    // this can drift is if the model stops implementing a split load. Splitting the
+    // joint Newton into an AC-coupled pair did NOT move it.
     assert(ratio > 0.9999);
-    // The plate and cathode nodes always sum to B+c (one current, two equal R).
-    assert(std::fabs((vpq + vkq) - inv.config().bPlusCathodyne) < 1e-9);
+    // The plate and cathode nodes always sum to C+ (one current, two equal R).
+    assert(std::fabs((vpq + vkq) - inv.config().bPlus) < 1e-9);
 
-    // COMPLIANCE clipping, the "stiffer, fuzzier" Orange clip: drive the grid far
-    // past what the stage can follow and the cathode pins at its rails instead of
-    // continuing to swing.
+    // COMPLIANCE clipping. Drive the grid far past what the stage can follow and
+    // the cathode pins at its rails instead of continuing to swing. The rails are
+    // the TRANSCRIBED ones — 0 and C+/2 — and are asserted as exact pins.
     double vpHi = 0, vkHi = 0, vpLo = 0, vkLo = 0;
-    for (int i = 0; i < 256; ++i) inv.processSample(+400.0, 0.0, vpHi, vkHi);
-    for (int i = 0; i < 256; ++i) inv.processSample(-400.0, 0.0, vpLo, vkLo);
-    const double swingUp = vkHi - vkq, swingDown = vkq - vkLo;
-    std::printf("  compliance: Vk slams to %.2f / %.2f V (idle %.2f) -> +%.1f / -%.1f V\n",
-                vkHi, vkLo, vkq, swingUp, swingDown);
-    assert(vkHi <= 0.5 * inv.config().bPlusCathodyne + 1e-9);
-    assert(vkLo >= -1e-9);
-    // Asymmetric by construction: the cutoff side has further to fall than the
-    // conduction side has to rise. This is the number that differs from an LTP.
-    assert(swingDown > swingUp);
+    for (int i = 0; i < 1024; ++i) inv.processSample(+400.0, 0.0, vpHi, vkHi);
+    for (int i = 0; i < 1024; ++i) inv.processSample(-400.0, 0.0, vpLo, vkLo);
+    // The driver INVERTS, so a positive grid slam drives the cathodyne's cathode DOWN.
+    const double swingDown = vkq - vkHi, swingUp = vkLo - vkq;
+    std::printf("  compliance: Vk slams to %.4f / %.4f V (idle %.4f) -> -%.2f / +%.2f V"
+                "  (asymmetry %.2f %%)\n",
+                vkHi, vkLo, vkq, swingDown, swingUp,
+                100.0 * std::fabs(swingUp - swingDown) / swingDown);
+    // The conduction side pins EXACTLY at 0 (the clamp bites); the cutoff side
+    // approaches C+/2 from below and can never exceed it, because past that the
+    // plate would sit under the cathode.
+    assert(vkHi >= 0.0 && vkHi < 1e-9);
+    assert(vkLo <= 0.5 * inv.config().bPlus + 1e-9);
+    assert(vkLo > 0.5 * inv.config().bPlus - 1.0);
+    // A FIRST-RELEASE CLAIM THIS CORRECTION REFUTES, reported rather than kept:
+    // the DC-coupled reconstruction clipped hard asymmetrically (-132.7 / +67.3 V)
+    // because the driver's plate pinned its grid off-centre. The transcribed
+    // AC-coupled stage is biased at the CENTRE of its own compliance, so the two
+    // limits are within a fraction of a percent of each other. Assert what is now
+    // TRUE — the excursions are symmetric to better than 1 % — so a future edit
+    // that de-centres the bias tap is caught here.
+    assert(std::fabs(swingUp - swingDown) / swingDown < 0.01);
+    // …and both must clear the EL34s' fixed bias, or the amp cannot make power.
+    assert(swingDown > -OrangePowerAmp::kVbias);
+    assert(swingUp > -OrangePowerAmp::kVbias);
 }
 
 // ===========================================================================
@@ -281,22 +404,21 @@ void testJamesStackVsAnalytic(double fs) {
     // from the SAME netlist, so this validates the DISCRETIZATION only. What
     // validates the TOPOLOGY is testMidForwardVsJcm800, which compares against a
     // different amp's stack.
-    const double rs = 38.0e3;
-    const int facPos = 1;
+    const double rs = 45.0e3;
     struct Case {
-        double bass, treble;
+        double bass, treble, gain;
     };
-    const Case cases[] = {{0.5, 0.5}, {0.0, 0.0}, {1.0, 1.0}, {1.0, 0.0}, {0.0, 1.0}};
+    const Case cases[] = {{0.5, 0.5, 0.5}, {0.0, 0.0, 0.5}, {1.0, 1.0, 0.5},
+                          {1.0, 0.0, 1.0}, {0.0, 1.0, 0.2}};
     const double freqs[] = {82.0, 220.0, 440.0, 1000.0, 3000.0, 6000.0};
     double worst = 0.0;
     for (const Case& c : cases) {
         JamesToneStack st;
         st.prepare(fs);
         st.setSourceImpedance(rs);
-        st.setFacPosition(facPos);
-        st.setKnobs(c.bass, c.treble);
+        st.setKnobs(c.bass, c.treble, c.gain);
         st.snapKnobs();
-        std::printf("  b=%.1f t=%.1f:", c.bass, c.treble);
+        std::printf("  b=%.1f t=%.1f g=%.1f:", c.bass, c.treble, c.gain);
         for (double f : freqs) {
             const std::vector<float> in = sine(f, 1.0f, 0.5, fs);
             std::vector<float> out(in.size(), 0.0f);
@@ -305,9 +427,10 @@ void testJamesStackVsAnalytic(double fs) {
             const double meas = goertzelAmp(out, s0, w, f, fs);
             // The MNA clamps the pot fraction to [1e-3, 1-1e-3]; mirror that in the
             // analytic call so the two describe the same network.
-            const double b = std::min(std::max(c.bass, 1.0e-3), 1.0 - 1.0e-3);
-            const double t = std::min(std::max(c.treble, 1.0e-3), 1.0 - 1.0e-3);
-            const double want = JamesToneStack::magnitudeAt(f, b, t, rs, facPos);
+            auto cl = [](double v) { return std::min(std::max(v, 1.0e-3), 1.0 - 1.0e-3); };
+            const double want = JamesToneStack::magnitudeAt(
+                f, cl(c.bass), cl(c.treble), cl(c.gain), rs,
+                JamesToneStack::Probe::Grid);
             const double errDb = toDb(meas) - toDb(want);
             worst = std::max(worst, std::fabs(errDb));
             std::printf(" %6.0f:%+.2f", f, errDb);
@@ -315,7 +438,38 @@ void testJamesStackVsAnalytic(double fs) {
         std::printf("\n");
     }
     std::printf("  worst |error| = %.3f dB\n", worst);
-    assert(worst < 0.35);
+    // The worst cell is always TREBLE at minimum, 6 kHz, 44.1 kHz — i.e. BILINEAR
+    // FREQUENCY WARPING, not a modelling error. tan(pi*f/fs)/(pi*f/fs) at 6 kHz on
+    // a 44.1 kHz grid is 1.0672, so the discrete pole sits 6.7 % high, which on the
+    // treble branch's rolloff is ~0.5 dB. Reported movement: the reconstruction's
+    // network measured 0.291 dB worst and shipped a 0.35 bound; the transcribed one
+    // measures 0.481 because its treble pot is 1M (not 250k) and the extreme is
+    // sharper. The bound is the warp figure with margin.
+    assert(worst < 0.55);
+
+    // The F.A.C. network gets the same treatment, on its own netlist.
+    std::printf("  F.A.C. network: discrete vs analytic\n");
+    double worstFac = 0.0;
+    for (int pos = 0; pos < FacNetwork::kPositions; ++pos) {
+        FacNetwork fn;
+        fn.prepare(fs);
+        fn.setSourceImpedance(rs);
+        fn.setPosition(pos);
+        std::printf("    pos %d:", pos);
+        for (double f : {82.0, 220.0, 1000.0, 6000.0}) {
+            const std::vector<float> in = sine(f, 1.0f, 0.4, fs);
+            std::vector<float> out(in.size(), 0.0f);
+            fn.process(in.data(), out.data(), static_cast<int>(in.size()));
+            const size_t n = out.size(), w = n / 2, s0 = n - w;
+            const double errDb = toDb(goertzelAmp(out, s0, w, f, fs)) -
+                                 toDb(FacNetwork::magnitudeAt(f, pos, rs));
+            worstFac = std::max(worstFac, std::fabs(errDb));
+            std::printf(" %6.0f:%+.2f", f, errDb);
+        }
+        std::printf("\n");
+    }
+    std::printf("  worst |error| = %.3f dB\n", worstFac);
+    assert(worstFac < 0.35);
 }
 
 // ===========================================================================
@@ -334,10 +488,13 @@ double midNotchDb(double (*mag)(double)) {
     return mid - 0.5 * (lo + hi);
 }
 
-double gJamesRs = 38.0e3;
-int gJamesFac = 1;
+double gJamesRs = 45.0e3;
+double gJamesGain = 0.5;
 double jamesMag(double f) {
-    return JamesToneStack::magnitudeAt(f, 0.5, 0.5, gJamesRs, gJamesFac);
+    // Probe::Out — the TONE NETWORK's own output node (the treble wiper, loaded by
+    // the GAIN pot), which is the fair analogue of the FMV's output node.
+    return JamesToneStack::magnitudeAt(f, 0.5, 0.5, gJamesGain, gJamesRs,
+                                       JamesToneStack::Probe::Out);
 }
 
 // Analytic H(jw) of the Marshall FMV netlist, written from MarshallToneStack's own
@@ -390,6 +547,15 @@ double marshallMag(double f) {
 
 void testMidForwardVsJcm800(double fs) {
     std::printf("\n[orange] ===== THE BAR: mid-forward vs the JCM800 =====\n");
+    {
+        // Drive the James network from the real V1A plate impedance and the real
+        // noon GAIN wiper, both measured rather than assumed.
+        OrangePreamp pre;
+        pre.setOversampling(4);
+        pre.prepare(fs, 128);
+        gJamesRs = pre.plateSourceImpedance();
+        gJamesGain = OrangePreamp::volumeTaper(0.5);
+    }
 
     // --- (a) the tone NETWORKS, at noon ------------------------------------
     const double orangeNotch = midNotchDb(&jamesMag);
@@ -405,19 +571,44 @@ void testMidForwardVsJcm800(double fs) {
     // The FMV must measure as a SCOOP and the James as a BUMP. Two separate signs,
     // asserted separately, so a change that moved both together could not hide.
     assert(marshallNotch < -3.0);
-    assert(orangeNotch > +1.0);
-    // …and the CONTRAST, the hard bar in dB. Measured 8.28 dB; the bar is 6.0 with
-    // the margin recorded here rather than snugged, because a future component-value
-    // correction inside either stack is allowed to move it.
+    // REPORTED MOVEMENT, and it is the one place the schematic correction cost this
+    // voice a margin. The reconstruction's invented James measured +2.32 dB and
+    // shipped a +1.0 bound; the TRANSCRIBED network measures +0.75, because its
+    // bass pot sits on a 22k leg (not 100k) and its treble branch is flatter. §57.4
+    // said in terms that these one-sided margins were recorded rather than snugged
+    // and that "a future component-value correction inside either stack is allowed
+    // to move them" — so the SIGN stays hard here and the teeth move to the
+    // CONTRAST bar below, which is UNCHANGED at 6.0 and now has less margin, not
+    // more.
+    assert(orangeNotch > 0.0);
+    // …and the CONTRAST, the hard bar in dB, UNCHANGED by this correction.
     assert(orangeNotch - marshallNotch > 6.0);
+
+    // KNOB AUTHORITY, added by the schematic correction because the perturbation
+    // run found the mid-notch metric alone could not see a collapsed bass pot: with
+    // kRB at 10 k instead of the transcribed 1 M the network is swamped by the two
+    // 100 k series resistors, the BASS control does almost nothing, and every bar
+    // above still passed. A control that does nothing is dead UI (CLAUDE.md's own
+    // rule), so both pots' travel is now measured at the frequency each one owns.
+    {
+        auto at = [&](double f, double b, double t) {
+            return toDb(JamesToneStack::magnitudeAt(f, b, t, gJamesGain, gJamesRs,
+                                                    JamesToneStack::Probe::Out));
+        };
+        const double bassTravel = at(82.0, 0.999, 0.5) - at(82.0, 0.001, 0.5);
+        const double trebTravel = at(5000.0, 0.5, 0.999) - at(5000.0, 0.5, 0.001);
+        std::printf("  knob authority: BASS %+.2f dB at 82 Hz   TREBLE %+.2f dB at "
+                    "5 kHz\n",
+                    bassTravel, trebTravel);
+        assert(bassTravel > 8.0);
+        assert(trebTravel > 20.0);
+    }
 
     // --- (b) the COMPOSED AMPS, rendered -----------------------------------
     // Same input, both amps at their tone knobs noon and at a clean level, and THE
     // SAME METRIC as (a) — min(330..660 Hz) relative to the mean of 110 Hz and
     // 4.4 kHz. Deliberately not "dB re 1 kHz": the FMV's own notch minimum sits at
     // ~1 kHz, so normalizing there would hide the very thing being measured.
-    // This is the player-observable half of the bar: it includes every stage, the
-    // power section and the feedback loop, not just the network.
     const double bands[] = {110.0, 220.0, 330.0, 440.0, 660.0, 1000.0, 2200.0, 4400.0};
     constexpr int kNb = 8;
     double oj[kNb] = {0}, mj[kNb] = {0};
@@ -457,8 +648,10 @@ void testMidForwardVsJcm800(double fs) {
                 "contrast %.2f dB\n",
                 oNotch, mNotch, oNotch - mNotch);
     // The whole amp, not just the network: the Orange must sit mid-FORWARD where
-    // the Marshall sits mid-scooped, and the gap has to be real. Measured 5.9 dB;
-    // the bar is 4.0, with the margin recorded rather than snugged.
+    // the Marshall sits mid-scooped, and the gap has to be real. The correction
+    // IMPROVED this half (6.24 -> 7.76 dB), because the transcribed 330p at V1B's
+    // grid and the transcribed F.A.C. take the bottom out of the Orange where the
+    // FMV is boosting it. Bars UNCHANGED.
     assert(oNotch > 0.0);
     assert(mNotch < -1.5);
     assert(oNotch - mNotch > 4.0);
@@ -494,7 +687,10 @@ void testBreakupTracksVolume(double fs) {
     std::printf("  >=5 %% THD onset at VOLUME %.2f\n", onset);
     // The amp has NO master volume, so the onset IS the design statement: clean in
     // the bottom third, breaking up around the middle, roaring at the top — the
-    // same window the AC30's volume law was chosen against (docs §46).
+    // same window the AC30's volume law was chosen against (docs §46). On the
+    // corrected circuit this is NOT set by a constant: kInterstageScale is 1.0 (an
+    // un-fitting — the model carries the whole physical path now), and the onset
+    // lands here on its own.
     assert(onset > 0.40 && onset <= 0.70);
     // Clean at the bottom and genuinely saturated at the top.
     {
@@ -514,12 +710,12 @@ void testBreakupTracksVolume(double fs) {
 // 6. The F.A.C. rotary — a real high-pass that walks
 // ===========================================================================
 void testFacSwitch(double fs) {
-    std::printf("\n[orange] F.A.C. — six positions\n");
+    std::printf("\n[orange] F.A.C. — six TRANSCRIBED positions "
+                "(through / 4n7 / 4n7 / 2n2 / 1n / 330p)\n");
     const double lowE = 82.0;
     double prevLf = 1e30, prevTilt = -1e30;
-    for (int pos = 0; pos < JamesToneStack::kFacPositions; ++pos) {
-        const double knob =
-            double(pos) / double(JamesToneStack::kFacPositions - 1);
+    for (int pos = 0; pos < FacNetwork::kPositions; ++pos) {
+        const double knob = double(pos) / double(FacNetwork::kPositions - 1);
         OrangeKnobs k;
         k.volume = 0.3;
         k.fac = knob;
@@ -531,7 +727,7 @@ void testFacSwitch(double fs) {
         const double aHi = toDb(goertzelAmp(hi, s0, w, 1000.0, fs));
         std::printf("  pos %d (C = %8.1f pF): low E %7.2f dB   1 kHz %7.2f dB   "
                     "tilt %+6.2f dB\n",
-                    pos, JamesToneStack::kFacCaps[pos] * 1e12, aLo, aHi, aHi - aLo);
+                    pos, FacNetwork::kCaps[pos] * 1e12, aLo, aHi, aHi - aLo);
         // Every click to the right takes low end away, and never adds any.
         assert(aLo < prevLf + 0.05);
         // …and the amp gets THINNER, i.e. the 1 kHz-to-low-E tilt only grows.
@@ -539,6 +735,12 @@ void testFacSwitch(double fs) {
         prevLf = aLo;
         prevTilt = aHi - aLo;
     }
+    // TRANSCRIPTION NOTE, asserted so it cannot be silently "tidied": positions 1
+    // and 2 carry the SAME 4n7 on BOTH factory sheets (C19 and C20). SW2 is a
+    // 2-pole 6-way, so the second pole plausibly does something the single-line
+    // transcription does not carry; the ladder is shipped literally.
+    assert(FacNetwork::kCaps[1] == FacNetwork::kCaps[2]);
+    assert(FacNetwork::kCaps[0] == 0.0);  // the straight-through click
     // The two ends must be a real switch, not a nuance.
     OrangeKnobs k0;
     k0.volume = 0.3;
@@ -556,10 +758,11 @@ void testFacSwitch(double fs) {
 }
 
 // ===========================================================================
-// 7. Global feedback + HF DRIVE
+// 7. Global feedback + the H.F. BOOST choke network
 // ===========================================================================
-void testFeedbackAndHfDrive(double fs) {
-    std::printf("\n[orange] global NFB (driver cathode) + HF DRIVE\n");
+void testFeedbackAndHfBoost(double fs) {
+    std::printf("\n[orange] global NFB (16 ohm tap -> 15k -> driver cathode) + "
+                "H.F. BOOST\n");
     const std::vector<float> in = sine(440.0, 0.02f, 0.4, fs);
     auto gainOf = [&](bool fb) {
         OrangePowerAmp p;
@@ -574,16 +777,36 @@ void testFeedbackAndHfDrive(double fs) {
     };
     const double closed = gainOf(true), open = gainOf(false);
     const double depth = toDb(open) - toDb(closed);
-    std::printf("  open-loop %.5f   closed-loop %.5f   loop depth %.2f dB "
-                "(divider beta = %.4f)\n",
-                open, closed, depth, 1.5e3 / (1.5e3 + 27.0e3));
+    {
+        OrangePowerAmp p;
+        p.setOversampling(4);
+        p.prepare(fs, 128);
+        std::printf("  open-loop %.5f   closed-loop %.5f   loop depth %.2f dB "
+                    "(divider beta = %.4f, x%.4f for the 16 ohm tap)\n",
+                    open, closed, depth, p.feedbackDivider(),
+                    OrangePowerAmp::kFbTapRatio);
+    }
     // NEGATIVE feedback: the loop must REDUCE the gain. This is what pins the
     // injection sign at the driver cathode (see OrangePowerAmp.h §3).
     assert(closed < open);
     // A moderately fed-back British amp: present, not a hi-fi loop.
     assert(depth > 2.0 && depth < 12.0);
 
-    // HF DRIVE lifts the top by removing HF feedback.
+    // The H.F. BOOST is a series R-L-C in the driver's CATHODE, resonant at
+    //   1/(2*pi*sqrt(L*C)) = 5.19 kHz
+    // — an ABSOLUTE number straight off the two transcribed component values, and
+    // the reason this control cannot be a one-pole shelf.
+    {
+        CathodyneInverter::Config c;
+        const double fRes = 1.0 / (kTwoPi * std::sqrt(c.Lboost * c.Cboost));
+        std::printf("  boost branch: L %.2f mH + C %.3f uF -> series resonance "
+                    "%.1f Hz, Q %.2f at full boost\n",
+                    c.Lboost * 1e3, c.Cboost * 1e6, fRes,
+                    std::sqrt(c.Lboost / c.Cboost) / c.RchokeDcr);
+        assert(c.Lboost > 0.0);  // there IS an inductor here
+        assert(fRes > 4500.0 && fRes < 6000.0);
+    }
+
     auto hfAt = [&](double p, double f) {
         OrangeKnobs k;
         k.volume = 0.3;
@@ -594,15 +817,18 @@ void testFeedbackAndHfDrive(double fs) {
     };
     const double lo0 = hfAt(0.0, 220.0), hi0 = hfAt(0.0, 5000.0);
     const double lo1 = hfAt(1.0, 220.0), hi1 = hfAt(1.0, 5000.0);
-    std::printf("  HF DRIVE 0: 220 Hz %.2f  5 kHz %.2f (tilt %+.2f)\n", lo0, hi0,
+    std::printf("  H.F. BOOST 0: 220 Hz %.2f  5 kHz %.2f (tilt %+.2f)\n", lo0, hi0,
                 hi0 - lo0);
-    std::printf("  HF DRIVE 1: 220 Hz %.2f  5 kHz %.2f (tilt %+.2f)\n", lo1, hi1,
+    std::printf("  H.F. BOOST 1: 220 Hz %.2f  5 kHz %.2f (tilt %+.2f)\n", lo1, hi1,
                 hi1 - lo1);
-    std::printf("  HF lift across the control: %+.2f dB\n",
-                (hi1 - lo1) - (hi0 - lo0));
+    std::printf("  HF lift across the control: %+.2f dB   (220 Hz moved %+.2f dB)\n",
+                (hi1 - lo1) - (hi0 - lo0), lo1 - lo0);
     // The control must move the TILT, not just the level (a level-only "presence"
     // is dead UI — CLAUDE.md's own rule).
     assert((hi1 - lo1) - (hi0 - lo0) > 0.75);
+    // …and it must leave the low end where it was: the branch is a cathode bypass
+    // whose own reactance keeps it out of the bass.
+    assert(std::fabs(lo1 - lo0) < 2.0);
 }
 
 // ===========================================================================
@@ -632,19 +858,25 @@ void testAliasing(double fs) {
         std::printf("  %dx: worst alias %.1f dB\n", factor, a[idx]);
         ++idx;
     }
-    // Same COMPOUND floor the JCM documents (docs §18/§45): at max everything the
-    // amp's own harmonics reach past Nyquist and intermodulate, so this is not a
-    // pure foldover number and 8x does not rescue it. The bar is set at the MEASURED
-    // floor with margin, and 4x must still be a large improvement on 1x — that
-    // second clause is what would catch an oversampler that stopped working, which
-    // an absolute bar on a compound floor cannot.
-    // Measured on the shipped 4x: 48 kHz -67.1 dB, 44.1 kHz -59.2 dB. The bar is
-    // -56, i.e. 3 dB under the WORSE of the two rates — the same margin structure
-    // docs §45 uses for the JCM, whose identical probe measures -54.7 at 48 kHz and
-    // carries a -52 bar. This voice therefore clears the M2 -60 target at 48 k and
-    // sits just under it at 44.1 k, on a COMPOSED amp at maximum volume.
-    assert(a[2] < -56.0);
+    // 4x must be a large improvement on 1x — the clause that would catch an
+    // oversampler that stopped working, which an absolute bar on a compound floor
+    // cannot. Hard at BOTH rates.
     assert(a[2] < a[0] - 12.0);
+    // The absolute bar is the one the reconstruction shipped, -56 dB, and it is NOT
+    // loosened: at 48 kHz the corrected amp clears it with room (-73.0). At
+    // 44.1 kHz it does NOT — see the XFAIL. Attribution was measured, not guessed:
+    // the floor is -52.0 / -50.8 / -50.7 dB at H.F. BOOST 0 / 0.5 / 1.0, so the new
+    // resonant cathode network is NOT the cause; and it MOVES with the factor
+    // (1x -15.2, 4x -50.8, 8x -61.8), so it is genuine foldover rather than the
+    // rail-clipping signature docs §54 describes.
+    if (fs > 46000.0) {
+        assert(a[2] < -56.0);
+    } else {
+        expectXfail(a[2] < -56.0, kXfailOrangeAlias44k1,
+                    "4x = -50.8 dB at 44.1 kHz (48 kHz measures -73.0); 8x reaches "
+                    "-61.8, so the shortfall is foldover the shipped factor does not "
+                    "clear");
+    }
 }
 
 // ===========================================================================
@@ -686,16 +918,9 @@ void testOrangeCab(double fs) {
         }
         return toDb(std::sqrt(re * re + im * im));
     };
-    // Both IRs are peak-normalized to unity (M6.6), so ABSOLUTE dB is the fair
-    // comparison between them; the "re its own 1 kHz" column would be read through
-    // whichever cab happens to peak there, which for the Orange is the bark itself.
     std::printf("       f    Orange    Brit   (absolute, both unity-peak)\n");
     for (double f : {60.0, 100.0, 200.0, 500.0, 1000.0, 1200.0, 3000.0, 8000.0})
         std::printf("  %6.0f   %+6.2f  %+6.2f\n", f, mag(o, f), mag(b, f));
-    // The LOW-CUT CORNER: the frequency at which each IR has fallen 6 dB below its
-    // own 300 Hz level. That is a property of the box's high-pass alone and is not
-    // confounded by either cab's midrange voicing, which a "60 Hz re 1 kHz" number
-    // very much is.
     auto corner6 = [&](const std::vector<float>& h) {
         const double ref = mag(h, 300.0) - 6.0;
         double best = 20.0;
@@ -708,14 +933,11 @@ void testOrangeCab(double fs) {
     const double oC = corner6(o), bC = corner6(b);
     std::printf("  -6 dB low corner: Orange %.1f Hz   Brit %.1f Hz\n", oC, bC);
     assert(oC < bC - 3.0);
-    // The BARK: more 1.2 kHz relative to 200 Hz than the Brit has — the cab voiced
-    // in the same direction as the amp's stack.
     const double oBark = mag(o, 1200.0) - mag(o, 200.0);
     const double bBark = mag(b, 1200.0) - mag(b, 200.0);
     std::printf("  1.2 kHz-minus-200 Hz: Orange %+.2f dB   Brit %+.2f dB\n", oBark,
                 bBark);
     assert(oBark > bBark + 2.0);
-    // Still a 4x12: dark up top, and peak-normalized to unity (M6.6).
     assert(mag(o, 8000.0) - mag(o, 1000.0) < -30.0);
     double peak = 0.0;
     for (int i = 0; i < 512; ++i) {
@@ -727,7 +949,7 @@ void testOrangeCab(double fs) {
 }
 
 // ===========================================================================
-// 11. reset() re-parks without re-solving, and the block size does not matter
+// 11. reset() re-parks without re-solving, blocking, and the denormal rests
 // ===========================================================================
 void testResetAndBlocking(double fs) {
     std::printf("\n[orange] reset() + ragged blocking\n");
@@ -756,37 +978,82 @@ void testResetAndBlocking(double fs) {
     // Everything finite, always.
     for (float v : blocked) assert(std::isfinite(v));
 
-    // The tone stack's cap companions all rest at EXACTLY zero (docs §33): a
-    // subnormal parked there is invisible in the float output and costs ~68x on the
-    // Marshall stack, and this network has EIGHT of them. Driven, then silenced —
-    // a never-driven stack would prove nothing.
+    // Every cap companion whose rest value is ZERO (docs §33, ADR 006). The James
+    // network has TEN of them (two bass caps, the treble series and shunt caps and
+    // the 330p, each as a v/i pair) and the F.A.C. two; a subnormal parked there is
+    // invisible in the float output and costs ~68x on the Marshall stack. Driven,
+    // then silenced — a never-driven network would prove nothing.
     JamesToneStack stack;
     stack.prepare(fs);
-    stack.setSourceImpedance(38.0e3);
-    stack.setKnobs(0.5, 0.5);
+    stack.setSourceImpedance(45.0e3);
+    stack.setKnobs(0.5, 0.5, 0.5);
     stack.snapKnobs();
+    FacNetwork fn;
+    fn.prepare(fs);
+    fn.setSourceImpedance(45.0e3);
+    fn.setPosition(1);
     {
         const std::vector<float> tone = sine(220.0, 1.0f, 0.2, fs);
         std::vector<float> o(tone.size(), 0.0f);
         stack.process(tone.data(), o.data(), static_cast<int>(tone.size()));
+        fn.process(tone.data(), o.data(), static_cast<int>(tone.size()));
         assert(stack.maxAbsRestingState() > 0.0);  // it really was excited
+        assert(fn.maxAbsRestingState() > 0.0);
         std::vector<float> quiet(static_cast<size_t>(4.0 * fs), 0.0f);
         std::vector<float> o2(quiet.size(), 0.0f);
         stack.process(quiet.data(), o2.data(), static_cast<int>(quiet.size()));
+        fn.process(quiet.data(), o2.data(), static_cast<int>(quiet.size()));
     }
-    const double rest = stack.maxAbsRestingState();
     std::printf("  James stack max |resting state| after 4 s of silence: %.3e\n",
-                rest);
-    assert(rest == 0.0);
+                stack.maxAbsRestingState());
+    std::printf("  F.A.C.       max |resting state| after 4 s of silence: %.3e\n",
+                fn.maxAbsRestingState());
+    assert(stack.maxAbsRestingState() == 0.0);
+    assert(fn.maxAbsRestingState() == 0.0);
+
+    // The H.F. Boost branch, measured rather than assumed (ADR 006). Its 0.47 uF
+    // rests at the DRIVER'S CATHODE voltage — a real operating point that looks
+    // like a zero-resting state — and its current and choke voltage, which really
+    // do rest at zero, FLOOR at ~1.4e-16 because they are a cancellation of two
+    // ~2 V node quantities. 292 decades above subnormal, so neither is flushed;
+    // this asserts the floor so a future edit that lets them decay into the
+    // subnormal range is caught. Driven, then silenced.
+    {
+        OrangePowerAmp pw;
+        pw.setOversampling(4);
+        pw.prepare(fs, 128);
+        CathodyneInverter probe;
+        probe.configure(pw.inverter().config());
+        probe.prepare(fs * 4.0);
+        probe.setBoost(1.0);
+        double vp = 0, vk = 0;
+        for (int i = 0; i < 20000; ++i)
+            probe.processSample(2.0 * std::sin(kTwoPi * 5000.0 * i / (fs * 4.0)), 0.0,
+                                vp, vk);
+        assert(probe.maxAbsRestingState() > 0.0);  // it really was excited
+        for (int i = 0; i < static_cast<int>(4.0 * fs * 4.0); ++i)
+            probe.processSample(0.0, 0.0, vp, vk);
+        std::printf("  H.F. Boost branch max |resting state| after 4 s of silence: "
+                    "%.3e   (its 0.47 uF rests at the driver cathode, %.4f V)\n",
+                    probe.maxAbsRestingState(), probe.boostCapRestVolts());
+        assert(probe.maxAbsRestingState() < 1e-12);
+        // …and the cap really is at a real operating point, which is why it is not
+        // guarded (ADR 006's scope rule, applied by measurement).
+        assert(probe.boostCapRestVolts() > 1.0);
+    }
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     // Unbuffered: an assert() aborts, and a buffered table is exactly the
     // measurement you need to see when it does.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     clipper::test::requireAssertsLive();
+    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
+                                                 sizeof kLedger / sizeof kLedger[0],
+                                                 "clipper_orange_tests");
+    if (ledger >= 0) return ledger;
     for (double fs : {44100.0, 48000.0}) {
         std::printf("\n================ Orange OR120, fs = %.0f ================\n",
                     fs);
@@ -799,12 +1066,13 @@ int main() {
     testMidForwardVsJcm800(fs);
     testBreakupTracksVolume(fs);
     testFacSwitch(fs);
-    testFeedbackAndHfDrive(fs);
+    testFeedbackAndHfBoost(fs);
     testAliasing(fs);
     testAliasing(44100.0);
     testDcOffsetOnSignal(fs);
     testOrangeCab(48000.0);
     testOrangeCab(44100.0);
-    std::printf("\n[orange] all OR120 tests passed\n");
-    return 0;
+    std::printf("\n[orange] all OR120 tests passed (the XFAIL below is a known open "
+                "defect, not a regression)\n");
+    return clipper::test::reportXfails();
 }

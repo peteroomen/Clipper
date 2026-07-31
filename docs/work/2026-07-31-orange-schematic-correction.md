@@ -199,3 +199,189 @@ against the real supply rails; alias floor; DC on signal; five goldens unchanged
 
 The post-'74 variant as a second voice, the Rockerverb (M10.7), every other amp and
 pedal, the cab (unchanged), any golden re-bless.
+
+---
+
+## What actually happened
+
+All ten defects were corrected. Two of them changed the shape of the model rather than a
+number, and both are worth reading before touching this voice again.
+
+**#1, the signal order, is the important one.** `OrangePreamp` now runs
+`V1A → James stack → GAIN → 330p → V1B → 68n → F.A.C. → power amp`. The James network, the
+GAIN pot and the 330 p/1 M grid network are ONE 9-node MNA, because the pot is the stack's
+load and the 330 p sees the pot's wiper impedance — so the coupling corner MOVES with the
+knob, which cascaded blocks could not represent. The F.A.C. is its own 3-node network after
+V1B, terminating at the driver's grid.
+
+**#7, the AC coupling, split the joint Newton.** The driver is a 2×2 in (Vpd, Vkd) with the
+1 n plate cap and the H.F. Boost R-L-C branch in its residuals; the cathodyne is a 1-D in
+(Vkc); the 68 n/1 M coupling is folded into the driver's plate node as one conductance plus
+a history current, so the Newton stays 2×2. The split loads stay EQUAL and the leg balance
+stays **0.999965**.
+
+**#8 put a real inductor in the model for the first time.** The H.F. Boost is a series
+R-L-C from the driver's cathode to ground, trapezoidal companions for both reactances,
+resonant at **5191.1 Hz** with Q **8.15** at full boost.
+
+**Three things the sheets do not carry** are named in §57.1 rather than hidden: where the
+cathodyne's 1 M grid leak returns to (derived by centring the stage in its own compliance,
+after MEASURING that a ground return idles it at 54.7 µA and cannot swing the transcribed
+48 V of EL34 bias), the 2 mH choke's DCR (8 Ω), and the HT choke's DCR/inductance (treated
+as ideal at DC, which merges A+ and B+ into one 66 µF node).
+
+**`kInterstageScale` became an UN-FITTING, not a re-derivation.** The corrected preamp ends
+at the driver's own grid node, so its output *is* the grid voltage and the constant is 1.0.
+It was still swept to check that unity is also where the amp behaves — and the breakup onset
+lands at VOLUME **0.50** there, i.e. the §46 window is met by the circuit.
+
+**Five claims were refuted by measurement and reported, not fitted away** — see "Measured
+results" below and §57.9. Two of them are the FIRST RELEASE'S OWN findings.
+
+**The mid-forward bar survived.** Both contrast bounds are unchanged (6.0 network, 4.0
+composed) and both are met, with the network contrast now at 6.78 dB (0.78 dB of margin
+against the old 2.35 — a harder test, not an easier one) and the composed one improved to
+7.76. One one-sided margin moved and is reported.
+
+**One property was LOST and is an XFAIL, not a loosened bound:** the composed alias floor at
+44.1 kHz / 4×.
+
+**The perturbation run found three bars that could not fail** (two Ohm's-law identities on
+the supply chain, and nothing measuring whether the tone pots did anything). All three were
+replaced by absolute windows plus a new knob-authority block, and all three then go red.
+
+## Measured results
+
+**DC — the transcribed supply chain, solved end to end**
+
+| node | value |
+| --- | --- |
+| EL34 rail (A+) / screens / Ip / Ig2 / Pdiss | 499.34 V / 495.83 V / 34.57 mA / 3.51 mA / 17.26 W (69 %) |
+| C+ = B+ − 33 K × (driver + cathodyne) | 416.93 V |
+| D+ = C+ − 33 K × (V1A + V1B) | 368.24 V |
+| V1A / V1B | Va 205.17 V, Vk 1.631 V, Ip 0.7412 mA (Ohm 0.7338), 56.2 % of D+ |
+| driver | Vp 271.44 V, Vk 1.945 V, Ip 1.4549 mA |
+| cathodyne | Vk 104.23 V, Vp 312.70 V, Ip 1.0423 mA, grid 102.740 V, Vgk −1.493 V |
+| derived bias tap | 1432 Ω of the 100 k cathode leg |
+| V1A / V1B plate source impedance | 45 534 Ω |
+
+**The ten defects, before → after**
+
+| # | item | reconstruction | transcribed | measured consequence |
+| --- | --- | --- | --- | --- |
+| 1 | signal order | `V1A → VOL → V1B → F.A.C. → stack` | `V1A → stack → GAIN → V1B → F.A.C. → power` | composed 110 Hz re 660: −3.28 → **−20.26 dB**; composed mid-notch +1.15 → **+2.67** |
+| 2 | V1A/V1B plate load | 100 k | **220 k** | stage Ip 1.343 → **0.741 mA**; plate Rout 30 235 → **45 534 Ω** |
+| 3 | V1A/V1B cathode | 820 Ω ∥ 25 µF | **2k2 ∥ 50 µF** | Vk 1.101 → **1.631 V** |
+| 4 | F.A.C. ladder | 47n·22n·10n·4n7·1n5·330p | **through·4n7·4n7·2n2·1n·330p** | low-E span 17.21 → **13.69 dB**; top three clicks now 0.45 dB apart |
+| 5 | cathodyne split loads | 180 k / 180 k | **100 k / 100 k** | Ipc 0.7374 → **1.0423 mA**; Vkc 132.74 → **104.23 V** |
+| 6 | driver plate load | 300 k | **100 k + 1 n across it** | driver gain −57.244 → **−43.735** |
+| 7 | driver → cathodyne | DC (joint 3×3) | **AC, 68 n + 1 M (2×2 + 1-D)** | compliance −132.7/+67.3 → **−104.23/+103.97** (0.25 % asymmetry) |
+| 8 | H.F. Boost | one-pole shelf in the NFB path | **1 k lin + 2 mH choke + 0.47 µF at the cathode** | 5 k-vs-220 Hz tilt +6.80 → **+6.32 dB**, and it is now a 5191 Hz resonance |
+| 9 | tone-stack values | reconstructed | as transcribed | network mid-notch +2.32 → **+0.75 dB**; contrast 8.35 → **6.78** |
+| 10 | EL34 screen R | 470 Ω shared + 47 µF | **1 k per tube, no bypass** | screen drop 6.3 → **3.51 V**, and it now follows the signal |
+
+**Staging constants, re-derived on the corrected circuit**
+
+* `kInterstageScale` **0.12 → 1.0** (un-fitted: the preamp emits the driver's grid volts).
+  Sweep, onset / cranked W: 0.06 → 1.00 / 70.8 · 0.12 → 1.00 / 84.1 · 0.20 → 0.90 / 87.7 ·
+  0.40 → 0.70 / 92.5 · **1.00 → 0.50 / 94.0** · 2.00 → 0.35 / 94.8.
+* `kFullScaleSecV` **50.7 → 43.086**, from the measured cranked secondary 38.777 V peak
+  (VOLUME 1.0, 0.50 V in, 220 Hz). Cranked normalized peak lands at **0.9000** (0.9018 at
+  44.1 kHz, 0.8980 at 96 kHz — 0.42 % spread).
+
+**Five refutations, reported not fitted**
+
+1. **"`kInterstageScale` does not set the breakup onset"** (a first-release finding) — on the
+   corrected circuit the onset moves 1.00 → 0.35 across the sweep. The preamp now loses
+   ~35 dB before V1B, so the POWER section clips first.
+2. **The amp does not make its rated 120 W.** The power section's own ceiling measures
+   **92.71 W with feedback / 93.56 W without**; the §42 criterion is unsatisfiable. Cause
+   measured: the transcribed 68 n → 110 k EL34 grid network drives the grids ~3× more
+   stiffly into conduction (§18 blocking); the per-tube 1 k screens with no bypass are worth
+   ~4 W (at 1 Ω the ceiling reads 97.7 W).
+3. **The cathodyne clip is NOT "asymmetric by construction"** (a first-release claim) — it
+   is symmetric to **0.25 %** once the stage is AC-coupled and centred.
+4. **The F.A.C.'s range is not "330 p to .047"** — it tops out at 4n7 plus a straight-through
+   click, a 10× error at the fat end.
+5. **A ground return for the cathodyne's grid leak is non-viable** — measured Vk 5.47 V,
+   Ip 54.7 µA, against the 48 V the transcribed EL34 bias needs.
+
+**The §57.4 bar, re-measured**
+
+| | reconstruction | transcribed | bar |
+| --- | --- | --- | --- |
+| network: James / FMV | +2.32 / −6.03 | **+0.75 / −6.03** | James > 0 (was > +1.0), FMV < −3.0 |
+| network contrast | 8.35 dB | **6.78 dB** | **> 6.0, UNCHANGED** |
+| composed: Orange / JCM | +1.15 / −5.09 | **+2.67 / −5.09** | Orange > 0, JCM < −1.5 |
+| composed contrast | 6.24 dB | **7.76 dB** | **> 4.0, UNCHANGED** |
+
+**Everything else measured**
+
+* Breakup: ≥5 % THD onset at **VOLUME 0.50** (unchanged); clean end 1.62 %, cranked end
+  41.59 %; THD and RMS monotone.
+* Cathodyne: leg ratio **0.999965**, exactly anti-phase, plate + cathode ≡ C+ exactly, split
+  load gain **+0.9733**, compliance rails 0.0000 / 208.202 V.
+* NFB depth **7.07 dB** (open 0.00905 → closed 0.00401), divider 0.0891 × √2 for the 16 Ω tap.
+* Knob authority: **BASS +11.96 dB at 82 Hz, TREBLE +39.81 dB at 5 kHz**.
+* Discretization: James+GAIN+330 p worst **0.481 dB** (44.1 k) / 0.403 (48 k), all of it
+  bilinear warp at TREBLE-min / 6 kHz; F.A.C. worst **0.002 dB**.
+* Alias floor (cranked, 4186 Hz / 0.3 V): 48 kHz 1× −17.7 → **4× −73.0** → 8× −73.1;
+  44.1 kHz 1× −15.2 → **4× −50.8** → 8× −61.8. The 44.1 k figure fails the −56 bar and is
+  an **XFAIL**, not a loosened bound.
+* DC on signal, VOLUME 0.7: **0.172 %** of peak with and without +0.1 V of input offset.
+* reset() + 128-frame ragged blocking vs one call: **0.000e+00**.
+* Denormals: James network **exactly 0.0**, F.A.C. **exactly 0.0**, H.F. Boost branch floors
+  at **1.386e-16** (its 0.47 µF rests at the driver's cathode, 1.9453 V — a real operating
+  point, so it is commented, not flushed).
+* **Goldens: all five UNCHANGED at ±0.00.** Nothing blessed, nothing written.
+
+**Perturbation transcript** — 12 patches, all RED, restore GREEN each time. Full table in
+§57.10. The headline is **P12**: swapping only the era-defining treble cap for the post-'74
+330 pF takes the James network to **−2.31 dB (a SCOOP)** and the contrast to **3.72 dB**,
+failing the bar — so the bar has teeth and the era choice is load-bearing. Three bars had to
+be ADDED because the first pass found them toothless (two Ohm's-law identities on the supply
+chain, and no measurement of pot authority at all).
+
+**Gates:** core ctest **29/29** (28 → 29 entries; the new `clipper_orange_tests_xfail_ledger`
+takes repo ledgers 4 → 5) · native `clipper_identical_core` / `clipper_chain_edit` /
+`clipper_cab_state` 3/3 · web `tsc --noEmit` + `vite build` clean, Playwright **76 passed** ·
+node 15 / 10 / 12 · electron 20 · WASM artifact rebuilt (77 hashed inputs) and the staleness
+gate re-verified.
+
+## Files created / modified
+
+* `core/include/clipper/dsp/OrangePreamp.h`, `core/src/dsp/OrangePreamp.cpp` — the
+  structural re-order, the 9-node James+GAIN+330 p MNA, the new `FacNetwork`, the
+  transcribed stage configs, the bisected D+ dropper chain.
+* `core/include/clipper/dsp/OrangePowerAmp.h`, `core/src/dsp/OrangePowerAmp.cpp` — the
+  driver/cathodyne split, the derived cathodyne bias tap, the H.F. Boost R-L-C branch, the
+  16 Ω NFB tap, the transcribed EL34 grid + screen + supply values, `kFullScaleSecV`.
+* `core/include/clipper/dsp/OrangeAmp.h`, `core/src/dsp/OrangeAmp.cpp` — `kInterstageScale`
+  un-fitted to 1.0, the sweep table and its two refutations, the C+ → preamp hand-off.
+* `core/tests/test_orange_amp.cpp` — rewritten against the corrected circuit; the sine leg-gain
+  probe, the knob-authority bars, the absolute supply/screen windows, the XFAIL ledger.
+* `core/CMakeLists.txt` — the `clipper_orange_tests` XFAIL ledger registration.
+* `docs/DEVELOPMENT.md` §57 — every subsection rewritten in place; §57.1 is now a transcribed
+  parts list.
+* `web/public/generated/clipper.js`, `clipper-processor.js`, `.build-stamp.json` — rebuilt.
+* `CLAUDE.md` — Current State.
+
+## Deferred to next session
+
+* **The ~93 W ceiling** against the rated 120 W. Attribution measured (§57.3); the next step
+  is the EL34 grid network and the screen model, **not** a re-invented filter cap.
+* **`orange-schematic-alias-44k1`** — the 44.1 kHz 4× alias floor. Candidate fix: one shared
+  oversampling domain around the whole preamp+power cascade (the same slice §46 flagged for
+  the AC30).
+* **Panel names**: the Field Guide says GAIN and H.F. BOOST; the web face still says Vol / HF.
+  A label-only change, deliberately left out of a circuit slice.
+* **A post-'74 voice** — the cross-check sheet is a complete second amp, and P12 shows it
+  measures materially different. It would need its own bar.
+* Cathodyne grid conduction, OT core saturation, and the values the sheets still do not carry
+  (`Raa`, the OT corners, the HT Thévenin source, the −48 V bias) — §57.1 / §57.13.
+
+## Status
+
+- [ ] In progress
+- [x] Complete
+- [ ] Partial — see deferred
