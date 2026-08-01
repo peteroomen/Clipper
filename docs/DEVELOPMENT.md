@@ -11369,7 +11369,8 @@ user surface; the wordmark is "Echoman").
 brigades, feedback, companders or knobs; `DelayModel` is the BBD behaviour built
 on top of it. M13.6's flanger and any future tape echo are cheap only if that
 separation is right, so the primitive carries its own bars in this suite (§60.7)
-rather than being an untested header that happens to work here.
+rather than being an untested header that happens to work here. **ADR 022** records
+that split, and the oversampling derivation below, as decisions rather than habits.
 
 ### 60.1 Research — what was reachable, and what was not
 
@@ -11696,7 +11697,9 @@ signal (Hann-windowed, see the trap in §60.9):
 
 **56.58 dB in one step**, and the step is exactly where the derivation says it
 should be. CPU for it: **2.9 % → 5.4 %** of one 48 kHz stream. Latency does not
-move at all, because the dry path never enters the oversampled domain.
+move at all, because the dry path never enters the oversampled domain. **ADR 022**
+records this as a device-derived factor, NOT a licence to raise the house 4×
+elsewhere: without a clock to clear, 1× → 4× moves only 5.5 dB here.
 
 At the OTHER end of the travel the device aliases and **that is correct**: a
 9 kHz tone into a 7.45 kHz clock (Nyquist 3.7 kHz) folds hard, and no amount of

@@ -207,11 +207,12 @@ Docs: `docs/DEVELOPMENT.md` §60, `CLAUDE.md` Current State, this file.
 
 ## Deferred to next session
 
-- **An ADR is needed and its number was NOT chosen** (§ and ADR numbers are
-  assigned centrally; 019 is the highest taken). Its subject: *the delay line is a
-  reusable primitive separate from the device behaviour, and the BBD's own clock —
-  not the house 4× convention — sets the oversampling factor.* Both are decisions a
-  future slice could reasonably "fix" back without one.
+- **ADR 022 assigned and written** (`docs/decisions/022-delay-primitive-and-device-set-oversampling.md`)
+  — the slice asked for a number and did not choose one, per the central-assignment
+  rule. Its subject: *the delay line is a reusable primitive separate from the
+  device behaviour, and the BBD's own clock — not the house 4× convention — sets
+  the oversampling factor.* Both are decisions a future slice could reasonably
+  "fix" back without one.
 - **Unify `DelayLine` with `ChorusModel`'s private ring buffer.** `ChorusModel`
   has its own cubic-interpolating ring, written before this primitive existed, and
   it still indexes with `%` (docs §32's cost). Folding it onto `DelayLine` is
