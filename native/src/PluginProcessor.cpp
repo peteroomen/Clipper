@@ -169,6 +169,14 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::compSustain, "Squash Sustain", 0.5f));
     layout.add(knob(pid::compLevel, "Squash Level", 0.4f));
 
+    // M13.6a — the "Curfew" noise gate. TWO knobs, because the pedal has two:
+    // THRESHOLD (which, unlike the compressor's SUSTAIN, really IS a threshold —
+    // 40 dB of travel on the open level, 0.00 dB on the gain when open) and
+    // DECAY. Defaults mirror the web's GATE_KNOB_DEFAULTS: 0.35 / 0.5 (docs §61).
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::gateOn, 1}, "Curfew On", true));
+    layout.add(knob(pid::gateThreshold, "Curfew Threshold", 0.35f));
+    layout.add(knob(pid::gateDecay, "Curfew Decay", 0.5f));
+
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::ampOn, 1}, "Amp Power", true));
     // M9.4 amp voice (default index 0 == Clean 120).
     layout.add(std::make_unique<Choice>(juce::ParameterID{pid::ampModel, 1},
@@ -429,6 +437,9 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.compOn = f(pid::compOn) >= 0.5f;
     p.compSustain = f(pid::compSustain);
     p.compLevel = f(pid::compLevel);
+    p.gateOn = f(pid::gateOn) >= 0.5f;
+    p.gateThreshold = f(pid::gateThreshold);
+    p.gateDecay = f(pid::gateDecay);
 
     // The board: unpack the lock-free snapshot the message thread published (never
     // touch the ValueTree here — this runs on the audio thread).

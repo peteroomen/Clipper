@@ -155,6 +155,28 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Level', aria: 'Level', param: 'level', testId: 'knob-level' },
     ],
   },
+  // M13.6a "Curfew": the lineup's first UTILITY — it makes no sound of its own,
+  // it takes one away. Morphology cue is the SLATE accent and a two-knob face on
+  // the small 'stack' anatomy: deliberately the most boring box on the board,
+  // because that is what a gate is. Wordmark "Curfew" is the wink (the thing that
+  // makes the noise stop at a set hour); the model line names the type. No
+  // Boss/NS-2/ISP/Decimator text anywhere.
+  gate: {
+    layout: 'stack',
+    model: 'UTILITY Nº8 · GATE',
+    wordmark: 'Curfew',
+    knobs: [
+      // TWO real knobs, because the reference has two. Slot 0 (distortion) is
+      // THRESHOLD — and unlike the compressor's SUSTAIN it really is a threshold
+      // (docs §61.4). Slot 2 (level) is DECAY, the fade time after the note
+      // stops. Slot 1 is carried and unused. The reference's third control is a
+      // MODE switch that changes what the FOOTSWITCH does rather than the audio,
+      // and this board's footswitch is bypass on every pedal — so it is
+      // deliberately not shipped rather than shipped as a knob that lies.
+      { name: 'Thresh', aria: 'Threshold', param: 'distortion', testId: 'knob-threshold' },
+      { name: 'Decay', aria: 'Decay', param: 'level', testId: 'knob-decay' },
+    ],
+  },
   // Post-v1.1 wah "Weeper": the lineup's FIRST FILTER pedal, and the first one
   // whose real-world enclosure is not a box you press but a ROCKING TREADLE you
   // stand on. That is its morphology cue and it gets its own 'rocker' layout: a

@@ -51,6 +51,7 @@
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CompModel.h"
+#include "clipper/dsp/GateModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/MuffModel.h"
@@ -91,6 +92,10 @@ void* comp_create(float);   void comp_destroy(void*);
 void  comp_set_param(void*, int, float);
 void  comp_process(void*, const float*, float*, int);
 void  comp_reset(void*);
+void* gate_create(float);   void gate_destroy(void*);
+void  gate_set_param(void*, int, float);
+void  gate_process(void*, const float*, float*, int);
+void  gate_reset(void*);
 void* gold_create(float);   void gold_destroy(void*);
 void  gold_set_param(void*, int, float);
 void  gold_process(void*, const float*, float*, int);
@@ -316,11 +321,13 @@ std::vector<UnitMaker> abiMakers() {
     const std::vector<int> three = {0, 1, 2};
     const std::vector<float> dirt = {0.6f, 0.5f, 0.6f};
     AbiReset ratR = nullptr, sdR = nullptr, tsR = nullptr, muffR = nullptr,
-             goldR = nullptr, phaserR = nullptr, ampR = nullptr, compR = nullptr;
+             goldR = nullptr, phaserR = nullptr, ampR = nullptr, compR = nullptr,
+             gateR = nullptr;
 #ifndef CLIPPER_NAN_TEST_NO_RESET
     ratR = rat_reset; sdR = sd_reset; tsR = ts_reset; muffR = muff_reset;
     goldR = gold_reset; phaserR = phaser_reset; ampR = amp_reset;
     compR = comp_reset;
+    gateR = gate_reset;
 #endif
     v.push_back([=] { return makeAbiUnit("rat_* (ABI)", rat_create, rat_destroy,
                                          rat_set_param, rat_process, ratR, three, dirt); });
@@ -337,6 +344,11 @@ std::vector<UnitMaker> abiMakers() {
     v.push_back([=] { return makeAbiUnit("comp_* (ABI)", comp_create, comp_destroy,
                                          comp_set_param, comp_process, compR,
                                          three, {0.5f, 0.5f, 0.4f}); });
+    // M13.6a: the gate writes slots 0 and 2 only (slot 1 is unused), but the
+    // guard must still reject a NaN arriving on ANY slot, so all three are driven.
+    v.push_back([=] { return makeAbiUnit("gate_* (ABI)", gate_create, gate_destroy,
+                                         gate_set_param, gate_process, gateR,
+                                         three, {0.35f, 0.5f, 0.5f}); });
     v.push_back([=] { return makeAbiUnit("phaser_* (ABI)", phaser_create, phaser_destroy,
                                          phaser_set_param, phaser_process, phaserR,
                                          three, {0.35f, 0.5f, 0.5f}); });
@@ -361,6 +373,8 @@ std::vector<UnitMaker> cppMakers() {
     v.push_back([=] { return makeCppUnit<GoldModel>("GoldModel (direct C++)", three, dirt, true); });
     v.push_back([=] { return makeCppUnit<CompModel>("CompModel (direct C++)", three,
                                                     {0.5f, 0.5f, 0.4f}, true); });
+    v.push_back([=] { return makeCppUnit<GateModel>("GateModel (direct C++)", three,
+                                                    {0.35f, 0.5f, 0.5f}, true); });
     v.push_back([] { return makeCleanAmpCppUnit(); });
     // Jcm800Amp: 0 gain, 1 master, 2 bass, 3 mid, 4 treble, 5 presence, 6 reverb.
     v.push_back([] {

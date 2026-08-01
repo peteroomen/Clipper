@@ -63,12 +63,25 @@ struct PedalFace {
         const char* name;
         const char* paramId;
     };
-    std::vector<Knob> knobs;  // 1..3, in display order (Squash carries 2)
+    std::vector<Knob> knobs;  // 1..3, in display order (Squash/Curfew carry 2)
     const char* onParamId;    // the engaged-flag parameter
+    // The PedalType this face belongs to. It is a FIELD rather than the entry's
+    // POSITION for two measured reasons found by M13.6a (docs §61.10): the table
+    // was a `[PEDAL_TYPE_COUNT]` array indexed by type, and (1) the wah's and the
+    // compressor's entries were in the wrong ORDER, so the native editor drew the
+    // Squash face on a Weeper and vice versa; (2) the slot-reservation commit
+    // widened PEDAL_TYPE_COUNT to 11 while the table still had 8 entries, so
+    // types 8/9/10 resolved to a value-initialized face with NULL strings. Both
+    // are impossible once the type is written down next to the face.
+    int type;
 };
 
-// The face for a PedalType (PEDAL_RAT..PEDAL_COMP).
+// The face for a PedalType. Falls back to the RAT face for a type whose slice has
+// not landed yet — see `pedalHasFace`, which is what the menus filter on.
 const PedalFace& pedalFace(int type);
+// FALSE for a reserved-but-unfilled PedalType. The gear tray and the swap menu
+// must not offer one: it would be an item that adds a pedal with no face.
+bool pedalHasFace(int type);
 // The human label used in the gear tray / swap menus.
 juce::String pedalMenuLabel(int type);
 

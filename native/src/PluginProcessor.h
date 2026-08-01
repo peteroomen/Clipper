@@ -55,6 +55,12 @@ inline constexpr const char* goldLevel   = "goldLevel";
 inline constexpr const char* compOn      = "compOn";
 inline constexpr const char* compSustain = "compSustain";
 inline constexpr const char* compLevel   = "compLevel";
+// M13.6a: the "Curfew" noise gate. TWO knobs, for the same reason as the
+// compressor's — the reference's third control changes the FOOTSWITCH, not the
+// audio, and this board's footswitch is bypass on every pedal.
+inline constexpr const char* gateOn        = "gateOn";
+inline constexpr const char* gateThreshold = "gateThreshold";
+inline constexpr const char* gateDecay     = "gateDecay";
 // Post-v1.1 — the "Weeper" wah / envelope filter, the board's first FILTER pedal
 // (docs §58). POSITION is the treadle (heel->toe) and is an ordinary automatable
 // parameter; SENSE at 0 is exactly that manual pedal and above 0 hands the same

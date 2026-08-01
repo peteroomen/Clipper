@@ -292,6 +292,9 @@ class ClipperProcessor extends AudioWorkletProcessor {
     // (both the SD-1 engine family), 'muff'=Pi fuzz, 'gold'=the GOLD clean-blend
     // overdrive (slots read GAIN/TREBLE/OUTPUT), 'comp'=the M13.1 "Squash" OTA
     // compressor (slot 0 = SUSTAIN, slot 2 = LEVEL, slot 1 unused-but-carried),
+    // 'gate'=the M13.6a "Curfew" noise gate (slot 0 = THRESHOLD, slot 2 = DECAY,
+    // slot 1 unused-but-carried; set_oversampling is a no-op and latency is 0,
+    // because a gate's signal path is a multiply — docs §61.7),
     // 'phaser'=Ninety (linear allpass sweep: set_oversampling is a no-op,
     // latency 0), anything else = RAT.
     // overdrive (slots read GAIN/TREBLE/OUTPUT), 'phaser'=Ninety (linear allpass
@@ -299,8 +302,8 @@ class ClipperProcessor extends AudioWorkletProcessor {
     // FILTER pedal: a swept resonant tank into a real transistor stage, so unlike
     // the phaser its set_oversampling and latency ARE real — slots read
     // POSITION/SENSE/VOICE), anything else = RAT.
-    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'muff' ? 'muff' : type === 'gold' ? 'gold' : type === 'comp' ? 'comp' : type === 'phaser' ? 'phaser' : type === 'wah' ? 'wah' : 'rat';
-    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'muff' ? '_muff' : t === 'gold' ? '_gold' : t === 'comp' ? '_comp' : t === 'phaser' ? '_phaser' : t === 'wah' ? '_wah' : '_rat';
+    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'muff' ? 'muff' : type === 'gold' ? 'gold' : type === 'comp' ? 'comp' : type === 'gate' ? 'gate' : type === 'phaser' ? 'phaser' : type === 'wah' ? 'wah' : 'rat';
+    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'muff' ? '_muff' : t === 'gold' ? '_gold' : t === 'comp' ? '_comp' : t === 'gate' ? '_gate' : t === 'phaser' ? '_phaser' : t === 'wah' ? '_wah' : '_rat';
     const handle = mod[P + '_create'](this._sr);
     mod[P + '_set_oversampling'](handle, this._oversampling | 0);
     if (params) {
@@ -317,7 +320,7 @@ class ClipperProcessor extends AudioWorkletProcessor {
   // ('_sd' | '_ts' | '_muff' | '_gold' | '_comp' | '_phaser' | '_rat').
   // ('_sd' | '_ts' | '_muff' | '_gold' | '_phaser' | '_wah' | '_rat').
   _prefix(node) {
-    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'muff' ? '_muff' : node.type === 'gold' ? '_gold' : node.type === 'comp' ? '_comp' : node.type === 'phaser' ? '_phaser' : node.type === 'wah' ? '_wah' : '_rat';
+    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'muff' ? '_muff' : node.type === 'gold' ? '_gold' : node.type === 'comp' ? '_comp' : node.type === 'gate' ? '_gate' : node.type === 'phaser' ? '_phaser' : node.type === 'wah' ? '_wah' : '_rat';
   }
 
   _destroyPedal(node) {

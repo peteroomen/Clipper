@@ -45,18 +45,6 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
-// Newton budget for one sidechain node. The solve is monotone (see the banner),
-// so this is a guard rail, not a working iteration count: the shipped 4x / 48 kHz
-// path measures 2.0 evaluations per solve at idle and 4 at a hard transient.
-constexpr int kMaxNewtonIter = 24;
-// Residual tolerance as a CURRENT (amps). The node's own resistive leg carries
-// ~2.5e-7 A at a typical excursion, so 1e-14 A is seven decades inside it — and
-// docs §34's finding is that a solver with NO residual exit burns its whole
-// budget at the parked operating point for nothing.
-constexpr double kNewtonResidualTolA = 1e-14;
-// Largest Newton step (volts). One exponential overshoot on the first iteration
-// is otherwise enough to push exp() to infinity.
-constexpr double kNewtonMaxStepV = 0.25;
 // The gain cell's control current can never be negative (a rheostat and a
 // junction cannot source current backwards into the bias pin).
 constexpr double kMinControlAmps = 0.0;
@@ -69,46 +57,6 @@ void bilinearSection(double wz, double wp, double fs, double& b0, double& b1,
     b0 = (k + wz) / d;
     b1 = (wz - k) / d;
     a1 = (wp - k) / d;
-}
-
-}  // namespace
-
-// --- Device helpers ----------------------------------------------------------
-//
-// Ebers-Moll forward collector current and the Gummel-Poon base current with the
-// low-current (ISE/NE) term. The ISE term is why this file does not carry a
-// hand-picked hFE: the published card reproduces the datasheet's own ~106 at
-// 0.2 mA on its own.
-namespace {
-
-inline double npnIc(double vbe, const NpnDevice& d) {
-    return d.Is * (std::exp(vbe / d.Vt) - 1.0);
-}
-
-inline double npnIb(double vbe, const NpnDevice& d) {
-    return (d.Is / d.betaF) * (std::exp(vbe / d.Vt) - 1.0) +
-           d.Ise * (std::exp(vbe / (d.Ne * d.Vt)) - 1.0);
-}
-
-// d(Ib)/d(vbe). ONLY the base current appears in the clamp node's KCL — the
-// collector current flows from the envelope node to the emitter and never
-// touches the base. Getting that wrong makes the node ~beta times too stiff,
-// which starves the discharge and turns a 5 ms attack into half a second.
-inline double npnBaseCond(double vbe, const NpnDevice& d) {
-    const double e1 = std::exp(vbe / d.Vt);
-    const double e2 = std::exp(vbe / (d.Ne * d.Vt));
-    return (d.Is / d.betaF) * e1 / d.Vt + d.Ise * e2 / (d.Ne * d.Vt);
-}
-
-// The clamp diode: anode at GROUND, cathode at the node. Positive return value
-// means current flowing INTO the node (which is what pulls a negative excursion
-// back up toward one diode drop below ground).
-inline double clampDiodeIn(double vNode, const DiodeDevice& d) {
-    return d.Is * (std::exp(-vNode / d.nVt) - 1.0);
-}
-
-inline double clampDiodeCond(double vNode, const DiodeDevice& d) {
-    return d.Is * std::exp(-vNode / d.nVt) / d.nVt;
 }
 
 }  // namespace
@@ -144,6 +92,8 @@ void CompressorEngine::prepare(double sampleRate, int maxBlockSize) {
 
 void CompressorEngine::rebuildRates() {
     osRate_ = sampleRate_ * static_cast<double>(os_.factor());
+    sc_.configure(cfg_.det, cfg_.npn, cfg_.diode);
+    sc_.setRate(osRate_);
 
     // Base-rate coupling high-passes: y = R*(y1 + x - x1).
     inHpR_ = std::exp(-2.0 * kPi * cfg_.in.couplingHz / sampleRate_);
@@ -195,10 +145,8 @@ void CompressorEngine::reset() {
     outHpX1_ = outHpY1_ = 0.0;
     for (int i = 0; i < 2; ++i) drvX1_[i] = drvY1_[i] = 0.0;
     loadY1_ = 0.0;
-    clampP_ = clampN_ = 0.0;
-    vbP_ = vbN_ = 0.0;
     // Re-park at the CACHED operating point — never re-solve here.
-    vEnv_ = vEnvPark_;
+    sc_.reset(vEnvPark_);
     iCtl_ = iCtlPark_;
     vbe5_ = vbe5Park_;
     compliance_.reset();
@@ -219,8 +167,7 @@ void CompressorEngine::setOversampling(int factor) {
     // history that belonged to another rate.
     for (int i = 0; i < 2; ++i) drvX1_[i] = drvY1_[i] = 0.0;
     loadY1_ = 0.0;
-    clampP_ = clampN_ = 0.0;
-    vbP_ = vbN_ = 0.0;
+    sc_.clearRateState();
     compliance_.reset();
 }
 
@@ -269,73 +216,6 @@ double CompressorEngine::cellGainAtDc() const {
     return hDc * gm * cfg_.load.rLoadOhms * cfg_.split.gain;
 }
 
-// --- Sidechain ---------------------------------------------------------------
-
-double CompressorEngine::detectorLeg(double drive, double& capState,
-                                     double& vbWarm, double srcOhms) const {
-    const double tOverC = 1.0 / (osRate_ * cfg_.det.clampCapF);
-    const double k = srcOhms + tOverC;
-    const double invR = 1.0 / cfg_.det.clampResOhms;
-
-    // g(vb) = vb - drive + qPrev + k*f(vb);  f' > 0  =>  g strictly increasing.
-    double vb = vbWarm;
-    double f = 0.0;
-    for (int it = 0; it < kMaxNewtonIter; ++it) {
-        f = vb * invR + npnIb(vb, cfg_.npn) - clampDiodeIn(vb, cfg_.diode);
-        const double g = vb - drive + capState + k * f;
-        // Residual expressed as a CURRENT so the tolerance means something.
-        if (std::fabs(g) / k < kNewtonResidualTolA) break;
-        const double fp =
-            invR + npnBaseCond(vb, cfg_.npn) + clampDiodeCond(vb, cfg_.diode);
-        double step = g / (1.0 + k * fp);
-        if (step > kNewtonMaxStepV) step = kNewtonMaxStepV;
-        if (step < -kNewtonMaxStepV) step = -kNewtonMaxStepV;
-        vb -= step;
-    }
-    // Recompute the branch current at the converged node so the cap advance
-    // agrees with the same vb.
-    f = vb * invR + npnIb(vb, cfg_.npn) - clampDiodeIn(vb, cfg_.diode);
-    // NO flushDenormal on either of these, and that is measured rather than
-    // assumed (ADR 006's "measure which, don't guess"). The node's physical
-    // equilibrium against the clamp diode's reverse saturation current is
-    // -4.90e-272 V, which IS below the flush floor — but the SOLVER cannot
-    // resolve it: Newton exits at kNewtonResidualTolA, so vb floors at
-    // kNewtonResidualTolA * (Rsrc + T/C) ~= 1.9e-11 V and the cap settles inside
-    // that. 1e-11 is 297 decades above the subnormal range, so a guard here can
-    // never fire — it would be unreachable code in the hottest loop in this
-    // file, exactly what docs §33 found the wrong thing to ship. Measured after
-    // a 40 s silent tail: |clamp cap| ~= 1e-11 V, not decaying, not subnormal.
-    capState = capState + tOverC * f;
-    vbWarm = vb;
-
-    const double ic = npnIc(vb, cfg_.npn);
-    return ic > 0.0 ? ic : 0.0;
-}
-
-void CompressorEngine::advanceEnvelope(double dischargeAmps) {
-    // Simplified saturation of the discharge transistors: their collector current
-    // collapses as Vce approaches zero. The exact statement is Ebers-Moll's
-    // reverse term; this smooth, monotone, bounded stand-in only ever acts when
-    // the envelope node is already bottomed, and it is the ONE approximation in
-    // the sidechain (docs §59.6).
-    const double vce = vEnv_ > 0.0 ? vEnv_ : 0.0;
-    const double sat = vce / (vce + cfg_.det.vceSatV);
-
-    const double h = 1.0 / (osRate_ * cfg_.det.envCapF);
-    const double ib5 = npnIb(vbe5_, cfg_.npn);
-    const double num =
-        vEnv_ + h * (cfg_.det.supplyV / cfg_.det.envResOhms -
-                     dischargeAmps * sat - ib5);
-    const double den = 1.0 + h / cfg_.det.envResOhms;
-    double v = num / den;
-    if (v < 0.0) v = 0.0;
-    if (v > cfg_.det.supplyV) v = cfg_.det.supplyV;
-    // NO flushDenormal: this node rests at a nonzero DC operating point
-    // (8.5786 V measured after a 20 s silent tail) and can never be subnormal.
-    // ADR 006's scope rule — a guard here is unreachable code in a hot loop.
-    vEnv_ = v;
-}
-
 void CompressorEngine::updateControl() {
     // Q5 emitter follower into the SUSTAIN rheostat and the fixed series
     // resistor, landing on the gain cell's control pin. `rTotCtl_` is refreshed
@@ -343,7 +223,7 @@ void CompressorEngine::updateControl() {
     // never the derived current.
     double ie = 0.0;
     for (int i = 0; i < 2; ++i) {
-        ie = (vEnv_ - vbe5_ - cfg_.ctl.cellPinV) / rTotCtl_;
+        ie = (sc_.envelopeVolts() - vbe5_ - cfg_.ctl.cellPinV) / rTotCtl_;
         if (ie < kMinControlAmps) ie = kMinControlAmps;
         vbe5_ = cfg_.npn.Vt * std::log(ie / cfg_.npn.Is + 1.0);
     }
@@ -369,7 +249,7 @@ void CompressorEngine::processChunk(const float* in, float* out, int numFrames) 
         sustainWiper_.setImmediate(sustainWiper_.target());
         level_.setImmediate(level_.target());
         solveQuiescent();
-        vEnv_ = vEnvPark_;
+        sc_.setEnvelopeVolts(vEnvPark_);
         iCtl_ = iCtlPark_;
         vbe5_ = vbe5Park_;
         snapPending_ = false;
@@ -437,11 +317,10 @@ void CompressorEngine::processChunk(const float* in, float* out, int numFrames) 
         // false branch (feed-forward) is a measurement hook, never a product
         // mode — see the header and `clipper_comp_tests`.
         const double det = cfg_.detectorFromOutput ? y : x;
-        const double icP =
-            detectorLeg(det, clampP_, vbP_, cfg_.det.srcEmitterOhms);
-        const double icN =
-            detectorLeg(-det, clampN_, vbN_, cfg_.det.srcCollectorOhms);
-        advanceEnvelope(icP + icN);
+        // The SHARED detector (docs §61.2). Q5's base current is the CONSUMER's
+        // own load on the envelope node, so it is passed in rather than living
+        // inside the detector — a gate's comparator draws none.
+        sc_.advanceEnvelope(sc_.detect(det), npnIb(vbe5_, cfg_.npn));
         updateControl();
 
         w[i] = static_cast<float>(y);
@@ -468,10 +347,11 @@ double CompressorEngine::maxAbsRestingState() const {
     // would make this assertion untestable instead of stricter.
     //
     // Deliberately excluded, each MEASURED rather than assumed:
-    //  * vEnv_  — a real DC operating point: 8.9684 V at SUSTAIN 0, 8.6353 V at
-    //    SUSTAIN 1.0. Never subnormal (ADR 006's scope rule).
-    //  * clampP_/clampN_ and vbP_/vbN_ — floored by the Newton residual
-    //    tolerance at ~1e-11 V, not by physics; see detectorLeg().
+    //  * the detector's envelope node — a real DC operating point: 8.9684 V at
+    //    SUSTAIN 0, 8.6353 V at SUSTAIN 1.0. Never subnormal (ADR 006's rule).
+    //  * the detector's clamp caps and Newton warm starts — floored by the Newton
+    //    residual tolerance at ~1e-11 V, not by physics; see
+    //    SidechainDetector::leg().
     return maxAbsState(inHpX1_, inHpY1_, outHpX1_, outHpY1_, drvX1_[0],
                        drvY1_[0], drvX1_[1], drvY1_[1], loadY1_);
 }

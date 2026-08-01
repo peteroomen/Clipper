@@ -31,6 +31,7 @@
 #include "clipper/dsp/TsModel.h"
 #include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/CompModel.h"
+#include "clipper/dsp/GateModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/AmpModel.h"
@@ -181,7 +182,8 @@ struct OldSpringReverb {
         "M2 flags: --os 1|2|4|8 (oversampling, default 4), --stage2 wdf|adaa (default wdf),\n"
         "          --alias-report (print the aliasing metric table for os=1/2/4/8 and exit).\n"
         "M6.5:     --ideal-opamp (bypass the op-amp model: ideal op-amp A/B),\n"
-        "M8/v1.1:  --pedal rat|sd1|ts|muff|gold|phaser|comp (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
+        "M8/v1.1:  --pedal rat|sd1|ts|muff|gold|phaser|comp|gate (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
+        "          gate = the M13.6a noise gate (2 knobs: --distortion = THRESHOLD, --level = DECAY);\n"
         "          comp = the M13.1 OTA compressor (2 knobs: --distortion = SUSTAIN, --level = LEVEL);\n"
         "          gold = the GOLD 'transparent' overdrive (parallel clean/dirt blend +\n"
         "          germanium clippers; --distortion=GAIN, --filter=TREBLE, --level=OUTPUT;\n"
@@ -746,6 +748,18 @@ int main(int argc, char** argv) {
         model.setParameter(clipper::dsp::CompModel::PARAM_LEVEL, a.level);
         if (!input.empty())
             model.process(input.data(), out.data(), static_cast<int>(input.size()));
+    } else if (a.pedal == "gate") {
+        // M13.6a: the "Curfew" noise gate. TWO knobs — flags map positionally:
+        // --distortion -> THRESHOLD, --level -> DECAY. --filter is carried and
+        // unused (the compressor/phaser precedent). --os is accepted and ignored:
+        // the gate is deliberately not oversampled (docs §61.7).
+        clipper::dsp::GateModel model;
+        model.prepare(fs, 128);
+        model.setOversampling(a.os);
+        model.setParameter(clipper::dsp::GateModel::PARAM_THRESHOLD, a.distortion);
+        model.setParameter(clipper::dsp::GateModel::PARAM_DECAY, a.level);
+        if (!input.empty())
+            model.process(input.data(), out.data(), static_cast<int>(input.size()));
     } else if (a.pedal == "muff") {
         // v1.1 item 4: the four-transistor Muff fuzz. Knob flags map positionally:
         // --distortion -> SUSTAIN, --filter -> TONE (the mid-scoop), --level -> VOLUME.
@@ -862,6 +876,11 @@ int main(int argc, char** argv) {
             "Rendered %zu frames @ %.0f Hz -> %s  (pedal=comp sustain=%.2f level=%.2f "
             "os=%dx)\n  peak=%.4f  rms=%.4f\n",
             out.size(), fs, a.outFile.c_str(), a.distortion, a.level, a.os, peak, rms);
+    } else if (a.pedal == "gate") {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (pedal=gate threshold=%.2f decay=%.2f)\n"
+            "  peak=%.4f  rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.distortion, a.level, peak, rms);
     } else if (a.pedal == "muff") {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (pedal=muff sustain=%.2f tone=%.2f "

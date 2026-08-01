@@ -56,6 +56,44 @@ indirection in the gain cell, and config fields that are dead for it. That cost 
 accepted because it is small and measured — the pedal runs 12.1 % of one stream on
 signal and 6.1 % on silence, well inside the lineup's range.
 
+## AMENDMENT 2026-08-01 — M13.6a shipped, and the named risk FIRED (docs §61.2)
+
+The noise gate is built. The mitigation below was exercised exactly as written:
+the finding is reported and the header corrected, and the engine was **not**
+widened. Recording the outcome here so this ADR is not read as a claim that
+turned out to be entirely true.
+
+**What held.** The gate genuinely reuses the detector — the same full-wave
+clamp/rectifier and the same envelope integrator, with nothing changed but
+component values (10 µF/150 kΩ → 47 nF/220 kΩ for the envelope pair, and equal
+leg source impedances because a gate's rectifier is driven by an op-amp rather
+than a phase splitter). No second envelope follower was written, which was the
+whole point.
+
+**What did not hold, and what was done about it.**
+
+1. **`Sidechain` was a config struct with NO CODE attached.** The detector lived
+   in `CompressorEngine::detectorLeg()` and `::advanceEnvelope()`, both private,
+   with their state in that class's members. There was nothing a second consumer
+   could hold. It is now the standalone `SidechainDetector`
+   (`core/include/clipper/dsp/SidechainDetector.h`), owned by value by both
+   pedals. The move is **bit-identical** for the compressor (verified by render
+   hash), so this is a structural correction and not a tone change.
+2. **`ControlMap` is not a policy hook.** It is three resistor values that turn
+   the envelope node into an OTA bias current. A gate has no rheostat, no cell
+   pin and no control current — its control law is a Schmitt comparator plus an
+   attack/hold/decay ramp into a VCA. `GateModel` therefore has its own
+   `GateControl`, and `ControlMap` was left alone. That is this ADR's own
+   instruction followed literally.
+3. **`detectorFromOutput` is OTA-only.** For a gate, feed-back is not a variant,
+   it is broken: once the gate closes the detector sees only the VCA's
+   off-isolation and can never re-open. Measured (feed-forward −0.02 dB vs
+   feed-back −80.02 dB on the same note), so the flag stays where it is and the
+   gate is feed-forward by construction.
+
+**The rule for M13.3, narrowed by this:** reuse the DETECTOR, and expect the
+CONTROL side to be your own. The `CompressorEngine.h` banner says so now.
+
 **The real risk, named.** A seam written before its second consumer exists can be
 the *wrong* seam. The mitigation is that it is documented as a claim rather than
 assumed as a fact: if M13.3 finds the optical voice needs to change something the

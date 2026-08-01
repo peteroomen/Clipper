@@ -96,6 +96,10 @@ add_library(clipper_dsp STATIC
     # OTA voice as a config. Same shape as OverdriveEngine + SdModel/TsModel.
     src/dsp/CompressorEngine.cpp
     src/dsp/CompModel.cpp
+    # M13.6a — the "Curfew" noise gate. The SECOND consumer of M13.1's detector
+    # (now the standalone SidechainDetector.h): the same rectifier + envelope
+    # integrator with different component values, and a control stage of its own.
+    src/dsp/GateModel.cpp
     src/dsp/Ac30Preamp.cpp
     src/dsp/Ac30PowerAmp.cpp
     src/dsp/Ac30Amp.cpp
@@ -275,6 +279,18 @@ if(NOT EMSCRIPTEN)
     # properties (transient loss, idle gain) asserted in the direction that says
     # this is still a Dyna Comp. No XFAIL ledger: the suite has no known-bad
     # property. Do not add one without a measured number.
+    # --- M13.6a: the "Curfew" noise gate (the first UTILITY) ------------------
+    # Player-observable bars only: the threshold table against the pedal's own
+    # stated law, the hysteresis gap in dB, the CHATTER count on a decaying note,
+    # the pick attack against a held-open reference, the noise reduction, and the
+    # THRESHOLD-vs-SUSTAIN control-law contrast. No XFAIL ledger: the suite has no
+    # known-bad property. Do not add one without a measured number.
+    add_executable(clipper_gate_tests tests/test_gate_model.cpp)
+    target_link_libraries(clipper_gate_tests PRIVATE clipper_dsp)
+    target_include_directories(clipper_gate_tests PRIVATE tests)
+    clipper_add_test_flags(clipper_gate_tests)
+    add_test(NAME clipper_gate_tests COMMAND clipper_gate_tests)
+
     add_executable(clipper_comp_tests tests/test_comp_model.cpp)
     target_link_libraries(clipper_comp_tests PRIVATE clipper_dsp)
     target_include_directories(clipper_comp_tests PRIVATE tests)
