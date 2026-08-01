@@ -244,6 +244,16 @@ jobs:
       - name: Build console tests
         run: cmake --build native/build -j --target clipper_identical_test clipper_chain_edit_test clipper_cab_state_test
 
+      # The console tests above link the ENGINE, not the EDITOR, so until this step
+      # existed nothing in CI ever compiled PluginEditor.cpp, PedalCard.cpp,
+      # ClipperLookAndFeel.cpp or UiSound.cpp — a syntax error in any of them went
+      # green. `Clipper` is the juce_add_plugin shared-code target: it compiles every
+      # editor source once, without building the Standalone/VST3 wrappers, so this
+      # closes the gap for about a minute of CI time rather than a full plugin link.
+      # It is a COMPILE gate only; the editor still has no automated behaviour test.
+      - name: Build the plugin shared code (compiles the editor)
+        run: cmake --build native/build -j --target Clipper
+
       # The native CMakeLists pulls the core in, so native/build registers ALL 26
       # core ctest entries alongside the two native ones. We only BUILD the native
       # pair, so an unfiltered ctest reports the core tests as "Not Run" and exits
