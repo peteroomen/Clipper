@@ -124,6 +124,10 @@ juce::Colour accent(AccentId id) {
         // the six dirt/mod accents: this is the first pedal of a new family and
         // the board should read that at a glance.
         case AccentId::Wah:    return d ? juce::Colour(0xff3ED0DD) : juce::Colour(0xff17868F);
+        // RESERVED 2026-07-31 — see tokens.css. Values kept verbatim in step with it.
+        case AccentId::Delay:  return d ? juce::Colour(0xff5AA8F0) : juce::Colour(0xff1F5FA0);
+        case AccentId::Gate:   return d ? juce::Colour(0xff9AAABF) : juce::Colour(0xff4A5568);
+        case AccentId::Chorus: return d ? juce::Colour(0xffE86FB8) : juce::Colour(0xff9B2C6F);
         case AccentId::Jcm:    return d ? juce::Colour(0xffE8B84B) : juce::Colour(0xffA87A18);
         case AccentId::Twin:   return d ? juce::Colour(0xff7FB4E8) : juce::Colour(0xff4E7BA8);
         case AccentId::Ac30:   return d ? juce::Colour(0xffE08A4A) : juce::Colour(0xffB4612C);

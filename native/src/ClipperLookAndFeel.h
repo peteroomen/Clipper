@@ -142,7 +142,8 @@ const Scheme& benchScheme();
 // --accent-comp). The real pedal is red, but Rat already owns red on this
 // board and two red boxes is a usability bug, so the colour is chosen for
 // distinguishability and the identity is carried by the two-knob face.
-enum class AccentId { Rat, Sd, Ts, Muff, Phaser, Gold, Comp, Wah, Jcm, Twin, Ac30, Orange, Clean };
+enum class AccentId { Rat, Sd, Ts, Muff, Phaser, Gold, Comp, Wah, Delay, Gate, Chorus,
+                      Jcm, Twin, Ac30, Orange, Clean };
 juce::Colour accent(AccentId);
 
 // Diagonal fill approximating a CSS linear-gradient(~150deg) across a rect.

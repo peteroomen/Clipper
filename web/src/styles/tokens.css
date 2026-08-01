@@ -86,6 +86,16 @@
      the glow reads bright on the dark board. */
   --accent-wah: #17868F;
   --accent-wah-glow: rgba(35, 175, 190, 0.5);
+  /* RESERVED 2026-07-31 for the three parallel slices below, so no two of them
+     pick the same hue. The board already spends red/yellow/green/violet/orange/
+     gold on dirt+mod and two teals on comp+wah, so these take the three clearly
+     unspoken-for directions. */
+  --accent-delay: #1F5FA0;   /* M13.4 delay — DEEP BLUE (space/repeats) */
+  --accent-delay-glow: rgba(50, 130, 210, 0.5);
+  --accent-gate: #4A5568;    /* M13.6a gate — SLATE: deliberately muted, it is a utility */
+  --accent-gate-glow: rgba(120, 140, 165, 0.5);
+  --accent-chorus: #9B2C6F;  /* M13.7 CE-1 — MAGENTA (modulation, distinct from phaser orange) */
+  --accent-chorus-glow: rgba(200, 70, 150, 0.5);
   --accent-tuner: var(--seg-green); /* tuner — its green lock color */
   --accent-tuner-glow: var(--seg-green-glow);
   /* M9.4 JCM800 amp — GOLD/BRASS accent (the Marshall gold-plexi wink), a readable
@@ -168,6 +178,9 @@
     --accent-comp: #3ECFC0; /* bright teal, glows on the dark board */
     --accent-comp-glow: rgba(62, 207, 192, 0.55);
     --accent-wah: #3ED0DD; /* bright teal/cyan, glows on the dark board */
+    --accent-delay: #5AA8F0;   --accent-delay-glow: rgba(90, 168, 240, 0.55);
+    --accent-gate: #9AAABF;    --accent-gate-glow: rgba(154, 170, 191, 0.5);
+    --accent-chorus: #E86FB8;  --accent-chorus-glow: rgba(232, 111, 184, 0.55);
     --accent-wah-glow: rgba(62, 208, 221, 0.6);
     --accent-tuner: var(--seg-green);
     --accent-tuner-glow: var(--seg-green-glow);
@@ -245,6 +258,9 @@
   --accent-gold: #D9B36B; --accent-gold-glow: rgba(217,179,107,.55);
   --accent-comp: #3ECFC0; --accent-comp-glow: rgba(62,207,192,.55);
   --accent-wah: #3ED0DD; --accent-wah-glow: rgba(62,208,221,.6);
+  --accent-delay: #5AA8F0; --accent-delay-glow: rgba(90,168,240,.55);
+  --accent-gate: #9AAABF; --accent-gate-glow: rgba(154,170,191,.5);
+  --accent-chorus: #E86FB8; --accent-chorus-glow: rgba(232,111,184,.55);
   --accent-jcm: #E8B84B; --accent-jcm-glow: rgba(232,184,75,.55);
   --accent-twin: #7FB4E8; --accent-twin-glow: rgba(127,180,232,.55);
   --accent-ac30: #E08A4A; --accent-ac30-glow: rgba(224,138,74,.55);
