@@ -73,9 +73,31 @@
 //
 // **Do not add a `rectifierKind` / `idealRectifier` / `asymmetricAttack` field
 // to make a wah fit.** That is the union-of-N-models ADR 021 forbids in terms.
-// The rule for the NEXT consumer (M13.3's optical voice) is procedural, not a
-// veto: build the substitution and measure it. "Both blocks rectify and
-// integrate" is not a reason to share and not a reason to refuse.
+//
+// ============================================================================
+//  M13.3 RAN THE SUBSTITUTION TOO, AND ALSO REFUSED (docs §64.3, ADR 025)
+// ============================================================================
+// The rule above said the next consumer's test was procedural, not a veto: build
+// the substitution and measure it. M13.3's optical compressor did, and the answer
+// is the same as the wah's, for a different reason.
+//
+// **That pedal has no envelope capacitor.** Its detector is an electroluminescent
+// panel lighting a CdS photocell: the panel emits on BOTH polarities, so the
+// PANEL is the rectifier and the CELL — with a two-stage, trap-retarded
+// recovery — is the integrator. There is no component in the reference circuit
+// for this block to be.
+//
+// Measured on a validated replica of that pedal's loop with one block swapped
+// (agrees with the shipped model to 0.05 dB before the swap): proportional range
+// 2.031 dB here against **14.323 dB** for the panel-and-cell; the ratio curve
+// goes non-monotone and reaches **10.40:1**; gain reduction at −30 dBV collapses
+// to **0.09 dB**; and that voice's whole acceptance property — a program-dependent
+// release, 2.892x — goes to **1.000x**, which is M13.1's own figure, because an RC
+// is an RC.
+//
+// So this component still has exactly TWO consumers, the compressor and the gate,
+// and it was not widened for a third. The photocell lives in its own component
+// (`OptoCell.h`).
 //
 // Platform-free (C++17, no OS/browser/Emscripten). Convention: 1.0f == 1.0 V.
 

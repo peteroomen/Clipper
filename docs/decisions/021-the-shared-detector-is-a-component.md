@@ -112,3 +112,21 @@ two designs sit on **opposite sides of ADR 006's scope rule**). Details in docs
 **§58.8**; the decision in **ADR 023**. The refusal carries a
 perturbation-proven test (`testFollowerLevelLaw`) so it is not only prose, and
 this component's header now states the threshold property up front.
+
+## 2026-08-01 — the prohibition was exercised a SECOND time, and it held again (ADR 025)
+
+M13.3's optical compressor arrived and ran the substitution this ADR asked for.
+`SidechainDetector` was **not** widened for it either, and the reason is stronger
+than the wah's: that pedal has **no envelope capacitor**. Its detector is an
+electroluminescent panel lighting a CdS photocell — the panel emits on both
+polarities, so the PANEL rectifies and the CELL integrates. Measured on a replica
+validated to 0.05 dB: proportional range 2.031 dB here against **14.323 dB** for
+the panel-and-cell; the ratio curve goes non-monotone to **10.40:1**; and the
+voice's acceptance property collapses from 2.892x to **1.000x**. Docs §64.3.
+
+That slice also found this ADR's *other* half does not extend to the engine: of
+`CompressorEngine`'s eight config structs one applies to an optical leveler, so
+`OptoModel` is standalone (the shape `GateModel` took) and holds a new component,
+`OptoCell`. **ADR 025** records it, and adds the layer above this one: an ENGINE is
+not automatically the right engine either, and "two pedals do the same JOB" is a
+much weaker signal than "two pedals contain the same SUB-CIRCUIT."

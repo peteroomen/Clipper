@@ -13373,6 +13373,469 @@ network reads **0.814** and at 22 k it reads **0.042** — both far outside.
   factory sheet before anyone re-tapers it.
 * A native `rockerverb` snapshot scene for the headless screenshot suite.
 
+## 64. M13.3 — the "Lumen" optical compressor (the SECOND dynamics voice)
+
+The lineup's second compressor, and deliberately not the first one with different
+knobs: a Teletronix LA-2A-style **electro-optical leveling amplifier** in pedal
+form, shipping as pedal type `opto`. Three controls, because the reference has
+three that all change the audio. Files: `core/include/clipper/dsp/OptoCell.h`
+(NEW — the photocell as a shared component), `core/include/clipper/dsp/OptoModel.h`
++ `core/src/dsp/OptoModel.cpp`; tests `core/tests/test_opto_model.cpp`
+(`clipper_opto_tests`); C ABI `opto_*`; `--pedal opto` in the render CLI; a `lumen`
+row in `clipper-bench`; worklet `opto` dispatch; `rig.ts` / `Pedal.tsx` /
+`pedal.css` / `tokens.css` / assistant; native `ClipperEngine` + APVTS +
+`PedalCard` + a ninth `identical_core_test` board. Trademark-safe throughout (no
+Teletronix / UREI / Universal Audio / LA-2A text on any user surface; the wordmark
+is "Lumen", the model line `DYNAMICS Nº2 · LEVELER`).
+
+### 64.1 Research — what was sourced, what was reconstructed
+
+Same channel as §59 and §61: **the proxy permits github.com only**, `WebFetch`
+returned 403 for every other host tried (`proreplicas.com` was the probe), and a
+GitHub code search for an LA-2A netlist or `.asc` found nothing usable. So there
+was no LTspice transcription to parse the way §59 had one, and **NO SCHEMATIC WAS
+READ.** The channel was search-result extracts.
+
+**SOURCED — used as given, and each one is load-bearing somewhere below:**
+
+| # | fact | where it lands |
+| --- | --- | --- |
+| S1 | The T4B module is an **EL panel plus two Clairex CL-505L CdS photoconductive cells** (one for gain reduction, one for the meter). Only the GR cell is modelled. | `OptoCell` |
+| S2 | The panel is driven by the **audio itself**, filtered and stepped up to **no more than ~90 V peak**. | `kPanelClampV`, and the reason the panel is the rectifier |
+| S3 | The CL-505L's resistance runs **under 1 kΩ lit to over 1 MΩ dark**. | `rLightOhms`, `rDarkOhms` |
+| S4 | The **photocell is the bottom leg of a voltage divider**; lower cell resistance = lower signal. | the whole gain-reduction topology |
+| S5 | A **2.2 MΩ bleeder** sits across both legs of the EL panel. | `kPanelBleedHz` |
+| S6 | CdS resistance follows illumination as a **log-log power law**, `R ∝ E^−γ`, with γ between **0.92 (dim) and 0.58 (bright)**; datasheets define γ over a 10:1 lux decade. | `cellGamma` |
+| S7 | EL brightness "increases in proportion to the **second to the third power** of the voltage". | `elExponent` |
+| S8 | Published performance: **attack 10 ms**; **release ~0.06 s for 50 %, 0.5 to 5 s for complete release depending upon the amount of previous reduction**; **0 to 40 dB gain limiting**; response +0/−1 dB from 30 Hz; under 0.5 % THD. | the acceptance bars |
+| S9 | The **COMPRESS/LIMIT switch changes the sidechain SOURCE**: COMPRESS shorts the sidechain to the output (100 % feed-back), LIMIT feeds it roughly **1/25 of the input plus 24/25 of the output**. *(This one is a forum reading of the schematic, not a factory sheet — weaker than the rest, and flagged as such.)* | `kLimitFeedForward`, and the reason MODE ships |
+| S10 | The unit's widely-quoted ratio is **"about 3:1"**, and it is program dependent rather than switchable. | the ratio prediction's check |
+| S11 | The manual also describes the static curve as compressing from a **−30 dB breakaway up to −20 dB**, above which "input increases of an additional 20 dB result in output increases of less than 1 dB". | **NOT reproduced — see §64.5** |
+
+**RECONSTRUCTED — this model's own, chosen under stated constraints, and §57's
+rule applies verbatim: do not re-tune any of them toward a sound; find the
+schematic.**
+
+* Every resistor in `OptoModel.cpp` except the two derived ones. `kSeriesOhms` and
+  the panel ceiling are **derived from published figures in the open** (S3 + S8
+  give Rs = 1 kΩ·(10^2 − 1) = 99 kΩ → the 100 kΩ standard value); `kAmpGain`,
+  `kHeadroomV`, `kGainRangeDb`, `kSidechainMaxGain`, `kPeakRangeDb`, the two
+  coupling corners and the panel's 20 nF are not.
+* **The tube stages are not modelled.** The reference is a 12AX7 voltage amp into
+  a 12BH7A cathode follower with input and output transformers, and a 6AQ5 driving
+  the panel. This model ships them as a fixed linear gain plus one soft (ADAA)
+  ceiling. Named simplification, §64.6.
+* **The entire dynamic model of the cell.** No published T4B response curve — step
+  response, recovery curve, or anything measurable — was reachable. The
+  **structure** is standard photoconductor physics (a fast free-carrier branch, a
+  slow trap-limited branch, and a trap occupancy that retards the slow one); the
+  **constants** are pinned to S8's published behaviour. **Every curve in §64.4 is
+  this model's own.**
+* **No independent simulation was available to check against.** §59's strongest
+  asset was an outside SPICE run that agreed to 4 % and caught that slice's one
+  real bug. Nothing equivalent exists here, and the substitute is weaker: the
+  ratio is *predicted* from S6 and S7 and checked against S10 (§64.5). That is one
+  number, not a whole loop, and it is the biggest gap in this section.
+
+### 64.2 The circuit, and why it has no envelope capacitor
+
+```
+in ─[Cin]──[Rs 100k]──┬──► x A0 ──[headroom]──┬──► GAIN pot ─[Cout]─► out
+                      │                       │
+                 R_cell (T4B)                 │  the sidechain taps HERE,
+                      │                       │  BEFORE the GAIN pot
+                     gnd                      ▼
+        ▲                            MODE: COMPRESS = this node (feed-BACK)
+        │                                  LIMIT    = 24/25 of it + 1/25 of the
+        │                                             pedal's own INPUT
+        │                                      │
+        │                            PEAK REDUCTION pot -> sidechain amp
+        │                                      │        -> step-up (<= 90 V pk)
+        │                                      ▼
+        └──────── OptoCell ◄── EL panel (2M2 bleeder across it)
+```
+
+**The panel is the rectifier and the cell is the integrator.** An EL panel emits
+on both polarities of its drive, so `|v|` is physics rather than a modelling
+convenience — and the consequence is that **this pedal has no rectifier, no
+envelope capacitor and no envelope resistor anywhere in its control path.** The
+time constants are the photocell's. That is the whole voice, and it is why §64.3
+refuses the shared detector.
+
+`OptoCell` (a header-only component, held by value) is:
+
+```
+    p       = elExponent * cellGamma                       (= 1.875 shipped)
+    K       = (1/rLight - 1/rDark) / panelMaxV^p           DERIVED from S2+S3
+    dG_ss   = K * |v_panel|^p                              the steady-state target
+    dG      = g_fast + g_slow      g_fast -> a*dG_ss, g_slow -> (1-a)*dG_ss
+    tau_slow_release = tauSlowRelease * (1 + (memMult - 1) * m)
+    m_ss    = dG_ss / (dG_ss + dG_half)                    trap kinetics (Langmuir)
+```
+
+**The trap target's SATURATING form is load-bearing and was found by measuring the
+first draft.** Written as a linear `dG/dG_max`, the occupancy sits at ~1e-3 at any
+playable level (the cell's limit corresponds to the full 90 V drive), and the
+program dependence measures **1.083×** — i.e. none. The Langmuir form
+`m_ss = dG/(dG + dG_half)` is what trap kinetics actually give
+(`dn/dt = c(N−n)·n_free − r·n`), it needs one constant (`trapHalfFraction`, the
+occupancy half-point as a fraction of the cell's light limit) instead of an
+arbitrary normalization, and it produces **both** dependences the reference is
+described by: DEPTH, because `m_ss` rises with the light, and DURATION, because
+`tauMemChargeSeconds` is of the order of a second.
+
+### 64.3 THE TWO SEAM REFUSALS, both measured (ADR 025)
+
+ADR 019 predicted M13.3 would be "a config of `CompressorEngine` plus one
+`applyGainCell()` case". ADR 021 narrowed that to "reuse the DETECTOR, expect the
+CONTROL side to be your own". ADR 023 added the procedure: **build the
+substitution and measure it.** Both were done. Both come out **no**, and both are
+reported rather than fixed by widening someone else's type.
+
+**(a) It is not a config of `CompressorEngine`.** Seam by seam, against the
+banner's own list of what M13.3 would "reuse as-is":
+
+| engine struct | what it is | applies here? |
+| --- | --- | --- |
+| `InputStage` | a coupling corner + an emitter follower's gain | partially — a corner, no follower |
+| `DriveNetwork` | the CA3080's differential input attenuator (2 poles, 2 zeros) | **no** — no such network exists |
+| `GainCellSpec` | `Iout = Iabc·tanh(Vd/2Vt)`, returning a **current** | **no** — an optical cell is a **resistor in a divider** |
+| `LoadStage` | what the cell's output current develops its voltage across, plus the CA3080's compliance | **no** |
+| `Splitter` | the Dyna Comp's phase splitter | **no** — there is none |
+| `Sidechain` | the clamp/rectifier + envelope integrator | **no** — see (b) |
+| `ControlMap` | rheostat + series resistor + OTA bias pin | **no** (ADR 021 already said so) |
+| `OutputStage` | coupling + level pot | **yes** |
+
+One of eight. Making it fit would need `applyGainCell()` to stop returning a
+current, `LoadStage`/`Splitter`/`compliance_` to be bypassed by a flag, and the
+detector to become a kind — four axes whose two settings share no component, which
+is the union-of-N-models ADR 021 forbids in terms. **`OptoModel` is therefore a
+standalone model that HOLDS the component that really is shared** — which is
+exactly the shape M13.6a's `GateModel` already took, one slice earlier, for the
+same reason. `CompressorEngine` is the OTA pedal's engine; that is not a defect,
+it is what it is, and the banner now says so.
+
+**(b) `SidechainDetector` is not this pedal's detector — and the substitution was
+BUILT AND RUN.** A replica of the shipped loop was written with one block
+switchable (validated against the shipped model first: settled gain reduction
+agrees to **0.05 dB** at −24 / −12 / 0 dBV), and given the detector's best shot:
+the clamp network in the gate's op-amp precision-rectifier form, the envelope pair
+pinned to the published 60 ms 50 %-release (`R_env·C_env` = 86.6 ms, using M13.1's
+own 10 µF cap), and calibrated at ONE point (a −12 dBV tone landing at the shipped
+gain reduction). Everything after that is a prediction.
+
+ADR 023's metric first — the **proportional range**, the input dB span over which
+the control travels 10 % → 90 % of its own swing, open loop on a 146.83 Hz tone,
+all rows at the same 192 kHz rate:
+
+| block | proportional range |
+| --- | --- |
+| M13.1's detector (10 µF / 150 kΩ) | **2.031 dB** *(§58.8 measured 1.950 on its own harness — the instrument agrees)* |
+| the best opto-plausible detector config found (10 µF / 8.66 kΩ) | **8.901 dB** |
+| **this pedal's EL panel + CdS cell** | **14.323 dB** *(10.179 dB analytic small-signal, `20·log10(9^{1/p})`; the difference is the sine's own rectification)* |
+
+Then the damage, on the replica:
+
+| in dBV | shipped GR | substituted GR | shipped ratio | substituted ratio |
+| --- | --- | --- | --- | --- |
+| −30 | 2.66 | **0.09** | 1.34 | 1.00 |
+| −24 | 5.01 | 0.82 | 1.64 | 1.14 |
+| −18 | 7.96 | 5.86 | 1.97 | **6.26** |
+| −12 | 11.29 | 11.29 *(calibration point)* | 2.25 | **10.40** |
+| −6 | 14.84 | 16.62 | 2.45 | 9.03 |
+| 0 | 18.53 | 21.72 | 2.60 | 6.66 |
+| +6 | 22.30 | 26.51 | 2.69 | 4.96 |
+
+A smooth monotone rise toward the predicted 2.875:1 becomes a **non-monotone
+10:1 wall** with **0.09 dB of gain reduction at −30 dBV** — the level S11 says the
+reference has already started compressing at. And with the detector standing in
+for the cell's dynamics as well, the acceptance property is simply gone: complete
+release **0.364 s after a 150 ms stab and 0.364 s after a 6 s passage — 1.000×**,
+the same figure M13.1 measures, because an RC is an RC.
+
+So: **`SidechainDetector` was not widened, and this pedal does not consume it.**
+The rule ADR 023 left ("both blocks rectify and integrate" is neither a reason to
+share nor a reason to refuse) was followed literally in the other direction from
+§58.8: this one refuses because the measurement says so, not because the block
+diagrams differ.
+
+**(c) What IS shared: `OptoCell`.** ADR 021's lesson applied on the way in rather
+than after the fact — the photocell is a component that owns its own state, held
+by value, with ROADMAP **M13.5's photocell-driven Uni-Vibe** as its named future
+consumer. Do not grow it a `lightSourceKind` axis for that: a lamp's drive law is
+a different function of a different quantity, and the thing to extract then is the
+lamp.
+
+### 64.4 THE ACCEPTANCE BAR — program dependence, and the OTA voice as the control
+
+The bar is the property an RC detector cannot have at any coefficient. Identical
+stimulus, identical measurement, both models: a 220 Hz tone at 0.30 V for 150 ms
+and for 6 s, then silence; gain reduction traced every 1 ms; "complete release" is
+the time from the end of the burst until the reduction falls under 0.5 dB — the
+point at which a player hears the pedal let go.
+
+| model | 150 ms burst | 6 s burst | ratio |
+| --- | --- | --- | --- |
+| **Lumen (PEAK 0.70)** | peak GR 12.17 dB, releases in **1.00 s** | peak GR 12.24 dB, releases in **2.88 s** | **2.892×** |
+| Squash (SUSTAIN 0.80) | peak GR 18.93 dB, releases in 4.11 s | peak GR 18.95 dB, releases in 4.11 s | **1.000×** |
+
+The two stimuli reach the same depth to **0.07 dB**, so the comparison is about
+memory and not about level. The mechanism is asserted alongside the symptom: trap
+occupancy at the end of the burst **0.0686 (short) vs 0.6163 (long)**.
+
+**The bar is `> 2.0` for the optical voice and `< 1.25` for the OTA one.** The
+margin is **recorded, not snugged**: 2.892 against 2.0 is 45 % of head-room, and
+2.0 was chosen as "unambiguously more than measurement noise" before the number
+was known to be 2.9. The cell's two release constants
+(`tauSlowReleaseSeconds` 0.18 s, `slowReleaseMemMult` 15) were pinned to S8's
+published 0.5–5 s window, **not** to this ratio, and the ratio is what fell out.
+
+**The DEPTH axis, which is what S8's sentence literally describes** ("depending
+upon the amount of previous reduction"). 4 s burst, PEAK REDUCTION swept:
+
+| PEAK | peak GR | trap occupancy | 50 % release | complete release |
+| --- | --- | --- | --- | --- |
+| 0.30 | 3.89 dB | 0.2697 | 46 ms | **1.04 s** |
+| 0.50 | 7.72 | 0.4468 | 75 ms | 2.04 s |
+| 0.70 | 12.24 | 0.5903 | 291 ms | 2.82 s |
+| 0.90 | 17.09 | 0.6965 | 638 ms | 3.42 s |
+| 1.00 | 19.58 | 0.7378 | 823 ms | **3.67 s** |
+
+Every point is inside the published 0.5–5 s, the span across the operating space
+is **3.53×**, and both are asserted.
+
+**50 % release: 47 ms** on a short burst at PEAK 0.50, against the published 60 ms,
+asserted inside a 40–80 ms window. It lengthens with depth exactly as the two-stage
+description says it should.
+
+**Attack, and the bar that is a prediction rather than a constant read back.**
+Measured as the manufacturer's spec means it — a 1 kHz tone stepping on, and the
+time for the cycle-peak envelope to settle within 1 dB of its final value, with the
+oversampler's latency skipped:
+
+| PEAK | overshoot | attack |
+| --- | --- | --- |
+| 0.30 | +3.12 dB | **9.0 ms** |
+| 0.50 | +6.20 | 10.0 |
+| 0.70 | +8.89 | 10.0 |
+| 1.00 | +11.17 | **9.0 ms** |
+
+The absolute window (5–20 ms against a published 10 ms) is the weaker of the two
+bars, because the cell's own attack constant is that number. The bar with teeth is
+the **spread: 1.0 ms across the whole knob**, asserted `< 3.0`. §59.2 measured
+M13.1's attack moving **14 → 3 ms** across SUSTAIN, because its attack is a
+current-starved discharge; an optical attack is the cell's and does not move. A
+3 ms window cannot contain the OTA behaviour.
+
+### 64.5 The ratio is a PREDICTION from two published device exponents
+
+Deep in reduction the divider's sensitivity `d(GR_dB)/d(V_panel_dB)` saturates at
+`p = n·γ` — the EL exponent times the cell's gamma — so a feed-back loop settles at
+a ratio of **1 + n·γ**. With the shipped mid-range values (n = 2.5 from S7's
+"second to third power", γ = 0.75 from S6's 0.58–0.92) that is **2.875:1**, and the
+published bracket the two source ranges allow is **2.16:1 … 3.76:1**, which
+contains S10's "about 3:1".
+
+Rendered static curve, PEAK 1.00 / GAIN 1.00, 220 Hz, 2 s settle:
+
+| in dBV | −54 | −48 | −42 | −36 | −30 | −24 | −18 | −12 | −6 | 0 | +6 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| out dBV | −34.46 | −29.16 | −24.67 | −21.02 | −17.98 | −15.30 | −12.86 | −10.55 | −8.33 | −6.15 | −4.02 |
+| GR dB | 0.44 | 1.16 | 2.68 | 5.05 | 8.02 | 11.36 | 14.92 | 18.61 | 22.39 | 26.21 | 30.06 |
+| ratio | — | 1.13 | 1.34 | 1.64 | 1.97 | 2.25 | 2.45 | 2.60 | 2.70 | 2.76 | **2.81** |
+
+**Measured deep ratio 2.81:1 against the 2.875 prediction — 2.2 %.** A soft knee
+that stiffens with depth, which is what players describe and what the divider's own
+shape gives: sensitivity rises from 0 (a dark cell barely loads the divider) and
+saturates at `p`.
+
+**WHAT IS MISSED, reported per the honesty gate and NOT fitted:** S11's manual
+description of the curve going "horizontal" above −20 dB, with 20 dB in giving
+under 1 dB out (i.e. >20:1). This model does not do that at any setting — its
+ratio ceiling is `1 + n·γ` and no choice inside the published exponent ranges
+reaches 20:1. The two published claims (S10's ~3:1 and S11's near-brick-wall)
+are not obviously consistent with each other either, and the model reproduces the
+one the topology predicts. If a schematic turns up and the sidechain has a gain
+stage that steepens with level, this is where it goes.
+
+The divider's own ceiling is **40.09 dB** (Rs 100 kΩ over a 1 kΩ lit cell, the
+`Rs` that S3 + S8 derive), and it is asserted twice — once analytically, and once
+by **rendering a slammed input** and checking the reduction really gets there,
+because the analytic line is an Ohm's-law identity on two constants and by itself
+could not fail (§57.9's finding).
+
+### 64.6 The three controls, and the honest expectations
+
+**PEAK REDUCTION is a threshold; GAIN is a level.** Measured, and the contrast is
+the three-way table this lineup can now print:
+
+| pedal | its "amount" control moves… | …and its other axis moves |
+| --- | --- | --- |
+| Squash (§59.4) | GAIN by **25.33 dB** | settled output by 0.28 dB |
+| Curfew (§61.4) | THRESHOLD by **40.00 dB** | open-state gain by 0.00 dB |
+| **Lumen** | THRESHOLD by **45.44 dB** (the 3 dB-of-reduction point, +4.38 → −41.06 dBV, monotone) | — |
+| **Lumen's GAIN** | output by **32.00 dB** | gain reduction by **0.0000 dB** |
+
+The last row is the reference's arrangement and is a real property rather than an
+identity: the sidechain taps *before* the GAIN pot, and moving the tap after it
+makes that assertion fail.
+
+**MODE ships, and §61.3 is why that needed a number.** The noise gate's MODE switch
+was deliberately not shipped because it changes what the footswitch does rather
+than the audio. This one changes the audio: LIMIT mixes S9's 1/25 of the pedal's
+own input into the sidechain, so under reduction the sidechain still sees the
+un-reduced peak. Measured at PEAK 1.00 / GAIN 1.00:
+
+| in dBV | −24 | −12 | 0 | +6 |
+| --- | --- | --- | --- | --- |
+| COMPRESS out | −15.30 | −10.55 | −6.15 | −4.02 |
+| LIMIT out | −15.86 | −12.27 | −10.98 | −11.73 |
+| difference | −0.55 | −1.72 | −4.82 | **−7.71 dB** |
+
+Asserted to be worth more than 3 dB somewhere, and to be **monotone in sign** —
+LIMIT may never clamp *less* than COMPRESS.
+
+**The honest expectations, measured and asserted in the direction that keeps
+them.** They are largely the OPPOSITE of §59.6's, which is the point of having two:
+
+* **The pick attack survives.** First 50 ms against settled: **+0.93 / +1.07 /
+  +1.22 dB** at PEAK 0.50 / 0.70 / 1.00, i.e. the transient gets *through*. §59.6
+  measured M13.1 losing **7.72–20.00 dB** of the same thing. The overshoot table in
+  §64.4 says the same from the other side (+3 to +11 dB of un-compressed front).
+* **It does not invert phase.** A divider into a non-inverting amplifier. M13.1
+  does invert (its signal drives the OTA's inverting input), so a player stacking
+  the two should know they disagree; the test correlates the output against the
+  latency-aligned input and asserts the sign.
+* **Turning it up does not raise the noise floor.** Idle gain on a −84.75 dBFS
+  floor is **+4.69 dB at PEAK 0.00, 0.50 and 1.00 — 0.00 dB of travel**, because an
+  opto at rest is a near-unity divider and the make-up gain lives on its own knob.
+  §59.6 measured M13.1's moving **25.34 dB**, which is its famous hiss.
+* **It is nearly tone-neutral**, and that is a claim worth pinning because it is
+  what a leveling amplifier is for. Small-signal, dB re 1 kHz: 20 Hz **−1.29**,
+  41 Hz −0.32, 82 Hz −0.08, 220 Hz −0.01, 5 kHz −0.03, 10 kHz **−0.12**. Worst
+  deviation from 82 Hz up: **0.12 dB**. (§59.6's Dyna Comp: −2.42 dB at 82 Hz and
+  −2.88 dB at 10 kHz.) The published +0/−1 dB from 30 Hz is met.
+* **It is slow to let go**, by design — see §64.4. Fast staccato playing can hear
+  the level still returning under the next note. That is the pedal.
+
+**The documented simplification:** the reference's tube stages and transformers are
+a fixed +20 dB gain plus one soft ADAA ceiling at 6 V. Its published distortion is
+under 0.5 % THD, i.e. the amplifier is not meant to be a voice, so what is lost is
+the transformer's low-end behaviour and the tube's own asymmetry at the top of the
+swing. Stated here rather than buried; it is the largest modelling departure in the
+file after the cell's dynamics.
+
+### 64.7 Oversampling — the FIRST thing checked, and the answer is 4x
+
+§61.7's gate declined oversampling on measurement, so this slice checked whether it
+could do the same before writing the loop. It cannot: **the gain-reduction divider
+is a multiply by an audio-rate signal.** The panel is the rectifier, so the cell's
+conductance carries a residual ripple at 2·f₀, and `x · div(t)` generates sum and
+difference products that fold.
+
+Single 9 kHz tone at 0.30 V, PEAK 1.00, worst non-harmonic component in band:
+
+| factor | 1× | 2× | 4× | 8× |
+| --- | --- | --- | --- | --- |
+| floor | **−86.16 dB** | −103.19 | **−113.09** | −114.07 |
+| latency | 0 | 64 | **72** | 76 |
+
+It **moves 27 dB with the factor**, which is §54's tell for real aliasing rather
+than the legitimate IMD a compressor's own gain modulation produces (§59.7's trap:
+a two-tone stimulus reports a flat floor at every factor and measures nothing —
+this test uses a single tone for exactly that reason). 4× is the knee; 8× buys
+1 dB. The ADAA headroom limiter's own half-sample averaging is the second reason:
+its droop at 10 kHz is **−1.99 dB at base rate and −0.12 dB at 4×**.
+
+Shipped **4×, latency 72 samples**, and the suite asserts the shipped factor
+directly — §58.7's could-not-fail finding was that a test setting the factor per
+row does not guard the default.
+
+### 64.8 Hygiene, and the denormal scope
+
+| property | measured |
+| --- | --- |
+| DC offset ON SIGNAL (220 Hz 0.30 V, and with +0.1 V of input offset) | **0.0000 %** of peak, both |
+| block-size invariance (128 vs ragged 100/37/256/1/411) | **exactly 0.0** |
+| `reset()` vs a fresh model | **0.000e+00** |
+| rate spread, 44.1 / 48 / 88.2 / 96 kHz | **0.0032 dB** |
+| knob-move seam vs the signal's own slew | **1.00×** |
+| latency | **72 samples** at 4× |
+| CPU, 4× at 48 kHz | **2.97 % of one stream** (`clipper-bench`, 33.6× realtime — against the OTA voice's 7.92 %), 3.0 % signal / 1.5 % silence on a standalone probe |
+| the shipped defaults (PEAK 0.50, MODE compress, GAIN 0.62) | a 0.15 V 220 Hz note out at **−16.52 dBV** against an input of −16.48 = **−0.04 dB**, i.e. unity |
+
+Denormal scope (ADR 006), decided by measurement:
+
+* **Guarded** — the three coupling high-passes (input, output, panel bleeder) and
+  **the cell's three states** (`gFast_`, `gSlow_`, `mem_`). All rest at exactly
+  zero; `maxAbsRestingState()` covers exactly these. Each is FIRST ORDER, so the
+  house one-liner is the right form (§56.4b's warning is about direct forms of
+  order ≥ 2).
+* **NOT guarded** — the loop's cell resistance, which rests at the cell's **dark
+  value, 1.0e7 Ω**. A real operating point. This puts `OptoCell` on the **opposite
+  side of the scope rule from `SidechainDetector`**, whose envelope node rests at a
+  supply rail — one of the several reasons the two are not the same block.
+* **The settle time is long and it is reported rather than worked around.** The
+  output reaches exact digital silence within 5 s, but `maxAbsRestingState()`
+  reaches **exactly 0.0 at 137 s**, because the trap occupancy's own time constant
+  is 2 s and it has to fall ~30 decades to reach the 1e-30 flush floor. Nothing is
+  denormal in the meantime (the states are ~1e-5 at 10 s), so the long tail is
+  about proving convergence, not about a cost; the test uses 160 s.
+
+### 64.9 Perturbation proofs
+
+Every load-bearing bar was proven by patching what it names in the source,
+rebuilding (with `touch` after **both** patch and restore — docs §29's trap), and
+confirming the suite goes red. `git stash` was NOT used, and neither was
+`git checkout --` (CLAUDE.md records what each has already destroyed here).
+
+| # | perturbation | result | first assertion to fail, with the number |
+| --- | --- | --- | --- |
+| baseline | — | GREEN | — |
+| P1 | `slowReleaseMemMult` 15 → 1 (the trap memory does nothing) | **RED** | THE ACCEPTANCE BAR — program dependence 2.892 → **1.000×**, i.e. exactly the OTA voice's figure |
+| P2 | `trapHalfFraction` 0.01 → 1.0 (the linear normalization the first draft had) | **RED** | THE ACCEPTANCE BAR — **1.249×** |
+| P3 | `elExponent` 2.5 → 1.0 (the EL law flattened) | **RED** | the published 50 %-release window (the curve moves under it). Re-run with `testRatioCurve` ordered first: **RED** on the knee shape, deep ratio **1.73:1** — see the note below |
+| P4 | `kSeriesOhms` 100 k → 10 k | **RED** | the published 50 %-release window, then the ceiling |
+| P5 | `kLimitFeedForward` 1/25 → 0 (MODE does nothing) | **RED** | MODE authority — 7.71 → **0.00 dB** |
+| P6 | the cell's attack coefficient scaled by the drive (M13.1's current-starved shape) | **RED** | the attack SPREAD — 1.0 → **4.0 ms**, i.e. the attack starts moving with the knob |
+| P7 | the sidechain tapped AFTER the GAIN pot | **RED** | the control-law contrast — GAIN now moves the gain reduction by **11.8587 dB** (and the output travel collapses 32.00 → 20.80 dB, which trips first) |
+| P8 | the shipped oversampling default 4 → 1 | **RED** | the TONE bar first — the ADAA limiter's own half-sample droop puts 10 kHz at **−1.99 dB** against a 1.0 dB in-band bound — and then the shipped-factor assert |
+| restore | — | GREEN | — |
+
+
+**One honest note on P3, because it exposes a weak bar.** `testRatioCurve`
+compares the rendered deep ratio against `predictedDeepRatio()` — but that
+prediction is computed from the SAME two device constants, so with `elExponent`
+moved to 1.0 the measurement (1.73:1) still agrees with the prediction (1.750) to
+1 %. That comparison therefore validates the discretization and the loop, and
+CANNOT catch a wrong exponent — the §29 warning about a reference derived from the
+same netlist, in miniature. The bars that do catch it are the PUBLISHED bracket
+(2.16:1 … 3.76:1, from S6 and S7's own ranges) and the knee shape, and both are in
+the same test. Left as is, with the weakness named, because the identity is still
+worth having: it is what would catch a broken loop.
+
+### 64.10 Integration and goldens
+
+One param shape, additive registries: `rig.ts` `PedalType` + `AVAILABLE_PEDAL_TYPES`
++ `OPTO_KNOB_DEFAULTS` (PEAK REDUCTION **0.50**, MODE **0** = compress, GAIN
+**0.62** = unity); worklet `opto` dispatch behind the `_opto` C-ABI prefix;
+`Pedal.tsx` FACES entry (the 'compact' anatomy — a levelling amplifier is a studio
+box rather than a stomp — with the PERIWINKLE accent, a T4B's blue-green panel glow
+pushed to blue-violet so it separates from the delay's deep azure and the Muff's
+magenta-violet); native `PEDAL_OPTO = 11` (appended, never inserted — those
+integers are the packed snapshot encoding), four APVTS parameters, a keyed
+`PedalCard` face and a ninth `identical_core_test` board (`Lumen → RAT → Twin` —
+the first case in which a pedal's MIDDLE slot carries a real control, so it is the
+one that proves slot 1 is plumbed end to end rather than silently dropped the way
+every two-knob pedal's is). Assistant: `add_pedal` gains `'opto'`, and the coach
+gets a real block — including the choosing-between-the-two-compressors paragraph,
+which is the question a player will actually ask.
+
+**Goldens: all five UNCHANGED at ±0.00 dB, and nothing was blessed.** The optical
+compressor is in no golden rig and touches no other model; the Dyna Comp and the
+noise gate are **bit-identical by render hash** (`clipper-render` renders compared
+byte for byte before and after the slice).
+
 ## 65. The SD-1 / TS tone network — the last documented approximation in the dirt path
 
 The final open item of the post-v1.1 field-report round (CLAUDE.md's own
@@ -13730,3 +14193,4 @@ suites assert it is **exactly 0.0** after a 4 s silent tail.
 * **The SD-1's tone pot value** (22 k transcribed, 20 k claimed by community
   sources) and **both pots' taper letters**. Find a factory sheet.
 * The clipper's `Cc` feedback cap (47 pF / 51 pF), not modelled.
+

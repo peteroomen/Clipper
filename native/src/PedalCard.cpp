@@ -89,6 +89,18 @@ const PedalFace kFaces[] = {
      Footswitch::Shape::Round, PedalFace::Layout::Stack, 34.0f,
      {{"Thresh", pid::gateThreshold}, {"Decay", pid::gateDecay}},
      pid::gateOn, PEDAL_GATE},
+    // LUMEN — M13.3, the second DYNAMICS voice and the board's first three-slot
+    // pedal whose middle slot is a real (discrete) control. Takes the Compact
+    // anatomy because a levelling amplifier is a studio box rather than a stomp
+    // (native has four layouts and 'compact' is a WEB CSS variant, so the card
+    // takes Stack with the SD-1's rectangular Pad footswitch), and the PERIWINKLE
+    // accent: a T4B's electroluminescent panel glows blue-
+    // green, pushed to blue-violet so it separates from the delay's deep azure
+    // and the Muff's magenta-violet. No Teletronix/UREI/LA-2A text.
+    {"Dynamics N\xc2\xba""2 \xc2\xb7 Leveler", "Lumen", skin::AccentId::Opto,
+     Footswitch::Shape::Pad, PedalFace::Layout::Stack, 30.0f,
+     {{"Peak", pid::optoPeakReduction}, {"Mode", pid::optoMode}, {"Gain", pid::optoGain}},
+     pid::optoOn, PEDAL_OPTO},
     // ENSEMBLE — M13.7, the CE-1 Chorus Ensemble: the second MODULATION pedal and
     // the first whose circuit the project already owned (it is the JC-120 amp's
     // chorus in a floor box — docs §62). Morphology cue is the real CE-1's big,

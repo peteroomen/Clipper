@@ -9,26 +9,48 @@
 // thin wrappers, zero duplicated DSP.
 //
 // ============================================================================
-//  THE M13.3 SEAM — read this before adding the optical voice
+//  THE M13.3 SEAM — SETTLED 2026-08-01, AND THE ANSWER IS NO (docs §64.3,
+//  ADR 025). The optical voice is NOT a config of this engine.
 // ============================================================================
-// Everything except the GAIN CELL is already voice-agnostic. An optical
-// compressor is the same block diagram with a different variable-gain element:
+// This block used to predict that M13.3 would be "a config plus one
+// `applyGainCell()` case", reusing `InputStage`, `DriveNetwork`, `LoadStage`,
+// `Splitter`, `Sidechain` and `OutputStage` as-is. M13.3 is now built
+// (`OptoModel` / `OptoCell`, docs §64) and that prediction was wrong. Corrected
+// here rather than made true by widening this engine — ADR 019's own instruction.
 //
-//   * REUSED AS-IS by M13.3 — `InputStage`, `DriveNetwork`, `LoadStage`,
-//     `Splitter`, `Sidechain` (rectifier + envelope integrator), `OutputStage`,
-//     the oversampling, the smoothers, `reset()`/park, the denormal policy.
-//   * CHANGED by M13.3 — exactly two things:
-//       1. `GainCellSpec::kind` gains `kOpticalLdr`, and `applyGainCell()` gains
-//          one `case`. The OTA case is `Iout = Iabc·tanh(Vd/2Vt)`; the optical
-//          case is a photoresistor whose resistance follows the LED current
-//          through a LOG-ish law with its OWN multi-decade lag (the T4B's
-//          famous two-stage release). That lag is cell state, so `GainCellSpec`
-//          gains the LDR's time constants and `CompressorEngine` gains one more
-//          state variable guarded by the same rules.
-//       2. `ControlMap` maps the envelope node to whatever the cell consumes —
-//          a bias CURRENT here, an LED current there. It is already a struct.
-//   * NOT NEEDED by M13.3 — `otaVt`, `swingUp/swingDown` (the CA3080's output
-//     compliance). Leave them where they are; they are OTA-only by name.
+// Of the eight config structs below, exactly ONE survives contact with an
+// optical leveling amplifier:
+//
+//   * `OutputStage` — yes.
+//   * `InputStage` — partly (a coupling corner, but no emitter follower).
+//   * `DriveNetwork` — NO. It is the CA3080's differential input attenuator.
+//     There is no such network in an optical compressor.
+//   * `GainCellSpec` / `applyGainCell()` — NO, and this is the structural one:
+//     this function returns a CURRENT into `LoadStage`. An optical cell is a
+//     RESISTOR IN A DIVIDER — it returns no current at all, it changes a gain.
+//     A second `case` here would have to mean something different by units.
+//   * `LoadStage`, `Splitter`, `compliance_` — NO. All three are the Dyna Comp's
+//     own stages and would have to be bypassed by a flag.
+//   * `Sidechain` / `SidechainDetector` — NO, and it was MEASURED not argued.
+//     An EL panel emits on both polarities, so in that pedal the PANEL is the
+//     rectifier and the PHOTOCELL is the integrator: there is no envelope
+//     capacitor anywhere in its control path for this component to be. The
+//     substitution was built and run per ADR 023's procedure — the ratio curve
+//     goes non-monotone and reaches 10.4:1, gain reduction at −30 dBV collapses
+//     to 0.09 dB, and the voice's whole acceptance property (a program-dependent
+//     release, 2.892x) goes to 1.000x, which is THIS pedal's own figure.
+//   * `ControlMap` — NO (ADR 021 already said so, for the gate).
+//
+// So `OptoModel` is a STANDALONE model that holds the component genuinely shared
+// (`OptoCell`, the photocell) — the shape `GateModel` already took one slice
+// earlier, for the same reason. **This engine has one consumer, and that is what
+// it is: the OTA compressor's engine.** Do not add a `kOpticalCell` case to
+// `applyGainCell()` in a later slice; the seam was checked and it is not here.
+//
+// The general lesson, from ADR 025: "two pedals do the same JOB" is a much weaker
+// signal than "two pedals contain the same SUB-CIRCUIT". A Dyna Comp and an LA-2A
+// are both compressors and share no block; a Dyna Comp and an NS-2 do completely
+// different jobs and share a detector exactly.
 //
 // ============================================================================
 //  M13.6 SHIPPED, AND IT CORRECTED THIS BANNER — read before trusting the above
@@ -61,8 +83,10 @@
 //     and can never re-open. Measured, not argued (docs §61.7). The field stays
 //     OTA-only; the gate is feed-forward by construction.
 //
-// So the rule for M13.3 stands, with its scope narrowed: reuse the DETECTOR, and
-// expect the CONTROL side to be your own.
+// The rule that left for M13.3 — "reuse the DETECTOR, expect the CONTROL side to
+// be your own" — was then TESTED by M13.3 and came out no on both halves. See the
+// corrected M13.3 block above and docs §64.3. The gate remains this detector's
+// second and (so far) last consumer.
 //
 // CROSS-SLICE NOTE (2026-07-31): a wah slice landing in parallel also builds an
 // envelope follower. They were deliberately NOT shared while both were in

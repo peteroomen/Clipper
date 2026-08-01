@@ -645,6 +645,106 @@ test('gate worklet: THRESHOLD is a real threshold — it gates a hiss floor and 
   expect(db(result.lowHiss)).toBeGreaterThan(db(result.lowNote) - 50.0);
 });
 
+test('opto worklet: the optical compressor is reachable and ALL THREE slots reach the core', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    // Long enough for the cell's attack (10 ms) and the loop to have settled.
+    const seconds = 1.5;
+
+    // FOUR renders, deliberately. Chromium's OfflineAudioContext starts returning
+    // SILENCE once enough contexts exist in one browser process (playwright.
+    // config.ts says so; the comp spec was observed tripping it at six).
+    async function render(peak: number, mode: number, gain: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      let ctx: OfflineAudioContext | null = null;
+      for (let attempt = 0; attempt < 4 && !ctx; attempt++) {
+        const c = new OfflineAudioContext(1, length, sampleRate);
+        try {
+          await Promise.race([
+            c.audioWorklet.addModule('/generated/clipper-processor.js'),
+            new Promise((_r, rej) => setTimeout(() => rej(new Error('addModule timeout')), 6000)),
+          ]);
+          ctx = c;
+        } catch {
+          /* fresh context, retry */
+        }
+      }
+      if (!ctx) throw new Error('addModule failed after retries');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 6000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') { clearTimeout(t); resolve(); }
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true }); // pure pedal proof
+        node.port.postMessage({
+          type: 'chain',
+          pedals: [{ id: 'o', type: 'opto', engaged: true, params: { distortion: peak, filter: mode, level: gain } }],
+        });
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: 0.5 });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+
+    // The settled tail only.
+    function tailRms(data: Float32Array, sr: number): number {
+      const start = Math.max(0, data.length - Math.floor(sr * 0.3));
+      let sum = 0, n = 0;
+      for (let i = start; i < data.length; i++) { sum += data[i] * data[i]; n++; }
+      return Math.sqrt(sum / n);
+    }
+
+    return {
+      open: tailRms(await render(0.0, 0.0, 0.62), sampleRate),      // barely working
+      squashed: tailRms(await render(1.0, 0.0, 0.62), sampleRate),  // slot 0 does something
+      limit: tailRms(await render(1.0, 1.0, 0.62), sampleRate),     // slot 1 does something
+      louder: tailRms(await render(1.0, 0.0, 1.0), sampleRate),     // slot 2 does something
+    };
+  });
+
+  const db = (x: number) => 20 * Math.log10(Math.max(x, 1e-30));
+
+  // (a) HARNESS GATE, before any DSP claim: every render must have produced
+  // audio. A silent one is Chromium's documented flake, not a result.
+  for (const [k, v] of Object.entries(result))
+    expect(v, `render "${k}" came back silent (Chromium OfflineAudioContext flake)`).toBeGreaterThan(1e-4);
+
+  // (b) THE DELIVERY PATH. `type: 'opto'` reaches the core, and this is the first
+  // pedal on the board whose MIDDLE slot carries a real control — every other
+  // two-knob pedal carries slot 1 unused, so nothing before this proved it is
+  // plumbed at all.
+  const compression = db(result.open) - db(result.squashed);
+  const modeAuthority = db(result.squashed) - db(result.limit);
+  const gainAuthority = db(result.louder) - db(result.squashed);
+  console.log(
+    `[opto] PEAK ${compression.toFixed(2)} dB, MODE ${modeAuthority.toFixed(2)} dB, GAIN ${gainAuthority.toFixed(2)} dB`,
+  );
+  expect(compression).toBeGreaterThan(15.0);   // core measures ~26 dB of reduction here
+  expect(modeAuthority).toBeGreaterThan(1.0);  // core measures 2.89 dB at this level
+  expect(gainAuthority).toBeGreaterThan(10.0); // core measures +15.2 dB for 0.62 -> 1.00
+  // (c) ...and LIMIT may never clamp LESS than COMPRESS, which is the direction
+  // the sourced sidechain blend predicts.
+  expect(modeAuthority).toBeGreaterThan(-0.01);
+});
+
 test('comp worklet: compresses 26 dB of input to a few dB, and SUSTAIN is not a threshold', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();

@@ -18,6 +18,7 @@
 #include "clipper/dsp/CompModel.h"
 #include "clipper/dsp/DelayModel.h"
 #include "clipper/dsp/GateModel.h"
+#include "clipper/dsp/OptoModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/OutputLimiter.h"
@@ -156,6 +157,14 @@ int main(int argc, char** argv) {
         m.setParameter(clipper::dsp::GateModel::PARAM_THRESHOLD, 0.35f);
         m.setParameter(clipper::dsp::GateModel::PARAM_DECAY, 0.5f);
         benchUnit("curfew (noise gate)", riff,
+                  [&](const float* i, float* o, int n) { m.process(i, o, n); });
+    }
+    if (want("opto")) {
+        clipper::dsp::OptoModel m;
+        m.prepare(kSr, kBlock);
+        m.setParameter(clipper::dsp::OptoModel::PARAM_PEAK_REDUCTION, 0.5f);
+        m.setParameter(clipper::dsp::OptoModel::PARAM_GAIN, 0.62f);
+        benchUnit("lumen (optical compressor)", riff,
                   [&](const float* i, float* o, int n) { m.process(i, o, n); });
     }
     if (want("delay")) {

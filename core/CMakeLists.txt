@@ -100,6 +100,12 @@ add_library(clipper_dsp STATIC
     # (now the standalone SidechainDetector.h): the same rectifier + envelope
     # integrator with different component values, and a control stage of its own.
     src/dsp/GateModel.cpp
+    # M13.3 — the "Lumen" OPTICAL compressor, the second DYNAMICS voice. NOT a
+    # config of CompressorEngine and NOT a consumer of SidechainDetector — both
+    # refused by measurement, docs §64.3 / ADR 025. What it DOES share is
+    # OptoCell.h, the photocell extracted as a component from the first line
+    # (ADR 021's lesson), whose named future consumer is M13.5's Uni-Vibe.
+    src/dsp/OptoModel.cpp
     # M13.7 — the Boss CE-1 Chorus Ensemble. NOT a new delay-line model: it OWNS a
     # ChorusModel (the JC-120 chorus the amp already ships) and drives it through
     # that class's voicing seam. See docs §62 for what the three real differences
@@ -305,6 +311,21 @@ if(NOT EMSCRIPTEN)
     target_include_directories(clipper_gate_tests PRIVATE tests)
     clipper_add_test_flags(clipper_gate_tests)
     add_test(NAME clipper_gate_tests COMMAND clipper_gate_tests)
+    # --- M13.3: the "Lumen" OPTICAL compressor (the second DYNAMICS voice) ----
+    # The acceptance bar is PROGRAM DEPENDENCE — release measured after a short
+    # stab and after a long passage that reach the SAME depth, on this model AND
+    # on M13.1's OTA compressor with the identical stimulus, because an RC
+    # detector cannot have the property at any coefficient. Everything else is
+    # pinned to a PUBLISHED figure for the reference unit (10 ms attack, 0.06 s to
+    # 50 % release, 0.5-5 s complete, over 40 dB of available reduction) or is a
+    # PREDICTION from two published device exponents (the ratio). No XFAIL ledger:
+    # the suite has no known-bad property. Do not add one without a measured
+    # number.
+    add_executable(clipper_opto_tests tests/test_opto_model.cpp)
+    target_link_libraries(clipper_opto_tests PRIVATE clipper_dsp)
+    target_include_directories(clipper_opto_tests PRIVATE tests)
+    clipper_add_test_flags(clipper_opto_tests)
+    add_test(NAME clipper_opto_tests COMMAND clipper_opto_tests)
     # --- M13.7: the Boss CE-1 Chorus Ensemble ---------------------------------
     # The CE-1 is the JC-120's chorus circuit in a floor box and this pedal owns a
     # ChorusModel, so the bars here are pointed at the question that actually
