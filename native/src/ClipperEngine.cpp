@@ -23,7 +23,8 @@ constexpr float  kPi = 3.14159265358979323846f;
 // The stable serialization keys, indexed by PedalType.
 const char* const kPedalKeys[PEDAL_TYPE_COUNT] = {"rat",    "sd1",  "ts",
                                                   "muff",   "phaser", "gold",
-                                                  "wah",   "comp"};
+                                                  "wah",   "comp",
+                                                  "delay", "gate", "chorus"};
 constexpr int   kCabPartition = 128;  // == worklet render quantum / cab partition
 // Extra samples to HOLD the output at zero after a CAB swap, before the fade back
 // in. Mirrors CAB_SWAP_DEAD_SAMPLES in web/worklet/clipper-processor.js and exists

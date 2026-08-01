@@ -125,7 +125,17 @@ enum PedalType : int {
     PEDAL_COMP = 7,   // 7, not 6: PEDAL_WAH shipped first and these
                       // integers ARE the packed-snapshot encoding, so
                       // renumbering it would re-read saved boards wrong.
-    PEDAL_TYPE_COUNT = 8,
+
+    // RESERVED 2026-07-31 by the slot-reservation commit, BEFORE the three
+    // parallel slices that fill them. Tonight's three-way merge produced a real
+    // collision — two slices independently claimed id 6, and these integers ARE
+    // the packed-snapshot encoding, so getting that backwards silently re-points
+    // every saved board. Pre-allocating removes the whole class: each slice fills
+    // exactly its own slot and never has to guess "next free".
+    PEDAL_DELAY = 8,    // M13.4  analog delay
+    PEDAL_GATE  = 9,    // M13.6a noise gate
+    PEDAL_CHORUS = 10,  // M13.7  CE-1 chorus ensemble
+    PEDAL_TYPE_COUNT = 11,
 };
 
 // Each type is instantiable once, so the board can never be longer than this.
@@ -230,7 +240,7 @@ struct Params {
     // hand and only sets ratOn/sdOn (the pre-parity tests, the reference renders)
     // keeps its exact old routing. The PLUGIN's shipped default board is the web
     // app's DEFAULT_RIG instead — a single RAT (see PluginProcessor).
-    int   chain[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0, 0, 0};
+    int   chain[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     int   chainLength = 2;
 
     // Amp voice (M9.4/M10.1/M10.2/M10.3): 0 = Clean 120, 1 = JCM800, 2 = Twin,
@@ -399,9 +409,9 @@ private:
 
     // The COMMITTED topology — what process() actually runs. It only ever changes
     // at a declick fade zero, so the audio never sees a mid-block reorder.
-    int  activeChain_[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0, 0, 0};
+    int  activeChain_[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     int  activeLength_ = 2;
-    bool activeOn_[PEDAL_TYPE_COUNT] = {true, false, true, true, true, true, true, true};
+    bool activeOn_[PEDAL_TYPE_COUNT] = {true, false, true, true, true, true, true, true, true, true, true};
 
     // Declick state machine (mirrors the worklet's): a linear ramp position in
     // [0,1] mapped through a raised cosine, ~6 ms each way.
