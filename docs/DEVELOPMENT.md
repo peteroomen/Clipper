@@ -13372,3 +13372,361 @@ network reads **0.814** and at 22 k it reads **0.042** — both far outside.
   VOLUME pot's LINEAR marking is the file's, which is worth confirming against a
   factory sheet before anyone re-tapers it.
 * A native `rockerverb` snapshot scene for the headless screenshot suite.
+
+## 65. The SD-1 / TS tone network — the last documented approximation in the dirt path
+
+The final open item of the post-v1.1 field-report round (CLAUDE.md's own
+ordering: *"then SD-1/TS tone-network rolloff and the GOLD gain-gang law"*; the
+GOLD half shipped as §50). This one had something none of the others had: the
+owner **owns a real SD-1** and A/B'd the model against it. The reported gap was
+the **upper-mid body** — how much midrange the pedal pushes, and where.
+
+**Deliberate tone change.** ADR **026**. Branch `claude/sd-ts-tone-network-6f557i`.
+Files: new `core/include/clipper/dsp/OverdriveToneStack.h`; `OverdriveEngine.{h,cpp}`,
+`SdModel.{h,cpp}`, `TsModel.{h,cpp}`; `core/tests/test_sd_model.cpp`,
+`test_ts_model.cpp`, `test_player_expectations.cpp`.
+
+### 65.0 The measurement came FIRST, and it confirmed the item's own title
+
+Before a line changed, the whole pedal was swept small-signal (1 mV, so the
+feedback clipper is linear) at DRIVE 0 / 0.5 / 1 × TONE 0 / 0.5 / 1, both pedals,
+48 kHz. At DRIVE 0.5 / TONE noon:
+
+| re the response's own peak | SD-1 before | TS before |
+| --- | --- | --- |
+| peak frequency | **6467 Hz** | **6467 Hz** |
+| 3 kHz | −0.15 dB | −0.15 dB |
+| 6 kHz | −0.00 dB | −0.00 dB |
+| 12 kHz | −0.11 dB | −0.11 dB |
+| 100 Hz | −16.76 dB | −16.53 dB |
+
+That is not a mid hump with too much treble on it. It is a **high shelf**: the
+response rises monotonically out of the bass and then sits FLAT across the top
+three octaves. And the two pedals measured **identical**, because §11.6's tone
+approximation was shared verbatim by §21.
+
+So the item's title was right, and the mechanism was worse than the word
+"rolloff" suggests: the model had **no low-pass in the tone stage at all**. The
+gap is the tone NETWORK — not the clipping stage (whose 720.5 Hz `Zg` corner
+measures correct to 0.18 dB, §65.7) and not the level staging (which is a real,
+separate defect — §65.8 — that this slice deliberately does not touch).
+
+### 65.1 The research: three independent sources, one outlier, one unsourced value
+
+The proxy still permits **github.com only** (`electrosmash.com` fails DNS;
+`hobby-hour.com` and `generalguitargadgets.com` return 403 through `WebFetch`;
+the Boss service PDF was unreachable). Three GitHub-hosted sources were:
+
+1. **`dsharlet/LiveSPICE`** ships BOTH pedals as example schematics —
+   `Tests/Examples/Boss Super Overdrive SD-1.schx` (whose own label names
+   **gmarts.org** as its source) and `Tests/Examples/Ibanez Tube Screamer
+   TS-9.schx`. Parsed node-by-node the same way §63 parsed the Rockerverb:
+   terminal offsets out of LiveSPICE's own `LayoutSymbol` code
+   (`TwoTerminal` anode (0,20) / cathode (0,−20); `Potentiometer` anode (−10,20),
+   cathode (−10,−20), wiper (10,0); `IdealOpAmp` + (−20,−10), − (−20,10),
+   out (20,0)), the rotate/flip transform out of `Schematic/Symbol.cs`
+   `MapToGlobal`, wires resolved by union-find with collinear merging.
+2. **`Cushychicken/ltspice-guitar-pedals`** — `ts808-tube-screamer.asc`, a full
+   TS808 LTspice netlist (the same repo §59 used for the Dyna Comp).
+3. **`JamesStubbsEng/TS-808-Ultra`** — a JUCE TS808 model whose `ToneStage.cpp`
+   implements **Yeh & Abel's DAFx-07** closed-form transfer function for exactly
+   this tone stage, with the paper's component values in the source.
+
+**What they agree on** (the TS tone stage): `R5` 1 kΩ, `C4` 0.22 µF, `R11` 10 kΩ,
+`C5` 0.22 µF, `R7` 220 Ω, `R8` 1 kΩ, and **no cap across `R8`**.
+
+**The one outlier, resolved:** LiveSPICE's TS-9 file marks the tone pot **10 kΩ**;
+the LTspice netlist and Yeh's published derivation both use **20 kΩ**. Two against
+one, and the two are independent of each other, so **20 kΩ ships** and the outlier
+is recorded here.
+
+**The one value with no second source:** the SD-1's tone pot. LiveSPICE transcribes
+**22 kΩ**; community sources say a real SD-1 uses a 20 kΩ pot, and no primary
+source was reachable to settle it. The transcription ships. It matters less than
+it looks: 22 k vs 20 k moves the network's magnitude by **0.19 dB worst** across
+the whole band and the whole knob, which is why P10 (§65.10) is the one
+perturbation no measured bar can see.
+
+Everything else about the SD-1 tone stage — `R5` 10 kΩ, `C4` 0.018 µF, `R11`
+10 kΩ, `C5` 0.027 µF, `R7` 470 Ω, `R8` 10 kΩ, **`C3` 0.01 µF across `R8`** — is
+LiveSPICE's transcription, and it agrees with §11.6's own prose description of
+the real circuit ("a 0.018 µF treble-lean path against a 10k/0.027 µF darker
+path") as far as that prose went.
+
+**Also gapped, and named rather than fitted:** both files mark both pots
+**Linear** and both pots ship linear, but the real taper LETTER could not be
+sourced (a search result describes the SD-1's as a "W taper"). Same class as
+§59's SUSTAIN pot.
+
+### 65.2 The transfer function, and an independent reference that lands EXACTLY
+
+The topology is the same on both pedals: the clipper's output reaches the second
+op-amp's **non-inverting** input through `Rin`, that node has `Cin` to ground and
+`Rbias` to the 4.5 V rail (an AC ground), the TONE pot bridges the op-amp's two
+inputs with `Cw`+`Rw` from its wiper to ground, and `Rfb` (‖ `Cfb`, SD-1 only)
+closes the loop. With the op-amp ideal both inputs sit at the same V, so the two
+pot legs are a parallel pair from V to the wiper — and with `p` the fraction of
+the pot between the non-inverting node and the wiper (`p` == the TONE knob):
+
+```
+H(s) = gin * [ 1 + p*Zfb/(Zw+Rp) ] / [ gin + gb + s*Cin + (1-p)/(Zw+Rp) ]
+     with Zw = Rw + 1/(s*Cw),  Rp = Rpot*p*(1-p),  Zfb = Rfb/(1+s*Rfb*Cfb)
+```
+
+Clearing `A = Rfb*Cfb` and `B = Cw*(Rw+Rp)`:
+
+```
+N(s) = gin * [ A*B s^2 + (A + B + p*Rfb*Cw) s + 1 ]
+D(s) = (1 + s*A) * [ Cin*B s^2 + ((gin+gb)*B + Cin + (1-p)*Cw) s + (gin+gb) ]
+```
+
+The `(1+sA)` factor comes out of `D` **exactly**, for every `p`, so the SD-1's
+third pole is read off rather than solved for and **no cubic solver exists in the
+shipped code**. With `Cfb = 0` (the TS) both sides drop an order.
+
+**The cross-check is the headline of this section.** Setting `Cfb = 0` and the TS
+values, this `H(s)` reproduces Yeh & Abel's published second-order form
+**term for term**: their `wp = 1/(Cs·(Rs‖Ri))` is `(gin+gb)/Cin`; their
+`wz = 1/(Cz·(Rz+par))` is `1/(Cw·B/Cw)`; their constant term `wp·wz` is
+`(gin+gb)/(Cin·Cw·Rz')`; their `alpha` is `(1/(Rin·Cin))·(1 + p·Rfb/Rz')`; and
+their `alpha·W·wz` is `wz/(Rin·Cin)`. Numerically, over 20 Hz–20 kHz × seven knob
+positions, the two forms agree to **0.000000 dB**.
+
+**One correction was needed, and it is a finding.** The reference implementation's
+`X` term (the third contributor to the `s` coefficient) reads
+`(Rr/(Rl+Rr)) / ((Rz+par) * Y)` — dimensionally **Ω⁻³**, added to two terms in
+rad/s. Deriving the same coefficient from the netlist gives
+`(Rr/(Rl+Rr)) / (Cs*(Rz+par))`: the transcription substitutes `Y` where `Cs`
+belongs. With `Y` in place the two forms disagree by up to **4.93 dB** at the dark
+end of the knob; with `Cs` they agree to the last digit — which is itself the
+evidence that the fix is right, since the other four coefficients are untouched.
+`test_ts_model.cpp` carries the corrected formula, with the correction written out.
+
+### 65.3 Discretization: matched-Z, real roots, and one Nyquist-matching zero
+
+**Every pole and every zero of this network is REAL**, on both pedals, across the
+whole knob. Measured worst normalized discriminant over 201 knob positions:
+**+0.288 / +0.173** (SD-1 numerator / denominator) and **+1.000 / +0.034** (TS).
+That is what licenses a **cascade of first-order sections in `double`** — the
+structure docs §56.4b names as the cure for direct forms of order ≥ 2, and the
+reason a per-tap `flushDenormal` is *correct* here where it is not in a direct
+form (within a first-order section `y1` decays by |a1| < 1 and `x1` is a copy of
+an already-flushed value, so the recursion cannot pump itself back over the floor).
+
+Four discretizations were measured against the analytic `H(s)` over
+20 Hz–20 kHz × the whole knob (worst |Δ| in dB):
+
+| | TS @44.1 k | SD-1 @44.1 k | TS @96 k | SD-1 @96 k |
+| --- | --- | --- | --- | --- |
+| plain bilinear on the whole rational | 13.57 | 19.42 | 1.38 | 2.16 |
+| bilinear per section, prewarped at its own pole | 13.56 | 16.61 | 1.38 | 1.76 |
+| **matched-Z pole/zero mapping** | 3.16 | 5.06 | 0.63 | 0.83 |
+| matched-Z + a zero at Nyquist (MZTi) | 13.73 | 14.95 | 1.39 | 1.48 |
+| **matched-Z + a Nyquist-MATCHED real zero (shipped)** | **0.96** | **1.21** | **0.45** | **0.49** |
+
+The shipped form maps every corner to exactly its analog frequency (which is what
+"where the hump is" depends on), normalizes the cascade so `H(0)` is exactly the
+`Rbias/(Rin+Rbias)` divider, and then adds ONE real zero `α` solving
+`(1−α)/(1+α) = |H_analytic(Nyquist)| / |H_cascade(Nyquist)|` so the Nyquist
+magnitude is exact too. At `z⁻¹ = −1` every section is real, so that costs a
+handful of flops; measured |α| ≤ **0.345**.
+
+**Rendered** (not analytic) against `H(s)`, worst over five knob positions:
+**1.16 dB (SD-1) / 0.96 dB (TS) at 16 kHz / 44.1 kHz**, and **≤ 0.53 dB
+everywhere below 10 kHz**; 0.32 / 0.30 dB at 96 kHz. The top-octave residual is
+**stated, not hidden** — see §65.11.
+
+### 65.4 What changed audibly: the upper-mid metric, before → after
+
+Whole pedal, small signal (1 mV), DRIVE 0.5, TONE noon, 48 kHz:
+
+| | SD-1 before | SD-1 after | TS before | TS after |
+| --- | --- | --- | --- | --- |
+| peak frequency | 6467 Hz | **1106 Hz** | 6467 Hz | **777 Hz** |
+| 3 kHz re peak | −0.15 dB | **−3.63 dB** | −0.15 dB | **−5.93 dB** |
+| 6 kHz re peak | −0.00 dB | **−9.34 dB** | −0.00 dB | **−11.75 dB** |
+| 12 kHz re peak | −0.11 dB | **−16.05 dB** | −0.11 dB | **−18.38 dB** |
+| 100 Hz re peak | −16.76 dB | −15.39 dB | −16.53 dB | −11.46 dB |
+
+A shelf became a hump, and the two pedals stopped being the same pedal: the SD-1
+peaks an interval higher than the TS and rolls off less steeply above it, which
+is the 884 Hz / 723 Hz difference and the SD-1's `C3` feedback cap.
+
+The TONE knob is still a treble control and still leaves the bass alone —
+3 kHz span **17.33 dB (SD-1) / 16.05 dB (TS)** against 100 Hz spans of
+**0.30 / 0.35 dB** (before: 18.63 dB and 0.58 dB on both).
+
+The tone stage's own response, rendered, at TONE noon:
+
+| f | SD-1 | TS |
+| --- | --- | --- |
+| 30 Hz | −6.01 dB | −0.84 dB |
+| 220 Hz | −5.74 | −1.14 |
+| 1 kHz | −5.68 | −4.50 |
+| 3 kHz | −10.95 | −11.92 |
+| 12 kHz | −22.63 | −23.62 |
+
+### 65.5 The level it costs, and why nothing was re-gained (ADR 026)
+
+The stage's DC gain is exactly the `Rin`/`Rbias` divider: **10 k/(10 k+10 k) =
+0.5 = −6.02 dB** on the SD-1 and **10 k/(1 k+10 k) = 0.9091 = −0.83 dB** on the
+TS. Rendered at 30 Hz: **−6.01** and **−0.84 dB**. That 5.18 dB difference between
+the two pedals is real, it is the single largest level difference between them,
+and it is now a hard assert.
+
+At the field anchor (0.15 V, 220 Hz, TONE noon, LEVEL 1.0) the fundamental moves:
+
+| | DRIVE 0 | DRIVE 0.5 | DRIVE 1.0 |
+| --- | --- | --- | --- |
+| SD-1 | −13.00 → **−18.74** dBV | −1.99 → **−7.73** | −0.21 → **−5.95** |
+| TS | −13.01 → **−14.15** | −3.72 → **−4.86** | −1.77 → **−2.91** |
+
+i.e. a flat −5.74 dB (SD-1) / −1.14 dB (TS) at every knob position — the tone
+stage's insertion loss at 220 Hz, and nothing else. **Nothing was re-gained**
+(§36 / ADR 008's precedent).
+
+### 65.6 The engine seam: one engine, two configs
+
+`OverdriveConfig`'s `tonePivotHz` + `toneMaxTiltDb` are replaced by an
+`OverdriveToneConfig` — the eight netlist values. The network lives in the ENGINE
+(the topology is shared) and the values live in each pedal's CONFIG (they are
+not), which is §21's rule applied to the one block that had been ignoring it.
+
+The TONE smoother now smooths the **pot wiper fraction** (a `OnePoleSmootherD`)
+rather than a tilt gain, and coefficients are rebuilt only while it is moving —
+`OnePoleSmootherT::settled()` makes a parked knob cost nothing, so the ~5 exp
+calls per sample are confined to the ~5 ms of an actual knob move. Stage 3's
+order follows the circuit: **tone network → the output coupling cap → LEVEL**
+(they are all linear and commute, so this is a readability choice, not a
+response one).
+
+**CPU: no measurable change.** Interleaved same-machine A/B, 3 pairs:
+SD-1 before 100.17 / 108.39 / 95.46× realtime, after 90.06 / 95.30 / 110.11×;
+Screamer before 100.06 / 108.44 / 98.57×, after 91.52 / 96.39 / 107.11×. Both
+sit at ~1.0 % of one 48 kHz stream against a within-binary spread of ~20 %. The
+added work is three first-order `double` sections plus one FIR tap at the BASE
+rate; the oversampled ADAA clip dominates and is untouched.
+
+### 65.7 The mid-hump test had to change, and what it now measures
+
+`testMidHumpCorner` measured the clipping stage's `1 + K·HP720` shelf **relative
+to a 5 kHz plateau**, at TONE noon, on the assumption that noon was transparent.
+Neither the plateau nor the transparency exists any more. The test now divides
+the tone network's analytic response out of both the probe and the reference, so
+it measures stage 1 on its own and still pins the 720.5 Hz corner: worst
+deviation **0.18 dB at 44.1 kHz / 0.04 dB at 96 kHz** on both pedals, unchanged.
+The same division was applied to the TS's max-DRIVE plateau probe
+(**40.23 / 40.27 / 40.43 dB** measured against the analytic 40.60).
+
+That makes the mid-hump test's reference partly netlist-derived-from-the-same-code
+for the tone half — the vacuous class CLAUDE.md warns about. It is acceptable here
+because the tone half has its own bar against an OUTSIDE reference (§65.2) and the
+thing this test exists to pin (the `Zg` corner) is on the other side of the
+division.
+
+### 65.8 Found and REPORTED, not fixed: the DRIVE plateau range
+
+Both netlists put the DRIVE pot **in series with a resistor** in the feedback leg
+— SD-1 `R3` = 33 kΩ, TS `R3` = 51 kΩ — so `Zf` spans 33 k…1.033 M and 51 k…551 k
+and the real plateau range is:
+
+| | model | netlist |
+| --- | --- | --- |
+| SD-1 min / max | +12.0 / +46.6 dB | **+18.1 / +46.9 dB** |
+| TS min / max | +12.0 / +40.6 dB | **+21.5 / +41.4 dB** |
+
+The maxima are right to within 0.3–0.8 dB; the **minima are 6.1 / 9.5 dB low**.
+That is a gain-staging defect, independent of the tone network, and it is
+deliberately **out of scope** here — see ADR 026's item 3 for why combining them
+would have proved nothing (the SD-1's two errors are ~6 dB in opposite
+directions). A coincidence worth recording so nobody reads it as design: the
+SD-1's missing +6.08 dB of minimum plateau and its missing −6.02 dB of tone-stage
+loss cancel almost exactly — but they do NOT cancel on the TS (+9.5 vs −0.8), so
+`driveMinDb = 12` was an approximation, not a compensating fit.
+
+Also out of scope and unchanged: the LEVEL pot's real divider (SD-1 `C6` 1 µF →
+`R10` 4.7 kΩ → a 10 kΩ pot; TS `C6` 1 µF → a 100 kΩ pot) against the model's
+identity map and its shared 12 Hz `dcBlockHz`; and the clipper's `Cc` feedback cap
+(SD-1 47 pF, TS 51 pF).
+
+### 65.9 The goldens — MEASURED, NOTHING BLESSED
+
+`./build/clipper_player_expectations_tests --golden-report` (report only, writes
+nothing):
+
+| golden | RMS Δ | worst band Δ | at | bands |
+| --- | --- | --- | --- | --- |
+| `rat_jcm800` | **+0.00 dB** | 0.00 dB | 252 Hz | 12 | UNCHANGED |
+| `sd1_twin_reverb` | **−5.99 dB** | **11.34 dB** | 3200 Hz | 12 | CHANGED |
+| `muff_twin` | **+0.00 dB** | 0.00 dB | 5080 Hz | 12 | UNCHANGED |
+| `ts_ac30` | **−1.83 dB** | **8.90 dB** | 2016 Hz | 8 | CHANGED |
+| `clean120_chorus` | **−0.00 dB** | 0.11 dB | 252 Hz | 7 | UNCHANGED |
+
+Exactly the two rigs containing the two pedals moved; the other three are
+untouched, which is the scope check. The core suite is therefore **RED at exactly
+one assertion** — `compareGolden`'s `fabs(rmsDeltaDb) < 1.0` on `sd1_twin_reverb`
+— and green everywhere else (33 of 34 ctest entries pass, six xfail ledgers
+Skipped as normal). Blessing is the owner's, on the table above.
+
+M11 reference rows re-baselined (values, not bounds — every window still holds):
+
+| row | SD-1 | TS |
+| --- | --- | --- |
+| A1 defaults RMS | −19.6 → **−25.2** dBFS | −22.1 → **−23.9** |
+| A2 hum vs note, min / default | −33.1/−39.3 → **−33.4/−39.5** dB | −33.1/−38.2 → **−32.8/−37.9** |
+| A3 GAIN THD % | 0.1→11.5→36.7 → **0.1→12.1→37.6** | 0.1→5.7→31.9 → **0.1→4.7→24.9** |
+| A3 LEVEL dBFS | −240→−12.8→−6.8 → **−240→−18.5→−12.5** | −240→−14.9→−8.9 → **−240→−16.1→−10.0** |
+| A3 TONE HF harmonics | −16.0→−4.2 → **−18.7→−7.2** | −17.4→−6.2 → **−23.1→−12.9** |
+| A4 default-rig RMS delta | +15.6 → **+10.0** dB (window +4..+24) | +13.1 → **+11.3** (window +1..+21) |
+
+The A3 THD rows move in **opposite directions** and neither is a change in
+clipping: the SD-1's low-pass sits high enough relative to its own DC gain that it
+takes the 220 Hz FUNDAMENTAL down as much as the harmonics (ratio up slightly),
+while the TS's 723 Hz corner is an octave closer to the probe and takes the
+HARMONICS down (ratio down 7 points). The clip stage is byte-for-byte untouched.
+
+### 65.10 Perturbations — 11 patched, 10 RED on a MEASURED bar, 1 honest miss
+
+Each patched in place, rebuilt, run, restored, `touch`ed after **both** (CLAUDE.md).
+
+| # | perturbation | result |
+| --- | --- | --- |
+| P1 | SD-1 `Cin` 18 n → ~0 (kill the tone low-pass) | **RED** — the hump/shelf bar |
+| P2 | TS `Cin` 220 n → ~0 (kill the 723 Hz low-pass) | **RED** — the Yeh bar |
+| P3 | SD-1 `Rbias` 10 k → 100 k (kill the 6 dB divider) | **RED** — the DC-loss bar |
+| P4 | SD-1 `Cfb` 10 n → 0 ("unify" it with the TS) | **RED** — the hump/shelf bar |
+| P5 | TS `Rpot` 20 k → 10 k (LiveSPICE's outlier) | **RED** — the Yeh bar |
+| P6 | TONE direction reversed (`p` → `1−p`), shared engine | **RED** on BOTH pedals — knob authority |
+| P7 | tone network bypassed (`processSample` returns its input) | **RED** on BOTH — the mid-hump bar |
+| P8 | the Nyquist-matching zero removed (`α` forced to 0) | **RED** on BOTH — the discretization bar |
+| P9 | SD-1 `Rw` (R7) 470 → 4.7 k | **RED** — knob authority |
+| P10 | **SD-1 `Rpot` 22 k → 20 k** | **RED only on the transcription guard** |
+| P11 | denormal guards removed from the cascade | **RED** — the exact-zero rest bar |
+
+Restore GREEN in every case.
+
+**P10 is the honest miss and is reported as one.** 22 k vs 20 k moves the
+network's magnitude by 0.19 dB worst across the whole band and the whole knob, so
+no player-observable bar can see it and only the literal transcription assert
+does. That is exactly the value with no second source (§65.1); the bar is a
+transcription guard and is labelled as one.
+
+**P11 is worth knowing before the next denormal slice:** the shared
+`clipper_denormal_tests` stays **GREEN** under it. A `double` subnormal in this
+cascade's state is invisible in the `float` output (docs §33's point), which is
+precisely why `OverdriveToneStack` exposes `maxAbsRestingState()` and the pedal
+suites assert it is **exactly 0.0** after a 4 s silent tail.
+
+### 65.11 Open, named rather than fitted
+
+* **The DRIVE plateau range** (§65.8) — the biggest one, with its numbers already
+  measured. Its own slice, and the pot TAPER between the endpoints is unsourced.
+* **The LEVEL divider and the output coupling cap** — SD-1 `R10` 4.7 k + a 10 k
+  pot (max output 0.68, corner ~10.8 Hz), TS a bare 100 k pot (~1.6 Hz), against
+  one identity map and one 12 Hz `dcBlockHz` for both.
+* **The top-octave discretization residual** — 1.16 dB at 16 kHz / 44.1 kHz. The
+  cure is to run the tone network inside the oversampled domain (it is linear, so
+  this is a pure accuracy/CPU trade with no circuit argument in it).
+* **The SD-1's tone pot value** (22 k transcribed, 20 k claimed by community
+  sources) and **both pots' taper letters**. Find a factory sheet.
+* The clipper's `Cc` feedback cap (47 pF / 51 pF), not modelled.

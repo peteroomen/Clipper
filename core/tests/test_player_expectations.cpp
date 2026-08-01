@@ -399,7 +399,12 @@ std::vector<Gear> allGear() {
     std::vector<Gear> gear;
     // A4 level-sanity windows (RMS delta dB, standard pluck at defaults), each
     // measured value ± ~10 dB. Measured 2026-07 @ 48 kHz (input RMS −33.5 dBFS):
-    //   rat +18.6   sd1 +15.6   ts +13.1   muff +27.7 (fuzz sustain wall — by design;
+    //   rat +18.6   sd1 +10.0 (§65: was +15.6 — the transcribed tone network's own
+    //   6.02 dB insertion loss, NOT re-gained anywhere; the +4..+24 window still
+    //   holds with 6 dB of margin and is deliberately NOT re-snugged)
+    //   ts +11.3 (§65: was +13.1 — the TS's tone stage costs only 0.83 dB at DC,
+    //   the rest is its 723 Hz low-pass taking the pluck's upper harmonics down)
+    //   muff +27.7 (fuzz sustain wall — by design;
     //   was +29.4 pre-§53, before the clip stages' DC-blocking diode caps)
     //   gold +12.4 (§56, was +12.5 after §54, +19.3 after §52, +7.3 after §50 and
     //   +13.2 before it: §52
@@ -542,7 +547,9 @@ bool isDirtPedal(const Gear& g) { return g.isPedal; }
 //   LEVEL knob at min             must actually attenuate ≥ 6 dB below default —
 //                                  measured: every level/volume/master pot (and
 //                                  the JCM's preamp-volume GAIN) kills to −240.
-//   Defaults RMS per gear: rat −16.6, sd1 −19.6, ts −22.1, muff −7.4 (§53: was
+//   Defaults RMS per gear: rat −16.6, sd1 −25.2 (§65: was −19.6, the transcribed
+//   tone network's 6.02 dB insertion loss), ts −23.9 (§65: was −22.1),
+//   muff −7.4 (§53: was
 //   −5.8, before the clip stages' DC-blocking diode caps), gold −22.7
 //   (§52 took it −27.8 → −15.9 with the derived summing weight; §54's clipping-stage
 //   trio takes it back to −22.6, because the reference implementation's measured
@@ -605,8 +612,11 @@ void testMinKnobUsability(const std::vector<Gear>& gear) {
 // note in the output.
 //
 // REGRESSION FLOOR: ≥ 28 dB below the note. Measured (2026-07, 48 kHz):
-//   rat  min −36.0 / def −41.6 dB     sd1  min −33.1 / def −39.3 dB
-//   ts   min −33.1 / def −38.2 dB     muff min −47.5 / def −55.4 dB (re-measured
+//   rat  min −36.0 / def −41.6 dB     sd1  min −33.4 / def −39.5 dB (§65: was
+//        −33.1 / −39.3 — the tone network's low-pass takes the note's harmonics
+//        down as well as the 60 Hz hum, so the RATIO barely moves)
+//   ts   min −32.8 / def −37.9 dB (§65: was −33.1 / −38.2)
+//                                     muff min −47.5 / def −55.4 dB (re-measured
 //        2026-07-31 twice: docs §49's series base resistors, then docs §53's
 //        DC-blocked diode branch — still 19+ dB inside the bar)
 //   gold min −30.1 / def −33.6 dB (§56: the default row was −35.6 under §54; the min
@@ -663,7 +673,15 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //   band level moves in the documented direction.
 //
 // Measured (2026-07, 48 kHz, references for future failures):
-//   GAIN THD %:  rat 0.0→22.4→37.1   sd1 0.1→11.5→36.7   ts 0.1→5.7→31.9
+//   GAIN THD %:  rat 0.0→22.4→37.1
+//                sd1 0.1→12.1→37.6 (§65: was 0.1→11.5→36.7 — the SD-1's tone
+//                stage is nearly flat through the low harmonics of the 220 Hz
+//                probe while its 6 dB divider takes the FUNDAMENTAL down, so the
+//                ratio rises slightly)
+//                ts 0.1→4.7→24.9 (§65: was 0.1→5.7→31.9 — the mirror image, and
+//                the bigger move: the TS's 723 Hz low-pass sits an octave lower
+//                relative to its own DC gain, so it takes the HARMONICS down. Not
+//                less clipping — the same clipping, correctly filtered)
 //                muff 0.4→32.0→35.7 (probes 0/0.6/1.0; §49's series base resistors
 //                made the wall ARTICULATE — max fell 147.7 → 38.5 because the
 //                fundamental survives — and §53's DC-blocked diode branch gave the
@@ -691,8 +709,10 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //                aimed at: the owner had said the GOLD is "potentially still a bit
 //                gainy by a touch but let's not change for now", and this moves in
 //                that direction by accident of the component values)
-//   LEVEL dBFS (0/0.5/1): rat −240→−15.6→−9.6   sd1 −240→−12.8→−6.8
-//                ts −240→−14.9→−8.9   muff −240→−6.4→−0.4 (§53: was −7.0→−1.0)
+//   LEVEL dBFS (0/0.5/1): rat −240→−15.6→−9.6
+//                sd1 −240→−18.5→−12.5 (§65: was −12.8→−6.8)
+//                ts −240→−16.1→−10.0 (§65: was −14.9→−8.9)
+//                muff −240→−6.4→−0.4 (§53: was −7.0→−1.0)
 //                clean120 −240→−25.9→−23.0   jcm master −240→−21.9→−7.5 (§51: the
 //                master pot's own law is untouched at k = 4 — what moved is the
 //                GAIN drive reaching it at the 0.5 default)
@@ -703,8 +723,15 @@ void testHumTorture(const std::vector<Gear>& gear) {
 //                clean end ~3.4 dB and the driven end 0.28 dB, so the knob's authority
 //                grew rather than moved.)
 //   TONE, pedals (HF harmonic energy dB, dark→bright, gain maxed; bar ≥ +6):
-//                rat filter −19.8→−10.6 (inverted knob)   sd1 −16.0→−4.2
-//                ts −17.4→−6.2   muff −12.8→−4.1 (§53: was −5.0→+10.1 — the clip
+//                rat filter −19.8→−10.6 (inverted knob)
+//                sd1 −18.7→−7.2 (§65: was −16.0→−4.2 — the transcribed tone
+//                network takes 2.8 dB of HF harmonic energy off BOTH ends and
+//                leaves the knob's authority at +11.5 dB, essentially unchanged
+//                from +11.8: it is still a treble control, it is just no longer
+//                transparent at noon)
+//                ts −23.1→−12.9 (§65: was −17.4→−6.2 — the TS's 723 Hz low-pass
+//                is the deeper of the two, hence the bigger −5.7 dB shift)
+//                muff −12.8→−4.1 (§53: was −5.0→+10.1 — the clip
 //                stages' 470 pF Miller caps now work against a real base-node
 //                impedance, so the pedal is less shrill overall; same +8.7 dB of
 //                knob authority)   gold treble −29.4→−18.9
@@ -858,7 +885,8 @@ void testKnobMonotonicity(const std::vector<Gear>& gear) {
 // (the RAT field bug) or 15 dB hot fails here before a player ever hears it.
 //
 // Measured Δ RMS at defaults (2026-07, 48 kHz, pluck peak −20 dBFS / RMS −33.5):
-//   rat +18.6   sd1 +15.6   ts +13.1   muff +27.7 (§53: was +29.4; the sustain wall lifts a
+//   rat +18.6   sd1 +10.0 (§65, was +15.6)   ts +11.3 (§65, was +13.1)
+//   muff +27.7 (§53: was +29.4; the sustain wall lifts a
 //   DECAYING pluck's RMS by design — a fuzz that did NOT would be the bug)
 //   clean120 −6.0   jcm800 −2.5 (docs §51)   twin −18.8   ac30 −7.5 (0.4 opening volume;
 //   docs §55 re-baselined this — see the note in allGear(). The §55 supply slice moved it

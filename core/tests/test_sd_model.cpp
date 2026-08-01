@@ -96,9 +96,13 @@ double tailRms(const std::vector<float>& x, double fs) {
 }
 
 // --- Test 1: the mid-hump shelf matches 1 + K*HP720 within +/-1.5 dB. --------
-// Small signal (diodes ~linear), moderate DRIVE (op-amp corner far above audio),
-// TONE=0.5 (transparent). Measure dB relative to a 5 kHz reference (the plateau)
-// and compare to the analytic non-inverting shelf. Pins the 720 Hz corner.
+// Small signal (diodes ~linear), moderate DRIVE (op-amp corner far above audio).
+// This measures STAGE 1 on its own, so the TONE NETWORK is divided out of the
+// measurement (docs §65: since 2026-08-01 TONE=0.5 is NOT transparent — it is the
+// real network, which carries an 884 Hz low-pass and a 6.02 dB insertion loss;
+// the old test's "5 kHz plateau" reference no longer exists). The tone half of
+// the reference is validated on its own by testToneNetwork; what this test pins
+// is the 720.5 Hz corner of the CLIPPING stage's Zg leg.
 void testMidHumpCorner(double fs) {
     const double driveKnob = 0.5;
     const double K = driveKnobToK(driveKnob);
@@ -114,12 +118,19 @@ void testMidHumpCorner(double fs) {
     };
     const double fRef = 5000.0;
     const float amp = 1e-5f;
+    // The tone network at TONE = 0.5, in dB — divided out so what is left is the
+    // clipping stage's own shelf.
+    const auto toneCfg = SdModel::toneConfig();
+    auto toneDb = [&](double f) {
+        return toDb(clipper::dsp::OverdriveToneStack::analyticMag(toneCfg, 0.5,
+                                                                  kTwoPi * f));
+    };
     auto measDbRel = [&](double f) {
         auto o = render(sine(f, amp, 0.5, fs), {(float)driveKnob, 0.5f, 1.0f}, fs);
         auto oRef = render(sine(fRef, amp, 0.5, fs), {(float)driveKnob, 0.5f, 1.0f}, fs);
         const size_t n = o.size(), win = std::min(n, static_cast<size_t>(0.3 * fs));
-        return toDb(goertzelAmp(o, n - win, win, f, fs)) -
-               toDb(goertzelAmp(oRef, n - win, win, fRef, fs));
+        return (toDb(goertzelAmp(o, n - win, win, f, fs)) - toneDb(f)) -
+               (toDb(goertzelAmp(oRef, n - win, win, fRef, fs)) - toneDb(fRef));
     };
     const double probes[] = {82.4, 220.0, 440.0, 720.5, 1500.0, 3000.0, 5000.0};
     double worst = 0.0;
@@ -137,6 +148,155 @@ void testMidHumpCorner(double fs) {
         "  [ok] mid-hump @ %.0f Hz: worst dev %.2f dB; 720Hz=%.2f dB, 82Hz=%.2f dB "
         "rel plateau (K=%.1f)\n",
         fs, worst, atCorner, atBass, K);
+}
+
+// --- Test 1b: THE TONE NETWORK (docs §65). -----------------------------------
+// The property the whole slice exists for: the SD-1's tone stage is not a treble
+// TILT, it is an active network with a LOW-PASS in it, and that low-pass is what
+// turns the family's high shelf into an upper-mid HUMP.
+//
+// The teeth are the four PLAYER-OBSERVABLE bars (1-4), each an absolute number
+// written as a literal rather than recomputed from the config, so moving a
+// component value moves a measurement and not the bar. Bars 5-7 are the
+// discretization / numerical hygiene checks and 8 is a transcription guard,
+// deliberately LAST so a perturbation trips a measured bar first.
+void testToneNetwork() {
+    using clipper::dsp::OverdriveToneStack;
+    const double fs = 48000.0;
+    const auto cfg = SdModel::toneConfig();
+
+    // Render the tone network on its own at pot position p.
+    auto stackDb = [&](double p, double f) {
+        OverdriveToneStack t;
+        t.prepare(cfg, fs);
+        t.setPot(p);
+        const int n = static_cast<int>(fs * 0.4);
+        std::vector<float> out(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i)
+            out[static_cast<size_t>(i)] =
+                t.processSample(static_cast<float>(0.1 * std::sin(kTwoPi * f * i / fs)));
+        return toDb(goertzelAmp(out, static_cast<size_t>(fs * 0.2),
+                                static_cast<size_t>(fs * 0.15), f, fs) /
+                    0.1);
+    };
+    // Whole-pedal small-signal response (1 mV: the feedback clipper is linear).
+    auto pedalDb = [&](double f, double tone) {
+        auto o = render(sine(f, 1e-3f, 0.6, fs), {0.5f, (float)tone, 1.0f}, fs);
+        return toDb(goertzelAmp(o, static_cast<size_t>(fs * 0.3),
+                                static_cast<size_t>(fs * 0.25), f, fs) /
+                    1e-3);
+    };
+
+    // BAR 1 — the DC insertion loss is the R5/R11 divider, and it is REAL: the
+    // SD-1's tone stage costs 6 dB that no other stage gives back (docs §65.5 —
+    // nothing was re-gained to hide it). 10k/(10k+10k) = 0.5 = -6.021 dB.
+    const double dcDb = stackDb(0.5, 30.0);
+    assert(std::fabs(dcDb - (-6.021)) < 0.15 &&
+           "SD-1 tone stage DC insertion loss is not the 10k/10k divider (-6.02 dB)");
+
+    // BAR 2 — THE HEADLINE: a HUMP, not a SHELF. At DRIVE noon / TONE noon the
+    // small-signal response must PEAK in the upper mids and be well down an
+    // octave and a half above it. Before docs §65 this model peaked at 6467 Hz
+    // with 3 kHz / 6 kHz / 12 kHz sitting at -0.15 / -0.00 / -0.11 dB re that
+    // peak — a plateau. Measured now: peak 1105.9 Hz, 6 kHz -9.34 dB re peak.
+    double peakF = 0.0, peakDb = -1e9;
+    std::vector<double> grid;
+    for (int i = 0; i < 25; ++i) grid.push_back(200.0 * std::pow(30.0, i / 24.0));
+    for (double f : grid) {
+        const double v = pedalDb(f, 0.5);
+        if (v > peakDb) { peakDb = v; peakF = f; }
+    }
+    const double at6k = pedalDb(6000.0, 0.5);
+    assert(peakF > 700.0 && peakF < 1600.0 &&
+           "SD-1 small-signal peak is not in the upper mids (700..1600 Hz)");
+    assert(peakDb - at6k > 6.0 &&
+           "SD-1 6 kHz is not >= 6 dB below the upper-mid peak — the response is a "
+           "SHELF, i.e. the tone stage's low-pass is missing");
+
+    // BAR 3 — TONE is a TREBLE control: lots of authority at 3 kHz, ~none at
+    // 100 Hz. (Boss's own description; the same shape the TS publishes.)
+    const double t3lo = pedalDb(3000.0, 0.0), t3hi = pedalDb(3000.0, 1.0);
+    const double b1lo = pedalDb(100.0, 0.0), b1hi = pedalDb(100.0, 1.0);
+    assert(t3hi - t3lo > 12.0 && "SD-1 TONE has < 12 dB of authority at 3 kHz");
+    assert(std::fabs(b1hi - b1lo) < 1.5 && "SD-1 TONE moves 100 Hz by > 1.5 dB");
+
+    // BAR 4 — and it points the right way at both ends.
+    assert(stackDb(1.0, 5000.0) - stackDb(0.0, 5000.0) > 10.0 &&
+           "SD-1 TONE 1.0 is not brighter than TONE 0.0");
+
+    // BAR 5 — DISCRETIZATION (a check on the mapping, not on the topology): the
+    // rendered cascade must track the netlist's own H(s). Worst measured 1.16 dB
+    // at 16 kHz / 44.1 kHz, 0.53 dB below 10 kHz.
+    double worstDisc = 0.0;
+    for (double rate : {44100.0, 96000.0}) {
+        for (double p : {0.0, 0.25, 0.5, 0.75, 1.0}) {
+            for (double f : {30.0, 110.0, 440.0, 880.0, 3000.0, 10000.0, 16000.0}) {
+                OverdriveToneStack t;
+                t.prepare(cfg, rate);
+                t.setPot(p);
+                const int n = static_cast<int>(rate * 0.4);
+                std::vector<float> out(static_cast<size_t>(n));
+                for (int i = 0; i < n; ++i)
+                    out[static_cast<size_t>(i)] = t.processSample(
+                        static_cast<float>(0.1 * std::sin(kTwoPi * f * i / rate)));
+                const double meas =
+                    toDb(goertzelAmp(out, static_cast<size_t>(rate * 0.2),
+                                     static_cast<size_t>(rate * 0.15), f, rate) /
+                         0.1);
+                worstDisc = std::max(
+                    worstDisc,
+                    std::fabs(meas - toDb(OverdriveToneStack::analyticMag(
+                                  cfg, p, kTwoPi * f))));
+            }
+        }
+    }
+    assert(worstDisc < 1.5 && "tone network discretization drifts > 1.5 dB from H(s)");
+
+    // BAR 6 — every root of the network is REAL across the whole knob, which is
+    // what licenses the first-order cascade (and makes OverdriveToneStack's
+    // negative-discriminant clamp unreachable). Normalized discriminant of both
+    // quadratics; measured minimum +0.288 (numerator) / +0.173 (denominator).
+    double minDisc = 1e9;
+    for (int i = 0; i <= 200; ++i) {
+        const double p = i / 200.0;
+        const double gin = 1.0 / cfg.rIn, gb = 1.0 / cfg.rBias;
+        const double A = cfg.rFb * cfg.cFb;
+        const double B = cfg.cW * (cfg.rW + cfg.rPot * p * (1.0 - p));
+        const double bn = A + B + p * cfg.rFb * cfg.cW;
+        const double bd = (gin + gb) * B + cfg.cIn + (1.0 - p) * cfg.cW;
+        minDisc = std::min(minDisc, (bn * bn - 4.0 * A * B) / (bn * bn));
+        minDisc = std::min(minDisc,
+                           (bd * bd - 4.0 * cfg.cIn * B * (gin + gb)) / (bd * bd));
+    }
+    assert(minDisc > 0.01 && "a tone-network root went complex — the cascade is invalid");
+
+    // BAR 7 — ADR 006: every state in the network rests at EXACTLY zero.
+    {
+        OverdriveToneStack t;
+        t.prepare(cfg, fs);
+        t.setPot(0.5);
+        for (int i = 0; i < static_cast<int>(fs * 0.2); ++i)
+            t.processSample(static_cast<float>(0.3 * std::sin(kTwoPi * 220.0 * i / fs)));
+        for (int i = 0; i < static_cast<int>(fs * 4.0); ++i) t.processSample(0.0f);
+        assert(t.maxAbsRestingState() == 0.0 &&
+               "tone network state did not reach EXACT zero after a silent tail");
+    }
+
+    // BAR 8 (transcription guard, deliberately last) — the values as transcribed
+    // from LiveSPICE's `Boss Super Overdrive SD-1.schx` (source: gmarts.org).
+    assert(cfg.rIn == 10.0e3 && cfg.cIn == 18.0e-9 && cfg.rBias == 10.0e3);
+    assert(cfg.rPot == 22.0e3 && cfg.rW == 470.0 && cfg.cW == 27.0e-9);
+    assert(cfg.rFb == 10.0e3 && cfg.cFb == 10.0e-9 &&
+           "the SD-1 has a 0.01 uF ACROSS its 10k tone feedback resistor; the TS "
+           "has no such cap — do not 'unify' them");
+
+    std::printf(
+        "  [ok] tone network: DC loss %.2f dB (divider 10k/10k = -6.02); peak %.0f Hz "
+        "at %+.2f dB, 6 kHz %.2f dB below it (was a FLAT shelf to 12 kHz); TONE 3 kHz "
+        "span %.2f dB vs 100 Hz %.2f dB; discretization worst %.2f dB; min root "
+        "discriminant %.3f\n",
+        dcDb, peakF, peakDb, peakDb - at6k, t3hi - t3lo, std::fabs(b1hi - b1lo),
+        worstDisc, minDisc);
 }
 
 // --- Test 2: asymmetry -> a real 2nd harmonic (even); symmetric ~absent. -----
@@ -358,6 +518,7 @@ int main() {
     std::printf("Running clipper::dsp::SdModel tests (M8 — SD-1)...\n");
     testMidHumpCorner(44100.0);
     testMidHumpCorner(96000.0);
+    testToneNetwork();
     testAsymmetry(44100.0);
     testAsymmetry(96000.0);
     testSoftKnee();

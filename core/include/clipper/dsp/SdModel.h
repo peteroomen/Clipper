@@ -34,6 +34,7 @@
 #include <memory>
 
 #include "clipper/dsp/OnePoleSmoother.h"
+#include "clipper/dsp/OverdriveToneStack.h"
 
 namespace clipper::dsp {
 
@@ -85,6 +86,12 @@ public:
     bool symmetric() const;
 
     void setParameter(int paramId, float value);
+
+    // Measurement hook (NOT a knob): the TRANSCRIBED tone-stage netlist this model
+    // ships (docs §65), so the tests can drive the network directly and check its
+    // values against the schematic. Also the reference the mid-hump test divides
+    // out to see stage 1 on its own.
+    static OverdriveToneConfig toneConfig();
 
     // Process numFrames of mono audio, in -> out (may alias). 1.0f == 1.0 V.
     void process(const float* in, float* out, int numFrames);

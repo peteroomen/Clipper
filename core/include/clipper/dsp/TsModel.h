@@ -28,6 +28,8 @@
 
 #include <memory>
 
+#include "clipper/dsp/OverdriveToneStack.h"
+
 namespace clipper::dsp {
 
 class TsModel {
@@ -73,6 +75,10 @@ public:
     bool symmetric() const;
 
     void setParameter(int paramId, float value);
+
+    // Measurement hook (NOT a knob): the TRANSCRIBED tone-stage netlist this model
+    // ships (docs §65) — the TS's values, which differ from the SD-1's.
+    static OverdriveToneConfig toneConfig();
 
     // Process numFrames of mono audio, in -> out (may alias). 1.0f == 1.0 V.
     void process(const float* in, float* out, int numFrames);

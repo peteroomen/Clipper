@@ -13,7 +13,8 @@
 //     f_mid = 1/(2*pi*R_g*C_g) = 1/(2*pi*4700*0.047e-6) = 720.5 Hz,
 // identical to the SD-1 — bass below ~720 Hz stays comparatively clean while the
 // mids/highs are slammed (the forward-midrange Tube-Screamer voice). Same 4558-
-// class op-amp (3 MHz GBW, 1.7 V/µs slew), same tone-tilt + level + DC-blocker.
+// class op-amp (3 MHz GBW, 1.7 V/µs slew), same tone-network TOPOLOGY + level +
+// DC-blocker — but see DIFFERENCE 3 for the tone stage's own values.
 //
 // DIFFERENCE 1 — SYMMETRIC clipping. The TS uses ONE diode each way in the
 // feedback loop (1-vs-1), both silicon Vf ~= 0.60 V, so Vp == Vn == 0.60 V. A
@@ -28,6 +29,28 @@
 // DRIVE maps linear-in-dB over [12, 40.6] dB (K = 3.0 .. 106.4). As with the SD-1
 // the minimum is NOT unity: a hot input still clears the ~0.6 V knee, so the TS
 // has no fully-clean setting (it grinds a little even at DRIVE 0), by design.
+//
+// DIFFERENCE 3 (docs §65) — the TONE NETWORK's values. Same topology as the SD-1
+// (OverdriveToneStack.h), transcribed from LiveSPICE's own
+// `Ibanez Tube Screamer TS-9.schx` and cross-checked component-for-component
+// against `Cushychicken/ltspice-guitar-pedals`' TS808 LTspice netlist and against
+// Yeh & Abel's DAFx-07 tone-stage transfer function (via
+// `JamesStubbsEng/TS-808-Ultra`). With the schematic's designators:
+//     R5  = 1 kΩ      clipper output -> the second op-amp's NON-inverting input
+//     C4  = 0.22 µF   that node to ground  =>  a LOW-PASS at 723.4 Hz — the
+//                     figure the Tube Screamer is famous for, and the half of
+//                     the mid HUMP this model used not to have at all
+//     R11 = 10 kΩ     that node to the 4.5 V rail (an AC ground)
+//     TONE pot 20 kΩ, LINEAR, wiper -> C5 -> R7 -> ground
+//     C5  = 0.22 µF , R7 = 220 Ω
+//     R8  = 1 kΩ      feedback around that op-amp
+//     C3  : ABSENT (the SD-1 puts a 0.01 µF across its R8; the TS does not)
+// R5/R11 make the stage's DC insertion loss 0.83 dB — against the SD-1's 6.02 dB,
+// which is the single largest level difference between the two pedals and is why
+// they are the same engine with different CONFIGS, not the same numbers.
+// **Sourcing note:** the LiveSPICE file marks the tone pot 10 kΩ; the LTspice
+// netlist and Yeh's published derivation both use 20 kΩ, so the 20 kΩ ships and
+// the outlier is recorded (docs §65.1).
 //
 // The 4558 closed-loop corner GBW/A at max DRIVE = 3e6 / 107.4 ~= 27.9 kHz — ABOVE
 // the audio band even at 44.1 k, so (unlike the SD-1's 14 kHz) the op-amp adds no
@@ -55,8 +78,17 @@ constexpr OverdriveConfig kTsConfig = {
     /* diodeVn              */ kTsDiodeVf,  // 0.60 (SYMMETRIC)
     /* opAmpGbwHz           */ 3.0e6,   // 4558-class, SHARED with SD-1
     /* opAmpSlewVoltsPerSec */ 1.7e6,
-    /* tonePivotHz          */ 1000.0,  // TS tone tilt, SHARED topology with SD-1
-    /* toneMaxTiltDb        */ 12.0f,
+    /* tone                 */
+    {
+        /* rIn   R5  */ 1.0e3,
+        /* cIn   C4  */ 220.0e-9,  // with R5: the famous 723.4 Hz low-pass
+        /* rBias R11 */ 10.0e3,    // => DC insertion loss 0.83 dB (SD-1: 6.02 dB)
+        /* rPot      */ 20.0e3,    // LINEAR; see the sourcing note above
+        /* rW    R7  */ 220.0,
+        /* cW    C5  */ 220.0e-9,
+        /* rFb   R8  */ 1.0e3,
+        /* cFb   C3  */ 0.0,       // ABSENT on the TS (the SD-1 has 0.01 uF here)
+    },
     /* dcBlockHz            */ 12.0,
 };
 
@@ -70,6 +102,8 @@ struct TsModel::Impl {
     OverdriveEngine engine{kTsConfig};
     bool symmetric = true;  // TS ships symmetric (production)
 };
+
+OverdriveToneConfig TsModel::toneConfig() { return kTsConfig.tone; }
 
 TsModel::TsModel() : impl_(std::make_unique<Impl>()) {}
 TsModel::~TsModel() = default;
