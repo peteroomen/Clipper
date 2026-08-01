@@ -195,6 +195,11 @@ if(NOT EMSCRIPTEN)
     target_include_directories(clipper_rat_tests PRIVATE tools)
     clipper_add_test_flags(clipper_rat_tests)
     add_test(NAME clipper_rat_tests COMMAND clipper_rat_tests)
+    # Ledger opened by docs §66 (2026-08-01): the LEVEL pot is modelled as an
+    # identity-linear map where the RAT fits a 100 k LOGARITHMIC pot. Measured,
+    # named, and deliberately owned by a lineup-wide output-pot slice rather than
+    # this pedal — see the declaration in tests/test_rat_model.cpp.
+    clipper_add_xfail_ledger(clipper_rat_tests)
 
     # --- M8: SD-1 model tests -------------------------------------------------
     add_executable(clipper_sd_tests tests/test_sd_model.cpp)

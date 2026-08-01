@@ -10,6 +10,47 @@
 // lift the signal past the diode threshold to clip — exactly as the real pedal
 // does with its LM308 stage.
 //
+// THE NETLIST (added 2026-08-01, docs §66). Until then every value in this file
+// was sourced from prose and analysis; a full ProCo RAT netlist is now readable
+// (Cushychicken/ltspice-guitar-pedals, `proco-rat-distortion.asc`, traced from
+// the published schematic — github.com is the only host reachable from this
+// container). Traced node by node against the code, the agreements and the
+// remaining approximations are:
+//
+//   AGREES EXACTLY — R8 560 R + C8 4.7 uF leg (60.5 Hz) and R7 47 R + C7 2.2 uF
+//   leg (1539 Hz) in the feedback network (kShapeLeg1Hz / kShapeLeg2Hz); R9 the
+//   100 k gain pot; R10 = 1 k feeding the antiparallel pair (kRs); the pair
+//   itself (D2/D3, 1N914 — modelled as the 1N4148 card, docs §36); C1 = 30 pF
+//   op-amp compensation (which is what selects the slew figure below).
+//
+//   APPROXIMATED, each with its measured cost:
+//     * C9 = 100 pF across the gain pot is NOT modelled. Its pole is
+//       1/(2*pi*Rf*C9) and the closed-loop corner this file DOES model is
+//       GBW/A ~= GBW*(R7||R8)/Rf: both scale as 1/Rf, so their ratio is
+//       1/(2*pi*C9*GBW*(R7||R8)) = 36.7x at EVERY knob position. C9's pole is
+//       36.7x above a pole that is already in the model, so it can never
+//       contribute more than ~0.03 dB in the audio band. Derivation, not an
+//       omission.
+//     * kCp = 10 nF at the clipping node is FABRICATED (it comes from the WDF
+//       library's example, not from the RAT). The real node carries no cap; it
+//       is loaded by the tone network, R17(100 k log) + R15 1.5 k into
+//       C11 3.3 nF. Replacing it moves the diode drive above ~10 kHz, the alias
+//       floor and DiodeClipperADAA's calibration together — its own slice.
+//     * STAGE 3's low-pass IS that tone network in form, but the model sweeps
+//       the CUTOFF log (500 Hz..20 kHz) where the circuit sweeps the RESISTANCE
+//       log (475 Hz..32.15 kHz through the 1.5 k + 3.3 nF).
+//     * The three output high-passes (C10 4.7 uF into 1 k = 33.9 Hz, C12 22 nF
+//       into 1 M = 7.2 Hz, C13 1 uF into 100 k = 1.6 Hz) are not modelled:
+//       together <= 0.75 dB at low E.
+//     * The LEVEL pot is a 100 k LOGARITHMIC pot (the netlist says so in its own
+//       annotation), last in the chain after the 2N5458 source follower and
+//       therefore essentially unloaded — so its law is the bare audio taper,
+//       where this file maps it identity-linear (see STAGE 3). Docs §66.3
+//       measures what fixing it would cost (-5.04 dB at the shipped default) and
+//       why it belongs to a lineup-wide slice: every other dirt pedal carries
+//       the same approximation, OverdriveEngine's in the words "identity linear
+//       map, as the RAT".
+//
 // STAGE 1 — gain / shaping (LM308 non-inverting amp; ProCo RAT).
 //   * DISTORTION knob -> pre-gain, linear-in-dB over [kDistMinDb, kDistMaxDb]
 //     = [0, +66 dB] (M6.1: the real RAT non-inverting HF plateau 1 + P1/(R1||R2);
@@ -61,7 +102,13 @@
 //     clockwise (knob -> 1) = DARKER. knob 0 -> kFilterMaxHz (20 kHz, ~open),
 //     knob 1 -> kFilterMinHz (500 Hz, dark); knob 0.5 ~ 3.16 kHz.
 //   * LEVEL knob -> clean linear output gain, identity map [0, 1] (0 = silence,
-//     1 = unity). A proper audio-taper volume law is a future refinement.
+//     1 = unity). The real pot is 100 k LOGARITHMIC (netlist annotation, and a
+//     parts-list cross-check: "100K-A pots for volume, tone and distortion"), so
+//     this is a known approximation and NOT a level trim — docs §66.3 measures
+//     it (-5.04 dB at the shipped 0.8 default) and explains why it is a
+//     lineup-wide slice rather than this pedal's: SdModel/TsModel/MuffModel/
+//     GoldModel all map their output pot the same way, and fixing one alone
+//     would break the level parity §66.2 measured across the five.
 //
 // M2 — antialiasing. Stage 2 (and ONLY stage 2, the nonlinearity) now runs
 // oversampled through a polyphase halfband cascade (1x/2x/4x/8x, default 4x);
@@ -148,11 +195,34 @@ constexpr float kShapeG2 = 0.9221702f;      // (Rf/R2)/Ainf  (47-Ohm leg)
 // chunk; the real network's frequency-dependent noise gain is a documented
 // simplification (same spirit as the fixed-Rf shaping).
 constexpr double kOpAmpGbwHz = 1.0e6;
-// Slew rate: the LM308 is a slow op-amp, ~0.3 V/us with standard compensation
-// (datasheet typical). Referred to our 1.0f == 1.0 V convention that is
-// 0.3e6 V/s. Steep gain-stage edges are rate-limited before the diode clamp,
-// softening the transitions that alias/fizz. (0.15-0.3 V/us is the cited band;
-// 0.3 keeps note attack alive while still killing the razor edges — measured.)
+// Slew rate. The LM308's slew rate is set by its EXTERNAL compensation capacitor
+// (bandwidth and slew rate both scale as 1/Cc), so the figure is only meaningful
+// together with the Cc the pedal actually fits — and the RAT fits the datasheet's
+// STANDARD 30 pF (C1 in the ProCo netlist; see the STAGE-1 source note above).
+// The standard-compensation typical is 0.3 V/us, i.e. 0.3e6 V/s in our
+// 1.0f == 1.0 V convention. That is what ships.
+//
+// Un-fitted 2026-08-01 (docs §66). Until then this comment justified the value
+// as "(0.15-0.3 V/us is the cited band; 0.3 keeps note attack alive while still
+// killing the razor edges - measured)" — i.e. a number picked out of a band by
+// tonal outcome, which is the fit this project forbids. The band is not a
+// tolerance: the 0.15 V/us figure that circulates belongs to the LM308H (the
+// metal-can part), not to the LM308N the RAT uses with 30 pF. The two are
+// audibly distinguishable HERE and testSlewInModel asserts the difference — at
+// 0.3 V/us a 0.30 V low-E pluck never reaches the clamp (peak demand 74.5 % of
+// the limit) and at 0.15 V/us it does. Provenance caveat, recorded rather than
+// dressed up: no datasheet PDF was reachable from this container (ti.com's
+// mirror, mit.edu, onsemi, studylib and direnc all 403 at CONNECT), so the
+// figure is search-summary-grade; the 30 pF it is conditioned on is from the
+// netlist and is solid.
+//
+// What the limiter is worth, measured (docs §66.4): NOTHING below ~1 kHz at any
+// realistic level — a 220 Hz tone, a 1 kHz tone and a low-E pluck render
+// bit-identically with the clamp removed — and 0.36 dB of level plus 134 Hz of
+// spectral centroid on a 4186 Hz tone, where it binds on 93-98 % of oversampled
+// samples. It is small because the two LM308 behaviours are IN SERIES and the
+// bandwidth pole above (GBW/A = 4.9 kHz at DISTORTION 0.7, 501 Hz at 1.0) has
+// already removed most of the slope demand before the clamp sees it.
 constexpr double kOpAmpSlewVoltsPerSec = 0.3e6;
 
 // --- Stage 2 constants ---
@@ -193,6 +263,7 @@ struct RatModel::Impl {
     int osFactor = 4;            // M2 default oversampling
     int stage2Mode = RatModel::STAGE2_WDF;
     bool idealOpAmp = false;     // M6.5: true bypasses the LM308 model (measurement)
+    bool slewLimit = true;       // §66: false keeps the BW pole, drops the slew clamp
 
     // Knob smoothers (mapped physical values, not raw knob positions).
     OnePoleSmoother preGain;    // linear pre-clip gain
@@ -240,7 +311,15 @@ struct RatModel::Impl {
         // LM308 op-amp model runs at the oversampled rate too (it sits between
         // the gain stage and the diode clamp). Corner is refreshed per chunk from
         // the smoothed pre-gain in processChunk().
-        opAmp.prepare(osRate, kOpAmpGbwHz, kOpAmpSlewVoltsPerSec);
+        opAmp.prepare(osRate, kOpAmpGbwHz, opAmpSlewRate());
+    }
+
+    // The slew rate handed to LM308Stage: the device's own figure, or a value so
+    // large the clamp can never bind (measurement path — see setSlewLimit). Not a
+    // second constant: kNoSlew is "no limiter", not "a faster op-amp".
+    double opAmpSlewRate() const {
+        constexpr double kNoSlew = 1.0e30;
+        return slewLimit ? kOpAmpSlewVoltsPerSec : kNoSlew;
     }
 
     // Map a FILTER knob position (0 = bright .. 1 = dark) to a cutoff in Hz,
@@ -324,6 +403,19 @@ void RatModel::setIdealOpAmp(bool ideal) {
 }
 
 bool RatModel::idealOpAmp() const { return impl_->idealOpAmp; }
+
+void RatModel::setSlewLimit(bool enabled) {
+    Impl& d = *impl_;
+    if (d.slewLimit == enabled) return;
+    d.slewLimit = enabled;
+    // Re-derive the clamp threshold at the CURRENT oversampled rate and reset the
+    // op-amp state. LM308Stage::prepare allocates nothing and parks the corner at
+    // unity noise gain; processChunk() re-aims it from the smoothed pre-gain on
+    // the very next chunk, so nothing else has to be re-prepared.
+    d.opAmp.prepare(d.sampleRate * d.os.factor(), kOpAmpGbwHz, d.opAmpSlewRate());
+}
+
+bool RatModel::slewLimit() const { return impl_->slewLimit; }
 
 void RatModel::setParameter(int paramId, float value) {
     Impl& d = *impl_;
