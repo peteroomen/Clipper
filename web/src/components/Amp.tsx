@@ -641,6 +641,101 @@ function OrangeFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
   );
 }
 
+// The Orange Rockerverb 100 face — the MODERN Orange head (docs §63), and the
+// deliberate counterweight to the OR120 the way the OR120 is to the JCM800. A
+// knowing homage: "Rocker Verb" (model line HEAD Nº6 · ONE-HUNDRED) · the same
+// saturated ORANGE accent (--accent-orange) — it IS an Orange.
+//
+// Control row: GAIN · BASS · MIDDLE · TREBLE · VOLUME · REVERB. Every one of
+// those differences from the OrangeFace above is a CIRCUIT difference, not a
+// styling choice:
+//   * there IS a MIDDLE, because this amp's stack is a Marshall-lineage FMV with
+//     a real 25k mid pot — the OR120's James/Baxandall network has no mid at all;
+//   * there IS a VOLUME, and it is a MASTER: it sits AFTER the tone stack, so
+//     GAIN and level are independent. The OR120 has no master by design;
+//   * there is NO F.A.C. (that is the vintage amp's rotary), NO H.F. BOOST and no
+//     presence of any kind (the Rockerverb's panel has none), and no bright
+//     switch or chorus.
+//
+// SLOT NOTE, and it matters for a stale rig state: the knob printed VOLUME binds
+// to the shared `master` slot (id 12), NOT to `volume` (id 0). The panel word is
+// the Rockerverb's; the slot is chosen by FUNCTION, and the function is a master
+// volume — the same slot the JCM800 prints as MASTER. This voice never reads
+// slot 0.
+function RockerverbFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
+  const { params } = amp;
+  return (
+    <div
+      className={`amp raised orange${amp.engaged ? ' on' : ''}`}
+      data-testid="amp"
+      data-engaged={amp.engaged}
+      data-amp-type="rockerverb"
+    >
+      <div className="amp-head">
+        <div className="amp-name display" data-testid="amp-name">
+          Rocker Verb<small>Head Nº6 · One-Hundred</small>
+        </div>
+      </div>
+
+      <div className="amp-controls">
+        <Knob
+          name="Gain"
+          ariaLabel="Gain"
+          value={params.gain}
+          defaultValue={AMP_KNOB_DEFAULTS.gain}
+          onChange={(v) => onParam('gain', v)}
+          testId="knob-gain"
+        />
+        <Knob
+          name="Bass"
+          ariaLabel="Bass"
+          value={params.bass}
+          defaultValue={AMP_KNOB_DEFAULTS.bass}
+          onChange={(v) => onParam('bass', v)}
+          testId="knob-bass"
+        />
+        <Knob
+          name="Middle"
+          ariaLabel="Middle"
+          value={params.middle}
+          defaultValue={AMP_KNOB_DEFAULTS.middle}
+          onChange={(v) => onParam('middle', v)}
+          testId="knob-middle"
+        />
+        <Knob
+          name="Treble"
+          ariaLabel="Treble"
+          value={params.treble}
+          defaultValue={AMP_KNOB_DEFAULTS.treble}
+          onChange={(v) => onParam('treble', v)}
+          testId="knob-treble"
+        />
+        {/* Printed VOLUME on the panel; bound to the shared MASTER slot (id 12)
+            because that is what it is — see the comment above. */}
+        <Knob
+          name="Volume"
+          ariaLabel="Volume"
+          value={params.master}
+          defaultValue={AMP_KNOB_DEFAULTS.master}
+          onChange={(v) => onParam('master', v)}
+          testId="knob-master"
+        />
+        <Knob
+          name="Reverb"
+          ariaLabel="Reverb"
+          value={params.reverb}
+          defaultValue={AMP_KNOB_DEFAULTS.reverb}
+          onChange={(v) => onParam('reverb', v)}
+          testId="knob-reverb"
+        />
+
+        {/* Cab lever + Power rocker only — no Bright. */}
+        <AmpRight amp={amp} onToggle={onToggle} onTogglePower={onTogglePower} showBright={false} />
+      </div>
+    </div>
+  );
+}
+
 export function Amp(props: AmpProps) {
   return (
     <div className="amp-wing">
@@ -652,6 +747,8 @@ export function Amp(props: AmpProps) {
         <Ac30Face {...props} />
       ) : props.amp.type === 'orange' ? (
         <OrangeFace {...props} />
+      ) : props.amp.type === 'rockerverb' ? (
+        <RockerverbFace {...props} />
       ) : (
         <Clean120Face {...props} />
       )}

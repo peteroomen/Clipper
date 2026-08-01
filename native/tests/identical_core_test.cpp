@@ -47,6 +47,7 @@
 #include "PluginProcessor.h"
 
 #include "clipper/dsp/Ac30Amp.h"
+#include "clipper/dsp/RockerverbAmp.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
@@ -76,6 +77,7 @@ constexpr int kAc30Oversampling = 4; // matches ClipperEngine/C ABI (docs §23)
 constexpr int kAmpJcm800 = 1;        // Params::ampModel value for the JCM head
 constexpr int kAmpTwin = 2;          // Params::ampModel value for the Twin combo
 constexpr int kAmpAc30 = 3;          // Params::ampModel value for the AC30 combo
+constexpr int kAmpRockerverb = 5;    // Params::ampModel value for the Rockerverb
 
 // The CLEAN 120 parameter set (both pedals on, cab + bright, stereo chorus + spring
 // reverb, 4x OS) — the linear clean-platform path.
@@ -267,6 +269,39 @@ Params goldBoardParams() {
     return p;
 }
 
+// NATIVE PARITY case 5 (M10.7) — a board carrying the ROCKERVERB: TS -> Squash ->
+// Rocker Verb. The Rockerverb is the first amp voice whose GAIN and its MASTER are
+// BOTH live at once (the JCM's are too, but the Rockerverb reads them off the same
+// two shared fields with a DIFFERENT meaning for the master's position in the
+// circuit), and it is the first Orange with a MID, so this case is what proves the
+// native wrap routes jcmGain -> PARAM_GAIN, jcmMaster -> PARAM_VOLUME and the
+// shared middle exactly as the hand-composed core chain does. jcmPresence is set
+// to a NON-default value on purpose: this voice has no presence control, so if the
+// wrap ever routed it the two renders would diverge.
+Params rockerverbBoardParams() {
+    Params p;
+    p.inputTrim = 0.5f;
+    p.chain[0] = clipper::native::PEDAL_TS;
+    p.chain[1] = clipper::native::PEDAL_COMP;
+    p.chainLength = 2;
+    p.tsOn = true;   p.tsDrive = 0.35f; p.tsTone = 0.55f; p.tsLevel = 0.7f;
+    p.compOn = true; p.compSustain = 0.4f; p.compLevel = 0.6f;
+    p.ratOn = true;  // ON, but NOT on the board — must be inaudible
+    p.sdOn = true;   // likewise
+    p.ampModel = kAmpRockerverb;
+    p.ampOn = true;
+    p.volume = 0.9f;   // slot 0 — this voice must IGNORE it entirely
+    p.bass = 0.45f; p.middle = 0.65f; p.treble = 0.55f;
+    p.bright = false; p.cab = true;
+    p.chorusMode = 0;
+    p.reverb = 0.2f;          // a REAL spring on this amp
+    p.jcmGain = 0.35f;        // -> Rockerverb GAIN
+    p.jcmMaster = 0.08f;      // -> Rockerverb VOLUME (a linear master: keep it low)
+    p.jcmPresence = 0.85f;    // must NOT reach this voice
+    p.oversampling = 4;
+    return p;
+}
+
 // M2-style 220 Hz sine * exponential pluck envelope.
 std::vector<float> makeSignal() {
     std::vector<float> x(static_cast<size_t>(kNumFrames));
@@ -294,6 +329,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     const bool jcm800 = p.ampModel == kAmpJcm800;
     const bool twin = p.ampModel == kAmpTwin;
     const bool ac30 = p.ampModel == kAmpAc30;
+    const bool rockerverb = p.ampModel == kAmpRockerverb;
 
     RatModel rat;
     SdModel sd;
@@ -308,6 +344,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     Jcm800Amp jcm;       // JCM800 head
     TwinAmp twinAmp;     // Twin combo
     Ac30Amp ac30Amp;     // AC30 combo
+    RockerverbAmp rvAmp; // Rockerverb 100 dirty channel (M10.7)
     CabConvolver cabL, cabR;
     OutputLimiter limiter;
 
@@ -365,6 +402,17 @@ void renderReference(const Params& p, const std::vector<float>& in,
         ac30Amp.setParameter(Ac30Amp::PARAM_TREBLE, p.treble);
         ac30Amp.setParameter(Ac30Amp::PARAM_TOPCUT, p.jcmPresence);  // presence → TOP CUT
         ac30Amp.setParameter(Ac30Amp::PARAM_REVERB, p.reverb);
+    } else if (rockerverb) {
+        // Mirror ClipperEngine::applyParamsToModels' Rockerverb routing exactly:
+        // jcmGain is its GAIN, jcmMaster its post-tone-stack VOLUME, and
+        // bass/middle/treble/reverb the shared fields. NOTHING else routes here —
+        // in particular not volume (slot 0) and not jcmPresence.
+        rvAmp.setParameter(RockerverbAmp::PARAM_GAIN, p.jcmGain);
+        rvAmp.setParameter(RockerverbAmp::PARAM_VOLUME, p.jcmMaster);
+        rvAmp.setParameter(RockerverbAmp::PARAM_BASS, p.bass);
+        rvAmp.setParameter(RockerverbAmp::PARAM_MID, p.middle);
+        rvAmp.setParameter(RockerverbAmp::PARAM_TREBLE, p.treble);
+        rvAmp.setParameter(RockerverbAmp::PARAM_REVERB, p.reverb);
     } else {
         amp.setParameter(AmpModel::PARAM_VOLUME, p.volume);
         amp.setParameter(AmpModel::PARAM_BASS, p.bass);
@@ -395,6 +443,8 @@ void renderReference(const Params& p, const std::vector<float>& in,
     twinAmp.prepare(kFs, kBlock);
     ac30Amp.setOversampling(kAc30Oversampling);
     ac30Amp.prepare(kFs, kBlock);
+    rvAmp.setOversampling(kAc30Oversampling);  // every tube amp here runs 4x
+    rvAmp.prepare(kFs, kBlock);
     rat.setOversampling(p.oversampling);
     sd.setOversampling(p.oversampling);
     ts.setOversampling(p.oversampling);
@@ -450,6 +500,9 @@ void renderReference(const Params& p, const std::vector<float>& in,
             } else if (ac30) {
                 ac30Amp.process(cur, l.data(), n);               // mono combo
                 for (int i = 0; i < n; ++i) r[static_cast<size_t>(i)] = l[static_cast<size_t>(i)];  // dual-mono
+            } else if (rockerverb) {
+                rvAmp.process(cur, l.data(), n);                 // mono head
+                for (int i = 0; i < n; ++i) r[static_cast<size_t>(i)] = l[static_cast<size_t>(i)];  // dual-mono
             } else {
                 amp.processStereo(cur, l.data(), r.data(), n);   // stereo split
             }
@@ -487,6 +540,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
                  (p.ampOn && jcm800 ? jcm.latencySamples() : 0) +
                  (p.ampOn && twin ? twinAmp.latencySamples() : 0) +
                  (p.ampOn && ac30 ? ac30Amp.latencySamples() : 0) +
+                 (p.ampOn && rockerverb ? rvAmp.latencySamples() : 0) +
                  (p.ampOn && p.cab ? cabL.latencySamples() : 0) +
                  limiter.latencySamples();
 }
@@ -726,6 +780,8 @@ int main() {
     ok &= runCase("Board: Squash -> TS -> Twin", compBoardParams(), in);
     ok &= runCase("Board: RAT -> Curfew -> JCM800", gateBoardParams(), in);
     ok &= runCase("Board: RAT -> Echoman -> JCM800", delayBoardParams(), in);
+    // M10.7: the Rockerverb 100 on the native board.
+    ok &= runCase("Board: TS -> Squash -> Rocker Verb", rockerverbBoardParams(), in);
 
     if (ok) {
         std::printf(

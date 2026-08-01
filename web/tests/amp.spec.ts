@@ -1518,6 +1518,165 @@ test('amp orange: an orange rig round-trips through JSON literally', async ({ pa
   expect(rt.back.amp.params.fac).toBe(0.6);
 });
 
+// ---------------------------------------------------------------------------
+// M10.7 — the Orange Rockerverb 100 (amp voice 5, docs §63)
+// ---------------------------------------------------------------------------
+//
+// Same discipline as the OR120 spec above: the acceptance BAR lives in the core
+// suite (`clipper_rockerverb_tests`), where it is measured over many renders. What
+// this asserts is the DELIVERY PATH — that voice 5 is reachable and that the two
+// ids this amp reads (10 = GAIN, 12 = the panel's VOLUME, which is the master slot)
+// actually reach the core and do DIFFERENT things. Two OfflineAudioContexts, and a
+// HARNESS GATE that fails first and by name if either render comes back silent
+// (Chromium's documented silent-render flake — see playwright.config.ts).
+test('amp rockerverb: voice 5 is reachable and its GAIN and VOLUME are independent', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.5;
+    async function render(gain: number, master: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 1, value: 0.5 });      // bass
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 2, value: 0.5 });      // middle
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 3, value: 0.5 });      // treble
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: 0.0 });      // reverb off
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 10, value: gain });    // GAIN
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 12, value: master });  // VOLUME (master slot)
+        node.port.postMessage({ type: 'ampModel', model: 5 });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 });        // cab on -> latency echo
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: 0.15 });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+    function rms(d: Float32Array): number {
+      const s0 = Math.floor(d.length * 0.5);
+      let a = 0;
+      for (let i = s0; i < d.length; i++) a += d[i] * d[i];
+      return Math.sqrt(a / (d.length - s0));
+    }
+    function anyNaN(d: Float32Array): boolean {
+      for (let i = 0; i < d.length; i++) if (!Number.isFinite(d[i])) return true;
+      return false;
+    }
+    // Same GAIN, two very different VOLUME positions. The renders differ ONLY in
+    // param id 12, so a level difference proves the master slot reaches this voice.
+    const quiet = await render(0.7, 0.03);
+    const loud = await render(0.7, 0.12);
+    return {
+      quietRms: rms(quiet), loudRms: rms(loud),
+      volumeDb: 20 * Math.log10((rms(loud) + 1e-12) / (rms(quiet) + 1e-12)),
+      nan: anyNaN(quiet) || anyNaN(loud),
+    };
+  });
+
+  // HARNESS GATE first, by name: a silent render is the flake, not a result.
+  expect(result.quietRms, 'quiet render was silent (Chromium flake)').toBeGreaterThan(0.0005);
+  expect(result.loudRms, 'loud render was silent (Chromium flake)').toBeGreaterThan(0.005);
+  expect(result.nan).toBe(false);
+  // The MASTER slot is wired: moving id 12 from 0.03 to 0.12 at a FIXED GAIN has to
+  // move the level a lot. The core suite measures 19.89 dB over 0.01 -> 0.10
+  // (docs §63.5); the bar here is a deliberately loose 6 dB because this is testing
+  // the WIRE, not the pot law.
+  expect(result.volumeDb).toBeGreaterThan(6);
+});
+
+// The Rockerverb rig shape round-trips literally. It adds NO field to AmpParams —
+// that is the point of reusing gain/master — so this pins the TYPE plus the two
+// shared fields it actually reads.
+test('amp rockerverb: a rockerverb rig round-trips through JSON literally', async ({ page }) => {
+  await page.goto('/');
+  const rt = await page.evaluate(() => {
+    const t = (window as any).__CLIPPER_TEST__;
+    const rig = {
+      input: { trim: 0.4 },
+      pedals: [
+        { id: 'ts-1', type: 'ts', engaged: true, params: { distortion: 0.35, filter: 0.55, level: 0.7 } },
+      ],
+      amp: {
+        type: 'rockerverb',
+        engaged: true,
+        cabModel: 'orange412',
+        params: {
+          volume: 0.4, bass: 0.45, middle: 0.65, treble: 0.55, bright: 0, cab: 1,
+          speed: 0.3, depth: 0.5, chorusMode: 0, reverb: 0.2,
+          // gain and master are the two this voice actually reads; presence and fac
+          // must survive the round trip untouched even though it ignores them.
+          gain: 0.35, presence: 0.85, master: 0.08, fac: 0.2,
+        },
+      },
+      oversampling: 4,
+      source: 'test',
+    };
+    const back = t.deserializeRig(t.serializeRig(rig));
+    return { equal: JSON.stringify(rig) === JSON.stringify(back), back };
+  });
+  expect(rt.equal).toBe(true);
+  expect(rt.back.amp.type).toBe('rockerverb');
+  expect(rt.back.amp.params.gain).toBe(0.35);
+  expect(rt.back.amp.params.master).toBe(0.08);
+});
+
+// UI: the face swaps and — the load-bearing half — the CONTROL ROW differs from the
+// OR120's in exactly the ways the circuit does. MIDDLE and VOLUME(=master) appear;
+// F.A.C. and H.F. BOOST(=presence) are gone.
+test('amp UI: selecting rockerverb swaps to Rocker Verb (middle + master shown, fac/presence hidden)', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByTestId('board-amp')).toBeVisible();
+  await expect(page.getByTestId('amp-name')).toContainText('Clean 120');
+
+  await page.getByTestId('amp-select').click();
+  await expect(page.getByTestId('amp-menu')).toBeVisible();
+  await page.getByTestId('amp-rockerverb').click();
+
+  const amp = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().amp);
+  expect(amp.type).toBe('rockerverb');
+  await expect(page.getByTestId('amp-name')).toContainText('Rocker Verb');
+  await expect(page.getByTestId('amp')).toHaveAttribute('data-amp-type', 'rockerverb');
+  // Shown: GAIN · Bass · Middle · Treble · VOLUME (bound to knob-master) · Reverb.
+  await expect(page.getByTestId('knob-gain')).toBeVisible();
+  await expect(page.getByTestId('knob-bass')).toBeVisible();
+  await expect(page.getByTestId('knob-middle')).toBeVisible();
+  await expect(page.getByTestId('knob-treble')).toBeVisible();
+  await expect(page.getByTestId('knob-master')).toBeVisible();
+  await expect(page.getByTestId('knob-master')).toContainText('Volume'); // printed VOLUME
+  await expect(page.getByTestId('knob-reverb')).toBeVisible();
+  // Absent, and each absence is a circuit fact (docs §63): no F.A.C. (that is the
+  // OR120's rotary), no presence/H.F. BOOST of any kind, no bright switch, and no
+  // slot-0 volume (this voice never reads it — the master IS its volume).
+  await expect(page.getByTestId('knob-fac')).toHaveCount(0);
+  await expect(page.getByTestId('knob-presence')).toHaveCount(0);
+  await expect(page.getByTestId('knob-volume')).toHaveCount(0);
+  await expect(page.getByTestId('bright-toggle')).toHaveCount(0);
+  // A one-line hint suggested the Orange cab — but the cab was NOT auto-switched.
+  await expect(page.getByTestId('cab-note')).toContainText('Orange 4×12');
+  expect(amp.cabModel).toBe('clean212');
+});
+
 // UI: the face swaps, F.A.C. and H.F. BOOST appear, and what the OR120 does NOT have stays
 // gone. The two PRINTED names are asserted because they are the Field Guide's, not ours
 // (docs §57.11): the panel calls slot 0 GAIN and slot 11 H.F. BOOST, and a future slice

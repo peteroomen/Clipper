@@ -36,6 +36,12 @@ export const AMP_PARAM_JCM_MASTER = 12;
 // is a documented reuse: volume (0), bass (1), treble (3), presence (11) as its
 // H.F. BOOST, reverb (9). Must mirror kAmpParamOrangeFac in clipper_c_api.cpp.
 export const AMP_PARAM_ORANGE_FAC = 13;
+// M10.7 Orange Rockerverb 100: NO new param id, deliberately. Its GAIN and its
+// post-tone-stack VOLUME mean exactly what the JCM800's GAIN (10) and MASTER (12)
+// mean to a player, and its BASS/MIDDLE/TREBLE are the shared tone ids (1/2/3) —
+// it is the first Orange in this repo with a mid control. The panel WORD for slot
+// 12 on this amp is "Volume"; the SLOT is the master slot because the FUNCTION is
+// a master. It has no presence control at all, so id 11 never reaches it.
 
 // The worklet's amp-model index (mirrors AmpModelId in clipper_c_api.cpp). M10.1
 // adds the Twin as voice 2 (purely additive; clean120/jcm800 indices unchanged).
@@ -43,8 +49,10 @@ export const AMP_PARAM_ORANGE_FAC = 13;
 // exports and the shared presence id 11 routed as its top CUT).
 // M10.3 adds the Orange OR120 as voice 4 (additive; clean120/jcm800/twin/ac30
 // indices unchanged).
+// M10.7 adds the Orange Rockerverb 100 as voice 5 (additive; every existing index
+// unchanged).
 export const AMP_MODEL_INDEX: Record<
-  'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange',
+  'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange' | 'rockerverb',
   number
 > = {
   clean120: 0,
@@ -52,6 +60,7 @@ export const AMP_MODEL_INDEX: Record<
   twin: 2,
   ac30: 3,
   orange: 4,
+  rockerverb: 5,
 };
 
 // Chorus mode enum (mirrors ChorusModel::Mode). Kept as plain numbers so it flows

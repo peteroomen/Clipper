@@ -349,6 +349,26 @@ independent slices that can interleave anywhere:
   bundled with M10.3: it adds footswitchable clean/dirty channel structure, a
   master volume and its own reverb, so it is a real slice rather than a
   re-voice. Do it directly after M10.3, while the Orange research is warm.
+  *(SHIPPED 2026-08-01 as amp voice 5 `rockerverb` — docs §63. The DIRTY channel
+  only, and that is a research decision: a real netlist was found for it
+  (LiveSPICE's `Orange Rockerverb 50 Preamp.schx`, parsed node by node) and none
+  for the clean channel, so the clean channel and its footswitch are a NAMED
+  follow-up rather than an invention — §57's "find the schematic" rule applies to
+  inventing a whole channel too. The acceptance bar was "measurably NOT a
+  re-skinned OR120" and it has two independent halves, both hard asserts:
+  **(a) the tone network is a Marshall-lineage FMV** — mid-notch metric at noon
+  **−6.01 dB (a SCOOP) against the OR120 James's +0.75 (a BUMP), 6.76 dB of
+  contrast** on §57.4's own scale, and **3.50 dB on the COMPOSED amps through the
+  same cab**; **(b) the MASTER VOLUME decouples drive from level** — level-matched
+  at −20 dBFS the Rockerverb delivers **15.76× the OR120's THD**, and across
+  VOLUME 0.01→0.10 it moves **19.89 dB of level for a THD ratio of 0.971**, which
+  a no-master amp cannot do at any setting. Bars shipped 5.0 dB / 3.0 dB / 5×;
+  margins recorded, not snugged. Third structural difference, reported not
+  asserted: a LONG-TAILED PAIR (balance 0.972, a calibration) where the OR120 has
+  a cathodyne (0.999965, topological). No new cab — it reuses `orange412` — and
+  **no new param id**: GAIN and its post-stack VOLUME ride the JCM's gain/master
+  slots because the FUNCTION matches. All five goldens unchanged; nothing blessed.
+  One XFAIL, shared with the OR120: the 44.1 kHz alias floor.)*
 - **M10.8 — Marshall "Bluesbreaker" 1962 combo** *(M)* — the JTM45 combo, the
   Clapton *Beano* tone. **Note the name collides:** the Bluesbreaker *pedal* is
   a transparent low-gain OD that overlaps the Gold/Myth territory and is NOT
