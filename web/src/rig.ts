@@ -79,7 +79,7 @@ export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'gate'
 // MID-FORWARD voice): a James/passive-Baxandall stack with BASS + TREBLE and no
 // mid, the six-position F.A.C. rotary (its own param, `fac`), NO master volume
 // (VOLUME is the whole amp — the power section is the overdrive), and the shared
-// 'presence' param (id 11) REUSED as its HF DRIVE. Docs §57.
+// 'presence' param (id 11) REUSED as its H.F. BOOST. Docs §57.
 export type AmpType = 'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange';
 
 // Cab expansion: which speaker cabinet IR the amp runs. 'clean212' is the

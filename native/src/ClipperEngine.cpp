@@ -196,7 +196,7 @@ void ClipperEngine::applyParamsToModels() {
     ac30_.setParameter(X::PARAM_REVERB, p.reverb);
 
     // Orange OR120 (M10.3): reuses volume + bass/treble + reverb from the shared
-    // fields and REUSES the presence field as its HF DRIVE (docs §57). It has NO
+    // fields and REUSES the presence field as its H.F. BOOST (docs §57). It has NO
     // mid control (a James stack is bass + treble), so 'middle' never routes here,
     // and NO master (VOLUME is the whole amp). Its one own field is the F.A.C.
     using O = clipper::dsp::OrangeAmp;

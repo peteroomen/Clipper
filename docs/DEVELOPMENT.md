@@ -10317,11 +10317,23 @@ appends **`CAB_ORANGE412 = 3`** and the engine maps the two spaces **in code**
 (`loadCurrentCabIntoPair`), never by assuming the integers agree. The popup-menu ids are a
 third space again (the Orange is menu id 5).
 
-**A naming note the Field Guide settles and the UI has not caught up with.** The panel reads
+**A naming note the Field Guide settles, and the UI has now caught up.** The panel reads
 **Input – F.A.C. – Bass – Treble – H.F.Boost – Gain – Reverb Send – Reverb Return**: the
 volume control is called **GAIN** and the presence control is called **H.F. BOOST**. The web
-face still says "Vol" and "HF". That is a label change with no DSP content and it was left
-out of this slice deliberately, to keep the correction to circuit + docs.
+face said "Vol" and "HF"; that is a label change with no DSP content, so it was left out of
+the correction slice deliberately and **landed separately (2026-08-01)** across the web face,
+the native editor panel and the assistant's own vocabulary.
+
+The same follow-up corrected a **factual claim the assistant was still making**: its prompt
+described H.F. BOOST as "a top-end lift inside the feedback loop", which is the
+reconstruction's mechanism, not this one's. Defect #8 replaced that with a 1 k pot + 2 mH
+choke + 0.47 µF **series-resonant network at the driver's cathode** (5191.1 Hz, Q 8.15), so
+the coaching now says a focused resonant peak rather than a broad shelf. **The PARAM IDS did
+not move** — GAIN is still the shared `volume` slot 0 and H.F. BOOST still the shared
+`presence` slot 11 — so the rig JSON, the testids, host automation and the C ABI are
+untouched by the renaming; only printed text changed. `OrangeAmp::PARAM_HF_DRIVE` keeps its
+identifier name deliberately: renaming a core enum would be a `core/` change and would force
+a WASM rebuild for a cosmetic reason.
 
 ### 57.12 Scope check
 

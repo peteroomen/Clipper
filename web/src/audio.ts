@@ -330,7 +330,7 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   // volume/bass/treble/presence(=top cut)/reverb already sent above reach it.
   else if (opts.ampType === 'ac30') engine.setAmpModel('ac30');
   // M10.3: the Orange OR120 is voice 4. It reuses volume/bass/treble/reverb and the
-  // presence slot as HF DRIVE, all sent above; F.A.C. is its own id and is sent
+  // presence slot as H.F. BOOST, all sent above; F.A.C. is its own id and is sent
   // with the JCM block below.
   else if (opts.ampType === 'orange') engine.setAmpModel('orange');
   engine.setAmpBypass(!opts.ampEngaged);

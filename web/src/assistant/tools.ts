@@ -90,8 +90,9 @@ export const TOOLS = [
       "mids standing — that is how you get the Orange midrange honk), 'fac' (the " +
       "six-position F.A.C. rotary — 0 is the fattest and each click to the right takes " +
       "away bass AND gain; use it to tighten a woolly low end instead of pulling the " +
-      "bass knob down), 'presence' REUSED as its HF DRIVE (a top-end lift in the " +
-      "feedback loop — the Orange has no bright switch, this is it), and 'reverb'. It " +
+      "bass knob down), 'presence' REUSED as its H.F. BOOST (a RESONANT top-end peak " +
+      "around 5 kHz at the driver's cathode, not a feedback shelf — the Orange has no " +
+      "bright switch, this is it), and 'reverb'. Its panel prints slot 0 as GAIN. It " +
       "IGNORES middle/gain/master/bright/chorus. " +
       "Input params: 'trim' — the rig-level INPUT gain BEFORE the pedal " +
       "(0..1 maps to -12..+24 dB, 1/3 = 0 dB). Raise it when the input peak is " +
@@ -240,10 +241,11 @@ export const TOOLS = [
       'CATHODYNE phase inverter (stiffer, punchier, fuzzier than a long-tail pair) and a ' +
       'James/Baxandall tone stack that leaves the midrange STANDING where a Marshall ' +
       'stack scoops it — measured, its tone network sits 8.3 dB more mid-forward than the ' +
-      "JCM's at noon. There is NO MASTER: VOLUME is the whole amp, clean in the bottom " +
-      'third and roaring at the top, so set the dirt with the volume knob. It has VOLUME + ' +
-      'BASS/TREBLE (no middle) + the six-position F.A.C. rotary (clicks bass and gain away ' +
-      'as it climbs) + HF DRIVE (the presence slot) + REVERB. Reach for it for thick, ' +
+      "JCM's at noon. There is NO MASTER: the single GAIN knob is the whole amp, clean in " +
+      'the bottom third and roaring at the top, so set the dirt with it (it writes the ' +
+      "shared 'volume' slot). It has GAIN + BASS/TREBLE (no middle) + the six-position " +
+      'F.A.C. rotary (clicks bass and gain away as it climbs) + H.F. BOOST (the presence ' +
+      'slot) + REVERB. Reach for it for thick, ' +
       'woolly, midrange-forward British rock and doom/stoner weight — where a JCM cuts, ' +
       'this one shoves. Pairs with the Orange 4×12. Switching is click-free; the ' +
       'cab and pedals carry over.',
