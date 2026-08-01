@@ -134,8 +134,12 @@ const clipper::test::XfailDecl kXfailOrangeAlias44k1{
     "docs §57 schematic correction (2026-07-31)",
     "the composed OR120 at maximum volume must hold a -56 dB alias floor at the "
     "shipped 4x oversampling on a 44.1 kHz grid, as it does at 48 kHz",
-    "an OR120 oversampling slice — the candidate is one shared OS domain around "
-    "the whole preamp+power cascade (docs §57.13), NOT a lower bar",
+    "NOT the shared OS domain: that candidate was BUILT AND RUN on this amp "
+    "2026-08-01 and measured WORSE (4x 44.1 kHz -50.8 -> -48.7 dB, 48 kHz -73.0 "
+    "-> -67.8), while the identical change fixed the Rockerverb's twin defect "
+    "(-52.7 -> -72.3). Re-owned to the CATHODYNE, whose compliance clip (Vk "
+    "pinned to [0, C+/2], docs §57.3) is the hardest nonlinearity in the lineup. "
+    "Docs §57.7 amendment / §63.14. NEVER a lower bar",
 };
 const clipper::test::XfailDecl kLedger[] = {kXfailOrangeAlias44k1};
 

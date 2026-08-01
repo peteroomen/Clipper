@@ -11,6 +11,23 @@
 // Oversampling: the preamp oversamples per triode stage (2 stages), the power
 // section oversamples once around the whole driver→cathodyne→EL34→OT solve.
 // setOversampling sets both. Convention: 1.0f == full scale.
+//
+// THE SHARED-OS-DOMAIN FIX §57.7 NAMED WAS TRIED HERE AND REFUTED BY MEASUREMENT
+// (2026-08-01, docs §57.7 amendment / §63.14). §57.7 attributed
+// `orange-schematic-alias-44k1` to "the architecture speaking" because the
+// Rockerverb failed the same bar at the same rate. Built and run on this amp —
+// one Oversampler around the whole cascade, both halves clocked at 192 kHz with
+// their own resamplers at 1x — the OR120's composed cranked 4x floor measures
+// -48.7 dB at 44.1 kHz (was -50.8) and -67.8 dB at 48 kHz (was -73.0). It is
+// WORSE at both rates. The same change measures -52.7 -> -72.3 dB on the
+// Rockerverb, so the architecture was that amp's problem and is not this one's.
+// The mechanism, and the reason this is not a paradox: removing the intermediate
+// band-limitings lets each stage's own products reach the NEXT nonlinearity
+// unfiltered, which is a win when the later stages are triodes and a loss when
+// the dominant nonlinearity is a hard rail — and this amp's cathodyne clips on
+// COMPLIANCE (Vk pinned to [0, C+/2], docs §57.3), the hardest clipper in the
+// lineup. The XFAIL stays and its owner is corrected: this needs the CATHODYNE
+// looked at, not the domain layout. NEVER a lower bar.
 // Platform-free C++17, zero web/server/electron deps.
 
 #ifndef CLIPPER_DSP_ORANGE_AMP_H

@@ -27,7 +27,9 @@
 #include "measure/AliasMetric.h"
 #include "support/AssertsLive.h"
 #include "support/DcOffset.h"
-#include "support/Xfail.h"
+// NO support/Xfail.h — this suite has ZERO known-bad properties as of docs §63.14.
+// Its one entry, `rockerverb-alias-44k1`, XPASSed and was deleted rather than left
+// standing; see the note above testAliasing's bars.
 
 #include <algorithm>
 #include <cassert>
@@ -102,27 +104,13 @@ double rmsTail(const std::vector<float>& x) {
 constexpr double kProbeHz = 220.0;
 constexpr float kProbeV = 0.15f;
 
-using clipper::test::expectXfail;
-
-// The ONE known-bad property this voice ships with, and it is the SAME defect the
-// OR120 carries (docs §57.7's `orange-schematic-alias-44k1`) — which is itself the
-// evidence for what owns it. On a 48 kHz grid the composed cranked alias floor is
-// -80.1 dB at the shipped 4x; on a 44.1 kHz grid it is -52.7 dB against the same
-// -56 bar. It is genuine foldover, not the rail-clipping signature docs §54
-// describes: it improves 11.3 dB going to 8x and beats 1x by 28.1 dB. Two amps
-// failing the same bar at the same rate, both with per-triode oversampling domains
-// feeding a separately-oversampled power section, is the architecture speaking.
-// The bar is NOT loosened.
-const clipper::test::XfailDecl kXfailAlias44k1{
-    "rockerverb-alias-44k1",
-    "docs §63.8 (M10.7, 2026-08-01) — shared with docs §57.7",
-    "the composed Rockerverb at maximum GAIN and VOLUME must hold a -56 dB alias "
-    "floor at the shipped 4x oversampling on a 44.1 kHz grid, as it does at 48 kHz",
-    "a shared-oversampling-domain slice: ONE domain around the whole preamp+power "
-    "cascade (docs §57.13 names the same fix for the OR120), NEVER a lower bar",
-};
-const clipper::test::XfailDecl kLedger[] = {kXfailAlias44k1};
-
+// `rockerverb-alias-44k1` USED TO LIVE HERE and is GONE (docs §63.14, 2026-08-01).
+// The voice shipped with a -52.7 dB composed cranked 4x alias floor on a 44.1 kHz
+// grid against a -56 dB bar; one shared oversampling domain around the whole
+// preamp+power cascade — the fix §63.8 named — takes it to -72.3 dB. An XFAIL must
+// not outlive its defect, so the bar below is a HARD assert at BOTH rates and this
+// suite registers no ledger.
+//
 struct RvKnobs {
     double gain = 0.5, volume = 0.5, bass = 0.5, mid = 0.5, treble = 0.5,
            reverb = 0.0;
@@ -783,17 +771,70 @@ void testAliasing(double fs) {
     // a floor that stops depending on the factor (docs §54's rail-clipping
     // signature) fails even if the absolute number looks fine.
     //
-    // The absolute floor is HARD at 48 kHz and an XFAIL at 44.1 kHz — see
-    // kXfailAlias44k1. The improvement clause stays hard at BOTH rates, because it
-    // is what separates "aliasing this oversampler cannot yet reach" from "not
-    // aliasing at all".
-    if (fs > 46000.0) {
-        assert(f4 < -56.0);
-    } else {
-        expectXfail(f4 < -56.0, kXfailAlias44k1,
-                    "composed cranked 4x alias floor at 44.1 kHz");
-    }
+    // BOTH bars are now HARD AT BOTH RATES. `rockerverb-alias-44k1` (docs §63.8)
+    // measured -52.7 dB here and is FIXED by the shared oversampling domain
+    // (docs §63.14): 44.1 kHz reads -72.3, 48 kHz -84.9. The bar was NOT lowered —
+    // it is the same -56 dB the XFAIL was written against, and the pre-§63.14
+    // five-domain build fails it by 3.3 dB.
+    assert(f4 < -56.0);
     assert(f1 - f4 > 12.0);
+
+    // ...and the same probe at a REALISTIC setting, which is where a player lives
+    // and where the five-domain arrangement was quietly worst relative to its own
+    // 48 kHz figure (44.1 kHz measured -61.1 dB against -71.5 at 48 kHz — a 10.4 dB
+    // rate penalty on an ordinary crunch setting). One domain measures -115.1 and
+    // -96.2, i.e. the penalty REVERSES. The bar is absolute, not a ratio.
+    {
+        RockerverbAmp amp;
+        amp.setOversampling(4);
+        amp.prepare(fs, 128);
+        amp.setParameter(RockerverbAmp::PARAM_GAIN, 0.5f);
+        amp.setParameter(RockerverbAmp::PARAM_VOLUME, 0.10f);
+        amp.setParameter(RockerverbAmp::PARAM_BASS, 0.5f);
+        amp.setParameter(RockerverbAmp::PARAM_MID, 0.5f);
+        amp.setParameter(RockerverbAmp::PARAM_TREBLE, 0.5f);
+        const std::vector<float> in = sine(4186.0, 0.15f, 0.5, fs);
+        std::vector<float> out(in.size(), 0.0f);
+        amp.process(in.data(), out.data(), static_cast<int>(in.size()));
+        const double a = measureAliasing(out, fs, 4186.0).worstAliasDb;
+        std::printf("   realistic GAIN 0.50 / VOLUME 0.10, 4x: %.1f dB\n", a);
+        assert(a < -80.0);
+    }
+}
+
+// ===========================================================================
+// 9b. THE OVERSAMPLING DOMAIN IS ONE DOMAIN, and latency is how you see it.
+//
+// docs §63.14. This is not decoration: latency is the number the UI and the
+// plugin report to the host for delay compensation, and it is the only
+// player-observable consequence of the domain LAYOUT that survives being
+// measured on the output. Five 4x domains reported 360 samples; one reports 72.
+// The reference is ABSOLUTE — Oversampler's own documented 2x/4x/8x latencies —
+// not read back from the amp, so re-arming an inner domain fails here even if
+// every spectral bar still passes.
+// ===========================================================================
+void testOneOversamplingDomain(double fs) {
+    std::printf("\n[rockerverb] oversampling domain @ %.0f Hz\n", fs);
+    // Oversampler::latencySamples() for a single domain: 0 / 64 / 72 / 76.
+    const int expect[] = {0, 64, 72, 76};
+    int i = 0;
+    for (int factor : {1, 2, 4, 8}) {
+        RockerverbAmp amp;
+        amp.setOversampling(factor);
+        amp.prepare(fs, 128);
+        const int lat = amp.latencySamples();
+        std::printf("   %dx: latency %d samples (one domain expects %d)\n", factor,
+                    lat, expect[i]);
+        assert(lat == expect[i]);
+        ++i;
+    }
+    // And the shipped default really is 4x — docs §58.7 found a bar that could not
+    // fail because every alias row set the factor explicitly and nothing pinned the
+    // default.
+    RockerverbAmp def;
+    def.prepare(fs, 128);
+    assert(def.oversampling() == 4);
+    assert(def.latencySamples() == 72);
 }
 
 // ===========================================================================
@@ -914,10 +955,8 @@ int main(int argc, char** argv) {
     // measurement you need to see when it does.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     clipper::test::requireAssertsLive();
-    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
-                                                 sizeof kLedger / sizeof kLedger[0],
-                                                 "clipper_rockerverb_tests");
-    if (ledger >= 0) return ledger;
+    (void)argc;
+    (void)argv;
     for (double fs : {44100.0, 48000.0}) {
         std::printf("\n=========== Rockerverb 100, fs = %.0f ===========\n", fs);
         testDcOperatingPoints(fs);
@@ -933,9 +972,10 @@ int main(int argc, char** argv) {
     testFeedback(fs);
     testAliasing(fs);
     testAliasing(44100.0);
+    testOneOversamplingDomain(fs);
     testDcOffsetOnSignal(fs);
     testRateIndependence();
-    std::printf("\n[rockerverb] all Rockerverb tests passed (the XFAIL below is a "
-                "known open defect shared with the OR120, not a regression)\n");
-    return clipper::test::reportXfails();
+    std::printf("\n[rockerverb] all Rockerverb tests passed — ZERO known-bad "
+                "properties (docs §63.14 closed rockerverb-alias-44k1)\n");
+    return 0;
 }

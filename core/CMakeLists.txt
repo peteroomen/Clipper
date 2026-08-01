@@ -410,15 +410,13 @@ if(NOT EMSCRIPTEN)
     target_include_directories(clipper_rockerverb_tests PRIVATE tools)
     clipper_add_test_flags(clipper_rockerverb_tests)
     add_test(NAME clipper_rockerverb_tests COMMAND clipper_rockerverb_tests)
-    # ONE known-bad property: `rockerverb-alias-44k1`, and it is the SAME defect the
-    # OR120 registered in docs §57.7. The composed cranked alias floor is −80.1 dB at
-    # 48 kHz / 4× and −52.7 dB at 44.1 kHz against the same −56 dB bar. It improves
-    # 11.3 dB at 8× and beats 1× by 28.1 dB, so it is genuine foldover rather than
-    # docs §54's rail-clipping signature. TWO amps failing the same bar at the same
-    # rate, both running per-triode oversampling domains into a separately
-    # oversampled power section, is the architecture speaking — owned by a shared-
-    # oversampling-domain slice, never by a lower bar.
-    clipper_add_xfail_ledger(clipper_rockerverb_tests)
+    # NO XFAIL LEDGER — zero known-bad properties. `rockerverb-alias-44k1` was this
+    # suite's only entry and docs §63.14 CLOSED it: one shared oversampling domain
+    # around the whole preamp+power cascade takes the composed cranked 4× floor at
+    # 44.1 kHz from −52.7 dB to −72.3 dB against the unchanged −56 dB bar, which is
+    # now a hard assert at BOTH rates. The OR120's twin entry (docs §57.7) STAYS —
+    # the same change measured WORSE there (−50.8 → −48.7), which refuted §57.7's
+    # "it is the architecture speaking" for that voice.
 
     # --- M11: Player Expectations Suite ---------------------------------------
     # Tests the PLAYER'S expectations, not the circuit (docs §26): universal gear
