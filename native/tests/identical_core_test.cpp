@@ -56,6 +56,7 @@
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/MuffModel.h"
+#include "clipper/dsp/OptoModel.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/OutputLimiter.h"
 #include "clipper/dsp/RatModel.h"
@@ -303,6 +304,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     GoldModel gold;      // the "Myth" transparent overdrive
     CompModel comp;      // the "Squash" OTA compressor (M13.1)
     GateModel gate;      // the "Curfew" noise gate (M13.6a)
+    OptoModel opto;      // the "Lumen" optical compressor (M13.3)
     DelayModel delayFx;  // the "Echoman" BBD analog delay (M13.4)
     AmpModel amp;        // Clean 120
     Jcm800Amp jcm;       // JCM800 head
@@ -332,6 +334,9 @@ void renderReference(const Params& p, const std::vector<float>& in,
     comp.setParameter(CompModel::PARAM_LEVEL, p.compLevel);
     gate.setParameter(GateModel::PARAM_THRESHOLD, p.gateThreshold);
     gate.setParameter(GateModel::PARAM_DECAY, p.gateDecay);
+    opto.setParameter(OptoModel::PARAM_PEAK_REDUCTION, p.optoPeakReduction);
+    opto.setParameter(OptoModel::PARAM_MODE, p.optoMode);
+    opto.setParameter(OptoModel::PARAM_GAIN, p.optoGain);
     delayFx.setParameter(DelayModel::PARAM_DELAY, p.delayTime);
     delayFx.setParameter(DelayModel::PARAM_FEEDBACK, p.delayFeedback);
     delayFx.setParameter(DelayModel::PARAM_BLEND, p.delayBlend);
@@ -385,6 +390,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     gold.prepare(kFs, kBlock);
     comp.prepare(kFs, kBlock);
     gate.prepare(kFs, kBlock);
+    opto.prepare(kFs, kBlock);
     delayFx.prepare(kFs, kBlock);
     amp.prepare(kFs, kBlock);
     // The JCM runs at its fixed 4x internally (set BEFORE prepare so its stages size
@@ -400,6 +406,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     ts.setOversampling(p.oversampling);
     muff.setOversampling(p.oversampling);
     gold.setOversampling(p.oversampling);
+    opto.setOversampling(p.oversampling);
     // (the phaser has no oversampler — it is linear)
 
     const std::vector<float> ir = generateDefaultCab2x12IR(kFs);
@@ -433,6 +440,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
                 case clipper::native::PEDAL_GOLD:   gold.process(cur, other, n); break;
                 case clipper::native::PEDAL_COMP:   comp.process(cur, other, n); break;
                 case clipper::native::PEDAL_GATE:   gate.process(cur, other, n); break;
+                case clipper::native::PEDAL_OPTO:   opto.process(cur, other, n); break;
                 case clipper::native::PEDAL_DELAY:  delayFx.process(cur, other, n); break;
                 default: continue;
             }
@@ -479,6 +487,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
             case clipper::native::PEDAL_COMP: pedalLatency += comp.latencySamples(); break;
             // The gate is not oversampled: zero group delay, like the phaser.
             case clipper::native::PEDAL_GATE: break;
+            case clipper::native::PEDAL_OPTO: pedalLatency += opto.latencySamples(); break;
             case clipper::native::PEDAL_DELAY: pedalLatency += delayFx.latencySamples(); break;
             default: break;  // the phaser is linear — no group delay
         }
@@ -515,6 +524,15 @@ void renderPlugin(const Params& p, const std::vector<float>& in,
     set(phaserOn, p.phaserOn ? 1.0f : 0.0f); set(phaserSpeed, p.phaserSpeed);
     set(goldOn, p.goldOn ? 1.0f : 0.0f);
     set(goldGain, p.goldGain); set(goldTreble, p.goldTreble); set(goldLevel, p.goldLevel);
+    // M13.3: the optical compressor. Pushed explicitly, unlike the other
+    // post-v1.1 pedals, because its board case moves all THREE slots away from
+    // their APVTS defaults — and slot 1 (MODE) is the first middle slot on this
+    // board that carries a real control, so nothing else here would have caught a
+    // plugin that never delivered it.
+    set(optoOn, p.optoOn ? 1.0f : 0.0f);
+    set(optoPeakReduction, p.optoPeakReduction);
+    set(optoMode, p.optoMode);
+    set(optoGain, p.optoGain);
     // The BOARD is state, not a parameter: push it through the processor's chain API
     // (which also publishes the packed snapshot the audio thread reads).
     {
@@ -632,6 +650,30 @@ Params gateBoardParams() {
     return p;
 }
 
+// NATIVE PARITY case 8 (M13.3) — a board carrying the "Lumen" optical
+// compressor: Lumen -> RAT -> Twin. It is the first pedal to reach this test
+// whose MIDDLE slot carries a real control (MODE), so it is the case that proves
+// slot 1 is plumbed end to end rather than silently dropped the way every other
+// two-knob pedal's is. It also carries a feed-back loop with a MULTI-SECOND state
+// (the cell's trap occupancy), which a wrapping bug would perturb.
+Params optoBoardParams() {
+    Params p;
+    p.inputTrim = 0.5f;
+    p.chain[0] = clipper::native::PEDAL_OPTO;
+    p.chain[1] = clipper::native::PEDAL_RAT;
+    p.chainLength = 2;
+    p.optoOn = true;  p.optoPeakReduction = 0.7f; p.optoMode = 1.0f; p.optoGain = 0.55f;
+    p.ratOn = true;   p.ratDist = 0.4f; p.ratFilter = 0.5f; p.ratLevel = 0.5f;
+    p.compOn = true;  // ON, but NOT on the board — must be inaudible
+    p.goldOn = true;  // likewise
+    p.muffOn = true;  // likewise
+    p.ampModel = kAmpTwin;
+    p.ampOn = true;  p.volume = 0.5f; p.bass = 0.5f; p.middle = 0.5f; p.treble = 0.6f;
+    p.bright = false; p.cab = true;
+    p.chorusMode = 0;
+    return p;
+}
+
 bool runCase(const char* label, const Params& p, const std::vector<float>& in) {
     std::printf("\n--- case: %s ---\n", label);
 
@@ -726,6 +768,7 @@ int main() {
     ok &= runCase("Board: Squash -> TS -> Twin", compBoardParams(), in);
     ok &= runCase("Board: RAT -> Curfew -> JCM800", gateBoardParams(), in);
     ok &= runCase("Board: RAT -> Echoman -> JCM800", delayBoardParams(), in);
+    ok &= runCase("Board: Lumen -> RAT -> Twin", optoBoardParams(), in);
 
     if (ok) {
         std::printf(

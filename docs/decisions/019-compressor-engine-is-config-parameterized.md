@@ -1,7 +1,7 @@
 # ADR 019: The compressor is a config-parameterized engine from its first line
 
 Date: 2026-07-31
-Status: Accepted — **amended by ADR 021** (2026-08-01)
+Status: Accepted — **amended by ADR 021 and ADR 025** (2026-08-01)
 
 ## Context
 
@@ -131,3 +131,27 @@ values rather than a policy hook. It was corrected — extracted into a real
 `SidechainDetector` component, compressor bit-identical — rather than widened
 until both voices fit, which is exactly what the Consequences section above
 said to do. See **ADR 021**.
+
+## AMENDMENT 2026-08-01 (2) — M13.3 SHIPPED, and the ENGINE half of this ADR's
+## claim did NOT hold (docs §64.3, ADR 025)
+
+The optical voice is built. It is **not** a config of `CompressorEngine` and **not**
+a consumer of `SidechainDetector`, and both were decided by measurement rather than
+by inspection.
+
+Of the eight config structs, **one** (`OutputStage`) applies to an optical leveling
+amplifier. `applyGainCell()` returns a CURRENT where an optical cell is a RESISTOR
+IN A DIVIDER; `DriveNetwork`, `LoadStage`, `Splitter` and the compliance are the
+CA3080 pedal's own stages. And that pedal has **no envelope capacitor at all** — an
+EL panel emits on both polarities, so the panel is the rectifier and the photocell
+is the integrator — so there is nothing for `SidechainDetector` to be. The
+substitution was built and run per ADR 023's procedure: the ratio curve goes
+non-monotone to 10.40:1, gain reduction at −30 dBV collapses to 0.09 dB, and the
+voice's acceptance property (a program-dependent release, 2.892x) goes to 1.000x.
+
+**Scorecard for this ADR's central bet — design the seam before the second consumer
+exists.** On the DETECTOR it is 1 for 2 (the gate reuses it; the wah and the optical
+voice do not). On the ENGINE it is 0 for 1: `CompressorEngine` now has exactly one
+consumer. What it did buy, both times, was that the question got asked and answered
+with a number instead of being discovered by a duplicated block. Neither type was
+widened. See **ADR 025**.

@@ -62,7 +62,14 @@ export type SourceKind = 'test' | 'live';
 // compressor carries it. THRESHOLD really IS a threshold: it moves the level at
 // which the gate opens by 40 dB and moves the gain the pedal applies when open by
 // 0.00 dB (docs §61.4) — the exact opposite of the compressor's SUSTAIN.
-export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'tuner';
+// M13.3 adds 'opto' (the "Lumen" OPTICAL compressor — the SECOND dynamics pedal,
+// and the first whose slot 1 carries a real control). It is not the Squash with
+// different constants: its time constants are a photocell's, so its release is
+// two-stage and PROGRAM DEPENDENT (measured 2.892x longer after a long passage
+// than after a stab at the same depth, against the OTA voice's 1.000x — docs
+// §64.4), its attack does not move with the knob, and its PEAK REDUCTION moves a
+// THRESHOLD by 45.44 dB where the Squash's SUSTAIN moves GAIN by 25.33 dB.
+export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
@@ -103,7 +110,7 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412' | 'orange412', num
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'tuner'];
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
@@ -333,6 +340,19 @@ export const GATE_KNOB_DEFAULTS: PedalParams = {
   level: 0.5,
 };
 
+// "Lumen" optical compressor (M13.3) opening state. PEAK REDUCTION 0.50 puts the
+// 3 dB point at -25.05 dBV, so a normally played note is levelled by about 5 dB
+// without the pedal ever sounding like it is working. MODE 0 = COMPRESS (the
+// gentler, 100 %-feed-back position; >= 0.5 is LIMIT, which mixes 1/25 of the
+// input into the sidechain and clamps up to 7.71 dB harder). GAIN 0.62 measures
+// UNITY: a 0.15 V-peak 220 Hz note comes out at -16.52 dBV against an input of
+// -16.48 dBV (+0.04 dB). See docs §64.
+export const OPTO_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.5,
+  filter: 0.0,
+  level: 0.62,
+};
+
 export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   rat: KNOB_DEFAULTS,
   sd1: SD1_KNOB_DEFAULTS,
@@ -340,6 +360,7 @@ export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   muff: MUFF_KNOB_DEFAULTS,
   gold: GOLD_KNOB_DEFAULTS,
   comp: COMP_KNOB_DEFAULTS,
+  opto: OPTO_KNOB_DEFAULTS,
   gate: GATE_KNOB_DEFAULTS,
   phaser: PHASER_KNOB_DEFAULTS,
   wah: WAH_KNOB_DEFAULTS,
@@ -453,6 +474,7 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
     : p.type === 'muff' ? 'muff'
     : p.type === 'gold' ? 'gold'
     : p.type === 'comp' ? 'comp'
+    : p.type === 'opto' ? 'opto'
     : p.type === 'gate' ? 'gate'
     : p.type === 'phaser' ? 'phaser'
     : p.type === 'wah' ? 'wah'

@@ -292,6 +292,11 @@ class ClipperProcessor extends AudioWorkletProcessor {
     // (both the SD-1 engine family), 'muff'=Pi fuzz, 'gold'=the GOLD clean-blend
     // overdrive (slots read GAIN/TREBLE/OUTPUT), 'comp'=the M13.1 "Squash" OTA
     // compressor (slot 0 = SUSTAIN, slot 2 = LEVEL, slot 1 unused-but-carried),
+    // 'opto'=the M13.3 "Lumen" OPTICAL compressor (an EL panel lighting a CdS
+    // photocell in a feed-back loop — slot 0 = PEAK REDUCTION, slot 1 = MODE and
+    // slot 1 is a REAL control here, DISCRETE: < 0.5 compress, >= 0.5 limit;
+    // slot 2 = GAIN. Oversampled 4x and latency 72, because the gain-reduction
+    // divider is a multiply by an audio-rate signal — docs §64.7),
     // 'gate'=the M13.6a "Curfew" noise gate (slot 0 = THRESHOLD, slot 2 = DECAY,
     // slot 1 unused-but-carried; set_oversampling is a no-op and latency is 0,
     // because a gate's signal path is a multiply — docs §61.7),
@@ -312,8 +317,8 @@ class ClipperProcessor extends AudioWorkletProcessor {
     // linear, so set_oversampling is a no-op and latency is 0 — slots read
     // RATE/DEPTH/MODE, and MODE is DISCRETE: < 0.5 chorus, >= 0.5 vibrato),
     // anything else = RAT.
-    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'muff' ? 'muff' : type === 'gold' ? 'gold' : type === 'comp' ? 'comp' : type === 'gate' ? 'gate' : type === 'phaser' ? 'phaser' : type === 'wah' ? 'wah' : type === 'chorus' ? 'chorus' : type === 'delay' ? 'delay' : 'rat';
-    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'muff' ? '_muff' : t === 'gold' ? '_gold' : t === 'comp' ? '_comp' : t === 'gate' ? '_gate' : t === 'phaser' ? '_phaser' : t === 'wah' ? '_wah' : t === 'chorus' ? '_chorus' : t === 'delay' ? '_delay' : '_rat';
+    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'muff' ? 'muff' : type === 'gold' ? 'gold' : type === 'comp' ? 'comp' : type === 'opto' ? 'opto' : type === 'gate' ? 'gate' : type === 'phaser' ? 'phaser' : type === 'wah' ? 'wah' : type === 'chorus' ? 'chorus' : type === 'delay' ? 'delay' : 'rat';
+    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'muff' ? '_muff' : t === 'gold' ? '_gold' : t === 'comp' ? '_comp' : t === 'opto' ? '_opto' : t === 'gate' ? '_gate' : t === 'phaser' ? '_phaser' : t === 'wah' ? '_wah' : t === 'chorus' ? '_chorus' : t === 'delay' ? '_delay' : '_rat';
     const handle = mod[P + '_create'](this._sr);
     mod[P + '_set_oversampling'](handle, this._oversampling | 0);
     if (params) {
@@ -329,10 +334,10 @@ class ClipperProcessor extends AudioWorkletProcessor {
 
   // C-ABI export prefix for a node's type
   // ('_sd' | '_ts' | '_muff' | '_gold' | '_comp' | '_phaser' | '_rat').
-  // ('_sd' | '_ts' | '_muff' | '_gold' | '_comp' | '_gate' | '_phaser' | '_wah' |
+  // ('_sd' | '_ts' | '_muff' | '_gold' | '_comp' | '_opto' | '_gate' | '_phaser' | '_wah' |
   // '_chorus' | '_delay' | '_rat').
   _prefix(node) {
-    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'muff' ? '_muff' : node.type === 'gold' ? '_gold' : node.type === 'comp' ? '_comp' : node.type === 'gate' ? '_gate' : node.type === 'phaser' ? '_phaser' : node.type === 'wah' ? '_wah' : node.type === 'chorus' ? '_chorus' : node.type === 'delay' ? '_delay' : '_rat';
+    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'muff' ? '_muff' : node.type === 'gold' ? '_gold' : node.type === 'comp' ? '_comp' : node.type === 'opto' ? '_opto' : node.type === 'gate' ? '_gate' : node.type === 'phaser' ? '_phaser' : node.type === 'wah' ? '_wah' : node.type === 'chorus' ? '_chorus' : node.type === 'delay' ? '_delay' : '_rat';
   }
 
   _destroyPedal(node) {

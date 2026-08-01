@@ -65,6 +65,7 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   muff: 'Pi fuzz (violet, big box)',
   gold: 'Myth overdrive (gold, transparent)',
   comp: 'Squash compressor (teal, 2-knob)',
+  opto: 'Lumen optical compressor (periwinkle, leveler)',
   gate: 'Curfew noise gate (slate, 2-knob)',
   phaser: 'Script phaser',
   wah: 'Weeper wah / envelope filter',

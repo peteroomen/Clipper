@@ -183,6 +183,10 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::gateOn, 1}, "Curfew On", true));
     layout.add(knob(pid::gateThreshold, "Curfew Threshold", 0.35f));
     layout.add(knob(pid::gateDecay, "Curfew Decay", 0.5f));
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::optoOn, 1}, "Lumen On", true));
+    layout.add(knob(pid::optoPeakReduction, "Lumen Peak Reduction", 0.5f));
+    layout.add(knob(pid::optoMode, "Lumen Mode", 0.0f));
+    layout.add(knob(pid::optoGain, "Lumen Gain", 0.62f));
 
     // M13.4 — the "Echoman" BBD analog delay. Defaults mirror web
     // DELAY_KNOB_DEFAULTS: 212 ms, a few repeats, wet behind the dry.
@@ -454,6 +458,10 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.gateOn = f(pid::gateOn) >= 0.5f;
     p.gateThreshold = f(pid::gateThreshold);
     p.gateDecay = f(pid::gateDecay);
+    p.optoOn = f(pid::optoOn) >= 0.5f;
+    p.optoPeakReduction = f(pid::optoPeakReduction);
+    p.optoMode = f(pid::optoMode);
+    p.optoGain = f(pid::optoGain);
     p.ce1On = f(pid::ce1On) >= 0.5f;
     p.ce1Rate = f(pid::ce1Rate);
     p.ce1Depth = f(pid::ce1Depth);

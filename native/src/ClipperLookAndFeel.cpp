@@ -128,6 +128,8 @@ juce::Colour accent(AccentId id) {
         case AccentId::Delay:  return d ? juce::Colour(0xff5AA8F0) : juce::Colour(0xff1F5FA0);
         case AccentId::Gate:   return d ? juce::Colour(0xff9AAABF) : juce::Colour(0xff4A5568);
         case AccentId::Chorus: return d ? juce::Colour(0xffE86FB8) : juce::Colour(0xff9B2C6F);
+        // M13.3 optical compressor — PERIWINKLE (web tokens.css --accent-opto).
+        case AccentId::Opto:   return d ? juce::Colour(0xff8E9BE8) : juce::Colour(0xff5C6BC0);
         case AccentId::Jcm:    return d ? juce::Colour(0xffE8B84B) : juce::Colour(0xffA87A18);
         case AccentId::Twin:   return d ? juce::Colour(0xff7FB4E8) : juce::Colour(0xff4E7BA8);
         case AccentId::Ac30:   return d ? juce::Colour(0xffE08A4A) : juce::Colour(0xffB4612C);

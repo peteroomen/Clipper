@@ -574,11 +574,20 @@ keeps these slices small:
    independent SPICE run's ~192 / ~16. SUSTAIN moves 25.33 dB of gain against
    0.28 dB of output — "not a threshold", as a number. Noise, transient loss and
    phase inversion are measured and asserted in the direction that KEEPS them.)*
-3. **M13.3 — Optical compressor (LA-2A style)** *(S–M after 13.2)* — the second
-   half of the owner's "the first two types". Electro-optical attenuator,
-   program-dependent release. Follows the **SD-1 / TS precedent**: a shared,
-   config-parameterized compressor engine with two voicings shipping as two
-   pedals — NOT bundled into 13.2.
+3. ~~**M13.3 — Optical compressor (LA-2A style)**~~ — **SHIPPED 2026-08-01**
+   (docs §64, ADR 025) as the "Lumen", pedal type `opto`, slot 11. Electro-optical
+   attenuator with a **program-dependent release**, which is its acceptance bar
+   and is asserted against M13.1 on the identical stimulus: the optical voice
+   releases **2.892x** more slowly after a long passage than after a stab at the
+   same depth, the OTA voice **1.000x**. Ratio **2.81:1** measured against a
+   **2.875:1** prediction from two published device exponents; attack 9–10 ms
+   across the whole knob (the OTA voice's moves 14 → 3 ms). **The SD-1 / TS
+   precedent did NOT hold and that is a finding, not a shortcut:** of
+   `CompressorEngine`'s eight config structs exactly one applies to an optical
+   leveling amplifier, and `SidechainDetector` was refused by measurement too
+   (there is no envelope capacitor in the reference circuit at all). `OptoModel`
+   is standalone and holds a new shared component, `OptoCell` — whose named
+   future consumer is **M13.5's photocell-driven Uni-Vibe**. See ADR 025.
 4. **M13.4 — Delay: Deluxe Memory Man / Echoplex EP-3** *(L)* — the single
    biggest hole in the lineup. BBD + compander + degradation. Note the EP-3's
    *preamp* is a tone in its own right (Page, EVH) and is worth exposing even

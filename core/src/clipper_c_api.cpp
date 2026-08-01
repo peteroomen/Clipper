@@ -21,6 +21,7 @@
 #include "clipper/dsp/WahModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/MuffModel.h"
+#include "clipper/dsp/OptoModel.h"
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/SdModel.h"
 #include "clipper/dsp/TsModel.h"
@@ -666,6 +667,67 @@ void gate_process(void* handle, const float* in_ptr, float* out_ptr,
                   int num_frames) {
     if (!handle) return;
     static_cast<clipper::dsp::GateModel*>(handle)->process(in_ptr, out_ptr,
+                                                           num_frames);
+}
+
+// --- M13.3: optical compressor exports ----------------------------------------
+//
+// Additive alongside rat_*/sd_*/ts_*/muff_*/gold_*/comp_*/gate_*/phaser_*/wah_*,
+// byte-for-byte the same opaque-handle ABI so the worklet drives it exactly like
+// any other pedal. Param slots: 0 = PEAK REDUCTION, 1 = MODE (< 0.5 COMPRESS,
+// >= 0.5 LIMIT — a DISCRETE two-state switch, the CE-1 precedent), 2 = GAIN.
+// This is the lineup's SECOND dynamics pedal and the first one whose slot 1
+// carries a real control rather than being unused.
+//
+// Under the hood it is an EL panel lighting a CdS photocell in a feed-back loop
+// (OptoModel / OptoCell), with the cell's own two-stage, program-dependent
+// release as the whole point — see docs §64. The ABI is identical to every other
+// pedal's, so a chain can mix it with anything.
+
+EMSCRIPTEN_KEEPALIVE
+void* opto_create(float sample_rate) {
+    auto* m = new clipper::dsp::OptoModel();
+    m->prepare(static_cast<double>(sample_rate), 128);
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void opto_destroy(void* handle) {
+    delete static_cast<clipper::dsp::OptoModel*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void opto_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
+    static_cast<clipper::dsp::OptoModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clear recursive state and re-park the cell DARK, keeping the
+// knobs / rate / factor. See the banner above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void opto_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::OptoModel*>(handle)->reset();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void opto_set_oversampling(void* handle, int factor) {
+    if (!handle) return;
+    static_cast<clipper::dsp::OptoModel*>(handle)->setOversampling(factor);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int opto_latency_samples(void* handle) {
+    if (!handle) return 0;
+    return static_cast<clipper::dsp::OptoModel*>(handle)->latencySamples();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void opto_process(void* handle, const float* in_ptr, float* out_ptr,
+                  int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::OptoModel*>(handle)->process(in_ptr, out_ptr,
                                                            num_frames);
 }
 

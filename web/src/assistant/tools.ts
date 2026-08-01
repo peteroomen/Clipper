@@ -292,6 +292,18 @@ export const TOOLS = [
       'FIXED threshold, so turning it up buys more squash, more make-up gain AND ' +
       'more hiss together, and it also squashes the pick attack harder. Put it ' +
       "FIRST in the chain, before the dirt), " +
+      "'opto' (the 'Lumen' OPTICAL COMPRESSOR — the SECOND dynamics pedal, and " +
+      'a genuinely different animal from the Squash rather than the same thing ' +
+      'with different knobs. Three controls: PEAK REDUCTION, MODE and GAIN. Its ' +
+      'time constants belong to a photocell, so its release is TWO-STAGE and ' +
+      'PROGRAM DEPENDENT — it lets go quickly after a stab and much more slowly ' +
+      'after a held passage, which is why it disappears on vocals-and-strums ' +
+      'material where the Squash announces itself. It is gentle (a soft knee ' +
+      'rising to about 3:1) where the Squash is a limiter, and it LETS THE PICK ' +
+      'ATTACK THROUGH where the Squash flattens it. PEAK REDUCTION really is a ' +
+      "threshold; GAIN is make-up only and changes no compression. MODE is a " +
+      'two-position switch: COMPRESS is the gentler setting, LIMIT clamps peaks ' +
+      "harder. Put it FIRST in the chain, before the dirt), " +
       "'gate' (the 'Curfew' NOISE GATE — a utility, not a voice: it makes no " +
       'sound of its own, it takes one away. Two knobs, THRESHOLD and DECAY. ' +
       'THRESHOLD really IS a threshold (unlike the compressor\'s SUSTAIN): below ' +
@@ -340,7 +352,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -534,13 +546,14 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'tuner' =
+    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'tuner' =
       input.type === 'tuner' ? 'tuner'
       : input.type === 'sd1' ? 'sd1'
       : input.type === 'ts' ? 'ts'
       : input.type === 'muff' ? 'muff'
       : input.type === 'gold' ? 'gold'
       : input.type === 'comp' ? 'comp'
+      : input.type === 'opto' ? 'opto'
       : input.type === 'gate' ? 'gate'
       : input.type === 'phaser' ? 'phaser'
       : input.type === 'wah' ? 'wah'
@@ -558,6 +571,7 @@ export function executeTool(
             : type === 'muff' ? 'Pi Fuzz'
               : type === 'gold' ? 'Myth'
                 : type === 'comp' ? 'Squash'
+                : type === 'opto' ? 'Lumen'
                 : type === 'gate' ? 'Curfew'
                   : type === 'phaser' ? 'Phaser'
                     : type === 'wah' ? 'Weeper'
