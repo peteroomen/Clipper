@@ -32,6 +32,7 @@
 #include "clipper/dsp/Biquad.h"
 #include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/CompModel.h"
+#include "clipper/dsp/GateModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/Jcm800Preamp.h"
 #include "clipper/dsp/OnePoleSmoother.h"
@@ -499,6 +500,18 @@ int main() {
         u.prepare(kFs, kBlock);
         u.setParameter(CompModel::PARAM_SUSTAIN, 1.0f);  // worst case: most gain
         u.setParameter(CompModel::PARAM_LEVEL, 1.0f);
+    });
+    // M13.6a's gate: its FOUR coupling-cap states rest at zero and are flushed.
+    // Two states deliberately are not, each at a real operating point (ADR 006):
+    // the shared detector's envelope node rests at the 9.0000 V rail, and the VCA
+    // gain rests at its off-isolation, 1.0000e-04. maxAbsRestingState() excludes
+    // both, so the bar below is the same EXACTLY-zero one every other pedal gets.
+    // Worst case for a gate is the knob that keeps it OPEN longest.
+    testPedalSilenceIsExactlySilent<GateModel>("Curfew noise gate (M13.6a)",
+                                               [](GateModel& u) {
+        u.prepare(kFs, kBlock);
+        u.setParameter(GateModel::PARAM_THRESHOLD, 0.0f);
+        u.setParameter(GateModel::PARAM_DECAY, 1.0f);
     });
     testPedalSilenceIsExactlySilent<SdModel>("SD-1 output DC blocker", [](SdModel& u) {
         u.prepare(kFs, kBlock);

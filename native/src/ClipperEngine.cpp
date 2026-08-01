@@ -77,6 +77,7 @@ bool Params::pedalOn(int type) const {
         case PEDAL_GOLD:   return goldOn;
         case PEDAL_WAH:    return wahOn;
         case PEDAL_COMP:   return compOn;
+        case PEDAL_GATE:   return gateOn;
         case PEDAL_CHORUS: return ce1On;
         default:           return false;
     }
@@ -128,6 +129,11 @@ void ClipperEngine::applyParamsToModels() {
     comp_.setParameter(clipper::dsp::CompModel::PARAM_SUSTAIN, p.compSustain);
     comp_.setParameter(clipper::dsp::CompModel::PARAM_LEVEL, p.compLevel);
 
+    // "Curfew" noise gate (M13.6a) — same positional slot ABI, slots 0 and 2 only
+    // (THRESHOLD / DECAY). Slot 1 is not written at all: the reference gate has
+    // no third audio control and the model ignores it.
+    gate_.setParameter(clipper::dsp::GateModel::PARAM_THRESHOLD, p.gateThreshold);
+    gate_.setParameter(clipper::dsp::GateModel::PARAM_DECAY, p.gateDecay);
     // CE-1 "Ensemble" chorus (M13.7) — the same positional slot ABI, reading as
     // RATE / DEPTH / MODE. MODE is DISCRETE inside the model (< 0.5 chorus,
     // >= 0.5 vibrato); it is a float here only because the slot is.
@@ -238,6 +244,7 @@ void ClipperEngine::updateParams(const Params& p) {
     using clipper::dsp::GoldModel;
     using clipper::dsp::WahModel;
     using clipper::dsp::CompModel;
+    using clipper::dsp::GateModel;
     using clipper::dsp::Jcm800Amp;
     using clipper::dsp::MuffModel;
     using clipper::dsp::PhaserModel;
@@ -269,6 +276,9 @@ void ClipperEngine::updateParams(const Params& p) {
     if (p.wahVoice != o.wahVoice)     wah_.setParameter(WahModel::PARAM_VOICE, p.wahVoice);
     if (p.compSustain != o.compSustain) comp_.setParameter(CompModel::PARAM_SUSTAIN, p.compSustain);
     if (p.compLevel != o.compLevel)   comp_.setParameter(CompModel::PARAM_LEVEL, p.compLevel);
+    if (p.gateThreshold != o.gateThreshold)
+        gate_.setParameter(GateModel::PARAM_THRESHOLD, p.gateThreshold);
+    if (p.gateDecay != o.gateDecay) gate_.setParameter(GateModel::PARAM_DECAY, p.gateDecay);
 
     // Amp knobs + toggles. VOLUME feeds clean120 + twin + ac30.
     if (p.volume != o.volume) {
@@ -370,6 +380,10 @@ void ClipperEngine::setPedalOversampling(int factor) {
     // reports real latency (docs §58.4) — unlike the phaser below.
     wah_.setOversampling(factor);
     comp_.setOversampling(factor);
+    // The gate accepts and IGNORES this, like the phaser: its signal path is a
+    // multiply, so there is nothing for an oversampler to band-limit and it
+    // carries no group delay (docs §61.7).
+    gate_.setOversampling(factor);
     // ce1_ has no nonlinearity: setOversampling would be a no-op, so it is not called.
     // The phaser is a LINEAR time-varying stage (allpass sweep) — no nonlinearity,
     // so it has no oversampler and no group delay. The web C ABI's
@@ -508,6 +522,7 @@ void ClipperEngine::processPedal(int type, const float* in, float* out, int numF
         case PEDAL_GOLD:   gold_.process(in, out, numFrames); break;
         case PEDAL_WAH:    wah_.process(in, out, numFrames); break;
         case PEDAL_COMP:   comp_.process(in, out, numFrames); break;
+        case PEDAL_GATE:   gate_.process(in, out, numFrames); break;
         case PEDAL_CHORUS: ce1_.process(in, out, numFrames); break;
         default: break;
     }
@@ -528,6 +543,7 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     gold_.prepare(sampleRate_, maxBlock_);
     wah_.prepare(sampleRate_, maxBlock_);
     comp_.prepare(sampleRate_, maxBlock_);
+    gate_.prepare(sampleRate_, maxBlock_);
     ce1_.prepare(sampleRate_, maxBlock_);
     amp_.prepare(sampleRate_, maxBlock_);
     // The JCM runs at its fixed 4× internally (set BEFORE prepare so its stages
@@ -728,6 +744,8 @@ int ClipperEngine::latencySamples() const {
             // The compressor oversamples its OTA gain cell, so it carries the
             // same OS group delay as the dirt boxes.
             case PEDAL_COMP: n += comp_.latencySamples(); break;
+            // The gate is not oversampled — zero group delay, like the phaser.
+            case PEDAL_GATE: break;
             // The CE-1 chorus is linear time-varying — no oversampling, and its
             // modulated delay IS the effect rather than a compensable latency.
             case PEDAL_CHORUS: break;

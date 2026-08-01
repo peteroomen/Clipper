@@ -11349,6 +11349,393 @@ is chosen for distinguishability and the identity is carried by the face. Wordma
 **Goldens: all five UNCHANGED at ±0.00 dB, and nothing was blessed.** The
 compressor is in no golden rig, and it touches no other model.
 
+## 61. M13.6a — the "Curfew" noise gate (the first UTILITY, and the second consumer of M13.1's detector)
+
+The lineup's first pedal that is not a voice at all. It makes no sound; it takes
+one away. Pedal type `gate`, slot **9** (reserved up front by the
+slot-reservation commit — see `PEDAL_GATE`), accent **slate**, wordmark
+"Curfew", model line `UTILITY Nº8 · GATE`. Files: shared
+`core/include/clipper/dsp/SidechainDetector.h` (NEW — the extracted detector);
+`core/include/clipper/dsp/GateModel.h` + `core/src/dsp/GateModel.cpp`; tests
+`core/tests/test_gate_model.cpp` (`clipper_gate_tests`); C ABI `gate_*`;
+`--pedal gate` in the render CLI; a `curfew` row in `clipper-bench`; worklet
+`gate` dispatch; `rig.ts` / `Pedal.tsx` / `pedal.css` / `Board.tsx` / assistant;
+native `ClipperEngine` + APVTS + `PedalCard` + a sixth `identical_core_test`
+board. Trademark-safe throughout (no Boss / NS-2 / ISP / Decimator text on any
+user surface).
+
+### 61.1 Research — what was reachable, and what was not
+
+**The reference is a Boss NS-2-class noise suppressor**, and this is the §57
+situation rather than the §59 one: **NO SCHEMATIC WAS EVER READ.**
+
+**Reachable, and used** (search-result extracts only — `WebFetch` returned 403
+for every host tried, *including Wikipedia*, exactly as §57 and §59 record):
+
+* **Boss's own product copy and the NS-2 owner's manual**: the pedal is built
+  around "a high-quality VCA and high-speed envelope-detecting circuits", and
+  "the expander starts its function when the volume of the instrument becomes
+  lower than the threshold level". So it is a downward expander with a VCA and a
+  fast detector — the topology, from the manufacturer.
+* **The control complement**: THRESHOLD (how sensitive), DECAY (how fast the
+  sound fades once the suppression engages), and a MODE switch (Reduction /
+  Mute). Manual, plus Roland's own support article on the two modes.
+* **One forum circuit description** (via extract): the input buffer Q1 feeds a
+  gain stage around IC2a "where signal dynamics are sensed and transformed into a
+  control signal via various stages with diodes", which then reaches pin 8 of an
+  **M5207 dual VCA**. That is the only component-level statement obtained, and it
+  matters: it says the sidechain is a **gain stage feeding a diode rectifier**,
+  which is exactly the shape of M13.1's detector.
+* **The gate literature, for the two things the reference does not document.**
+  Hysteresis: "noise gates often implement hysteresis, that is, they have two
+  thresholds: one to open the gate and another, set a few dB below, to close the
+  gate", with **−6 dB the recommended starting point**. Hold: designers "have
+  probably built a fixed hold time into the system, **usually about 20 to
+  30 ms**", so a gate does not chase individual cycles of a low note under a fast
+  attack. Guitar attack **0.1–1 ms**, release **~300 ms** as typical starting
+  points.
+
+**Not reachable, recorded as gaps.** Every one of these 403'd or is paywalled:
+`freestompboxes.org` (the schematic thread), `ronsound.com` (sells the sheet),
+`elecsprout.com`, `schematicsonline.com`, `eserviceinfo.com`, and the
+`static.roland.com` manual PDF itself. A GitHub code/repo search for an NS-2
+netlist or `.asc` found nothing — so unlike §59 there was no LTspice
+transcription to parse.
+
+Consequences, stated rather than buried:
+
+* **Every component value in `GateModel.cpp` is a documented reconstruction**,
+  chosen under stated constraints, not transcribed. §57's rule applies verbatim:
+  *do not re-tune any of them toward a sound; find the schematic.*
+* **The threshold range in dBV, the decay range in seconds and the VCA's
+  off-isolation are all this model's own.** There is no published figure for any
+  of them.
+* **Whether the real NS-2 implements hysteresis at all could not be established.**
+  It is in this model because the gate literature is unanimous that a single
+  threshold chatters, and because this slice measures the chatter (§61.5). Its
+  −6 dB nominal is that literature's own number, not a fit.
+* The **device cards are NOT reconstructed**: the 2N3904 and 1N4148 come from
+  `SidechainDetector.h`, i.e. they are the same published SPICE cards M13.1 uses.
+
+### 61.2 THE SEAM — what ADR 019 got right, what it got wrong, and what was NOT done
+
+ADR 019 built `CompressorEngine` config-parameterized from its first line and
+named the noise gate as a consumer: *"a gate is this same `Sidechain` feeding a
+different `ControlMap`"*. It also named the risk in terms — a seam written before
+its second consumer exists can be the wrong seam, and the answer to that is *"a
+finding to report and the header to correct, not a reason to quietly widen the
+engine until both fit"*. This slice is that test. **The verdict: the CLAIM held;
+the SEAM AS WRITTEN did not, and it was corrected rather than widened.**
+
+**Right — the detector really is the shared part.** The gate uses the same
+full-wave clamp/rectifier and the same envelope integrator, with **nothing
+changed but component values**. No second envelope follower was written. The
+diff, entirely in config:
+
+| part | compressor (§59) | gate | why |
+| --- | --- | --- | --- |
+| clamp cap / resistor | 10 nF / 1 MΩ | 10 nF / 1 MΩ | the same DC restorer, 15.9 Hz — below the band, so it restores every note |
+| envelope cap / resistor | 10 µF / 150 kΩ = **1.500 s** | 47 nF / 220 kΩ = **10.34 ms** | a compressor's release IS its envelope; a gate's audible release is the DECAY knob on the VCA ramp, so its detector only has to see a note stop |
+| leg source impedances | 1.4 kΩ (emitter follower) / 10 kΩ (collector load) — deliberately ASYMMETRIC | 1 kΩ / 1 kΩ | the gate's rectifier is driven by an op-amp, so both legs see the same impedance and the full-wave rectifier is symmetric |
+| supply / Vce,sat | 9 V / 0.1 V | 9 V / 0.1 V | same |
+
+**Wrong (structure) — `Sidechain` was a struct with no code attached.** The
+detector itself was `CompressorEngine::detectorLeg()` and `::advanceEnvelope()`,
+both **private**, with their state (`clampP_`, `clampN_`, `vbP_`, `vbN_`,
+`vEnv_`) in that class's members. There was nothing a second consumer could hold.
+It is now the standalone **`SidechainDetector`**, which both pedals own by value.
+The move is **bit-identical for the compressor** — two `clipper-render` renders
+(a 2 s 80→6000 Hz sweep at SUSTAIN 0.70/LEVEL 0.50, and a 3 s 110 Hz pluck at
+SUSTAIN 0.20/LEVEL 0.90) `cmp` byte-for-byte against the pre-move binary, and
+`clipper_comp_tests` / `clipper_denormal_tests` / `clipper_nan_guard_tests` pass
+unchanged.
+
+**Wrong (`ControlMap`) — it is not a policy hook.** It is three resistor values
+(`potOhms` / `seriesOhms` / `cellPinV`) that turn an envelope voltage into an
+**OTA bias current**. A gate has no rheostat, no cell pin and no control current;
+its control law is a Schmitt comparator plus an attack/hold/decay ramp into a
+VCA. `GateModel` therefore carries its own `GateControl`, and **`ControlMap` was
+not widened**. That is the ADR's instruction followed literally: an engine that
+grows a field every time a voice disagrees has become a union of two models.
+
+**Wrong (`detectorFromOutput`) — for a gate, feed-back is not a variant, it is
+broken.** §59 proves by measurement that the Dyna Comp's detector tastes the gain
+cell's OUTPUT, and that flipping it collapses the ratio 216:1 → 3.3:1. A gate
+that tastes its own output **latches shut the first time it closes** — the
+detector then sees only the VCA's off-isolation and can never see enough to
+re-open. Measured, not argued (§61.7). The field stays OTA-only; the gate is
+feed-forward by construction, with the flip kept as a test hook.
+
+`CompressorEngine.h`'s seam banner now carries all four of those corrections, and
+its rule for M13.3 is narrowed to: **reuse the DETECTOR, and expect the CONTROL
+side to be your own.**
+
+### 61.3 The knobs — TWO, and why the third was not shipped
+
+The reference exposes THRESHOLD, DECAY and a MODE switch. The first two ship as
+slots 0 and 2. **MODE deliberately does not ship**, and the reason is a finding
+rather than a shortcut: per Roland's own support article, MODE does not change
+the audio processing at all — it changes what the FOOTSWITCH does (in Reduction
+the switch bypasses the suppression; in Mute the suppression is always on and the
+switch becomes a mute). On this board the footswitch is **bypass on every pedal**,
+so modelling MODE would either be inert (dead UI, forbidden) or would make one
+pedal's footswitch mean something different from the other nine. Slot 1 is
+carried and unused — the compressor's and the phaser's precedent.
+
+### 61.4 THRESHOLD is a threshold — the table, and the contrast that matters
+
+The THRESHOLD pot is a LOG (audio-taper) part attenuating the sidechain amp's
+fixed ×400 gain over **40 dB**. Measured, shipped code, 220 Hz, 48 kHz — the
+input peak at which a fresh gate ends up OPEN, bisected on the comparator's own
+state:
+
+| knob | opens at | the pedal's stated law | Δ |
+| --- | --- | --- | --- |
+| 0.00 | **−59.05 dBV** | −59.06 | +0.01 |
+| 0.20 | −51.05 | −51.06 | +0.01 |
+| 0.35 (default) | **−45.05** | −45.06 | +0.01 |
+| 0.50 | −39.05 | −39.06 | +0.01 |
+| 0.65 | −33.05 | −33.06 | +0.01 |
+| 0.80 | −27.05 | −27.06 | +0.01 |
+| 1.00 | **−19.05** | −19.06 | +0.01 |
+
+Span **40.00 dB**, monotone, worst |measured − stated| **0.01 dB**. The SHAPE is
+the property, not the offset: the detector sitting between the pot and the
+comparator is **exponential**, so a dB-linear pot producing a dB-linear threshold
+across 40 dB is a real prediction. (The one calibration constant in the file,
+`kStatedTripVolts` = 0.4458 V — the sidechain drive at which the detector's mean
+collector current reaches (V+ − vRef)/R_env = 8.30 µA — sets the offset only; it
+is a conduction-angle integral with no closed form, and it is labelled as quoted
+rather than derived.)
+
+Two ABSOLUTE, player-observable windows at the default 0.35, asserted: a
+realistic single-coil hiss floor (~−60 dBV) **stays shut**, and a normally played
+note (0.15 V peak) **opens it**.
+
+**THE CONTROL-LAW CONTRAST, which is the whole point of the pedal.** Across the
+entire THRESHOLD travel the gain the pedal applies when it IS open:
+
+| knob | 0.00 | 0.25 | 0.50 | 0.75 | 1.00 |
+| --- | --- | --- | --- | --- | --- |
+| gain when open | −0.0176 dB | −0.0176 | −0.0176 | −0.0176 | −0.0176 |
+
+**40.00 dB of THRESHOLD travel against 0.0000 dB of GAIN travel.** §59.4 measured
+the Dyna Comp's SUSTAIN doing the exact opposite: **25.33 dB of gain travel
+against 0.28 dB of output travel**. That pair of numbers IS the difference
+between a threshold and a sensitivity control, and both directions are asserted.
+(The −0.0176 dB is the two 7.234 Hz coupling caps at 220 Hz — the gate is unity
+when open, which is what makes it usable always-on.)
+
+Threshold across sample rates (knob 0.35): 44.1 k **−45.05**, 48 k **−45.05**,
+88.2 k **−45.06**, 96 k **−45.07** — spread **0.02 dB**.
+
+### 61.5 Hysteresis and chatter — the two bars that carry this slice
+
+**Where the hysteresis is taken is the design decision, and it was made by
+measurement.** A Schmitt trigger is positive feedback; the obvious place is the
+comparator's own input divider, i.e. a fixed VOLTAGE offset on the reference.
+That does not work here, and the number says why: the detector's transfer is
+exponential, so a fixed voltage offset at the comparator is worth **0.21 dB** of
+input level. So the feedback path is the **sidechain attenuator** instead — while
+the gate is open the sidechain sees 6 dB more level, which makes the gap a
+defined number of dB independent of how steep the detector is.
+
+Measured by ramping a 220 Hz tone from −70 dBV up over 8 s and back down over 8 s
+(knob 0.35):
+
+| | opens at | closes at | GAP |
+| --- | --- | --- | --- |
+| shipped (6 dB of sidechain feedback) | −44.98 dBV | −51.07 dBV | **6.09 dB** |
+| the same code with the hysteresis set to 0 | −44.93 | −45.14 | **0.21 dB** |
+
+**THE CHATTER TEST — the one that matters.** A decaying low E (82.41 Hz,
+0.30 V peak, τ = 0.9 s, 6 s) crosses the threshold once on its way down. Counting
+comparator EDGES over the whole render:
+
+| THRESHOLD | shipped | hysteresis removed |
+| --- | --- | --- |
+| 0.35 | **1 open, 1 close** | 5 opens, 5 closes |
+| 0.50 | **1 open, 1 close** | 6 opens, 6 closes |
+| 0.65 | **1 open, 1 close** | 7 opens, 7 closes |
+
+The mechanism is the detector's own envelope ripple at 2·f₀ — τ_env = 10.34 ms
+against a 12.1 ms period — which is exactly why the stimulus is a LOW note.
+
+### 61.6 The rest of the player-observable set
+
+**The pick attack survives**, which is a gate's characteristic failure mode.
+Measured against the SAME model with the gate held open (same code path, same
+coupling caps, so the comparison isolates the decision):
+
+| | gated | held open | lost |
+| --- | --- | --- | --- |
+| first 20 ms peak | 0.35866 | 0.35906 | **0.01 dB** |
+| first 20 ms rms | 0.22008 | 0.22048 | **0.02 dB** |
+| time to 90 % of the open peak | 3.44 ms | 3.44 ms | **0.00 ms** |
+
+For contrast, §59.6 measured the compressor losing **7.72–20.00 dB** of the same
+transient. A gate has no business losing any, and this one does not.
+
+**Noise reduction**, on a real noise floor, gate closed: **80.01 dB** at a
+−60 dBV floor and **80.01 dB** at −70 dBV. That number is the VCA's own
+off-isolation (`kClosedGain` = 1e-4 = −80 dB — a reconstruction constant, since a
+real gain cell does not reach zero), and the test asserts both that the reduction
+clears 60 dB and that it does not exceed the cell's isolation.
+
+**DECAY is the only time constant the player has.** Time for the VCA gain to fall
+after the note stops:
+
+| knob | −3 dB at | −20 dB at | span |
+| --- | --- | --- | --- |
+| 0.00 | 58.6 ms | 97.8 ms | 39.2 ms |
+| 0.25 | 73.5 ms | 197.4 ms | 123.8 ms |
+| 0.50 (default) | 120.8 ms | **512.4 ms** | 391.6 ms |
+| 0.75 | 270.1 ms | 1508.5 ms | 1238.4 ms |
+| 1.00 | 742.5 ms | 4658.6 ms | 3916.1 ms |
+
+Monotone. ATTACK (**0.40 ms**) and HOLD (**30.0 ms**) are FIXED and have no knob,
+because the reference exposes neither — the values are the gate literature's own
+(0.1–1 ms for percussive guitar; 20–30 ms of built-in hold).
+
+### 61.7 Two structural findings, both measured
+
+**1. The detector MUST be feed-forward.** Same code, one flag:
+
+| tap | settled peak on a 0.30 V note | open? |
+| --- | --- | --- |
+| feed-forward (shipped) | 2.993923e-01 (**−0.02 dB** re input) | yes |
+| feed-back | 2.993923e-05 (**−80.02 dB**) | **no — latched** |
+
+80 dB apart, and the feed-back build never opens at any level, because the only
+thing its detector can see is the VCA's off-isolation.
+
+**2. THE GATE IS NOT OVERSAMPLED, and that is a measured decision.** Its signal
+path is a MULTIPLY; the only nonlinearity in the pedal is in the sidechain, and
+the sidechain reaches the output only through a control ramp whose own corner is
+400 Hz. On the worst stimulus available — a 9 kHz tone whose envelope is forced
+open and shut at 4 Hz — the non-harmonic floor measures:
+
+| factor | 1× | 2× | 4× | 8× |
+| --- | --- | --- | --- | --- |
+| floor re fundamental | **−176.93 dB** | −166.45 | −162.18 | −162.79 |
+
+Oversampling makes it very slightly WORSE and costs **72 samples of latency** and
+roughly double the CPU. The open threshold is likewise unmoved: at 82 Hz / 220 Hz
+/ 1 kHz / 3 kHz / 6 kHz / 10 kHz, 1× and 4× agree within **0.09 dB**. So the gate
+takes the phaser's arrangement — `setOversampling()` is accepted and IGNORED,
+`oversampling()` returns 1, `latencySamples()` returns **0** — and
+`clipper_gate_tests` asserts the no-op is real by rendering at 1/2/4/8× and
+requiring the results be **bit-identical**. A utility pedal that put 1.5 ms on a
+whole board for nothing would be a bug.
+
+### 61.8 Hygiene, and the denormal scope decided by measurement
+
+| property | measured |
+| --- | --- |
+| DC offset ON SIGNAL (220 Hz 0.30 V, and with +0.1 V input offset) | **0.0000 %** of peak, both cases |
+| block-size invariance (128 vs ragged 100/37/256/1/411) | **exactly 0.0** |
+| `reset()` vs a fresh model | **0.000e+00**; one NaN poisons 246/256 samples, after `reset()` **0/48000** |
+| knob-move seam vs the signal's own slew | 8.610e-03 vs 8.622e-03 = **1.00×** |
+| latency | **0 samples** (not oversampled — §61.7) |
+| rate spread, 44.1–96 kHz | **0.02 dB** on the open threshold |
+
+Denormal scope (ADR 006) applied by measurement, not by pattern:
+
+* **Guarded** — the four coupling-cap states (input and output high-passes). They
+  rest at exactly zero; `maxAbsRestingState()` covers exactly those and measures
+  **0.000e+00** after an 8 s silent tail, with the output at **exact digital
+  silence**.
+* **NOT guarded, the detector's envelope node** — rests at the **9.0000 V** rail.
+  A real DC operating point; it can never be subnormal.
+* **NOT guarded, the VCA gain** — rests at the cell's off-isolation,
+  **1.0000e−04**. Also a real operating point, 296 decades above subnormal.
+* **NOT guarded, the detector's clamp caps and Newton warm starts** — §59's
+  finding, unchanged by the extraction: they floor at the solver's residual
+  tolerance (~1e−11 V), not at zero, so a guard there can never fire.
+
+### 61.9 Perturbation proofs
+
+Every load-bearing bar was proven by reverting the thing it names in a copy of
+the source, rebuilding (with `touch` after **both** patch and restore — docs
+§29's trap), and confirming the suite goes red. `git stash` was NOT used:
+CLAUDE.md records that stashes are repo-global across worktrees.
+
+| # | perturbation | result | first assertion to fail, with the measured number |
+| --- | --- | --- | --- |
+| baseline | — | GREEN | — |
+| P1 | `kHysteresisDb` 6.0 → 0.0 | **RED** | `gap > 3.0 && gap < 10.0` — the gap collapses to **0.19 dB**, and the chatter test then reports 5/6/7 opens |
+| P2 | `detectorFromOutput_` default false → **true** (feed-back) | **RED** | the threshold table's monotonicity — the bisection returns **+9.54 dBV** at knob 0.20 because the gate can no longer be opened at any sane level |
+| P3 | `kThresholdRangeDb` 40 → 6 (a near-linear pot) | **RED** | the threshold table's `m > prev + 1.0` — the knob stops moving the threshold a usable amount per step |
+| P4 | `kAttackSeconds` 0.4 ms → 40 ms | **RED** | `dbOf(pkR / pkG) < 1.0` — the pick edge is late by **6.15 ms** and the 20 ms peak is eaten |
+| P5 | `kClosedGain` 1e-4 → 1e-2 | **RED** | `red > 60.0` — noise reduction **80.01 → 40.01 dB** |
+| P6 | `kHoldSeconds` 30 ms → 0 | **RED** | the measured hold — unity survives **5.5 ms** instead of 35.8 ms after the comparator closes |
+| restore | — | GREEN | — |
+
+**P6 is worth a note, because its first version could not fail.** It was written
+as `assert(control().holdSeconds >= 0.020 && <= 0.030)` — an identity that reads
+the constant back, so moving the constant moves the bar with it. Replaced by the
+player-observable form: how long the gain stays within 0.5 dB of unity after the
+comparator lets go, measured from the audio at the FASTEST decay setting
+(**35.8 ms** shipped, **5.5 ms** under P6). Same lesson as §58's and §57's
+could-not-fail bars.
+
+### 61.10 Two bugs found in the native face table on the way in
+
+Filling `PEDAL_GATE = 9` meant touching `native/src/PedalCard.cpp`'s `kFaces`,
+which was `const PedalFace kFaces[PEDAL_TYPE_COUNT]` **indexed by PedalType**.
+Two defects fell out, both pre-existing on `main`:
+
+1. **The wah's and the compressor's entries were in the wrong order.**
+   `PEDAL_WAH = 6` and `PEDAL_COMP = 7`, but the table listed Squash before
+   Weeper — so the native editor drew the Squash face (two knobs, teal) on a
+   Weeper card and vice versa.
+2. **The slot-reservation commit widened `PEDAL_TYPE_COUNT` to 11 while the table
+   still had 8 entries**, so types 8/9/10 resolved to a value-initialized
+   `PedalFace` with NULL `const char*` strings — and `showTrayMenu()` loops to
+   `PEDAL_TYPE_COUNT`, so the gear tray was already offering three of them.
+
+Both are impossible once the type is written down next to the face, so
+`PedalFace` gains an explicit `int type`, `kFaces` is unsized, `pedalFace()` is a
+keyed lookup with a RAT fallback, and a new `pedalHasFace()` filters the gear
+tray and the swap menu so a RESERVED-but-unfilled type is never offered. The
+delay's and the chorus's slots are untouched — they add a pair to the table when
+their slices land.
+
+### 61.11 Integration and goldens
+
+One param shape, additive registries: `rig.ts` `PedalType` + `AVAILABLE_PEDAL_TYPES`
++ `GATE_KNOB_DEFAULTS` (THRESHOLD **0.35**, DECAY **0.5**); worklet `gate`
+dispatch behind the `_gate` C-ABI prefix; `Pedal.tsx` FACES entry (the two-knob
+'stack' geometry, SLATE accent — deliberately the most muted colour on the board,
+because a gate is plumbing); native `PEDAL_GATE = 9` (pre-reserved), three APVTS
+parameters, a `PedalCard` face and a sixth `identical_core_test` board
+(`RAT → Curfew → JCM800` — the first case in which a ZERO-latency pedal follows a
+nonzero-latency one, so the chain's latency accounting has to add exactly the
+RAT's). Assistant: `add_pedal` gains `'gate'`, and the coach gets a real block —
+including that **a gate goes AFTER the dirt** (the opposite of the compressor's
+advice, and for the same reason: the noise a gate has to remove is made by the
+pedals and the amp's gain, so a gate in front of a distortion has nothing to gate
+yet), what to do when notes get chopped (lower THRESHOLD first), and the honest
+limit that a gate cannot remove noise *under* a note.
+
+**Goldens: all five UNCHANGED at ±0.00 dB, and nothing was blessed.** The gate is
+in no golden rig; the detector extraction it required is bit-identical for the
+compressor; and it touches no other model.
+
+**Web-suite caveat, environmental not code — the same one §57 recorded.** The
+Playwright run is unstable in this container: three full runs produced three
+DIFFERENT failing sets (20 / 4 / 4), every one of them including pre-existing
+specs this slice does not touch (`muff worklet`, `chain: reorder of two RATs`,
+`gold worklet`, half of `amp.spec.ts`), and every failure passes on retry in
+isolation. That is `playwright.config.ts`'s own documented Chromium
+`OfflineAudioContext` flake — `audio.spec.ts` has created a great many contexts
+by the time it reaches line 542, and the comp spec's own comment records the
+engine starting to return silence past about six. The new `gate worklet` spec
+measures **hiss drop 80.00 dB, note change 0.000 dB** every time it is run in
+isolation, and its harness gate fails by name if a render comes back silent.
+Also: **port 4173 was taken mid-session by a parallel agent's worktree**, so the
+later runs were done on a throwaway config on another port (deleted afterwards).
+Do NOT `pkill` a sibling's preview server.
 ## 62. M13.7 — the Boss CE-1 Chorus Ensemble: the JC-120's chorus, re-voiced
 
 Pedal type `chorus`, slot `PEDAL_CHORUS = 10`, wordmark **"Ensemble"**, model line

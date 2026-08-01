@@ -13,33 +13,33 @@ constexpr int kJackD = 16;      // .jack is 16px
 // The per-type faces — the native sibling of the web FACES table. Same names, same
 // accents, same morphology cues. Knob labels/order mirror each face's knob array;
 // the underlying param ids are the ones the host automates.
-const PedalFace kFaces[PEDAL_TYPE_COUNT] = {
+const PedalFace kFaces[] = {
     // RAT — the reference: red, the round stomp, the vertical stack.
     {"Dirt N\xc2\xba""1 \xc2\xb7 Rodent-Type", "Rodent", skin::AccentId::Rat,
      Footswitch::Shape::Round, PedalFace::Layout::Stack, 38.0f,
      {{"Dist", pid::ratDist}, {"Filter", pid::ratFilter}, {"Level", pid::ratLevel}},
-     pid::ratOn},
+     pid::ratOn, PEDAL_RAT},
     // SD-1 — yellow, and the Boss-compact RUBBER TREADLE (the morphology cue).
     {"Drive N\xc2\xba""2 \xc2\xb7 Yellow", "Super Drive", skin::AccentId::Sd,
      Footswitch::Shape::Treadle, PedalFace::Layout::Stack, 26.0f,
      {{"Drive", pid::sdDrive}, {"Tone", pid::sdTone}, {"Level", pid::sdLevel}},
-     pid::sdOn},
+     pid::sdOn, PEDAL_SD},
     // TS — the green box, and the Ibanez-format hinged metal PAD.
     {"Drive N\xc2\xba""3 \xc2\xb7 Green", "Screamer", skin::AccentId::Ts,
      Footswitch::Shape::Pad, PedalFace::Layout::Stack, 30.0f,
      {{"Drive", pid::tsDrive}, {"Tone", pid::tsTone}, {"Level", pid::tsLevel}},
-     pid::tsOn},
+     pid::tsOn, PEDAL_TS},
     // Muff — violet, the big stomp, and the classic three-knob TRIANGLE. Knob order
     // is the triangle placement: Sustain top-left, Volume top-right, Tone below.
     {"Fuzz N\xc2\xba""5 \xc2\xb7 Pi", "Pi", skin::AccentId::Muff,
      Footswitch::Shape::BigRound, PedalFace::Layout::Triangle, 44.0f,
      {{"Sustain", pid::muffSustain}, {"Volume", pid::muffVolume}, {"Tone", pid::muffTone}},
-     pid::muffOn},
+     pid::muffOn, PEDAL_MUFF},
     // Phaser — burnt orange, and the iconic ONE big knob.
     {"Phaser N\xc2\xba""4 \xc2\xb7 Script", "Ninety", skin::AccentId::Phaser,
      Footswitch::Shape::Round, PedalFace::Layout::Single, 34.0f,
      {{"Speed", pid::phaserSpeed}},
-     pid::phaserOn},
+     pid::phaserOn, PEDAL_PHASER},
     // GOLD — the hoarded gold box. Its morphology cue is the milled NAMEPLATE band:
     // the original is remembered for a colour and for being ENGRAVED rather than
     // printed, so native takes the colour and the engraving IDEA. Type only — the
@@ -48,14 +48,21 @@ const PedalFace kFaces[PEDAL_TYPE_COUNT] = {
     {"Drive N\xc2\xba""6 \xc2\xb7 Gold", "Myth", skin::AccentId::Gold,
      Footswitch::Shape::Round, PedalFace::Layout::Plate, 30.0f,
      {{"Gain", pid::goldGain}, {"Treble", pid::goldTreble}, {"Output", pid::goldLevel}},
-     pid::goldOn},
-    // ---- ORDER IS LOAD-BEARING: this array is indexed by PedalType. ----
-    // The two entries below were SWAPPED before M13.7 (Squash sat at index 6 and
-    // Weeper at index 7, while PEDAL_WAH = 6 and PEDAL_COMP = 7), so a wah card
-    // drew the compressor's face and a compressor card drew the wah's. The menu
-    // was right, because pedalMenuLabel uses explicit `case` labels rather than
-    // this array's position — which is exactly why the two disagreed. Corrected
-    // here into enum order; never re-sort this array by anything but PedalType.
+     pid::goldOn, PEDAL_GOLD},
+    // This array was once indexed BY PedalType, and its Squash/Weeper entries were
+    // SWAPPED (Squash at 6, Weeper at 7, while PEDAL_WAH = 6 and PEDAL_COMP = 7), so
+    // a wah card drew the compressor's face and vice versa. The menu stayed right
+    // because pedalMenuLabel uses explicit `case` labels — which is exactly why the
+    // two could disagree. Each entry now carries its own PedalType and lookup is
+    // KEYED, so position means nothing and that class of bug cannot recur.
+    // SQUASH — M13.1, the first DYNAMICS pedal and the first non-dirt box. Its
+    // morphology cue is simply that it has TWO knobs where every dirt box has
+    // three: a small MXR-format enclosure over a round stomp. Teal accent (the
+    // real pedal is red, and Rat owns red here). No MXR/Dyna Comp/Ross text.
+    {"Dynamics N\xc2\xba""7 \xc2\xb7 Squash", "Squash", skin::AccentId::Comp,
+     Footswitch::Shape::Round, PedalFace::Layout::Stack, 34.0f,
+     {{"Sustain", pid::compSustain}, {"Level", pid::compLevel}},
+     pid::compOn, PEDAL_COMP},
     // WAH "Weeper" (docs §58) — the board's first FILTER pedal, and the first one
     // whose real enclosure is a ROCKING TREADLE rather than a box. The treadle
     // footswitch shape is that morphology cue (shared with the Boss-compact SD-1
@@ -66,22 +73,16 @@ const PedalFace kFaces[PEDAL_TYPE_COUNT] = {
     {"Filter N\xc2\xba""7 \xc2\xb7 Treadle", "Weeper", skin::AccentId::Wah,
      Footswitch::Shape::Treadle, PedalFace::Layout::Stack, 26.0f,
      {{"Position", pid::wahPosition}, {"Sense", pid::wahSense}, {"Voice", pid::wahVoice}},
-     pid::wahOn},
-    // SQUASH — M13.1, the first DYNAMICS pedal and the first non-dirt box. Its
-    // morphology cue is simply that it has TWO knobs where every dirt box has
-    // three: a small MXR-format enclosure over a round stomp. Teal accent (the
-    // real pedal is red, and Rat owns red here). No MXR/Dyna Comp/Ross text.
-    {"Dynamics N\xc2\xba""7 \xc2\xb7 Squash", "Squash", skin::AccentId::Comp,
+     pid::wahOn, PEDAL_WAH},
+    // CURFEW — M13.6a, the board's first UTILITY: it makes no sound of its own,
+    // it takes one away. Shares the compressor's two-knob 'stack' geometry (two
+    // knobs where a dirt box has three is the cue for "not a voice") and is told
+    // apart by the SLATE accent — deliberately the most muted colour on the
+    // board, because a gate is plumbing. No Boss/NS-2/ISP/Decimator text.
+    {"Utility N\xc2\xba""8 \xc2\xb7 Gate", "Curfew", skin::AccentId::Gate,
      Footswitch::Shape::Round, PedalFace::Layout::Stack, 34.0f,
-     {{"Sustain", pid::compSustain}, {"Level", pid::compLevel}},
-     pid::compOn},
-    // RESERVED, in the slot-reservation commit's order. These two are the DELAY
-    // (8) and NOISE GATE (9) slices' to fill — left as explicit empty faces so
-    // this array stays index-aligned with PedalType while those slices are in
-    // flight. An empty face draws no knobs and no wordmark, and is unreachable
-    // anyway: a type is only addable once the front-ends know about it.
-    {},  // PEDAL_DELAY = 8  — M13.4, owned by the delay slice
-    {},  // PEDAL_GATE  = 9  — M13.6a, owned by the gate slice
+     {{"Thresh", pid::gateThreshold}, {"Decay", pid::gateDecay}},
+     pid::gateOn, PEDAL_GATE},
     // ENSEMBLE — M13.7, the CE-1 Chorus Ensemble: the second MODULATION pedal and
     // the first whose circuit the project already owned (it is the JC-120 amp's
     // chorus in a floor box — docs §62). Morphology cue is the real CE-1's big,
@@ -92,12 +93,25 @@ const PedalFace kFaces[PEDAL_TYPE_COUNT] = {
     {"Modulation N\xc2\xba""8 \xc2\xb7 Ensemble", "Ensemble", skin::AccentId::Chorus,
      Footswitch::Shape::Round, PedalFace::Layout::Plate, 34.0f,
      {{"Rate", pid::ce1Rate}, {"Depth", pid::ce1Depth}, {"Mode", pid::ce1Mode}},
-     pid::ce1On},
+     pid::ce1On, PEDAL_CHORUS},
 };
 }  // namespace
 
+constexpr int kNumFaces = static_cast<int>(sizeof(kFaces) / sizeof(kFaces[0]));
+
 const PedalFace& pedalFace(int type) {
-    return kFaces[juce::jlimit(0, PEDAL_TYPE_COUNT - 1, type)];
+    for (int i = 0; i < kNumFaces; ++i)
+        if (kFaces[i].type == type) return kFaces[i];
+    // A reserved-but-unfilled PedalType. Callers that could reach one filter on
+    // pedalHasFace() first; this fallback exists so a stale saved board can never
+    // dereference a NULL face.
+    return kFaces[0];
+}
+
+bool pedalHasFace(int type) {
+    for (int i = 0; i < kNumFaces; ++i)
+        if (kFaces[i].type == type) return true;
+    return false;
 }
 
 juce::String pedalMenuLabel(int type) {
@@ -109,6 +123,7 @@ juce::String pedalMenuLabel(int type) {
         case PEDAL_PHASER: return "Ninety - script phaser";
         case PEDAL_GOLD:   return "Myth - gold transparent overdrive";
         case PEDAL_COMP:   return "Squash - OTA compressor";
+        case PEDAL_GATE:   return "Curfew - noise gate";
         case PEDAL_WAH:    return "Weeper - wah / envelope filter";
         case PEDAL_CHORUS: return "Ensemble - CE-1 chorus / vibrato";
         default:           return "Pedal";
@@ -167,7 +182,7 @@ PedalCard::PedalCard(ClipperAudioProcessor& p, int type) : proc_(p), type_(type)
         m.addSectionHeader("Swap for");
         const std::vector<int> board = proc_.chainOrder();
         for (int t = 0; t < PEDAL_TYPE_COUNT; ++t) {
-            if (t == type_) continue;
+            if (t == type_ || !pedalHasFace(t)) continue;
             bool taken = false;  // each type is instantiable once
             for (int have : board) taken = taken || have == t;
             if (taken) continue;

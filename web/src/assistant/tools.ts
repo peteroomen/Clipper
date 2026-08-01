@@ -290,6 +290,14 @@ export const TOOLS = [
       'FIXED threshold, so turning it up buys more squash, more make-up gain AND ' +
       'more hiss together, and it also squashes the pick attack harder. Put it ' +
       "FIRST in the chain, before the dirt), " +
+      "'gate' (the 'Curfew' NOISE GATE — a utility, not a voice: it makes no " +
+      'sound of its own, it takes one away. Two knobs, THRESHOLD and DECAY. ' +
+      'THRESHOLD really IS a threshold (unlike the compressor\'s SUSTAIN): below ' +
+      'it the gate shuts, above it the pedal is UNITY and does nothing at all. ' +
+      'DECAY sets how fast the sound fades once it shuts. It is what makes a ' +
+      'high-gain rig playable — silence between phrases, and no hiss riding under ' +
+      'the palm mutes. Put it AFTER the dirt (or in an effects loop), never ' +
+      "before it), " +
       "'phaser' (a script-era 4-stage phaser — the classic swirling/whooshing " +
       'modulation with ONE knob, SPEED: placed AFTER the dirt it gives the vocal ' +
       'EVH swoosh, before the dirt it is subtler; slow = tape-warble, fast = ' +
@@ -321,7 +329,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'phaser', 'wah', 'chorus', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'gate', 'phaser', 'wah', 'chorus', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -509,13 +517,14 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'phaser' | 'wah' | 'chorus' | 'tuner' =
+    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'tuner' =
       input.type === 'tuner' ? 'tuner'
       : input.type === 'sd1' ? 'sd1'
       : input.type === 'ts' ? 'ts'
       : input.type === 'muff' ? 'muff'
       : input.type === 'gold' ? 'gold'
       : input.type === 'comp' ? 'comp'
+      : input.type === 'gate' ? 'gate'
       : input.type === 'phaser' ? 'phaser'
       : input.type === 'wah' ? 'wah'
       : input.type === 'chorus' ? 'chorus'
@@ -531,6 +540,7 @@ export function executeTool(
             : type === 'muff' ? 'Pi Fuzz'
               : type === 'gold' ? 'Myth'
                 : type === 'comp' ? 'Squash'
+                : type === 'gate' ? 'Curfew'
                   : type === 'phaser' ? 'Phaser'
                     : type === 'wah' ? 'Weeper'
                     : type === 'chorus' ? 'Ensemble'

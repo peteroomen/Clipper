@@ -507,6 +507,10 @@ void ClipperAudioProcessorEditor::showTrayMenu() {
     juce::PopupMenu m;
     m.addSectionHeader("Available pedals");
     for (int t = 0; t < PEDAL_TYPE_COUNT; ++t) {
+        // Skip a RESERVED type whose slice has not landed: PEDAL_TYPE_COUNT was
+        // widened to 11 ahead of three parallel slices, and offering a pedal with
+        // no face would be dead UI at best (docs §61.10).
+        if (!pedalHasFace(t)) continue;
         bool taken = false;  // each pedal type is instantiable once
         for (int have : chain) taken = taken || have == t;
         if (!taken) m.addItem(t + 1, pedalMenuLabel(t));

@@ -55,6 +55,12 @@ inline constexpr const char* goldLevel   = "goldLevel";
 inline constexpr const char* compOn      = "compOn";
 inline constexpr const char* compSustain = "compSustain";
 inline constexpr const char* compLevel   = "compLevel";
+// M13.6a: the "Curfew" noise gate. TWO knobs, for the same reason as the
+// compressor's — the reference's third control changes the FOOTSWITCH, not the
+// audio, and this board's footswitch is bypass on every pedal.
+inline constexpr const char* gateOn        = "gateOn";
+inline constexpr const char* gateThreshold = "gateThreshold";
+inline constexpr const char* gateDecay     = "gateDecay";
 // M13.7: the CE-1 "Ensemble" chorus. THREE knobs — RATE, DEPTH and MODE. MODE is
 // a plain 0..1 knob rather than a Choice deliberately: it is the shared slot-2 of
 // the pedal-agnostic positional ABI, so making it a Choice here would put the
