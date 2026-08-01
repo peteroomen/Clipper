@@ -22,6 +22,7 @@
 .pedal[data-pedal-type="gold"]  { --pedal-accent: var(--accent-gold);  --pedal-accent-glow: var(--accent-gold-glow); }
 .pedal[data-pedal-type="comp"]  { --pedal-accent: var(--accent-comp);  --pedal-accent-glow: var(--accent-comp-glow); }
 .pedal[data-pedal-type="wah"]   { --pedal-accent: var(--accent-wah);   --pedal-accent-glow: var(--accent-wah-glow); }
+.pedal[data-pedal-type="chorus"] { --pedal-accent: var(--accent-chorus); --pedal-accent-glow: var(--accent-chorus-glow); }
 .pedal.raised {
   background:
     linear-gradient(160deg, var(--chassis-tint, transparent), var(--chassis-tint, transparent)),

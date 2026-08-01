@@ -168,6 +168,13 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::compOn, 1}, "Squash On", true));
     layout.add(knob(pid::compSustain, "Squash Sustain", 0.5f));
     layout.add(knob(pid::compLevel, "Squash Level", 0.4f));
+    // M13.7 — the CE-1 "Ensemble" chorus. Defaults mirror the web's
+    // CHORUS_KNOB_DEFAULTS: RATE 0.35 (~1.30 Hz in chorus mode), DEPTH 0.5, MODE
+    // 0 = CHORUS.
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::ce1On, 1}, "Ensemble On", true));
+    layout.add(knob(pid::ce1Rate, "Ensemble Rate", 0.35f));
+    layout.add(knob(pid::ce1Depth, "Ensemble Depth", 0.5f));
+    layout.add(knob(pid::ce1Mode, "Ensemble Mode", 0.0f));
 
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::ampOn, 1}, "Amp Power", true));
     // M9.4 amp voice (default index 0 == Clean 120).
@@ -429,6 +436,10 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.compOn = f(pid::compOn) >= 0.5f;
     p.compSustain = f(pid::compSustain);
     p.compLevel = f(pid::compLevel);
+    p.ce1On = f(pid::ce1On) >= 0.5f;
+    p.ce1Rate = f(pid::ce1Rate);
+    p.ce1Depth = f(pid::ce1Depth);
+    p.ce1Mode = f(pid::ce1Mode);
 
     // The board: unpack the lock-free snapshot the message thread published (never
     // touch the ValueTree here — this runs on the audio thread).

@@ -80,12 +80,54 @@ struct ChorusModel::Impl {
     int bufLen = 0;
     int writeIdx = 0;
 
-    double baseSamples = 0.0;     // kBaseMs in samples
+    // Base delay in SAMPLES. A double smoother, not a plain double, because the
+    // CE-1 voicing (docs §62) moves the base with its DEPTH knob and an unsmoothed
+    // base delay is a pitch step. A settled OnePoleSmootherT<double> returns its
+    // target BIT-EXACTLY (value_ == target_ short-circuits in next()), so an owner
+    // that sets it once — every JC-120 caller — is unchanged to the last mantissa
+    // bit. That is what keeps the clean120_chorus golden at ±0.00.
+    OnePoleSmootherD baseSamples;
     OnePoleSmoother sweepSamples;  // depth -> sweep amplitude in samples
     OnePoleSmoother rateHz;        // speed -> LFO Hz
     double lfoPhase = 0.0;         // radians, [0, 2*pi)
 
     int mode = MODE_OFF;
+
+    // Waveform as a SMOOTHED BLEND: 0.0 = sine, 1.0 = triangle.
+    //
+    // It has to be smoothed, and the reason was found by measurement rather than
+    // reasoned about in advance (docs §62.8). The two shapes share their zero
+    // crossings and their sign, so switching AT a zero crossing would be
+    // seamless — but they do NOT agree anywhere in between: at phase pi/4 sine is
+    // 0.7071 and triangle is 0.5000, so flipping the flag mid-cycle JUMPS the
+    // read pointer by 0.207*A, which at a 1.4 ms sweep is ~14 samples at 48 kHz.
+    // That is an audible click, and the CE-1's mode switch changes the waveform.
+    // Blending on the same ~8 ms constant as everything else makes the delay
+    // continuous through the change.
+    //
+    // The blend is a DOUBLE smoother so that the sine end is EXACT: an owner that
+    // never asks for triangle holds blend == 0.0 and takes the `b <= 0.0` branch,
+    // which is std::sin(phase) and nothing else. That is what keeps every JC-120
+    // caller bit-identical — a `(1-b)*sin + b*tri` evaluated unconditionally
+    // would also be exact at b == 0, but it would pay for the triangle on every
+    // sample of every amp render for nothing.
+    OnePoleSmootherD waveBlend;
+
+    // Triangle normalised to +/-1 with sine's zero crossings and sign:
+    // 0 at phase 0, +1 at pi/2, 0 at pi, -1 at 3pi/2. Its delay sweep makes the
+    // PITCH deviation a SQUARE wave — two fixed detunings, not a wobble.
+    static double triangle(double phase) {
+        const double p = phase * (1.0 / kTwoPi);  // [0, 1)
+        if (p < 0.25) return 4.0 * p;
+        if (p < 0.75) return 2.0 - 4.0 * p;
+        return 4.0 * p - 4.0;
+    }
+
+    static double lfo(double blend, double phase) {
+        if (blend <= 0.0) return std::sin(phase);
+        if (blend >= 1.0) return triangle(phase);
+        return (1.0 - blend) * std::sin(phase) + blend * triangle(phase);
+    }
 
     // 4-point Lagrange (cubic) fractional-delay read at delay D (in samples,
     // D >= 2 guaranteed by the base + sweep design). tap(k) reads the sample
@@ -119,7 +161,6 @@ void ChorusModel::prepare(double sampleRate) {
     Impl& d = *impl_;
     d.sampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
 
-    d.baseSamples = kBaseMs * d.sampleRate / 1000.0;
     const double maxDelayMs = kBaseMs + kMaxSweepMs + kGuardMs;
     d.bufLen = static_cast<int>(std::ceil(maxDelayMs * d.sampleRate / 1000.0)) + 4;
     if (d.bufLen < 8) d.bufLen = 8;
@@ -127,9 +168,15 @@ void ChorusModel::prepare(double sampleRate) {
     d.writeIdx = 0;
     d.lfoPhase = 0.0;
 
+    d.baseSamples.prepare(kSmoothSeconds, d.sampleRate);
+    d.waveBlend.prepare(kSmoothSeconds, d.sampleRate);
     d.sweepSamples.prepare(kSmoothSeconds, d.sampleRate);
     d.rateHz.prepare(kSmoothSeconds, d.sampleRate);
-    // Defaults: no sweep, a gentle rate (settable before/after prepare).
+    // Defaults: the JC's fixed 5 ms base, no sweep, a gentle rate (all settable
+    // before/after prepare). setImmediate snaps, so nothing ramps from a stale
+    // value at (re)prepare time.
+    d.baseSamples.setImmediate(kBaseMs * d.sampleRate / 1000.0);
+    d.waveBlend.setImmediate(0.0);  // SINE — the JC-120 voicing
     d.sweepSamples.setImmediate(0.0f);
     d.rateHz.setImmediate(static_cast<float>(speedToHz(0.3f)));
 }
@@ -142,6 +189,8 @@ void ChorusModel::reset() {
     // Snap the two control smoothers onto their targets too — a poisoned smoother
     // value never recovers on its own, and a NaN sweep would immediately re-poison
     // the delay line we just cleared (audit finding 1).
+    d.baseSamples.reset();
+    d.waveBlend.reset();
     d.sweepSamples.reset();
     d.rateHz.reset();
 }
@@ -165,6 +214,47 @@ void ChorusModel::setMode(int mode) {
 
 int ChorusModel::mode() const { return impl_->mode; }
 
+// --- Direct voicing seam (docs §62) -----------------------------------------
+// Milliseconds and hertz, not knob positions. Non-finite values are rejected
+// outright (ParamGuard convention): a NaN base delay would index the ring buffer
+// with a NaN and poison every subsequent read, and unlike a knob there is no
+// meaningful clamp target for "not a number".
+
+void ChorusModel::setBaseDelayMs(double ms) {
+    if (!std::isfinite(ms)) return;
+    if (ms < 0.0) ms = 0.0;
+    impl_->baseSamples.setTarget(ms * impl_->sampleRate / 1000.0);
+}
+
+void ChorusModel::setSweepMs(double ms) {
+    if (!std::isfinite(ms)) return;
+    if (ms < 0.0) ms = 0.0;
+    impl_->sweepSamples.setTarget(static_cast<float>(ms * impl_->sampleRate / 1000.0));
+}
+
+void ChorusModel::setRateHz(double hz) {
+    if (!std::isfinite(hz)) return;
+    if (hz < 0.0) hz = 0.0;
+    impl_->rateHz.setTarget(static_cast<float>(hz));
+}
+
+void ChorusModel::setWaveform(int w) {
+    impl_->waveBlend.setTarget(w == WAVE_TRIANGLE ? 1.0 : 0.0);
+}
+
+double ChorusModel::currentRateHz() const {
+    return static_cast<double>(impl_->rateHz.value());
+}
+
+double ChorusModel::maxAbsDelayLine() const {
+    double m = 0.0;
+    for (float v : impl_->buf) {
+        const double a = std::fabs(static_cast<double>(v));
+        if (a > m) m = a;
+    }
+    return m;
+}
+
 void ChorusModel::processStereo(const float* in, float* outL, float* outR, int numFrames) {
     Impl& d = *impl_;
 
@@ -180,8 +270,10 @@ void ChorusModel::processStereo(const float* in, float* outL, float* outR, int n
         }
         // Advance smoothers so a later engage starts from the right depth/rate.
         for (int i = 0; i < numFrames; ++i) {
+            d.baseSamples.next();
             d.sweepSamples.next();
             d.rateHz.next();
+            d.waveBlend.next();
         }
         return;
     }
@@ -191,12 +283,13 @@ void ChorusModel::processStereo(const float* in, float* outL, float* outR, int n
         // Write the current input into the ring buffer.
         d.buf[static_cast<size_t>(d.writeIdx)] = in[i];
 
+        const double base = d.baseSamples.next();
         const double sweep = d.sweepSamples.next();
         const double rate = d.rateHz.next();
 
-        // Modulated delay in samples. sin(phase) in [-1,1]; base ± sweep keeps it
+        // Modulated delay in samples. lfo(phase) in [-1,1]; base ± sweep keeps it
         // well inside the buffer and >= a couple samples (interpolator floor).
-        double delay = d.baseSamples + sweep * std::sin(d.lfoPhase);
+        double delay = base + sweep * Impl::lfo(d.waveBlend.next(), d.lfoPhase);
         if (delay < 2.0) delay = 2.0;
         if (delay > d.bufLen - 3) delay = d.bufLen - 3;
 

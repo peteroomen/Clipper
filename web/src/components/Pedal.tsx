@@ -177,6 +177,31 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Voice', aria: 'Voice', param: 'level', testId: 'knob-voice' },
     ],
   },
+  // M13.7 CE-1 "Ensemble": the world's FIRST chorus pedal, and the first pedal
+  // here whose circuit the project already owned (it is the JC-120 amp's chorus
+  // in a floor box — docs §62). The real CE-1 is a big, wide, low-slung enclosure
+  // with two footswitches, which is why it takes the 'plate' anatomy rather than
+  // the compact 'stack': it reads as a large box, not a dirt pedal. MAGENTA accent
+  // — the phaser already owns orange and this is the second MODULATION pedal, so
+  // the hue separates the family members (tokens.css --accent-chorus). "Ensemble"
+  // is the wink at the name; no Boss / Roland / CE-1 wording anywhere.
+  chorus: {
+    layout: 'plate',
+    model: 'MODULATION Nº8 · ENSEMBLE',
+    wordmark: 'Ensemble',
+    knobs: [
+      // Slot 0 = RATE. Its RANGE depends on MODE (1.0-3.0 Hz chorus, 3.2-11.6 Hz
+      // vibrato) — the two ranges do not overlap on the real pedal, which is why
+      // the modes read as different effects rather than two speeds of one.
+      // Slot 1 = DEPTH (the 3-5 .. 3-7 ms delay window; it never reaches zero).
+      // Slot 2 = MODE, and it is genuinely DISCRETE: < 0.5 chorus, >= 0.5 vibrato.
+      // The real CE-1 gangs rate+depth onto one INTENSITY knob in chorus mode; we
+      // keep them independent so no knob is dead in either mode (docs §62.6).
+      { name: 'Rate', aria: 'Rate', param: 'distortion', testId: 'knob-rate' },
+      { name: 'Depth', aria: 'Depth', param: 'filter', testId: 'knob-depth' },
+      { name: 'Mode', aria: 'Mode (chorus / vibrato)', param: 'level', testId: 'knob-mode' },
+    ],
+  },
   phaser: {
     // The iconic ONE-KNOB face: a single big centered SPEED knob on a dark chassis
     // with an ORANGE accent (the orange box, instantly read). "Ninety" is the wink
