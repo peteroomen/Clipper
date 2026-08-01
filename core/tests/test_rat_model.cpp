@@ -11,6 +11,7 @@
 
 #include "support/AssertsLive.h"
 #include "support/DcOffset.h"
+#include "support/Xfail.h"
 
 #include <cassert>
 #include <chrono>
@@ -24,6 +25,28 @@ namespace {
 
 constexpr double kTwoPi = 6.283185307179586;
 using clipper::dsp::RatModel;
+
+// The RAT's LEVEL pot is a 100 kOhm LOGARITHMIC pot — the ProCo netlist says so in
+// its own annotation ("R14 is volume pot (100k, logarithmic)"), and it sits last in
+// the chain, driven by the 2N5458 source follower and loaded only by whatever
+// follows, so its law is the bare audio taper with no divider correction to make.
+// RatModel maps it identity-linear and has said so since M1 ("A proper audio-taper
+// volume law is a future refinement"). Registered here rather than left as prose
+// because the level slice (docs §66) MEASURED it and deliberately did not ship it:
+// every dirt pedal in the lineup carries the same approximation — OverdriveEngine
+// says "identity linear map, as the RAT" — so fixing this pedal alone would move it
+// 5.04 dB at its shipped default and break the level parity §66.2 measured across
+// the five. One slice, five output pots, one owner bless.
+const clipper::test::XfailDecl kXfailLevelPotLinear{
+    "rat-level-pot-linear-not-log",
+    "docs §66.3 (2026-08-01 RAT polish; ProCo netlist annotation on R14)",
+    "the LEVEL knob at half rotation must sit inside the 10-20 % audio-taper band a "
+    "100 k logarithmic pot delivers (the house audioTaper, k = 4, gives 12.15 %), "
+    "not the 50 % of a linear map",
+    "a lineup-wide output-pot taper slice — rat/sd1/ts/muff/gold together, NOT this "
+    "pedal alone (docs §66.3)",
+};
+const clipper::test::XfailDecl kLedger[] = {kXfailLevelPotLinear};
 
 // --- Hand-rolled Goertzel: amplitude estimate at frequency f (Hann-windowed).
 double goertzelAmp(const std::vector<float>& x, size_t start, size_t n, double f,
@@ -250,12 +273,18 @@ void testClosedLoopBandwidth(double fs) {
         fs, fcHi, fcHiAnalytic, fcMd, fcMdAnalytic);
 }
 
-// --- Test 1d: LM308 slew-rate limiter clamps dV/dt to ~0.3 V/us (M6.5). --------
-// Unit-test the LM308Stage in isolation: a big step / square must produce a max
-// |dV/dt| equal to the configured slew rate (0.3 V/us), rate-independently. (The
-// slew limiter lives inside oversampling before the diode clamp; testing the
-// stage directly avoids the diode+FILTER masking the op-amp node, and confirms
-// the clamp math at both 44.1k and 96k.)
+// --- Test 1d: the LM308Stage CLAMP MATH, in isolation (M6.5). -----------------
+// Renamed and re-scoped 2026-08-01 (docs §66.5). What this test does: it hands
+// LM308Stage a slew rate and checks the stage delivers exactly that dV/dt, at
+// both rates. What it emphatically does NOT do, and used to be mistaken for:
+// assert anything about the RAT. `SR` below is a LOCAL copy — nothing here reads
+// RatModel.cpp's kOpAmpSlewVoltsPerSec, so the pedal's slew rate could be moved
+// to 0.15 or 3.0 V/us and this test would still pass. It was measured that way:
+// perturbing the model's constant left this test green in both directions, and
+// the only thing that noticed was testFactorOneRegression, a hardcoded-sample
+// DRIFT GUARD (docs §36 labels it as such) that gets regenerated whenever the
+// clipper legitimately changes — i.e. the slew rate had no property guarding it
+// at all. testSlewInModel below is that property.
 void testSlewRate(double fs) {
     const double GBW = 1.0e6, SR = 0.3e6;  // V/s
     clipper::dsp::LM308Stage s;
@@ -284,8 +313,114 @@ void testSlewRate(double fs) {
 
     assert(std::fabs(srStep / 0.3 - 1.0) < 0.02 && "step slew-rate not ~0.3 V/us");
     assert(std::fabs(srSq / 0.3 - 1.0) < 0.02 && "square slew-rate not ~0.3 V/us");
-    std::printf("  [ok] slew @ %.0f Hz: step %.4f V/us, square %.4f V/us (target 0.300)\n",
+    std::printf("  [ok] slew clamp math @ %.0f Hz: step %.4f V/us, square %.4f V/us "
+                "(configured 0.300; does NOT read the model's constant)\n",
                 fs, srStep, srSq);
+}
+
+// --- Test 1e: the LM308's slew rate, as a property of the SHIPPED model. ------
+// (docs §66.4/§66.5. New 2026-08-01 — the RAT polish slice.)
+//
+// The reference is EXTERNAL: the LM308 slews at 0.3 V/us with the datasheet's
+// standard 30 pF compensation, and the ProCo netlist fits exactly that 30 pF
+// (C1). The competing 0.15 V/us figure in circulation belongs to the LM308H, a
+// different part. Both bars below are consequences of the shipped number that a
+// wrong one changes, measured through the whole signal path — the op-amp node
+// itself is unobservable from outside (the diode clamp is immediately after it),
+// so the properties are stated where a player meets them.
+//
+//   (a) DORMANCY. At 0.3 V/us the op-amp NEVER slews on ordinary low-string
+//       playing: a low-E pluck at 0.30 V peak (a hot humbucker) demands at most
+//       0.2235 V/us at the node — 74.5 % of the limit — so removing the clamp
+//       must leave the render BIT-IDENTICAL. Measured 0 differing samples of
+//       66150 / 72000 / 144000 at 44.1 / 48 / 96 kHz, at the default knobs AND
+//       at DISTORTION 1.0. This is the bar that separates the two candidate
+//       datasheet figures: at 0.15 V/us the same pluck DOES slew and it fails.
+//       (Bit-identity is safe rather than brittle here: with the clamp inactive
+//       both builds execute the same adds in the same order — the only
+//       difference is a comparison that never fires.)
+//
+//   (b) ENGAGEMENT, and by how much. On a high E at the 20th fret (4186 Hz, the
+//       house alias probe) at the same 0.15 V the node demands 6.83 V/us, 23x
+//       the limit, and the clamp binds on 93-98 % of oversampled samples. The
+//       level it costs is stable across rates — measured 0.343 / 0.360 / 0.354
+//       dB at 44.1 / 48 / 96 kHz — and it BRACKETS the constant: at 0.15 V/us
+//       the same probe loses 0.752 dB and at 0.6 V/us only 0.067 dB, so the
+//       window below fails in both directions.
+//
+// Together (a) and (b) say the shipped value is neither too slow to leave normal
+// playing alone nor too fast to shape a high note — which is the whole audible
+// content of "the RAT has a slow op-amp".
+void testSlewInModel(double fs) {
+    // The house standard pluck (test_player_expectations.cpp), peak-scaled.
+    auto pluck = [&](double f0, float peak) {
+        const int n = static_cast<int>(1.2 * fs);
+        std::vector<float> s(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) {
+            const double t = i / fs;
+            const double attack = 1.0 - std::exp(-t / 0.004);  // 4 ms pick attack
+            double v = 0.0;
+            for (int h = 1; h <= 6; ++h)
+                v += (1.0 / h) * std::exp(-t * (2.0 + 1.2 * h)) *
+                     std::sin(kTwoPi * f0 * h * t);
+            s[static_cast<size_t>(i)] = static_cast<float>(attack * v);
+        }
+        double pk = 0.0;
+        for (float x : s) pk = std::max(pk, static_cast<double>(std::fabs(x)));
+        for (float& x : s) x = static_cast<float>(x / pk * peak);
+        return s;
+    };
+    auto renderSlew = [&](const std::vector<float>& in, Params p, bool slew) {
+        RatModel m;
+        m.prepare(fs, 128);
+        m.setSlewLimit(slew);
+        m.setParameter(RatModel::PARAM_DISTORTION, p.distortion);
+        m.setParameter(RatModel::PARAM_FILTER, p.filter);
+        m.setParameter(RatModel::PARAM_LEVEL, p.level);
+        std::vector<float> out(in.size(), 0.0f);
+        m.process(in.data(), out.data(), static_cast<int>(in.size()));
+        return out;
+    };
+    auto maxDiff = [](const std::vector<float>& a, const std::vector<float>& b) {
+        double mx = 0.0;
+        for (size_t i = 0; i < a.size(); ++i)
+            mx = std::max(mx, std::fabs(static_cast<double>(a[i]) - static_cast<double>(b[i])));
+        return mx;
+    };
+
+    // (a) Dormancy on ordinary low-string playing, at the default knobs and
+    //     cranked. Hot humbucker level; the clamp must never bind.
+    const auto lowE = pluck(82.41, 0.30f);
+    const Params defaults { 0.7f, 0.4f, 0.8f };
+    const Params cranked { 1.0f, 0.4f, 0.8f };
+    const double dDef = maxDiff(renderSlew(lowE, defaults, true),
+                                renderSlew(lowE, defaults, false));
+    const double dMax = maxDiff(renderSlew(lowE, cranked, true),
+                                renderSlew(lowE, cranked, false));
+    assert(dDef == 0.0 &&
+           "the LM308 slew clamp bound on a 0.30 V low-E pluck at the default knobs — "
+           "at 0.3 V/us (30 pF standard compensation) it must not; is the slew rate "
+           "set to the LM308H's 0.15 V/us? (docs §66.4)");
+    assert(dMax == 0.0 &&
+           "the LM308 slew clamp bound on a 0.30 V low-E pluck at DISTORTION 1.0 — "
+           "see above (docs §66.4)");
+
+    // (b) Engagement on a high note, and the level it costs.
+    const auto highE = sine(4186.0, 0.15f, 0.6, fs);
+    const auto onHi = renderSlew(highE, cranked, true);
+    const auto offHi = renderSlew(highE, cranked, false);
+    assert(maxDiff(onHi, offHi) > 0.05 &&
+           "the LM308 slew clamp did nothing at all on a 4186 Hz tone — it is either "
+           "bypassed or set far too fast for an LM308 (docs §66.4)");
+    const double lossDb = 20.0 * std::log10((tailRms(offHi, fs) + 1e-12) /
+                                            (tailRms(onHi, fs) + 1e-12));
+    assert(lossDb > 0.20 && lossDb < 0.55 &&
+           "slew-induced loss on a 4186 Hz tone outside the 0.20-0.55 dB window the "
+           "0.3 V/us LM308 produces (0.15 V/us measures 0.75, 0.6 V/us measures 0.07) "
+           "— docs §66.4");
+    std::printf("  [ok] slew in model @ %.0f Hz: low-E pluck bit-identical with/without "
+                "the clamp (%.1e / %.1e), 4186 Hz costs %.3f dB (window 0.20-0.55)\n",
+                fs, dDef, dMax, lossDb);
 }
 
 // --- Test 2: clipping ceiling. ----------------------------------------------
@@ -381,10 +516,29 @@ void testLevelLinearity() {
     const double r50 = rmsAt(0.50f);
     const double r100 = rmsAt(1.0f);
     // mapped gain == knob (identity), so RMS should scale linearly.
+    //
+    // READ THIS BEFORE TRUSTING IT (docs §66.3): these two asserts pin the
+    // IMPLEMENTATION's map, not the circuit's pot. The real LEVEL pot is
+    // logarithmic, so a slice that fixes the taper MUST rewrite this test —
+    // it is a drift guard on a known approximation, and its being green is
+    // not evidence the law is right. The circuit property is the XFAIL below.
     assert(std::fabs(r50 / r25 - 2.0) < 0.05 && "RMS not linear 0.25 -> 0.5");
     assert(std::fabs(r100 / r50 - 2.0) < 0.05 && "RMS not linear 0.5 -> 1.0");
-    std::printf("  [ok] level linearity: r50/r25=%.3f  r100/r50=%.3f\n",
-                r50 / r25, r100 / r50);
+    std::printf("  [ok] level linearity (the LINEAR map, an approximation): "
+                "r50/r25=%.3f  r100/r50=%.3f\n", r50 / r25, r100 / r50);
+
+    // The circuit property, measured and known-bad. A 100 k audio-taper pot puts
+    // 10-20 % of full output at half rotation (the house audioTaper with k = 4
+    // gives 12.15 %); this model gives 50.0 %, i.e. the bottom of the travel does
+    // all the work in dB and the top half spans only 6 dB where the real pedal
+    // spans ~18. Not fixed here, and the reason is in the declaration.
+    const double halfFraction = r50 / r100;
+    char detail[160];
+    std::snprintf(detail, sizeof(detail),
+                  "LEVEL 0.5 delivers %.1f %% of the LEVEL 1.0 output (audio-taper band "
+                  "10-20 %%; house audioTaper k=4 -> 12.15 %%)",
+                  100.0 * halfFraction);
+    clipper::test::expectXfail(halfFraction <= 0.20, kXfailLevelPotLinear, detail);
 }
 
 // --- Test 5: hygiene (no NaN/inf, silence->silence, determinism). -----------
@@ -712,8 +866,12 @@ void testPerfSanity() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     clipper::test::requireAssertsLive();
+    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
+                                                 sizeof(kLedger) / sizeof(kLedger[0]),
+                                                 "clipper_rat_tests");
+    if (ledger >= 0) return ledger;
     std::printf("Running clipper::dsp::RatModel tests...\n");
     testHarmonics(44100.0);
     testHarmonics(96000.0);   // Test 6: SR robustness for test 1
@@ -723,6 +881,8 @@ int main() {
     testClosedLoopBandwidth(96000.0);
     testSlewRate(44100.0);
     testSlewRate(96000.0);
+    testSlewInModel(44100.0);
+    testSlewInModel(96000.0);
     testClippingCeiling();
     testFilter(44100.0);
     testFilter(96000.0);      // Test 6: SR robustness for test 3
@@ -739,5 +899,5 @@ int main() {
     testAdaaEffectiveness();
     testPerfSanity();
     std::printf("All RatModel tests passed.\n");
-    return 0;
+    return clipper::test::reportXfails();
 }
