@@ -35,7 +35,7 @@
 //      stage's prepare() re-solves its DC point and settles ~50 k silent samples
 //      per stage (~69 ms for a whole Jcm800Amp).
 //
-// Coverage: all seven pedals (rat / sd / ts / muff / gold / comp / phaser) and all four amp
+// Coverage: all eight pedals (rat / sd / ts / muff / gold / comp / delay / phaser) and all four amp
 // voices (clean120 / jcm800 / twin / ac30), every parameter id of each, times
 // {NaN, +Inf, -Inf} — over both the C ABI and the direct C++ API.
 //
@@ -51,6 +51,7 @@
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CompModel.h"
+#include "clipper/dsp/DelayModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/MuffModel.h"
@@ -361,6 +362,12 @@ std::vector<UnitMaker> cppMakers() {
     v.push_back([=] { return makeCppUnit<GoldModel>("GoldModel (direct C++)", three, dirt, true); });
     v.push_back([=] { return makeCppUnit<CompModel>("CompModel (direct C++)", three,
                                                     {0.5f, 0.5f, 0.4f}, true); });
+    // M13.4's delay. FEEDBACK is deliberately high here: a NaN that reaches a
+    // FEEDBACK loop is the worst case in the whole tree, because the poisoned
+    // sample is written into a 550 ms line and re-enters through the compander
+    // forever unless reset() clears the line itself.
+    v.push_back([=] { return makeCppUnit<clipper::dsp::DelayModel>(
+                          "DelayModel (direct C++)", three, {0.5f, 0.8f, 0.6f}, true); });
     v.push_back([] { return makeCleanAmpCppUnit(); });
     // Jcm800Amp: 0 gain, 1 master, 2 bass, 3 mid, 4 treble, 5 presence, 6 reverb.
     v.push_back([] {

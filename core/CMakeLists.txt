@@ -96,6 +96,7 @@ add_library(clipper_dsp STATIC
     # OTA voice as a config. Same shape as OverdriveEngine + SdModel/TsModel.
     src/dsp/CompressorEngine.cpp
     src/dsp/CompModel.cpp
+    src/dsp/DelayModel.cpp
     src/dsp/Ac30Preamp.cpp
     src/dsp/Ac30PowerAmp.cpp
     src/dsp/Ac30Amp.cpp
@@ -280,6 +281,16 @@ if(NOT EMSCRIPTEN)
     target_include_directories(clipper_comp_tests PRIVATE tests)
     clipper_add_test_flags(clipper_comp_tests)
     add_test(NAME clipper_comp_tests COMMAND clipper_comp_tests)
+
+    # M13.4 — the "Echoman" BBD analog delay + the reusable DelayLine primitive
+    # (docs §60). The FIRST delay pedal, so this suite also carries the
+    # primitive's own bars (fractional read accuracy, group delay) rather than
+    # leaving a reusable header untested.
+    add_executable(clipper_delay_tests tests/test_delay_model.cpp)
+    target_link_libraries(clipper_delay_tests PRIVATE clipper_dsp)
+    target_include_directories(clipper_delay_tests PRIVATE tests)
+    clipper_add_test_flags(clipper_delay_tests)
+    add_test(NAME clipper_delay_tests COMMAND clipper_delay_tests)
 
     add_executable(clipper_gold_tests tests/test_gold_model.cpp)
     target_link_libraries(clipper_gold_tests PRIVATE clipper_dsp)

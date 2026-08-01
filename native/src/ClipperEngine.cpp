@@ -77,6 +77,7 @@ bool Params::pedalOn(int type) const {
         case PEDAL_GOLD:   return goldOn;
         case PEDAL_WAH:    return wahOn;
         case PEDAL_COMP:   return compOn;
+        case PEDAL_DELAY:  return delayOn;
         default:           return false;
     }
 }
@@ -126,6 +127,11 @@ void ClipperEngine::applyParamsToModels() {
     // all: a compressor has no tone control and the model ignores it.
     comp_.setParameter(clipper::dsp::CompModel::PARAM_SUSTAIN, p.compSustain);
     comp_.setParameter(clipper::dsp::CompModel::PARAM_LEVEL, p.compLevel);
+
+    // "Echoman" BBD analog delay (M13.4) — three real knobs on the shared slots.
+    delay_.setParameter(clipper::dsp::DelayModel::PARAM_DELAY, p.delayTime);
+    delay_.setParameter(clipper::dsp::DelayModel::PARAM_FEEDBACK, p.delayFeedback);
+    delay_.setParameter(clipper::dsp::DelayModel::PARAM_BLEND, p.delayBlend);
 
     // Amp tone stack + volume + bright, then the routed chorus params.
     amp_.setParameter(clipper::dsp::AmpModel::PARAM_VOLUME, p.volume);
@@ -230,6 +236,7 @@ void ClipperEngine::updateParams(const Params& p) {
     using clipper::dsp::GoldModel;
     using clipper::dsp::WahModel;
     using clipper::dsp::CompModel;
+    using clipper::dsp::DelayModel;
     using clipper::dsp::Jcm800Amp;
     using clipper::dsp::MuffModel;
     using clipper::dsp::PhaserModel;
@@ -261,6 +268,9 @@ void ClipperEngine::updateParams(const Params& p) {
     if (p.wahVoice != o.wahVoice)     wah_.setParameter(WahModel::PARAM_VOICE, p.wahVoice);
     if (p.compSustain != o.compSustain) comp_.setParameter(CompModel::PARAM_SUSTAIN, p.compSustain);
     if (p.compLevel != o.compLevel)   comp_.setParameter(CompModel::PARAM_LEVEL, p.compLevel);
+    if (p.delayTime != o.delayTime)         delay_.setParameter(DelayModel::PARAM_DELAY, p.delayTime);
+    if (p.delayFeedback != o.delayFeedback) delay_.setParameter(DelayModel::PARAM_FEEDBACK, p.delayFeedback);
+    if (p.delayBlend != o.delayBlend)       delay_.setParameter(DelayModel::PARAM_BLEND, p.delayBlend);
 
     // Amp knobs + toggles. VOLUME feeds clean120 + twin + ac30.
     if (p.volume != o.volume) {
@@ -362,6 +372,9 @@ void ClipperEngine::setPedalOversampling(int factor) {
     // reports real latency (docs §58.4) — unlike the phaser below.
     wah_.setOversampling(factor);
     comp_.setOversampling(factor);
+    // NOTE: the delay is deliberately NOT re-factored here. Its oversampling is
+    // set by the DEVICE (the BBD clock reaches 136.5 kHz, so the internal rate
+    // must clear 273 kHz), not by the chain's quality switch — docs §60.5.
     // The phaser is a LINEAR time-varying stage (allpass sweep) — no nonlinearity,
     // so it has no oversampler and no group delay. The web C ABI's
     // phaser_set_oversampling is likewise a no-op.
@@ -499,6 +512,7 @@ void ClipperEngine::processPedal(int type, const float* in, float* out, int numF
         case PEDAL_GOLD:   gold_.process(in, out, numFrames); break;
         case PEDAL_WAH:    wah_.process(in, out, numFrames); break;
         case PEDAL_COMP:   comp_.process(in, out, numFrames); break;
+        case PEDAL_DELAY:  delay_.process(in, out, numFrames); break;
         default: break;
     }
 }
@@ -518,6 +532,7 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     gold_.prepare(sampleRate_, maxBlock_);
     wah_.prepare(sampleRate_, maxBlock_);
     comp_.prepare(sampleRate_, maxBlock_);
+    delay_.prepare(sampleRate_, maxBlock_);
     amp_.prepare(sampleRate_, maxBlock_);
     // The JCM runs at its fixed 4× internally (set BEFORE prepare so its stages
     // size to it), independent of the pedal OS selector — matches the C ABI.
@@ -717,6 +732,9 @@ int ClipperEngine::latencySamples() const {
             // The compressor oversamples its OTA gain cell, so it carries the
             // same OS group delay as the dirt boxes.
             case PEDAL_COMP: n += comp_.latencySamples(); break;
+            // The delay reports 0 by design: its dry path never enters the
+            // oversampled domain (docs §60), so it adds no latency to the chain.
+            case PEDAL_DELAY: n += delay_.latencySamples(); break;
             // The phaser is linear — zero group delay.
             case PEDAL_PHASER: break;
             default: break;

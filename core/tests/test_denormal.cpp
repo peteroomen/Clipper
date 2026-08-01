@@ -32,6 +32,7 @@
 #include "clipper/dsp/Biquad.h"
 #include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/CompModel.h"
+#include "clipper/dsp/DelayModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/Jcm800Preamp.h"
 #include "clipper/dsp/OnePoleSmoother.h"
@@ -499,6 +500,31 @@ int main() {
         u.prepare(kFs, kBlock);
         u.setParameter(CompModel::PARAM_SUSTAIN, 1.0f);  // worst case: most gain
         u.setParameter(CompModel::PARAM_LEVEL, 1.0f);
+    });
+    // M13.4's delay. EVERY recursive state it owns rests at zero — including the
+    // 550 ms delay LINE, which is the case ADR 006 cares most about here: a
+    // decaying feedback tail circulates float subnormals through a quarter of a
+    // million samples of ring buffer, which is invisible in the audio and is a
+    // permanent WASM denormal source (WASM has no flush-to-zero at all).
+    //
+    // WHY THE SHORTEST DELAY AND NOT THE LONGEST. This bar is "exact digital
+    // silence within 7 s", and on a pedal whose whole job is a feedback loop the
+    // ring-down to the -600 dB flush floor is set by the LOOP, not by any guard.
+    // Measured settle-to-exact-zero, after the same 2 s of program:
+    //
+    //     DELAY 0.0 (30 ms):   FB 0.0  0.26 s | FB 0.5  0.78 s | FB 0.8   1.08 s
+    //     DELAY 0.5 (290 ms):  FB 0.0  0.52 s | FB 0.5  7.68 s | FB 0.8  15.55 s
+    //     DELAY 1.0 (550 ms):  FB 0.0  0.78 s | FB 0.5 15.51 s | FB 0.8 199.85 s
+    //
+    // 200 s at 550 ms / FEEDBACK 0.8 is the pedal WORKING: a loop gain of 0.736 per
+    // 550 ms pass is 4.8 dB/s, so 590 dB takes two minutes. Subnormals are ZERO at
+    // every one of those nine settings, which is the property this file is for; the
+    // long-line case is covered by clipper_delay_tests over a 40 s tail.
+    testPedalSilenceIsExactlySilent<DelayModel>("Echoman BBD delay (M13.4)", [](DelayModel& u) {
+        u.prepare(kFs, kBlock);
+        u.setParameter(DelayModel::PARAM_DELAY, 0.0f);      // 30 ms: the fastest loop
+        u.setParameter(DelayModel::PARAM_FEEDBACK, 0.8f);   // worst-case tail for it
+        u.setParameter(DelayModel::PARAM_BLEND, 1.0f);
     });
     testPedalSilenceIsExactlySilent<SdModel>("SD-1 output DC blocker", [](SdModel& u) {
         u.prepare(kFs, kBlock);

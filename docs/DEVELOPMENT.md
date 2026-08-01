@@ -11348,3 +11348,484 @@ is chosen for distinguishability and the identity is carried by the face. Wordma
 
 **Goldens: all five UNCHANGED at ±0.00 dB, and nothing was blessed.** The
 compressor is in no golden rig, and it touches no other model.
+
+## 60. M13.4 — the "Echoman" BBD analog delay (the lineup's FIRST DELAY)
+
+The first pedal in the lineup that is not dirt, dynamics, modulation or filter:
+an EHX Deluxe Memory Man-class **bucket-brigade analog delay**, shipping as pedal
+type `delay`. Three knobs, because the three that matter on the real box are
+DELAY, FEEDBACK and BLEND. Files: the reusable primitive
+`core/include/clipper/dsp/DelayLine.h`; the model
+`core/include/clipper/dsp/DelayModel.h` + `core/src/dsp/DelayModel.cpp`; tests
+`core/tests/test_delay_model.cpp` (`clipper_delay_tests`); C ABI `delay_*`;
+`--pedal delay` in the render CLI; an `echoman` row in `clipper-bench`; worklet
+`delay` dispatch; `rig.ts` / `Pedal.tsx` / `pedal.css` / assistant; native
+`ClipperEngine` + APVTS + `PedalCard` + an `identical_core_test` board case.
+Trademark-safe throughout (no Electro-Harmonix / Memory Man / Deluxe text on any
+user surface; the wordmark is "Echoman").
+
+**It is a new DSP FAMILY, and the deliberate deliverable is the primitive.**
+`DelayLine` is a plain interpolating ring buffer that knows nothing about bucket
+brigades, feedback, companders or knobs; `DelayModel` is the BBD behaviour built
+on top of it. M13.6's flanger and any future tape echo are cheap only if that
+separation is right, so the primitive carries its own bars in this suite (§60.7)
+rather than being an untested header that happens to work here.
+
+### 60.1 Research — what was reachable, and what was not
+
+**Reachable, and used.**
+
+* **The MN3005's electrical numbers**, via the Panasonic / Xvive datasheet through
+  search-result extracts: **4096 stages**, an adjustable delay of **20.48 ms to
+  204.8 ms**, a **10 kHz** clock giving 205 ms at a **75 dB** S/N, P-channel
+  low-noise silicon gate process. Those endpoints are what fix the device law
+  (§60.2) — and they fix it *independently*, because the law has to reproduce both
+  of them from the stage count alone, which it does exactly.
+* **The Deluxe Memory Man's published delay travel, 30 ms to 550 ms**, from EHX's
+  own product pages (consistent across several retail listings). Also sourced: the
+  DMM uses **two MN3005s** in series (the pair is what gives the 550 ms), an
+  **NE570/NE571 compander** placed before and after the BBDs (Rev C carries the
+  NE571, Rev D the NE570), and a **CD4047** as the clock oscillator. Its controls
+  are Level, Delay, Blend, Feedback plus the chorus/vibrato section.
+* **The NE570's compander law**, via the ON Semi / Philips datasheet and AN174
+  through search extracts: each half has a **full-wave rectifier** whose output is
+  averaged by an external `C_RECT` against an internal resistor, mirrored ×2 to
+  become the gain-control current `I_G`; the gain cell in the op-amp's feedback
+  path gives a **2:1 compressor** and in the forward path a **1:2 expander**;
+  `I_B = 140 µA`; the rectifier input resistor is the internal **10 kΩ**
+  (`I = 3 V/R1 = 3 V/10 k`), and the application notes' worked examples use
+  `C_RECT` of 1–2 µF.
+* **BBD charge transfer efficiency**, from the device literature through search
+  extracts: *"transfer efficiencies of 0.9998 have been obtained at 5 MHz sampling
+  rates while at lower rates an efficiency of 0.99995 is not uncommon."* Audio
+  BBDs run at 10–200 kHz, i.e. squarely in the "lower rates" band.
+* **A REAL, INDEPENDENT BBD IMPLEMENTATION, read in full.** `chowdsp_utils` clones
+  from GitHub and carries `chowdsp::BBD` — Holters & Parker's DAFx-18 model
+  (`BBDDelayLine.h`, `BBDFilterBank.h`) — including the **pole/root sets and the
+  cutoffs of the JUNO-60 chorus's BBD anti-aliasing / reconstruction filter pair,
+  9900 Hz in and 9500 Hz out**. That is the only real BBD filter design point
+  reachable from here, and it is where this model's fixed cutoffs come from
+  (§60.3, and see the gap below — they are the JUNO's, not the Memory Man's).
+* A **secondary** BBD model, `ajmwagar/pedalkernel`'s `bbd.rs`, also cloned. It is
+  useful only as a cross-check on the delay formula (it uses the same
+  `N/(2·f_clk)`), and this slice **disagrees with it on one substantive point**:
+  it delays the compressor's envelope and feeds the delayed envelope to the
+  expander. A real NE570 has one rectifier per half, each looking at its own
+  input, so no envelope is delayed anywhere — and that disagreement is the whole
+  mechanism behind the breathing (§60.4). The netlist-level argument wins.
+
+**Not reachable, recorded as gaps.** The proxy here permits **github.com only**;
+every other host returns 403 at the CONNECT stage, so `WebFetch` failed uniformly
+and `WebSearch` result extracts were the only other channel.
+
+* **The Deluxe Memory Man's SCHEMATIC.** `ehx.com`'s own schematic thread,
+  `electronicservicemanuals.com`, `freestompboxes.org`, `music-electronics-forum`
+  and the Google-Sites teardown all 403. **This is the biggest gap and it has a
+  specific consequence: the anti-alias and reconstruction filters' topology,
+  order and cutoffs are NOT the DMM's.** They are the JUNO-60's, borrowed from an
+  independent published BBD design, and stated as such rather than invented.
+  Also unsourced for the same reason: the CD4047's actual timing network, the
+  compander's `C_RECT` value in this pedal specifically, the BBD bias trimmer's
+  operating point, and the feedback pot's taper.
+* **The MN3005 datasheet PDF itself** (xvive.com, alldatasheet, jotrin, tubedepot)
+  — 403 everywhere; its numbers above are from search extracts, not the document.
+* **The NE570 datasheet and AN174 PDFs** (onsemi, aionfx, experimentalistsanonymous,
+  digikey) — 403 everywhere; same caveat.
+* **Raffel & Smith, DAFx-10 "Practical Modeling of Bucket-Brigade Device Circuits"
+  and Holters & Parker, DAFx-18 "A Combined Model for a Bucket Brigade Device and
+  its Input and Output Filters."** `dafx.de`, `dafx10.iem.at`, `academia.edu`,
+  `researchgate.net` and `ccrma.stanford.edu` all 403. The papers were NOT read.
+  What *was* read is a complete, working implementation of the second one
+  (chowdsp_utils), which is arguably the better source anyway — but the
+  derivations behind it are unseen here, and this model does not claim to be
+  either paper's method.
+* **A published frequency response or repeat-degradation measurement for a real
+  DMM.** None found. One qualitative figure surfaced in an extract — the delay
+  path "attenuates the high end significantly, from 55 Hz to 5.5 kHz, with a small
+  bass cut and strong mid boost" — and it is recorded here as a sanity anchor, not
+  used as a fitting target. **Every curve in §60.4 and §60.5 is this model's own.**
+* **The MN3005's charge transfer efficiency specifically.** Not published anywhere
+  reachable. `kCte = 0.9999` is the commonly quoted mid-range figure and sits
+  inside the sourced 0.9998…0.99995 band; it is a **stated modelling parameter**,
+  and §60.4 reports its consequence rather than tuning it toward a sound.
+
+### 60.2 The device, and the law the DELAY knob obeys
+
+An MN3005 is a **4096-stage** BBD. A charge packet advances one stage per clock
+HALF-cycle, so an N-stage device holds N/2 **sample slots** clocked at `f_clk` and
+its delay is
+
+```
+    t_delay = N / (2 · f_clk)
+```
+
+That is not asserted, it is **checked against the datasheet's own endpoints**:
+`4096/(2·10 kHz) = 204.8 ms` and `4096/(2·100 kHz) = 20.48 ms`. Both exactly.
+
+The DMM puts **two** of them in series: `kStages = 8192`, `kSlots = 4096`, and the
+delay is `4096 / f_clk`. The DELAY pot varies the CD4047 astable — the **CLOCK** —
+and nothing else in the delay path moves. Since the CD4047's frequency is
+`1/(4.4·R·C)`, `f_clk ∝ 1/R` and the delay TIME is directly proportional to the
+timing resistance, so a linear pot in series with a minimum resistor gives a delay
+**linear in rotation**. That is what ships; it is a consequence of the oscillator,
+not a taste choice.
+
+**The clock runs off BOTH ends of the MN3005's spec sheet, and that is reported
+rather than clamped away.** EHX's published 30–550 ms with 4096 slots means
+
+| DELAY knob | delay (ms) | f_clk (Hz) | MN3005 rating |
+| --- | --- | --- | --- |
+| 0.000 | 30.0 | **136 533** | 36 % above the rated 100 kHz max |
+| 0.125 | 95.0 | 43 116 | in spec |
+| 0.250 | 160.0 | 25 600 | in spec |
+| 0.375 | 225.0 | 18 204 | in spec |
+| 0.500 | 290.0 | 14 124 | in spec |
+| 0.625 | 355.0 | 11 538 | in spec |
+| 0.750 | 420.0 | 9 752 | 2 % below the rated 10 kHz min |
+| 0.875 | 485.0 | 8 445 | 16 % below |
+| 1.000 | 550.0 | **7 447** | 26 % below |
+
+The published TIME range is the stronger source, so it wins. A real DMM genuinely
+runs its BBDs past both ends, which is a large part of why its long settings sound
+the way they do.
+
+### 60.3 The signal path, and where each number comes from
+
+```
+  in ─[input HP 60 Hz]─┬─→ COMPRESSOR (NE570, 2:1)
+                       ↑            │
+                  FEEDBACK          ↓
+                       ↑    [anti-alias LPF, FIXED 9.9 kHz, 4-pole Butterworth]
+                       │            │
+                       │    [BBD compliance limit, tanh at 0.45 V]
+                       │            │
+                       │    [S/H at f_clk] → [Poisson charge smear] → [delay
+                       │     = 4096/f_clk seconds, cubic fractional read]
+                       │            │
+                       │    [reconstruction LPF, FIXED 9.5 kHz, 4-pole]
+                       │            │
+                       └──── EXPANDER (NE570, 1:2) ─[output HP 60 Hz]─→ wet
+
+  out = dry + BLEND · wet          (the dry stays at BASE rate and is untouched)
+```
+
+**1. The BBD is modelled as the SAMPLED DEVICE it is.** A clock-phase accumulator
+runs at `f_clk`; on each tick the anti-aliased input is **held**, and the held
+staircase is what enters the line. The read distance is the device's own law
+expressed in internal samples, so it is exact, fractional, and it **glides** when
+the clock does — which is why sweeping DELAY bends pitch exactly as a real BBD (or
+a tape machine) does. The delay-line storage is `DelayLine`; the clock, the hold
+and the smear are the BBD.
+
+**2. The charge smear is the darkening, and it is DERIVED from the device.** A BBD
+stage does not transfer all of its charge: a fraction ε is left behind and mixes
+into the following packet. One stage is `y[n] = (1−ε)x[n] + ε y[n−1]`, and N of
+them cascade to `[(1−ε)/(1−ε z⁻¹)]^N`. For small ε,
+
+```
+    log H = N[log(1−ε) − log(1−ε z⁻¹)] ≈ −N·ε·(1 − z⁻¹)
+    ⇒ H(z) ≈ exp(−μ(1 − z⁻¹)),   a POISSON kernel h[k] = e^-μ μ^k / k!
+```
+
+with μ = N·ε in stage-transfer steps, i.e. **μ = N·ε/2 = 0.4096 sample slots**.
+It is applied **once per slot, at the clock**, as an 8-tap FIR (the truncation is
+1e-8 at this μ, renormalised so DC gain is exactly 1). Its −3 dB corner is
+therefore a fixed FRACTION of `f_clk` — solve `exp(−2μ(1−cos ω)) = ½` for
+ω = 1.4166 rad, i.e.
+
+```
+    f_-3dB = 0.2254 · f_clk
+```
+
+**and that is the whole darkening mechanism**: the filters are fixed, the clock
+moves, so the corner falls in Hz as the delay lengthens. Measured against the
+clock table above: **30.8 kHz at 30 ms → 1.68 kHz at 550 ms**.
+
+**3. The compander is the NE570's actual law.** The gain cell sits in the op-amp's
+feedback path for the compressor and in the forward path for the expander, which
+makes the pair a square-root / square:
+
+```
+    compressor   G_c = sqrt(V_ref / env_in)        ⇒ env_out = sqrt(V_ref · env_in)   (2:1)
+    expander     G_e = env_bbd / V_ref             ⇒ env_out = env_bbd² / V_ref       (1:2)
+```
+
+Composed with the same envelope those are **exactly unity at every level** — the
+algebra is the datasheet's claim and §60.7 checks it against the rendered audio.
+Each half has its own full-wave rectifier averaged with `τ = R·C = 10 kΩ × 1 µF =
+10 ms`. **The two rectifiers see different signals** — the expander's is the
+delayed, band-limited, charge-smeared one — so the envelopes cannot agree, and
+that disagreement *is* the breathing. Nothing delays an envelope anywhere;
+neither does the real circuit.
+
+`kCompRefVolts = 0.15 V` is a **staging constant, declared as such**: the pair is
+unity at every level by construction, so this only sets where the BBD's nominal
+drive lands. It is a normal single-coil pluck peak, which puts the device at about
+42 % of its compliance at that level and leaves the pick attack room.
+
+**4. What bounds the feedback loop is the DEVICE, not a limiter.** The bucket has
+finite capacity; past it the packet clips. `kBbdClipVolts = 0.45 V` is that
+compliance, applied as a smooth odd `tanh` (odd, so it adds no DC). Removing it
+takes the 30 s peak at FEEDBACK max from **1.14 to 8.04** — see P4 in §60.8.
+
+**5. Fixed filters, borrowed cutoffs, and that is a named gap.** 4th-order
+Butterworth (two cascaded biquads) at **9900 Hz** in and **9500 Hz** out — the
+JUNO-60's figures out of the Holters-Parker implementation (§60.1). They are a
+real BBD design point from a real instrument, they are NOT the Memory Man's, and
+nothing here was tuned to them.
+
+**Numerics (docs §56 / §56.4b, applied at the first opportunity rather than after
+the fact).** These filters sit inside a FEEDBACK loop at up to 768 kHz, so their
+state is `double`, not `float`; and a TDF2 biquad is a recursion of order 2, where
+the house one-liner `z = flushDenormal(z)` **cannot converge** — so each section
+tests BOTH taps and zeroes them as a unit.
+
+### 60.4 What the shipped pedal measures
+
+**Delay time vs knob**, rendered (impulse → first echo peak), against the device
+law. Every row's `rendered − law` is the oversampler's own group delay and
+nothing else:
+
+| knob | device law (ms) | rendered (ms) | f_clk (Hz) | smear −3 dB (Hz) |
+| --- | --- | --- | --- | --- |
+| 0.000 | 30.00 | 31.750 | 136 533 | 30 776 |
+| 0.125 | 95.00 | 96.688 | 43 116 | 9 719 |
+| 0.250 | 160.00 | 161.688 | 25 600 | 5 771 |
+| 0.375 | 225.00 | 226.708 | 18 204 | 4 104 |
+| 0.500 | 290.00 | 291.667 | 14 124 | 3 184 |
+| 0.625 | 355.00 | 356.688 | 11 538 | 2 601 |
+| 0.750 | 420.00 | 421.729 | 9 752 | 2 198 |
+| 0.875 | 485.00 | 486.771 | 8 445 | 1 904 |
+| 1.000 | 550.00 | 551.792 | 7 447 | 1 679 |
+
+The constant **~1.75 ms offset is the 8× oversampler's 76-sample group delay**,
+and it is reported rather than compensated: the dry path never enters the
+oversampled domain (that is what keeps BLEND 0 bit-identical), so the offset lands
+on the wet path only. **The repeat SPACING carries no offset at all** — measured
+gaps at knob 0.0 / 0.5 / 1.0 are 30.67 / 30.04 / 30.67 ms, 290.10 / 290.71 /
+290.12 ms and 550.69 / 550.12 / 550.15 ms against laws of 30 / 290 / 550, the
+residual being the peak-picker's own resolution on a 10 ms burst.
+
+**REPEAT DEGRADATION — the bucket-brigade property.** A plucked burst (220 Hz +
+1.5 kHz + 4 kHz partials), DELAY 0.5, FEEDBACK 0.7:
+
+| repeat | rms | LF 100–400 Hz | HF 2–6 kHz | HF/LF (dB) |
+| --- | --- | --- | --- | --- |
+| 1 | 0.114705 | 0.040375 | 0.001291 | **−29.91** |
+| 2 | 0.078984 | 0.028832 | 0.000688 | **−32.45** |
+| 3 | 0.058732 | 0.021945 | 0.000380 | **−35.23** |
+| 4 | 0.046020 | 0.017444 | 0.000234 | **−37.43** |
+| 5 | 0.037122 | 0.014207 | 0.000145 | **−39.83** |
+
+**9.92 dB of HF lost from repeat 1 to repeat 5, monotone, ~2.5 dB per pass.** That
+is what "cumulative" means: the feedback returns to the COMPRESSOR'S INPUT, so
+every repeat goes through the compander, both fixed filters, the sample-and-hold
+and the charge smear again. A clean line with one filter in the loop converges
+somewhere else — P1 and P2 in §60.8 measure exactly how much else.
+
+**DARKENING WITH TIME.** The same burst, repeat 1 only, FEEDBACK 0, so the only
+thing that changes across the table is the CLOCK:
+
+| knob | delay (ms) | LF | HF | HF/LF (dB) | smear −3 dB (Hz) |
+| --- | --- | --- | --- | --- | --- |
+| 0.00 | 30.0 | 0.043321 | 0.002463 | **−24.90** | 30 776 |
+| 0.25 | 160.0 | 0.041863 | 0.001964 | **−26.57** | 5 771 |
+| 0.50 | 290.0 | 0.040376 | 0.001390 | **−29.26** | 3 184 |
+| 0.75 | 420.0 | 0.039551 | 0.001045 | **−31.56** | 2 198 |
+| 1.00 | 550.0 | 0.038938 | 0.000786 | **−33.90** | 1 679 |
+
+**8.99 dB darker at 550 ms than at 30 ms, on the FIRST repeat.** A fixed filter on
+a variable-length digital line measures 0.00 dB here, by construction.
+
+**THE COMPANDER CURVE**, 220 Hz, DELAY 0.3, FEEDBACK 0, wet measured with the dry
+subtracted:
+
+| in peak (V) | G_comp | G_exp | product | wet f0 | wet gain (dB) |
+| --- | --- | --- | --- | --- | --- |
+| 0.005 | 6.794 | 0.148 | 1.0019 | 0.004951 | **−0.09** |
+| 0.015 | 3.923 | 0.255 | 0.9994 | 0.014773 | **−0.13** |
+| 0.050 | 2.149 | 0.462 | 0.9924 | 0.048322 | **−0.30** |
+| 0.150 | 1.240 | 0.781 | 0.9681 | 0.137580 | **−0.75** |
+| 0.300 | 0.877 | 1.066 | 0.9347 | 0.255495 | **−1.39** |
+| 0.600 | 0.620 | 1.414 | 0.8768 | 0.446452 | **−2.57** |
+
+The compressor's gain FALLS and the expander's RISES, and their product is
+**unity to 0.2 % over the bottom 30 dB** — the NE570 pair is an identity that the
+BBD sits inside, not a compressor with a make-up gain bolted on. At a quiet input
+the compressor really is working: at 0.005 V it puts **+16.64 dB** into the device
+and the expander takes **−16.61 dB** back, which is 16 dB of BBD noise floor
+pushed down — the reason the compander exists. The departure at the top (−2.57 dB
+at 0.6 V) is the **bucket's own compliance**, not a limiter.
+
+**FEEDBACK.** At FEEDBACK 0 there is **exactly one repeat**: echo 1 measures
+6.14e-03 and echo 2 measures **1.70e-22 (−391 dB)** — what sits in the echo-2
+window is the tail of the input filters' own ring-down arriving one delay later,
+not a second pass. At FEEDBACK **max**, after a 0.6-peak strum (input peak 1.06),
+over 30 s:
+
+| DELAY | peak over 30 s | 15–22.5 s | 22.5–30 s |
+| --- | --- | --- | --- |
+| 0.0 (30 ms) | 1.135 | 0.000 | 0.000 |
+| 0.5 (290 ms) | 0.920 | 0.291 | 0.294 |
+| 1.0 (550 ms) | 0.920 | 0.349 | 0.349 |
+
+Bounded, finite, and **converging rather than growing**. At long settings it
+settles into a self-oscillating swirl at about a third of full scale — which a
+real Memory Man does, and which the bucket's compliance is what caps. At the
+short setting the loop passes 33 times a second, so the accumulated loss per
+second wins and the repeats die out entirely. A 60 s run confirms the asymptote:
+0.229 → 0.291 → 0.294 → 0.300 → 0.304 → 0.308 → 0.310 → 0.3116 over 5 s windows,
+increments shrinking to 1e-4.
+
+### 60.5 Oversampling is set by the DEVICE, and it is 8×, not the house 4×
+
+The BBD's clock reaches **136.53 kHz** at the 30 ms end, so the internal rate has
+to clear **2 × 136.53 = 273.07 kHz** or the DEVICE'S OWN clock images fold inside
+the oversampled domain before the reconstruction filter can reach them. 4× at
+44.1 kHz is 176.4 kHz and does **not** clear it; 8× is 352.8 kHz and does.
+
+Measured, at DELAY 0.0 on a 3 kHz tone, worst non-harmonic product in the wet
+signal (Hann-windowed, see the trap in §60.9):
+
+| factor | internal rate (48 kHz base) | worst non-harmonic |
+| --- | --- | --- |
+| 1× | 48 kHz | −70.94 dB |
+| 2× | 96 kHz | −66.08 dB |
+| 4× | 192 kHz | −65.49 dB |
+| **8×** | **384 kHz** | **−122.08 dB** |
+
+**56.58 dB in one step**, and the step is exactly where the derivation says it
+should be. CPU for it: **2.9 % → 5.4 %** of one 48 kHz stream. Latency does not
+move at all, because the dry path never enters the oversampled domain.
+
+At the OTHER end of the travel the device aliases and **that is correct**: a
+9 kHz tone into a 7.45 kHz clock (Nyquist 3.7 kHz) folds hard, and no amount of
+host oversampling can or should remove it — a real DMM at 550 ms does the same
+thing. Measured worst in-band product: **−9.66 dB at 1×, −16.23 dB at 4×**;
+oversampling buys 6.6 dB of *implementation* accuracy there and nothing more.
+
+### 60.6 Hygiene, cost, and the numbers the conventions require
+
+| property | measured |
+| --- | --- |
+| alias floor, 3 kHz 0.3 V, DELAY 0.0, shipped 8× | **−122.1 dB** (4× −65.5, 1× −70.9) |
+| DC offset ON SIGNAL, wet path (220 Hz 0.2 V, and with +0.1 V input offset) | **0.0000 %** of peak both cases (mean −9.4e-09) |
+| block-size invariance (128 vs ragged 100/37/256/1/411) | **exactly 0.0** |
+| rate independence (settled wet level, 44.1 / 48 / 88.2 / 96 kHz) | spread **0.0001 dB**; delay 238.000 ms at every rate |
+| latency | **0 samples** — by design (see §60.4) |
+| determinism (two fresh models) | worst |Δ| **0.000e+00** |
+| `reset()` after one NaN | 1/256 samples poisoned → **0/96000** after reset; settled level within **0.016 dB** of a fresh model |
+| denormals, `maxAbsRestingState()` after 40 s of silence | **exactly 0.0**; output exactly 0.0f |
+| DELAY sweep, broadband HF floor 3–20 kHz | swept **−81.17 dB** re f0 vs static −86.37 (5.2 dB) |
+| CPU, 8× at 48 kHz | signal **18.6× realtime / 5.4 %** of a stream; silence 23.2× / 4.3 % |
+
+**Denormal scope (ADR 006), decided by measurement.** *Everything* recursive in
+this model rests at exactly zero, the 550 ms delay LINE included — which is the
+case the rule cares most about here, because a decaying feedback tail circulates
+`float` subnormals through a quarter of a million samples of ring buffer, that is
+invisible in the audio, and WASM has no flush-to-zero at all. `DelayLine::write`
+therefore flushes; the ring has no recursion of its own, so the per-value contract
+of `flushDenormal` is sufficient *there* and §56.4b's whole-state form is not
+needed. It IS needed for the four Butterworth pairs, which are order-2 recursions
+and zero both taps as a unit. The compander envelopes, the held sample and the
+tick history all rest at zero and are guarded. There is no nonzero-resting state
+anywhere in this pedal — no operating point, no rail — so unlike §59 there is
+nothing here that should be left unguarded.
+
+**`reset()` does NOT reproduce a fresh model bit-for-bit, and that is deliberate.**
+It re-zeroes the BBD clock PHASE, which is a physical quantity with no canonical
+value (a real device's clock has whatever phase it has). Two models differing only
+in clock phase sample the input at different instants within one clock period, so
+their echoes differ by a sub-clock-period timing — measured at ~2.4e-03 on a
+0.15-peak echo. Asserting bit-identity there would be asserting an arbitrary
+convention, so the bar is that the reset model recovers the same **steady-state
+level**: 0.016 dB.
+
+### 60.7 The `DelayLine` primitive, measured on its own
+
+| property | measured |
+| --- | --- |
+| integer read (D = 50), vs the source samples | **0 mismatches of 350** — exact, no interpolation error at all |
+| fractional read, |H| at 1 kHz, D = 100.00 / .25 / .50 / .75 | −0.0054 / −0.0046 / −0.0037 / −0.0028 dB |
+| measured delay step per quarter-sample of requested delay | 0.2503 / 0.2502 / 0.2502 samples |
+| 8 kHz droop at D = 100.5, **cubic** | **−0.2258 dB** |
+| 8 kHz droop at D = 100.5, **linear** | **−1.2489 dB** |
+| ring rest after silence | **exactly 0.0** |
+| out-of-range reads (10 000 × capacity, −5, NaN) | all clamped, all finite |
+
+The cubic-vs-linear gap of **1.02 dB at 8 kHz** is why `readCubic` is the default
+read and why `DelayModel` uses it: a delay line whose read position sweeps under a
+knob would otherwise lose an audible dB of top every time the knob moved, on top
+of everything the device already takes. 4-point Lagrange is also **stateless**, so
+a sweep that reverses direction leaves no ringing where an allpass interpolator
+would smear it — the same argument `ChorusModel` already records.
+
+### 60.8 Perturbation proofs
+
+Every load-bearing bar was proven by reverting the thing it names in a scratch
+copy of the source, rebuilding (with `touch` after **both** patch and restore —
+docs §29's trap), and confirming the suite goes red. `git stash` was NOT used and
+neither was `git checkout --`: CLAUDE.md records both destroying work in this
+repo.
+
+| # | perturbation | result | first assertion to fail | measured |
+| --- | --- | --- | --- | --- |
+| baseline | — | GREEN | — | — |
+| P1 | `kCte` 0.9999 → 1.0 (charge transfer made perfect) | **RED** | `ratio < prevRatio - 1.0` | repeat 1 −26.11 dB, repeat 2 −26.13 — degradation collapses from 2.54 dB/pass to **0.02** |
+| P2 | the sample-and-hold removed (`pre` written instead of `held`) | **RED** | `ratio < prevRatio - 1.0` | repeat 1 −24.84, repeat 2 −24.67 — the device stops being sampled and the degradation **reverses** |
+| P3 | the compander bypassed (both gains pinned to 1) | **RED** | `gc * ge < prevProduct` | the product stops moving with level at all |
+| P4 | the bucket compliance removed (`bucketLimit` returns `v`) | **RED** | `pk < 2.0` | 30 s peak at FEEDBACK max **1.14 → 8.04** — the loop runs away |
+| P5 | BLEND gains a 0.001 wet floor | **RED** | `diff == 0` | **34 000 of 48 000** samples differ; hash `6276ea…` → `6a3a97…` |
+| P6 | `kStages` 8192 → 4096 (one MN3005 instead of two) | **RED** | `DelayModel::bbdSlots() == 4096` | the clock travel doubles and the published 30–550 ms travel is unreachable |
+| restore | — | GREEN | — | — |
+
+**6/6 RED, restore GREEN.**
+
+### 60.9 Two traps this slice found
+
+**1. A rectangular-window Goertzel cannot measure an alias floor.** The first
+version of the alias test reported a floor of **−55.8 dB that did not move with
+the oversampling factor** and sat 409 Hz from the fundamental. That reads like a
+DSP result and is not one: a rectangular window's leakage falls as 1/Δbin, so a
+3 kHz tone read at 3409 Hz with 2 Hz bins leaks `1/(π·204) = −56 dB` — the number
+measured, to the decimal. A Hann window's sidelobes fall as 1/Δbin³ and put that
+leakage ~90 dB lower, and the real floor then appeared (−65.5 dB at 4×) **along
+with the 56 dB step at 8× that the whole oversampling derivation turns on**. The
+tell is §54's and it held: a floor that does not move with the factor is either
+not aliasing or not being measured.
+
+**2. "Exactly one repeat" is not "exactly zero".** At FEEDBACK 0 the echo-2 window
+is not empty — it holds 1.70e-22, which is the input high-pass's own ring-down
+arriving one delay later through a line that is fed continuously. The player-
+observable statement is 100 dB down, not bit-zero, and writing the assertion the
+strict way would have been asserting an accident of the filter's decay rate.
+
+### 60.10 Integration and goldens
+
+One param shape, additive registries: `rig.ts` `PedalType` + gear tray +
+`DELAY_KNOB_DEFAULTS` (DELAY 0.35 = 212 ms, FEEDBACK 0.30, BLEND 0.35 — the
+repeats behind the note, which is how a Memory Man is normally used); worklet
+`delay` dispatch behind the `_delay` C-ABI prefix; `Pedal.tsx` FACES entry with a
+new `bank` layout; `tokens.css` `--accent-delay` (already reserved); native
+`PEDAL_DELAY = 8` (**pre-reserved** by the slot-reservation commit, so no slice had
+to guess "next free" — the integers ARE the packed-snapshot encoding), four APVTS
+parameters, a `PedalCard` face and an `identical_core_test` board case
+(`RAT → Echoman → JCM800`, the first case carrying a long recursive state and a
+feedback loop through the plugin's chunking). Assistant: `add_pedal` gains
+`'delay'`, `PEDAL_PARAM` gains delay/time/feedback/repeats/blend/mix, and the
+coach gets a real block — including that the DELAY knob is the clock so long
+settings are darker *by design*, that the pedal belongs LAST in the chain, that
+FEEDBACK max is a usable bounded swirl rather than a fault, and that sweeping
+DELAY while the repeats ring bends their pitch like a tape machine.
+
+**Visual identity (doctrine §17).** Dark chassis both themes, **DEEP BLUE** accent
+— the furthest hue on the board from every dirt/mod/filter box. Web face is a new
+`bank` layout: the widest chassis in the app (380 px) with the three knobs in a
+single row, because a Memory Man is not a small box and that silhouette is the
+morphology cue. Wordmark "Echoman", model line `DELAY Nº8 · BUCKET BRIGADE`. The
+native card uses the shared Stack layout (native lays cards on a fixed rail, so
+width is not a card-level property there) and carries the identity in the accent.
+No trademarks anywhere.
+
+**Goldens: all five UNCHANGED at ±0.00 dB, and nothing was blessed.** The delay is
+in no golden rig and touches no other model.

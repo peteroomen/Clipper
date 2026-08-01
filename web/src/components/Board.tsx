@@ -67,6 +67,7 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   comp: 'Squash compressor (teal, 2-knob)',
   phaser: 'Script phaser',
   wah: 'Weeper wah / envelope filter',
+  delay: 'Echoman analog delay (bucket brigade)',
   tuner: 'Chromatic tuner',
 };
 const AMP_TYPE_LABEL: Record<string, string> = {

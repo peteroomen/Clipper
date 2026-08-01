@@ -68,6 +68,17 @@ const PedalFace kFaces[PEDAL_TYPE_COUNT] = {
      Footswitch::Shape::Treadle, PedalFace::Layout::Stack, 26.0f,
      {{"Position", pid::wahPosition}, {"Sense", pid::wahSense}, {"Voice", pid::wahVoice}},
      pid::wahOn},
+    // ECHOMAN (docs §60) — M13.4, the board's FIRST DELAY and a new DSP family.
+    // Its morphology cue is simply that a Memory Man is a WIDE box: the card is a
+    // plain three-knob Stack here (native lays cards out on a fixed rail, so width
+    // is not a card-level property the way it is on the web face), and the
+    // identity is carried by the DEEP BLUE accent — the furthest hue on the board
+    // from every dirt/mod/filter box. DELAY / FEEDBACK / BLEND. No
+    // Electro-Harmonix / Memory Man / Deluxe wording anywhere.
+    {"Delay N\xc2\xba""8 \xc2\xb7 Bucket Brigade", "Echoman", skin::AccentId::Delay,
+     Footswitch::Shape::Round, PedalFace::Layout::Stack, 30.0f,
+     {{"Delay", pid::delayTime}, {"Feedback", pid::delayFeedback}, {"Blend", pid::delayBlend}},
+     pid::delayOn},
 };
 }  // namespace
 
@@ -85,6 +96,7 @@ juce::String pedalMenuLabel(int type) {
         case PEDAL_GOLD:   return "Myth - gold transparent overdrive";
         case PEDAL_COMP:   return "Squash - OTA compressor";
         case PEDAL_WAH:    return "Weeper - wah / envelope filter";
+        case PEDAL_DELAY:  return "Echoman - BBD analog delay";
         default:           return "Pedal";
     }
 }

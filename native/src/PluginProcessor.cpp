@@ -169,6 +169,13 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::compSustain, "Squash Sustain", 0.5f));
     layout.add(knob(pid::compLevel, "Squash Level", 0.4f));
 
+    // M13.4 — the "Echoman" BBD analog delay. Defaults mirror web
+    // DELAY_KNOB_DEFAULTS: 212 ms, a few repeats, wet behind the dry.
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::delayOn, 1}, "Echoman On", true));
+    layout.add(knob(pid::delayTime, "Echoman Delay", 0.35f));
+    layout.add(knob(pid::delayFeedback, "Echoman Feedback", 0.3f));
+    layout.add(knob(pid::delayBlend, "Echoman Blend", 0.35f));
+
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::ampOn, 1}, "Amp Power", true));
     // M9.4 amp voice (default index 0 == Clean 120).
     layout.add(std::make_unique<Choice>(juce::ParameterID{pid::ampModel, 1},
@@ -429,6 +436,10 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.compOn = f(pid::compOn) >= 0.5f;
     p.compSustain = f(pid::compSustain);
     p.compLevel = f(pid::compLevel);
+    p.delayOn = f(pid::delayOn) >= 0.5f;
+    p.delayTime = f(pid::delayTime);
+    p.delayFeedback = f(pid::delayFeedback);
+    p.delayBlend = f(pid::delayBlend);
 
     // The board: unpack the lock-free snapshot the message thread published (never
     // touch the ValueTree here — this runs on the audio thread).

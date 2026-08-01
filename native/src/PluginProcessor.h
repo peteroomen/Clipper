@@ -55,6 +55,12 @@ inline constexpr const char* goldLevel   = "goldLevel";
 inline constexpr const char* compOn      = "compOn";
 inline constexpr const char* compSustain = "compSustain";
 inline constexpr const char* compLevel   = "compLevel";
+// M13.4 — the "Echoman" BBD analog delay (docs §60). DELAY is the bucket-brigade
+// CLOCK, so it lengthens the echo AND darkens the repeats; BLEND 0 is bypass.
+inline constexpr const char* delayOn       = "delayOn";
+inline constexpr const char* delayTime     = "delayTime";
+inline constexpr const char* delayFeedback = "delayFeedback";
+inline constexpr const char* delayBlend    = "delayBlend";
 // Post-v1.1 — the "Weeper" wah / envelope filter, the board's first FILTER pedal
 // (docs §58). POSITION is the treadle (heel->toe) and is an ordinary automatable
 // parameter; SENSE at 0 is exactly that manual pedal and above 0 hands the same

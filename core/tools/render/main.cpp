@@ -31,6 +31,7 @@
 #include "clipper/dsp/TsModel.h"
 #include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/CompModel.h"
+#include "clipper/dsp/DelayModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/AmpModel.h"
@@ -181,7 +182,8 @@ struct OldSpringReverb {
         "M2 flags: --os 1|2|4|8 (oversampling, default 4), --stage2 wdf|adaa (default wdf),\n"
         "          --alias-report (print the aliasing metric table for os=1/2/4/8 and exit).\n"
         "M6.5:     --ideal-opamp (bypass the op-amp model: ideal op-amp A/B),\n"
-        "M8/v1.1:  --pedal rat|sd1|ts|muff|gold|phaser|comp (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
+        "M8/v1.1:  --pedal rat|sd1|ts|muff|gold|phaser|comp|delay (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
+        "          delay = the M13.4 BBD analog delay (--distortion = DELAY, --filter = FEEDBACK, --level = BLEND);\n"
         "          comp = the M13.1 OTA compressor (2 knobs: --distortion = SUSTAIN, --level = LEVEL);\n"
         "          gold = the GOLD 'transparent' overdrive (parallel clean/dirt blend +\n"
         "          germanium clippers; --distortion=GAIN, --filter=TREBLE, --level=OUTPUT;\n"
@@ -746,6 +748,19 @@ int main(int argc, char** argv) {
         model.setParameter(clipper::dsp::CompModel::PARAM_LEVEL, a.level);
         if (!input.empty())
             model.process(input.data(), out.data(), static_cast<int>(input.size()));
+    } else if (a.pedal == "delay") {
+        // M13.4: the "Echoman" BBD analog delay. THREE knobs, mapping positionally:
+        // --distortion -> DELAY (the bucket-brigade clock), --filter -> FEEDBACK,
+        // --level -> BLEND. --os is honoured, but note the model's own default is
+        // 8x, derived from the device's 136.5 kHz maximum clock (docs §60.5).
+        clipper::dsp::DelayModel model;
+        model.prepare(fs, 128);
+        model.setOversampling(a.os);
+        model.setParameter(clipper::dsp::DelayModel::PARAM_DELAY, a.distortion);
+        model.setParameter(clipper::dsp::DelayModel::PARAM_FEEDBACK, a.filter);
+        model.setParameter(clipper::dsp::DelayModel::PARAM_BLEND, a.level);
+        if (!input.empty())
+            model.process(input.data(), out.data(), static_cast<int>(input.size()));
     } else if (a.pedal == "muff") {
         // v1.1 item 4: the four-transistor Muff fuzz. Knob flags map positionally:
         // --distortion -> SUSTAIN, --filter -> TONE (the mid-scoop), --level -> VOLUME.
@@ -862,6 +877,12 @@ int main(int argc, char** argv) {
             "Rendered %zu frames @ %.0f Hz -> %s  (pedal=comp sustain=%.2f level=%.2f "
             "os=%dx)\n  peak=%.4f  rms=%.4f\n",
             out.size(), fs, a.outFile.c_str(), a.distortion, a.level, a.os, peak, rms);
+    } else if (a.pedal == "delay") {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (pedal=delay time=%.2f feedback=%.2f "
+            "blend=%.2f os=%dx)\n  peak=%.4f  rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.distortion, a.filter, a.level, a.os,
+            peak, rms);
     } else if (a.pedal == "muff") {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (pedal=muff sustain=%.2f tone=%.2f "

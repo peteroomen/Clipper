@@ -51,6 +51,7 @@
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/CompModel.h"
+#include "clipper/dsp/DelayModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/MuffModel.h"
@@ -300,6 +301,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     PhaserModel phaser;
     GoldModel gold;      // the "Myth" transparent overdrive
     CompModel comp;      // the "Squash" OTA compressor (M13.1)
+    DelayModel delayFx;  // the "Echoman" BBD analog delay (M13.4)
     AmpModel amp;        // Clean 120
     Jcm800Amp jcm;       // JCM800 head
     TwinAmp twinAmp;     // Twin combo
@@ -326,6 +328,9 @@ void renderReference(const Params& p, const std::vector<float>& in,
     gold.setParameter(GoldModel::PARAM_OUTPUT, p.goldLevel);
     comp.setParameter(CompModel::PARAM_SUSTAIN, p.compSustain);
     comp.setParameter(CompModel::PARAM_LEVEL, p.compLevel);
+    delayFx.setParameter(DelayModel::PARAM_DELAY, p.delayTime);
+    delayFx.setParameter(DelayModel::PARAM_FEEDBACK, p.delayFeedback);
+    delayFx.setParameter(DelayModel::PARAM_BLEND, p.delayBlend);
 
     if (jcm800) {
         // Mirror ClipperEngine::applyParams' JCM order exactly.
@@ -375,6 +380,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     phaser.prepare(kFs);   // linear: no block-size scratch
     gold.prepare(kFs, kBlock);
     comp.prepare(kFs, kBlock);
+    delayFx.prepare(kFs, kBlock);
     amp.prepare(kFs, kBlock);
     // The JCM runs at its fixed 4x internally (set BEFORE prepare so its stages size
     // to it), independent of the pedal OS selector — matches ClipperEngine.
@@ -421,6 +427,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
                 case clipper::native::PEDAL_PHASER: phaser.process(cur, other, n); break;
                 case clipper::native::PEDAL_GOLD:   gold.process(cur, other, n); break;
                 case clipper::native::PEDAL_COMP:   comp.process(cur, other, n); break;
+                case clipper::native::PEDAL_DELAY:  delayFx.process(cur, other, n); break;
                 default: continue;
             }
             std::swap(cur, other);
@@ -464,6 +471,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
             case clipper::native::PEDAL_MUFF: pedalLatency += muff.latencySamples(); break;
             case clipper::native::PEDAL_GOLD: pedalLatency += gold.latencySamples(); break;
             case clipper::native::PEDAL_COMP: pedalLatency += comp.latencySamples(); break;
+            case clipper::native::PEDAL_DELAY: pedalLatency += delayFx.latencySamples(); break;
             default: break;  // the phaser is linear — no group delay
         }
     }
@@ -568,6 +576,33 @@ Params compBoardParams() {
     return p;
 }
 
+// NATIVE PARITY case 6 (M13.4) — a board carrying the "Echoman" BBD analog
+// delay: RAT -> Echoman -> JCM800. The delay goes LAST, which is where a player
+// actually puts one, and it is the first pedal to reach this test that carries a
+// LONG recursive state (a 550 ms line at 8x = a quarter of a million samples) and
+// a FEEDBACK loop. That combination is exactly what a wrapping bug corrupts and a
+// short render would hide, so this case is what proves the plugin's chunking does
+// not perturb it. It is also the first pedal here that reports ZERO latency while
+// still oversampling internally.
+Params delayBoardParams() {
+    Params p;
+    p.inputTrim = 0.5f;
+    p.chain[0] = clipper::native::PEDAL_RAT;
+    p.chain[1] = clipper::native::PEDAL_DELAY;
+    p.chainLength = 2;
+    p.ratOn = true;   p.ratDist = 0.5f; p.ratFilter = 0.5f; p.ratLevel = 0.6f;
+    p.delayOn = true; p.delayTime = 0.45f; p.delayFeedback = 0.55f; p.delayBlend = 0.4f;
+    p.compOn = true;  // ON, but NOT on the board — must be inaudible
+    p.goldOn = true;  // likewise
+    p.muffOn = true;  // likewise
+    p.ampModel = kAmpJcm800;
+    p.ampOn = true;  p.volume = 0.5f; p.bass = 0.5f; p.middle = 0.5f; p.treble = 0.6f;
+    p.jcmGain = 0.45f; p.jcmMaster = 0.5f; p.jcmPresence = 0.4f;
+    p.bright = false; p.cab = true;
+    p.chorusMode = 0;
+    return p;
+}
+
 bool runCase(const char* label, const Params& p, const std::vector<float>& in) {
     std::printf("\n--- case: %s ---\n", label);
 
@@ -660,6 +695,7 @@ int main() {
     // v1.1 item 6: the GOLD "Myth" overdrive on the native board.
     ok &= runCase("Board: Gold -> (RAT bypassed) -> Phaser -> AC30", goldBoardParams(), in);
     ok &= runCase("Board: Squash -> TS -> Twin", compBoardParams(), in);
+    ok &= runCase("Board: RAT -> Echoman -> JCM800", delayBoardParams(), in);
 
     if (ok) {
         std::printf(
