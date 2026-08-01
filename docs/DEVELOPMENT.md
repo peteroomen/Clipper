@@ -10140,6 +10140,30 @@ extra octaves of capacitance at the fat end were invented.
   rail-clipping signature §54 describes. The named fix is one shared oversampling domain
   around the whole preamp+power cascade (§57.13), never a lower bar. The "4× must beat 1×
   by ≥ 12 dB" clause stays hard at **both** rates (35.6 dB of margin at 44.1 kHz).
+
+  > **AMENDMENT 2026-08-01 (§63.14): THAT NAMED FIX WAS BUILT, RUN ON THIS AMP, AND
+  > REFUTED — the XFAIL stays and its owner is corrected.** §63.8 registered the same
+  > bar failing on the Rockerverb and this section's own text concluded that "two amps
+  > failing the same bar at the same rate … is the architecture speaking". The
+  > Rockerverb field-report slice implemented exactly the candidate above — ONE
+  > `Oversampler` around the whole cascade, both halves clocked at 192 kHz with their
+  > own resamplers at 1× — on **both** amps and measured them:
+  >
+  > | composed cranked 4× | 44.1 kHz | 48 kHz |
+  > | --- | --- | --- |
+  > | **Rockerverb** before → after | −52.7 → **−72.3** | −80.1 → **−84.9** |
+  > | **OR120** before → after | −50.8 → **−48.7** | −73.0 → **−67.8** |
+  >
+  > **It fixes the Rockerverb by 19.6 dB and makes the OR120 WORSE at both rates**, so
+  > the OR120 half was **reverted** (`OrangeAmp.cpp` is byte-identical to its
+  > pre-slice state; only this banner and the XFAIL's `fix` string changed). The
+  > mechanism, measured rather than assumed: removing the intermediate band-limitings
+  > lets each stage's own products reach the NEXT nonlinearity unfiltered. That is a
+  > large win when the later stages are triodes (the Rockerverb's four) and a loss
+  > when the dominant nonlinearity is a hard rail — and this amp's cathodyne clips on
+  > **compliance** (Vk pinned to [0, C+/2], §57.3), the hardest clipper in the lineup.
+  > **The XFAIL is re-owned to the CATHODYNE, not to the domain layout.** Still never
+  > a lower bar.
 * **DC offset ON SIGNAL** (§29 / `support/DcOffset.h`), VOLUME 0.7, 220 Hz: **0.172 % of
   peak** with a clean input and **0.172 %** with +0.1 V of DC on the input (*was 0.126 %
   both*) — the coupling caps and the OT's own LF corner hold, and the +0.1 V case is the one
@@ -10353,10 +10377,14 @@ the staleness gate re-verified.
 
 * **The ~93 W ceiling** against the rated 120 W (§57.3/§57.9). Attribution is measured; the
   next step is the EL34 grid network and the screen model, **not** a re-invented filter cap.
-* **The 44.1 kHz alias floor**, XFAIL `orange-schematic-alias-44k1` (§57.7). The candidate
-  is one shared oversampling domain around the whole preamp+power cascade — which is the
-  same slice §46 flagged for the AC30 and the same one that would recover the stacked group
-  delay.
+* **The 44.1 kHz alias floor**, XFAIL `orange-schematic-alias-44k1` (§57.7). ~~The
+  candidate is one shared oversampling domain around the whole preamp+power cascade.~~
+  **That candidate was built, run and REFUTED on 2026-08-01 (§57.7's amendment, §63.14):
+  it takes this amp to −48.7 dB at 44.1 kHz, i.e. worse, while fixing the Rockerverb's
+  twin defect outright.** Re-owned to the **cathodyne's compliance clip** (§57.3) — the
+  hardest nonlinearity in the lineup, and the only one in this amp that does not soften
+  as the domain widens. A shared domain is still worth doing here for the *latency*
+  (216 → 72 samples) if and only if the alias cost is answered first.
 * **The panel names**: GAIN and H.F. BOOST, per the Field Guide (§57.11).
 * **A post-'74 voice.** The cross-check sheet is a complete second amp — 330 pF treble,
   DC-coupled cathodyne, 2K2 grid stoppers — and P12 shows it measures *materially*
@@ -13221,6 +13249,17 @@ and the span is that of TWO ganged dividers in series.
   preamp+power cascade — §57.13's own candidate — **never a lower bar**.
   `clipper_rockerverb_tests` therefore registers a ledger: core ctest **32 → 34
   entries**, repo ledgers **5 → 6**.
+
+  > **AMENDED 2026-08-01 — §63.14 FIXED THIS AND THE XFAIL IS GONE.** One shared
+  > oversampling domain around the whole cascade takes the composed cranked 4×
+  > floor to **−72.3 dB at 44.1 kHz and −84.9 dB at 48 kHz**, against the
+  > UNCHANGED −56 dB bar, which is now a hard assert at BOTH rates. At an ordinary
+  > crunch setting (GAIN 0.50 / VOLUME 0.10) it goes **−61.1 → −115.1 dB** at
+  > 44.1 kHz. `clipper_rockerverb_tests` has **zero** known-bad properties and its
+  > ledger registration came off: core ctest **35 → 34 entries**, repo ledgers
+  > **6 → 5**. The paragraph above's "two amps … is the architecture speaking" is
+  > **half right and was corrected by measurement**: the identical change makes the
+  > OR120 *worse* and its XFAIL stays (§57.7's amendment).
 * **DC offset ON SIGNAL** (§29 / `support/DcOffset.h`), GAIN 0.7 / VOLUME 0.7,
   220 Hz: **0.2152 % of peak** with a clean input and **0.2157 %** with +0.1 V of
   DC on the input — the +0.1 V case is the one that makes the assertion able to
@@ -13232,6 +13271,10 @@ and the span is that of TWO ganged dividers in series.
 * **Latency 360 samples (7.50 ms at 48 kHz)** — four per-stage preamp domains at
   72 each plus the power section's 72. This is the deepest cascade of any voice
   here, and it is the second reason the shared-OS-domain slice is worth doing.
+  **AMENDED 2026-08-01 (§63.14): 360 → 72 samples (1.50 ms), the shared domain's
+  own figure, and it is now a HARD ASSERT against `Oversampler`'s documented
+  0 / 64 / 72 / 76 rather than read back from the amp** — so re-arming an inner
+  domain fails `testOneOversamplingDomain` even if every spectral bar passes.
 * **CPU**: see §63.12.
 * **Denormals** (§33, ADR 006). The FMV stack's **six** cap companions and each
   interstage network's up-to-four all rest at exactly zero, so all are guarded;
@@ -13362,16 +13405,287 @@ network reads **0.814** and at 22 k it reads **0.042** — both far outside.
 
 * **THE CLEAN CHANNEL** and its footswitch. It needs a netlist; the `.schx` this
   voice is transcribed from covers the dirty channel only. Do not invent it.
-* **The 44.1 kHz alias floor**, XFAIL `rockerverb-alias-44k1` (§63.8) — the same
-  slice as §57.13's, and now with two amps behind it.
+* ~~**The 44.1 kHz alias floor**, XFAIL `rockerverb-alias-44k1` (§63.8).~~
+  **CLOSED 2026-08-01 (§63.14)** by one shared oversampling domain. The OR120's
+  twin entry stays and is re-owned to its cathodyne (§57.7's amendment).
 * **`TriodeStage` independent input/output coupling configs** (§63.3), which would
   give this voice its preamp grid blocking back without the doubled corner.
+  **NOT the cause of "squashed" — refuted by measurement in §63.14** (the amp
+  reproduces 25.52 dB of a 26.0 dB input span at GAIN 0.30), so this is a fidelity
+  item, not a field-report item. It is still shared with four amps and four
+  goldens; do it on its own.
+* **Per-voice amp knob DEFAULTS** (§63.14). This voice inherited
+  `AMP_KNOB_DEFAULTS`' JCM values — GAIN 0.5 / master 0.4 — and both are past this
+  amp's wall. Blocked on nothing but scope: it touches `rig.ts`, `Amp.tsx`, the
+  native APVTS and the three literal rig-JSON Playwright fixtures, so it wants its
+  own slice. The numbers to use are in §63.14's wiper table.
 * **The ~93 W ceiling** against the rated 100 W (§63.6).
 * **The Attenuator**, which is a post-OT load device and belongs after the OT.
 * **The pots' taper laws** — the file gives the letter, not the curve; and the
   VOLUME pot's LINEAR marking is the file's, which is worth confirming against a
   factory sheet before anyone re-tapers it.
 * A native `rockerverb` snapshot scene for the headless screenshot suite.
+
+### 63.14 The 2026-08-01 OWNER FIELD REPORT — one fix, three refutations
+
+*Date: 2026-08-01 · Branch `claude/rockerverb-field-report-6f557i` ·
+`docs/work/2026-08-01-rockerverb-field-report.md`*
+
+The report, verbatim, on a voice that was hours old:
+
+> *"the rockverb is a bit tinny/squashed compared to the sunshine stack/orange
+> clone in logic pro" · "a touch brittle almost. it does have orange
+> characteristics overall" · "the gain needs scaling back too 100 is totally
+> unusable" · "too noisy, too much gain."*
+
+**RULE ZERO, applied throughout: the Sunshine Stack is another vendor's model, not
+a reference unit.** It is used below only as a description of a symptom. §57's rule
+governs — every change is justified by the circuit, the netlist or a measured
+defect, and where none exists the answer is *"this is what the netlist does"*.
+
+Everything was measured BEFORE anything was changed, because §43's field report
+said "the RAT" and measured as the Muff, and §51's reported knob position was not
+where the THD onset actually was.
+
+#### 63.14.1 "brittle" + "too noisy" — ONE defect, and it is FIXED
+
+This project synthesises no noise anywhere (§59 says so in terms), so "too noisy"
+can only be foldover, unbounded HF products, or amplified input noise. It is the
+first: `rockerverb-alias-44k1` (§63.8), and Logic's default grid is 44.1 kHz.
+
+**The fix is the one §63.8 and §57.13 both named — ONE shared oversampling domain
+around the whole preamp+power cascade, never a lower bar.** `RockerverbAmp` now
+owns a single `Oversampler`; the preamp and the power section are prepared **at the
+oversampled rate** with their own resamplers set to **1×**, which `Oversampler.h`
+documents as an exact pass-through with no filtering and no delay. That is why the
+change needed **no** edit to `TriodeStage`, `RockerverbPreamp` or
+`RockerverbPowerAmp` — they are simply clocked at 192 kHz instead of 48 kHz — and
+therefore **no shared code was touched and no golden could move**. The three
+interstage MNAs and the FMV stack come inside the domain with them, which is a
+strictly better discretization for them, not a worse one.
+
+Composed cranked alias floor (the house probe, 4186 Hz / 0.3 V):
+
+| factor | 44.1 kHz before → after | 48 kHz before → after |
+| --- | --- | --- |
+| 1× | −24.6 → −24.6 | −27.6 → −27.6 |
+| 2× | −26.5 → −27.3 | −27.3 → −27.8 |
+| **4× (shipped)** | **−52.7 → −72.3** | **−80.1 → −84.9** |
+| 8× | −64.0 → −88.6 | −92.1 → −78.6 |
+
+…and at an ORDINARY CRUNCH SETTING, which is where a player lives and where the
+five-domain arrangement was quietly worst — GAIN 0.50 / VOLUME 0.10, 4×:
+
+| | 44.1 kHz | 48 kHz |
+| --- | --- | --- |
+| before | −61.1 dB | −71.5 dB |
+| after | **−115.1 dB** | **−96.2 dB** |
+
+**The 10.4 dB rate penalty at a normal setting REVERSES.** The −56 dB bar was not
+touched; it is now a **hard assert at both rates**, plus a new absolute −80 dB bar
+on the realistic setting, plus the unchanged "4× must beat 1× by ≥ 12 dB" clause.
+`rockerverb-alias-44k1` XPASSed, was **deleted**, and its property is asserted for
+real. `clipper_rockerverb_tests` registers no ledger: core ctest **35 → 34
+entries**, repo ledgers **6 → 5**.
+
+**Latency 360 → 72 samples (7.50 → 1.50 ms at 48 kHz)** — five 4× domains became
+one. That is asserted too, against `Oversampler`'s own documented 0 / 64 / 72 / 76
+rather than read back from the amp, and the shipped 4× default is pinned (§58.7
+found a bar that could not fail because nothing pinned a default factor).
+
+#### 63.14.2 THE SAME CHANGE MAKES THE OR120 WORSE — §57.7's attribution refuted
+
+§57.7 concluded that "two amps failing the same bar at the same rate … is the
+architecture speaking". **Half of that is now measured to be false.** The identical
+change was built and run on `OrangeAmp` as well:
+
+| composed cranked 4× | 44.1 kHz | 48 kHz |
+| --- | --- | --- |
+| Rockerverb before → after | −52.7 → **−72.3** | −80.1 → **−84.9** |
+| OR120 before → after | −50.8 → **−48.7** | −73.0 → **−67.8** |
+
+So the OR120 half was **REVERTED** — `core/src/dsp/OrangeAmp.cpp` is byte-identical
+to its pre-slice state; only its header banner and the XFAIL's `fix` string
+changed, both to record this. **The mechanism, measured rather than assumed:**
+removing the intermediate band-limitings lets each stage's own products reach the
+NEXT nonlinearity unfiltered. That is a large win when the later stages are triodes
+(this amp's four) and a loss when the dominant nonlinearity is a hard rail — and
+the OR120's cathodyne clips on **compliance** (Vk pinned to [0, C+/2], §57.3), the
+hardest clipper in the lineup. `orange-schematic-alias-44k1` is re-owned to the
+**cathodyne**, not to the domain layout. Still never a lower bar.
+
+#### 63.14.3 "squashed" is NOT §63.3's missing grid blocking — REFUTED
+
+§63.3 names preamp grid blocking as this voice's one modelling departure, and
+"squashed" is exactly what an un-bloomed preamp sounds like. It is not the cause.
+Dynamic range, 220 Hz, VOLUME 0.10, input swept 0.02 → 0.40 V (a **26.0 dB** span):
+
+| GAIN | output span | pick attack re sustain (input 2.37 dB) |
+| --- | --- | --- |
+| 0.30 | **25.52 dB** | 3.38 dB |
+| 0.50 | 10.45 dB | 0.24 dB |
+| 0.70 | **1.01 dB** | 0.19 dB |
+| 1.00 | **−0.04 dB** | — |
+
+**The amp has essentially perfect touch sensitivity at GAIN 0.30 and none at all at
+0.70.** The squash is not a missing mechanism, it is where the knob puts you; grid
+blocking would put a bloom-and-recover on top of a brick wall, not restore 25 dB of
+range. **`TriodeStage` was therefore NOT touched**, which is also why the four
+valve goldens were never at risk. §63.11's entry for it is re-scoped to a fidelity
+item.
+
+#### 63.14.4 "too much gain / 100 unusable" — CONFIRMED as a symptom, and the taper CANNOT fix it
+
+Measured in **wiper** space, which is taper-independent (220 Hz / 0.15 V, VOLUME
+0.10; the knob column is where the shipped k = 4 law puts each wiper):
+
+| wiper | knob (k=4) | THD % | RMS dBFS | dyn range (26 dB in) |
+| --- | --- | --- | --- | --- |
+| 0.002 | 0.026 | 1.06 | −72.50 | 25.99 |
+| 0.010 | 0.107 | 1.46 | −44.54 | 26.01 |
+| 0.030 | 0.240 | 4.89 | −25.38 | 26.33 |
+| 0.050 | 0.326 | 9.84 | −16.26 | 23.98 |
+| 0.080 | 0.416 | 15.86 | −10.22 | 17.02 |
+| 0.120 | 0.501 | 26.41 | −9.00 | 10.33 |
+| 0.200 | 0.615 | 29.57 | −8.33 | 2.63 |
+| 0.500 | 0.831 | 32.36 | −8.34 | 0.04 |
+| 1.000 | 1.000 | 34.31 | −8.55 | −0.04 |
+
+**Above wiper 0.20 the output moves 0.22 dB** — so with the shipped taper, knob
+0.615 → 1.00 (**38 % of the travel**) is level-dead, and by a 1 dB level-ceiling
+criterion it is dead from knob **0.50**. The complaint is real and this table is it.
+
+**But the taper is not the lever, and that is a measured refutation of the obvious
+§51-style fix:**
+
+* The house law `(e^{kx}−1)/(e^k−1)` puts the wiper at `1/(e^{k/2}+1)` at half
+  rotation. **k = 4 → 11.9 %, inside the 10–20 % audio-taper spec §58 established
+  as this repo's reference.** k = 8 → **1.8 %**, which is not an audio pot. The
+  most the spec allows is k = 4.394 (10.0 %), which moves the level ceiling from
+  knob 0.500 to **0.537** — nothing.
+* The geometry is fixed and no monotone map changes it: clean→onset is **23.5 dB**
+  of the useful span and onset→saturated is **16.5 dB**, so any taper that puts
+  saturation at the top of the travel puts the ≥5 % THD onset at ~59 % of it.
+  Measured: k = 8 → onset **0.56**, k = 10 → **0.65**, k = 12 → **0.71**. A
+  Rockerverb dirty channel that is clean at GAIN 6 is a worse model than one that
+  is dirty at 3, and §63.5's own shipped window (0.08 < onset < 0.35) forbids it.
+
+**So no taper change ships, and §51's method does not apply here.** §51 could take
+the owner's sentence as the design equation because its constraint (`taper(1) = 1`,
+"100 is perfect") was compatible with the circuit; here the sentence is *"100 is
+unusable"*, and the circuit says 100 is a wall because **two ganged 1 MΩ log pots**
+in front of a **four-stage** preamp are what the netlist has.
+
+**What IS wrong, and is NOT this slice's to fix: the DEFAULTS.** The voice inherited
+`AMP_KNOB_DEFAULTS`' JCM values wholesale — **GAIN 0.5 / master 0.4** — although
+§63.5 documents that its VOLUME is a **linear** master whose useful range is 5–15,
+and the table above puts GAIN 0.5 at 26 % THD with 10 dB of dynamic range left.
+**The amp opens at the wall**, and that is the single best explanation for a first
+impression of "too much gain / squashed". Per-voice defaults touch `rig.ts`,
+`Amp.tsx`, the native APVTS and three literal rig-JSON Playwright fixtures, and
+`setAmpType` deliberately does not reset knobs — so it is named as its own slice
+(§63.11) rather than smuggled in here. **The assistant prompt was extended in the
+meantime** (the §48 / §63.10 precedent): it now coaches the measured GAIN geometry
+alongside the VOLUME 5–15 it already carried.
+
+#### 63.14.5 "tinny" is a BASS DEFICIT, not a treble excess — and it is the netlist
+
+Composed spectral tilt, clean level, tone knobs noon, dB re each amp's own 660 Hz:
+
+| f | Rockerverb | OR120 | JCM800 |
+| --- | --- | --- | --- |
+| 82.41 Hz | **−14.79** | −23.33 | **−3.36** |
+| 110 Hz | −10.07 | −20.17 | −3.14 |
+| 220 Hz | −3.09 | −11.13 | −2.66 |
+| 660 Hz | 0.00 | 0.00 | 0.00 |
+| 2.2 kHz | +6.05 | +3.15 | +7.15 |
+| 4.4 kHz | **+8.37** | +2.81 | **+10.15** |
+| 6 kHz | +8.88 | +1.96 | +10.64 |
+
+**The Rockerverb is LESS bright than the JCM800 at the top** and **11.4 dB thinner
+at low E.** A preamp-only probe puts all of it in the preamp (−14.82 dB at 82 Hz at
+GAIN 0.3), i.e. the transcribed **1 n / 2n2 / 4n7** interstage cascade — corners at
+398 / 134 / 49 Hz, whose analytic product at 82 Hz re 660 Hz is ≈ −19 dB before the
+FMV's own bass lift gives some back. **Not touched.** The BASS control has
+**+9.77 dB** of authority at 82 Hz to answer it (§63.7) — the same disposition §57
+records for the OR120's 330 p.
+
+#### 63.14.6 The netlist was RE-VERIFIED, independently, because two complaints rest on it
+
+`dsharlet/LiveSPICE` was re-cloned and `Tests/Examples/Orange Rockerverb 50
+Preamp.schx` re-parsed from scratch:
+
+* **`C1 = 1 nF` — CONFIRMED.** The single largest audible consequence in the voice
+  is transcribed correctly, so §63.14.5's bass deficit is the amp's and not a parse
+  error.
+* **The MIDDLE pot is NOT a rheostat — CONFIRMED**, by re-deriving the terminal
+  geometry rather than trusting the first pass: a LiveSPICE `Potentiometer` has
+  anode (−10,−20), cathode (−10,+20) and wiper (+10,0); `Middle` sits at (470,100)
+  with `Rotation="-10"` (≡ 180°) and `Flip="true"`, and the flip resolves as
+  y → −y, which puts its anode at (480,80) on the BASS pot's cathode, its cathode
+  at (480,120) on the ground/output-reference node, and its **wiper** at (460,100)
+  on C26. §63.2's transcription stands.
+* **A consequence of that, newly measured and REPORTED:** because C→GND is 25 k at
+  every position instead of a canonical FMV's rheostat, the stack's mid-band
+  insertion loss is **−13.24 dB at 1 kHz** (−14.55 at 660 Hz) where a canonical
+  Marshall FMV at noon is ~−20 dB. **That is ~7 dB of "too much gain", and it is
+  the netlist's, not a fit.**
+* **Both GAIN pots carry `Wipe="0.6"`** in the file where every other pot carries
+  0.5 — the file's own saved position. Noted as weak evidence; not used.
+* **Still open and unresolvable from this container:** the file is a Rockerverb
+  **50** preamp and this voice ships as a **100**. No reachable source settles
+  whether the two preamps are identical. Recorded, not guessed.
+
+#### 63.14.7 CPU: NO measurable change, and the reason is honest
+
+Interleaved same-machine A/B (§35's rule — absolute columns are machine-dependent),
+`clipper-bench`, 6 alternating pairs of the same binary pair, % of one 48 kHz stream:
+
+| | runs | median |
+| --- | --- | --- |
+| AFTER (one domain) | 46.03 / 46.13 / 46.91 / 39.88 / 39.46 / 47.04 | **46.08 %** |
+| BEFORE (five domains) | 47.93 / 39.68 / 48.19 / 47.36 / 48.98 / 46.22 | **47.65 %** |
+
+The 1.6-point difference sits inside a **7.6-point within-binary spread**, so the
+defensible statement is **no measurable change**. That is not a disappointment, it
+is the mechanism: eight halfband passes were deleted, and the three interstage 4×4
+MNAs and the FMV stack's 8×8 now run at 192 kHz instead of 48 kHz. The two roughly
+cancel. Latency, which does move 5×, is the win.
+
+#### 63.14.8 Perturbation proofs
+
+Patch in a scratch copy, `touch`, rebuild, confirm RED, restore FROM THE SCRATCH
+COPY, `touch`, rebuild, confirm GREEN. Never `git checkout --`, never `git stash`.
+
+| # | perturbation | result |
+| --- | --- | --- |
+| P1 | `RockerverbAmp` reverted to the five-domain arrangement (the whole fix) | **RED** — the realistic-setting bar first (48 kHz reads −71.5 dB against −80) |
+| P1b | the same, with the realistic assert lifted so the next bar can be reached | **RED** — `f4 < -56.0` at 44.1 kHz, measuring **−52.7 dB** |
+| P2 | the shared domain KEPT but the inner power-section domain re-armed (`power_.setOversampling(2)`) | **RED** — `testOneOversamplingDomain` (latency 64 at 1×, expected 0). **Every alias bar still PASSES** (44.1 kHz 4× reads −75.5, realistic −117.1), which is the isolation: the latency bar catches a domain-layout regression the spectrum cannot see |
+| — | restore | **GREEN** |
+
+P1 and P2 between them prove all three new/changed bars independently. The bar that
+would have been the "could not fail" candidate — the latency assert — is written
+against `Oversampler`'s **documented** 0 / 64 / 72 / 76 rather than read back from
+`RockerverbAmp`, which is exactly the identity §58.7 and §57.10 each caught once;
+P2 confirms it fails when it should.
+
+#### 63.14.9 Scope, and what did NOT move
+
+* **ALL FIVE GOLDENS UNCHANGED at ±0.00** — `rat_jcm800`, `sd1_twin_reverb`,
+  `muff_twin`, `ts_ac30`, `clean120_chorus`. Nothing blessed, nothing written. The
+  change touches no shared class, which is why this is a construction guarantee
+  rather than luck.
+* Every other Rockerverb bar is unmoved: the two acceptance halves (network
+  contrast 6.76 dB, composed 3.50 dB; master-volume ratio 15.76×), the LTP balance
+  0.971988, knob authority, loop depth 6.65 dB / 0.26 dB spread, the breakup table,
+  rate spread **0.007 dB** over 44.1–96 kHz. DC on signal moved 0.2152 % →
+  **0.3645 %** of peak (and 0.3646 % with +0.1 V of input offset) — still an order
+  of magnitude inside its bar.
+* **Not done, deliberately:** the taper (§63.14.4), `TriodeStage` (§63.14.3), the
+  interstage caps (§63.14.5), the OR120 (§63.14.2), and per-voice defaults
+  (§63.11). `RatModel` / `DiodeClipperADAA` / §66 / ADR 027 belong to a parallel
+  slice and were not touched.
 
 ## 64. M13.3 — the "Lumen" optical compressor (the SECOND dynamics voice)
 
