@@ -168,6 +168,21 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::compOn, 1}, "Squash On", true));
     layout.add(knob(pid::compSustain, "Squash Sustain", 0.5f));
     layout.add(knob(pid::compLevel, "Squash Level", 0.4f));
+    // M13.7 — the CE-1 "Ensemble" chorus. Defaults mirror the web's
+    // CHORUS_KNOB_DEFAULTS: RATE 0.35 (~1.30 Hz in chorus mode), DEPTH 0.5, MODE
+    // 0 = CHORUS.
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::ce1On, 1}, "Ensemble On", true));
+    layout.add(knob(pid::ce1Rate, "Ensemble Rate", 0.35f));
+    layout.add(knob(pid::ce1Depth, "Ensemble Depth", 0.5f));
+    layout.add(knob(pid::ce1Mode, "Ensemble Mode", 0.0f));
+
+    // M13.6a — the "Curfew" noise gate. TWO knobs, because the pedal has two:
+    // THRESHOLD (which, unlike the compressor's SUSTAIN, really IS a threshold —
+    // 40 dB of travel on the open level, 0.00 dB on the gain when open) and
+    // DECAY. Defaults mirror the web's GATE_KNOB_DEFAULTS: 0.35 / 0.5 (docs §61).
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::gateOn, 1}, "Curfew On", true));
+    layout.add(knob(pid::gateThreshold, "Curfew Threshold", 0.35f));
+    layout.add(knob(pid::gateDecay, "Curfew Decay", 0.5f));
 
     // M13.4 — the "Echoman" BBD analog delay. Defaults mirror web
     // DELAY_KNOB_DEFAULTS: 212 ms, a few repeats, wet behind the dry.
@@ -436,6 +451,13 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.compOn = f(pid::compOn) >= 0.5f;
     p.compSustain = f(pid::compSustain);
     p.compLevel = f(pid::compLevel);
+    p.gateOn = f(pid::gateOn) >= 0.5f;
+    p.gateThreshold = f(pid::gateThreshold);
+    p.gateDecay = f(pid::gateDecay);
+    p.ce1On = f(pid::ce1On) >= 0.5f;
+    p.ce1Rate = f(pid::ce1Rate);
+    p.ce1Depth = f(pid::ce1Depth);
+    p.ce1Mode = f(pid::ce1Mode);
     p.delayOn = f(pid::delayOn) >= 0.5f;
     p.delayTime = f(pid::delayTime);
     p.delayFeedback = f(pid::delayFeedback);

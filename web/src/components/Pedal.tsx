@@ -155,6 +155,28 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Level', aria: 'Level', param: 'level', testId: 'knob-level' },
     ],
   },
+  // M13.6a "Curfew": the lineup's first UTILITY — it makes no sound of its own,
+  // it takes one away. Morphology cue is the SLATE accent and a two-knob face on
+  // the small 'stack' anatomy: deliberately the most boring box on the board,
+  // because that is what a gate is. Wordmark "Curfew" is the wink (the thing that
+  // makes the noise stop at a set hour); the model line names the type. No
+  // Boss/NS-2/ISP/Decimator text anywhere.
+  gate: {
+    layout: 'stack',
+    model: 'UTILITY Nº8 · GATE',
+    wordmark: 'Curfew',
+    knobs: [
+      // TWO real knobs, because the reference has two. Slot 0 (distortion) is
+      // THRESHOLD — and unlike the compressor's SUSTAIN it really is a threshold
+      // (docs §61.4). Slot 2 (level) is DECAY, the fade time after the note
+      // stops. Slot 1 is carried and unused. The reference's third control is a
+      // MODE switch that changes what the FOOTSWITCH does rather than the audio,
+      // and this board's footswitch is bypass on every pedal — so it is
+      // deliberately not shipped rather than shipped as a knob that lies.
+      { name: 'Thresh', aria: 'Threshold', param: 'distortion', testId: 'knob-threshold' },
+      { name: 'Decay', aria: 'Decay', param: 'level', testId: 'knob-decay' },
+    ],
+  },
   // Post-v1.1 wah "Weeper": the lineup's FIRST FILTER pedal, and the first one
   // whose real-world enclosure is not a box you press but a ROCKING TREADLE you
   // stand on. That is its morphology cue and it gets its own 'rocker' layout: a
@@ -196,6 +218,31 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Delay', aria: 'Delay', param: 'distortion', testId: 'knob-delay' },
       { name: 'Feedback', aria: 'Feedback', param: 'filter', testId: 'knob-feedback' },
       { name: 'Blend', aria: 'Blend', param: 'level', testId: 'knob-blend' },
+    ],
+  },
+  // M13.7 CE-1 "Ensemble": the world's FIRST chorus pedal, and the first pedal
+  // here whose circuit the project already owned (it is the JC-120 amp's chorus
+  // in a floor box — docs §62). The real CE-1 is a big, wide, low-slung enclosure
+  // with two footswitches, which is why it takes the 'plate' anatomy rather than
+  // the compact 'stack': it reads as a large box, not a dirt pedal. MAGENTA accent
+  // — the phaser already owns orange and this is the second MODULATION pedal, so
+  // the hue separates the family members (tokens.css --accent-chorus). "Ensemble"
+  // is the wink at the name; no Boss / Roland / CE-1 wording anywhere.
+  chorus: {
+    layout: 'plate',
+    model: 'MODULATION Nº8 · ENSEMBLE',
+    wordmark: 'Ensemble',
+    knobs: [
+      // Slot 0 = RATE. Its RANGE depends on MODE (1.0-3.0 Hz chorus, 3.2-11.6 Hz
+      // vibrato) — the two ranges do not overlap on the real pedal, which is why
+      // the modes read as different effects rather than two speeds of one.
+      // Slot 1 = DEPTH (the 3-5 .. 3-7 ms delay window; it never reaches zero).
+      // Slot 2 = MODE, and it is genuinely DISCRETE: < 0.5 chorus, >= 0.5 vibrato.
+      // The real CE-1 gangs rate+depth onto one INTENSITY knob in chorus mode; we
+      // keep them independent so no knob is dead in either mode (docs §62.6).
+      { name: 'Rate', aria: 'Rate', param: 'distortion', testId: 'knob-rate' },
+      { name: 'Depth', aria: 'Depth', param: 'filter', testId: 'knob-depth' },
+      { name: 'Mode', aria: 'Mode (chorus / vibrato)', param: 'level', testId: 'knob-mode' },
     ],
   },
   phaser: {

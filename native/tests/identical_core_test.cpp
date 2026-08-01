@@ -52,6 +52,7 @@
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/CompModel.h"
 #include "clipper/dsp/DelayModel.h"
+#include "clipper/dsp/GateModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/MuffModel.h"
@@ -301,6 +302,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     PhaserModel phaser;
     GoldModel gold;      // the "Myth" transparent overdrive
     CompModel comp;      // the "Squash" OTA compressor (M13.1)
+    GateModel gate;      // the "Curfew" noise gate (M13.6a)
     DelayModel delayFx;  // the "Echoman" BBD analog delay (M13.4)
     AmpModel amp;        // Clean 120
     Jcm800Amp jcm;       // JCM800 head
@@ -328,6 +330,8 @@ void renderReference(const Params& p, const std::vector<float>& in,
     gold.setParameter(GoldModel::PARAM_OUTPUT, p.goldLevel);
     comp.setParameter(CompModel::PARAM_SUSTAIN, p.compSustain);
     comp.setParameter(CompModel::PARAM_LEVEL, p.compLevel);
+    gate.setParameter(GateModel::PARAM_THRESHOLD, p.gateThreshold);
+    gate.setParameter(GateModel::PARAM_DECAY, p.gateDecay);
     delayFx.setParameter(DelayModel::PARAM_DELAY, p.delayTime);
     delayFx.setParameter(DelayModel::PARAM_FEEDBACK, p.delayFeedback);
     delayFx.setParameter(DelayModel::PARAM_BLEND, p.delayBlend);
@@ -380,6 +384,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     phaser.prepare(kFs);   // linear: no block-size scratch
     gold.prepare(kFs, kBlock);
     comp.prepare(kFs, kBlock);
+    gate.prepare(kFs, kBlock);
     delayFx.prepare(kFs, kBlock);
     amp.prepare(kFs, kBlock);
     // The JCM runs at its fixed 4x internally (set BEFORE prepare so its stages size
@@ -427,6 +432,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
                 case clipper::native::PEDAL_PHASER: phaser.process(cur, other, n); break;
                 case clipper::native::PEDAL_GOLD:   gold.process(cur, other, n); break;
                 case clipper::native::PEDAL_COMP:   comp.process(cur, other, n); break;
+                case clipper::native::PEDAL_GATE:   gate.process(cur, other, n); break;
                 case clipper::native::PEDAL_DELAY:  delayFx.process(cur, other, n); break;
                 default: continue;
             }
@@ -471,6 +477,8 @@ void renderReference(const Params& p, const std::vector<float>& in,
             case clipper::native::PEDAL_MUFF: pedalLatency += muff.latencySamples(); break;
             case clipper::native::PEDAL_GOLD: pedalLatency += gold.latencySamples(); break;
             case clipper::native::PEDAL_COMP: pedalLatency += comp.latencySamples(); break;
+            // The gate is not oversampled: zero group delay, like the phaser.
+            case clipper::native::PEDAL_GATE: break;
             case clipper::native::PEDAL_DELAY: pedalLatency += delayFx.latencySamples(); break;
             default: break;  // the phaser is linear — no group delay
         }
@@ -576,7 +584,7 @@ Params compBoardParams() {
     return p;
 }
 
-// NATIVE PARITY case 6 (M13.4) — a board carrying the "Echoman" BBD analog
+// NATIVE PARITY case 7 (M13.4) — a board carrying the "Echoman" BBD analog
 // delay: RAT -> Echoman -> JCM800. The delay goes LAST, which is where a player
 // actually puts one, and it is the first pedal to reach this test that carries a
 // LONG recursive state (a 550 ms line at 8x = a quarter of a million samples) and
@@ -600,6 +608,27 @@ Params delayBoardParams() {
     p.jcmGain = 0.45f; p.jcmMaster = 0.5f; p.jcmPresence = 0.4f;
     p.bright = false; p.cab = true;
     p.chorusMode = 0;
+    return p;
+}
+
+// NATIVE PARITY case 6 (M13.6a) — a board carrying the "Curfew" noise gate:
+// RAT -> Curfew -> JCM800. The gate goes AFTER the dirt, which is where a gate
+// belongs and the opposite of where the compressor belongs. It is the first pedal
+// to reach this test that reports ZERO latency while a pedal BEFORE it reports a
+// nonzero one, so the chain's latency accounting has to add exactly the RAT's.
+Params gateBoardParams() {
+    Params p;
+    p.inputTrim = 0.5f;
+    p.chain[0] = clipper::native::PEDAL_RAT;
+    p.chain[1] = clipper::native::PEDAL_GATE;
+    p.chainLength = 2;
+    p.ratOn = true;   p.ratDist = 0.7f; p.ratFilter = 0.5f; p.ratLevel = 0.5f;
+    p.gateOn = true;  p.gateThreshold = 0.3f; p.gateDecay = 0.45f;
+    p.compOn = true;  // ON, but NOT on the board — must be inaudible
+    p.goldOn = true;  // likewise
+    p.muffOn = true;  // likewise
+    p.ampModel = kAmpJcm800;
+    p.ampOn = true;  p.volume = 0.55f; p.bass = 0.5f; p.middle = 0.5f; p.treble = 0.6f;
     return p;
 }
 
@@ -695,6 +724,7 @@ int main() {
     // v1.1 item 6: the GOLD "Myth" overdrive on the native board.
     ok &= runCase("Board: Gold -> (RAT bypassed) -> Phaser -> AC30", goldBoardParams(), in);
     ok &= runCase("Board: Squash -> TS -> Twin", compBoardParams(), in);
+    ok &= runCase("Board: RAT -> Curfew -> JCM800", gateBoardParams(), in);
     ok &= runCase("Board: RAT -> Echoman -> JCM800", delayBoardParams(), in);
 
     if (ok) {

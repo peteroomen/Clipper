@@ -539,6 +539,112 @@ test('gold worklet: transparent at min gain, harmonics + touch response when pus
 //
 // This is also the parity check that the worklet routes the 'comp' type to the
 // _comp_* C-ABI prefix and hands slot 0/2 through as SUSTAIN/LEVEL.
+test('gate worklet: THRESHOLD is a real threshold — it gates a hiss floor and passes a note untouched', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 1.2;
+
+    // FOUR renders, deliberately — Chromium's OfflineAudioContext starts
+    // returning SILENCE once enough contexts exist in one browser process
+    // (playwright.config.ts says so, and the comp spec was observed tripping it
+    // at six). Everything below is measured from these four.
+    async function render(threshold: number, amp: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      let ctx: OfflineAudioContext | null = null;
+      for (let attempt = 0; attempt < 4 && !ctx; attempt++) {
+        const c = new OfflineAudioContext(1, length, sampleRate);
+        try {
+          await Promise.race([
+            c.audioWorklet.addModule('/generated/clipper-processor.js'),
+            new Promise((_r, rej) => setTimeout(() => rej(new Error('addModule timeout')), 6000)),
+          ]);
+          ctx = c;
+        } catch {
+          /* fresh context, retry */
+        }
+      }
+      if (!ctx) throw new Error('addModule failed after retries');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 6000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') { clearTimeout(t); resolve(); }
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true }); // pure pedal proof
+        node.port.postMessage({
+          type: 'chain',
+          pedals: [{ id: 'g', type: 'gate', engaged: true, params: { distortion: threshold, filter: 0.5, level: 0.2 } }],
+        });
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: amp });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+
+    // The settled tail only: past the attack, past the hold, past the decay.
+    function tailRms(data: Float32Array, sr: number): number {
+      const start = Math.max(0, data.length - Math.floor(sr * 0.3));
+      let sum = 0, n = 0;
+      for (let i = start; i < data.length; i++) { sum += data[i] * data[i]; n++; }
+      return Math.sqrt(sum / n);
+    }
+
+    // 0.004 is a hiss floor (-47.96 dBV); 0.30 is a played note (-10.46 dBV).
+    // THRESHOLD 0.00 opens at -59.05 dBV and 0.60 at -35.05 (the core suite's
+    // measured table), so the hiss is ABOVE the low threshold and BELOW the high
+    // one while the note is above BOTH — which is exactly the straddle the test
+    // needs, and it is why the knob pair is 0.00/0.60 rather than something
+    // tidier.
+    const hiss = 0.004;
+    const note = 0.30;
+    return {
+      lowHiss: tailRms(await render(0.0, hiss), sampleRate),
+      lowNote: tailRms(await render(0.0, note), sampleRate),
+      highHiss: tailRms(await render(0.60, hiss), sampleRate),
+      highNote: tailRms(await render(0.60, note), sampleRate),
+    };
+  });
+
+  const db = (x: number) => 20 * Math.log10(Math.max(x, 1e-30));
+
+  // (a) HARNESS GATE, before any DSP claim: the two renders that must produce
+  // audio have to have produced some. (The hiss renders are ALLOWED to be near
+  // silent at the high threshold — that is the pedal working.)
+  for (const v of [result.lowNote, result.highNote])
+    expect(v, 'a render came back silent (Chromium OfflineAudioContext flake)').toBeGreaterThan(1e-4);
+
+  // (b) THE DELIVERY PATH: `type: 'gate'` reaches the core and slot 0 does
+  // something. Raising THRESHOLD from 0.00 to 0.60 must shut the hiss down hard.
+  const hissDrop = db(result.lowHiss) - db(result.highHiss);
+  // (c) AND THE NOTE IS UNTOUCHED at BOTH positions — this is the property that
+  // separates a threshold from a sensitivity control, and it is what the core
+  // suite measures as 40.00 dB of threshold travel against 0.0000 dB of gain.
+  const noteChange = Math.abs(db(result.highNote) - db(result.lowNote));
+  console.log(`[gate] hiss drop ${hissDrop.toFixed(2)} dB, note change ${noteChange.toFixed(3)} dB`);
+  expect(hissDrop).toBeGreaterThan(30.0);
+  expect(noteChange).toBeLessThan(0.5);
+  // (d) ...and at the low threshold the hiss really is passed, so (b) measures a
+  // gate closing rather than a pedal that is simply always shut.
+  expect(db(result.lowHiss)).toBeGreaterThan(db(result.lowNote) - 50.0);
+});
+
 test('comp worklet: compresses 26 dB of input to a few dB, and SUSTAIN is not a threshold', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
@@ -2132,6 +2238,144 @@ test('wah worklet: POSITION moves the resonance, and SENSE hands it to the envel
   // just a second, louder setting.
   expect(result.tailDiff).toBeLessThan(result.attackDiff * 0.1);
 });
+
+// M13.7 — the CE-1 "Ensemble" chorus (docs §62). Like the wah spec above, this is
+// the ONLY test proving the new pedal reaches audio through the REAL stack: the
+// WASM export list (_chorus_*), the worklet's `chorus` dispatch, and the rig's
+// three param slots. The core suite proves the DSP.
+//
+// It asserts the ONE property that separates this pedal from the amp's chorus and
+// cannot be faked by a gain change: in CHORUS mode the dry path is mixed in, so a
+// steady tone COMBS and its envelope swings; in VIBRATO mode the dry path is gone
+// entirely, so the same tone comes out at a steady level with the modulation
+// living purely in its pitch. Two OfflineAudioContexts only — the config's own
+// note documents a Chromium silent-render flake that fires at six.
+test('chorus worklet: MODE switches between a combing chorus and a dry-free vibrato', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 2.0;
+
+    async function render(params: {
+      distortion: number;
+      filter: number;
+      level: number;
+    }): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      let ctx: OfflineAudioContext | null = null;
+      for (let attempt = 0; attempt < 4 && !ctx; attempt++) {
+        const c = new OfflineAudioContext(1, length, sampleRate);
+        try {
+          await Promise.race([
+            c.audioWorklet.addModule('/generated/clipper-processor.js'),
+            new Promise((_r, rej) => setTimeout(() => rej(new Error('addModule timeout')), 6000)),
+          ]);
+          ctx = c;
+        } catch {
+          /* fresh context, try again */
+        }
+      }
+      if (!ctx) throw new Error('addModule failed after retries');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') {
+            clearTimeout(t);
+            resolve();
+          } else if (e.data?.type === 'error') {
+            clearTimeout(t);
+            reject(new Error(e.data.message));
+          }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 6000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') {
+            clearTimeout(t);
+            resolve();
+          }
+        };
+        // Amp OFF: a pure pedal-DSP proof.
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true });
+        node.port.postMessage({
+          type: 'chain',
+          pedals: [{ id: 'c', type: 'chorus', engaged: true, params }],
+        });
+        node.port.postMessage({ type: 'oversampling', factor: 4 });
+      });
+
+      // Deterministic steady tone built into a buffer (no OscillatorNode).
+      const src = ctx.createBufferSource();
+      const buf = ctx.createBuffer(1, length, sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < length; i++) d[i] = 0.5 * Math.sin((2 * Math.PI * 440 * i) / sampleRate);
+      src.buffer = buf;
+      src.connect(node).connect(ctx.destination);
+      src.start();
+      const out = await ctx.startRendering();
+      return out.getChannelData(0).slice();
+    }
+
+    // Peak-envelope swing (dB) over the settled tail, in 20 ms windows.
+    function envelopeDepthDb(x: Float32Array): number {
+      const w = Math.floor(sampleRate * 0.02);
+      let lo = Infinity;
+      let hi = 0;
+      for (let i = Math.floor(x.length / 2); i + w < x.length; i += w) {
+        let pk = 0;
+        for (let j = 0; j < w; j++) pk = Math.max(pk, Math.abs(x[i + j]));
+        lo = Math.min(lo, pk);
+        hi = Math.max(hi, pk);
+      }
+      return 20 * Math.log10(hi / Math.max(lo, 1e-12));
+    }
+    function rms(x: Float32Array): number {
+      let s = 0;
+      const a = Math.floor(x.length / 2);
+      for (let i = a; i < x.length; i++) s += x[i] * x[i];
+      return Math.sqrt(s / (x.length - a));
+    }
+
+    // Same RATE and DEPTH both times; only MODE moves (slot 2 = level).
+    const chorus = await render({ distortion: 0.5, filter: 1.0, level: 0.0 });
+    const vibrato = await render({ distortion: 0.5, filter: 1.0, level: 1.0 });
+
+    let finite = true;
+    for (const x of [chorus, vibrato])
+      for (let i = 0; i < x.length; i++) if (!Number.isFinite(x[i])) finite = false;
+
+    return {
+      finite,
+      chorusEnvDb: envelopeDepthDb(chorus),
+      vibratoEnvDb: envelopeDepthDb(vibrato),
+      chorusRms: rms(chorus),
+      vibratoRms: rms(vibrato),
+    };
+  });
+
+  expect(result.finite).toBe(true);
+  // HARNESS GATE: a silent render would make every ratio below meaningless, so it
+  // fails first and by name (the compressor spec's lesson, docs §59).
+  expect(result.chorusRms).toBeGreaterThan(0.01);
+  expect(result.vibratoRms).toBeGreaterThan(0.01);
+  // CHORUS mixes dry + detuned wet, so a steady tone combs and the envelope swings
+  // hard. This is the param slot AND the dispatch AND the mono sum, in one number.
+  expect(result.chorusEnvDb).toBeGreaterThan(6);
+  // VIBRATO removes the dry path entirely, so the same tone holds a steady level —
+  // the modulation is all in the pitch. No gain change can produce this pair.
+  expect(result.vibratoEnvDb).toBeLessThan(1);
+});
+
 
 // M13.4: the "Echoman" BBD analog delay, proved THROUGH THE WORKLET. This is a
 // DELIVERY-PATH test, deliberately — the physics (the clock law, the cumulative

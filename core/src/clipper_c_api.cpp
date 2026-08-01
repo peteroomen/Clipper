@@ -14,8 +14,10 @@
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/OrangeAmp.h"
 #include "clipper/dsp/PhaserModel.h"
+#include "clipper/dsp/Ce1Model.h"
 #include "clipper/dsp/CompModel.h"
 #include "clipper/dsp/DelayModel.h"
+#include "clipper/dsp/GateModel.h"
 #include "clipper/dsp/WahModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/MuffModel.h"
@@ -555,6 +557,118 @@ void comp_process(void* handle, const float* in_ptr, float* out_ptr,
                                                            num_frames);
 }
 
+// --- M13.7: CE-1 Chorus Ensemble exports -------------------------------------
+//
+// Additive alongside every other pedal, byte-for-byte the same opaque-handle ABI.
+// Param slots: 0 = RATE, 1 = DEPTH, 2 = MODE (< 0.5 chorus, >= 0.5 vibrato).
+//
+// Under the hood this is the JC-120 chorus (ChorusModel) re-voiced and summed to
+// the CE-1's MONO output jack — see Ce1Model.h and docs §62. The ABI is the same
+// as any other pedal's, so a chain can put it anywhere.
+
+EMSCRIPTEN_KEEPALIVE
+void* chorus_create(float sample_rate) {
+    auto* m = new clipper::dsp::Ce1Model();
+    m->prepare(static_cast<double>(sample_rate), 128);
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void chorus_destroy(void* handle) {
+    delete static_cast<clipper::dsp::Ce1Model*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void chorus_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
+    static_cast<clipper::dsp::Ce1Model*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clear the delay line, LFO phase and smoothers; keep the knobs.
+EMSCRIPTEN_KEEPALIVE
+void chorus_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::Ce1Model*>(handle)->reset();
+}
+
+// Accepted and ignored — a linear time-varying effect has nothing to alias.
+// Same answer as the phaser above.
+EMSCRIPTEN_KEEPALIVE
+void chorus_set_oversampling(void* /*handle*/, int /*factor*/) {}
+
+// Always 0: the modulated delay IS the effect, not a compensable latency.
+EMSCRIPTEN_KEEPALIVE
+int chorus_latency_samples(void* /*handle*/) { return 0; }
+
+EMSCRIPTEN_KEEPALIVE
+void chorus_process(void* handle, const float* in_ptr, float* out_ptr,
+                    int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::Ce1Model*>(handle)->process(in_ptr, out_ptr,
+                                                          num_frames);
+}
+
+
+// --- M13.6a: noise gate exports ----------------------------------------------
+//
+// Additive alongside rat_*/sd_*/ts_*/muff_*/gold_*/comp_*/phaser_*/wah_*,
+// byte-for-byte the same opaque-handle ABI so the worklet drives it exactly like
+// any other pedal. Param slots: 0 = THRESHOLD, 1 = UNUSED (the reference gate has
+// two knobs — the compressor/phaser precedent), 2 = DECAY.
+//
+// `gate_set_oversampling` is a deliberate NO-OP and `gate_latency_samples`
+// returns 0, exactly like the phaser's: the gate's signal path is a multiply and
+// the measurement says an oversampler buys nothing (docs §61.7). The exports
+// exist so the worklet's per-pedal loop stays uniform.
+
+EMSCRIPTEN_KEEPALIVE
+void* gate_create(float sample_rate) {
+    auto* m = new clipper::dsp::GateModel();
+    m->prepare(static_cast<double>(sample_rate), 128);
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void gate_destroy(void* handle) {
+    delete static_cast<clipper::dsp::GateModel*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void gate_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
+    static_cast<clipper::dsp::GateModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clear recursive state, re-park at the cached quiescent point,
+// keep the knobs / rate. See the banner above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void gate_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::GateModel*>(handle)->reset();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void gate_set_oversampling(void* handle, int factor) {
+    if (!handle) return;
+    static_cast<clipper::dsp::GateModel*>(handle)->setOversampling(factor);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int gate_latency_samples(void* handle) {
+    if (!handle) return 0;
+    return static_cast<clipper::dsp::GateModel*>(handle)->latencySamples();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void gate_process(void* handle, const float* in_ptr, float* out_ptr,
+                  int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::GateModel*>(handle)->process(in_ptr, out_ptr,
+                                                           num_frames);
+}
+
 // --- M13.4: BBD analog delay exports -----------------------------------------
 //
 // Additive alongside rat_*/sd_*/ts_*/muff_*/gold_*/comp_*/phaser_*/wah_*, and
@@ -617,7 +731,6 @@ void delay_process(void* handle, const float* in_ptr, float* out_ptr,
     static_cast<clipper::dsp::DelayModel*>(handle)->process(in_ptr, out_ptr,
                                                              num_frames);
 }
-
 
 // --- M5: clean amp + cab exports ---------------------------------------------
 //

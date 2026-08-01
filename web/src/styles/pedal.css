@@ -22,6 +22,8 @@
 .pedal[data-pedal-type="gold"]  { --pedal-accent: var(--accent-gold);  --pedal-accent-glow: var(--accent-gold-glow); }
 .pedal[data-pedal-type="comp"]  { --pedal-accent: var(--accent-comp);  --pedal-accent-glow: var(--accent-comp-glow); }
 .pedal[data-pedal-type="wah"]   { --pedal-accent: var(--accent-wah);   --pedal-accent-glow: var(--accent-wah-glow); }
+.pedal[data-pedal-type="gate"]  { --pedal-accent: var(--accent-gate);  --pedal-accent-glow: var(--accent-gate-glow); }
+.pedal[data-pedal-type="chorus"] { --pedal-accent: var(--accent-chorus); --pedal-accent-glow: var(--accent-chorus-glow); }
 .pedal[data-pedal-type="delay"] { --pedal-accent: var(--accent-delay); --pedal-accent-glow: var(--accent-delay-glow); }
 .pedal.raised {
   background:
@@ -375,6 +377,17 @@
 .pedal[data-face="wide"] .fsw-zone { margin-top: 22px; }
 .pedal[data-face="wide"] .fsw { width: 104px; height: 104px; }
 
+
+/* ---- M13.6a "Curfew" noise gate: the two-knob UTILITY box ----
+   Shares the compressor's two-knob 'stack' geometry (two knobs where a dirt box
+   has three is the morphology cue for "this is not a voice"), and is told apart
+   from it by the SLATE accent — deliberately the most muted colour on the board,
+   because a gate is plumbing. */
+.pedal[data-pedal-type="gate"] .knob-row {
+  justify-content: center;
+  gap: 26px;
+}
+.pedal[data-pedal-type="gate"] .k-name { letter-spacing: .16em; }
 
 /* ---- M13.1 "Squash" compressor: a two-knob MXR-format box ----
    It shares the 'stack' anatomy (hero wordmark, knob row, round stomp) with the

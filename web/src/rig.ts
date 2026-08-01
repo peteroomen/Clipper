@@ -55,7 +55,14 @@ export type SourceKind = 'test' | 'live';
 // repeats get darker the longer you set it; the repeats also degrade cumulatively,
 // because each one goes back through the whole device. BLEND 0 is bit-identical
 // to bypass. Docs §60.
-export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'phaser' | 'wah' | 'delay' | 'tuner';
+// M13.6a adds 'gate' (the "Curfew" noise gate — the lineup's first UTILITY, and
+// the pedal that makes a high-gain rig playable). SAME three-slot shape/ABI, but
+// only TWO of the slots are real knobs — slot 0 (distortion) is THRESHOLD and
+// slot 2 (level) is DECAY. Slot 1 is carried and unused, exactly as the
+// compressor carries it. THRESHOLD really IS a threshold: it moves the level at
+// which the gate opens by 40 dB and moves the gain the pedal applies when open by
+// 0.00 dB (docs §61.4) — the exact opposite of the compressor's SUSTAIN.
+export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
@@ -96,7 +103,7 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412' | 'orange412', num
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'phaser', 'wah', 'delay', 'tuner'];
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
@@ -302,7 +309,30 @@ export const DELAY_KNOB_DEFAULTS: PedalParams = {
   level: 0.35,
 };
 
+// CE-1 Chorus Ensemble (M13.7) opening state. RATE 0.35 lands at ~1.30 Hz in
+// chorus mode — the slow, wide 1970s shimmer the pedal is famous for, and well
+// inside its 1.0-3.0 Hz range. DEPTH 0.5 is the middle of the 3-6 ms delay
+// window. MODE 0 is CHORUS; >= 0.5 selects VIBRATO (a DISCRETE two-state switch,
+// matching the real pedal's footswitch). See Ce1Model / docs §62.
+export const CHORUS_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.35,
+  filter: 0.5,
+  level: 0.0,
+};
+
 // Per-type opening knob positions (gear tray "add" / swap use this).
+// "Curfew" noise gate (M13.6a) opening state. THRESHOLD 0.35, which measures a
+// −45.05 dBV open point: a realistic single-coil hiss floor (~−60 dBV) stays shut
+// and a normally played note (0.15 V peak) opens it, so the pedal is useful the
+// moment it lands on the board. DECAY 0.5 = a ~390 ms fade, close to the 300 ms
+// the gate literature recommends as a starting release. Slot 1 (filter) is
+// carried and unused. See docs §61.
+export const GATE_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.35,
+  filter: 0.5,
+  level: 0.5,
+};
+
 export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   rat: KNOB_DEFAULTS,
   sd1: SD1_KNOB_DEFAULTS,
@@ -310,8 +340,10 @@ export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   muff: MUFF_KNOB_DEFAULTS,
   gold: GOLD_KNOB_DEFAULTS,
   comp: COMP_KNOB_DEFAULTS,
+  gate: GATE_KNOB_DEFAULTS,
   phaser: PHASER_KNOB_DEFAULTS,
   wah: WAH_KNOB_DEFAULTS,
+  chorus: CHORUS_KNOB_DEFAULTS,
   delay: DELAY_KNOB_DEFAULTS,
   // The tuner has no knobs; params are unused but keep the shared shape.
   tuner: KNOB_DEFAULTS,
@@ -421,8 +453,10 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
     : p.type === 'muff' ? 'muff'
     : p.type === 'gold' ? 'gold'
     : p.type === 'comp' ? 'comp'
+    : p.type === 'gate' ? 'gate'
     : p.type === 'phaser' ? 'phaser'
     : p.type === 'wah' ? 'wah'
+    : p.type === 'chorus' ? 'chorus'
     : p.type === 'delay' ? 'delay'
     : 'rat';
   return {
