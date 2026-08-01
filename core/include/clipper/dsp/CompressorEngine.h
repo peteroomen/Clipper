@@ -68,6 +68,15 @@
 // envelope follower. They were deliberately NOT shared while both were in
 // flight. Unifying them is a named follow-up, not this engine's business.
 //
+// SETTLED 2026-08-01 (docs §58.8, ADR 023): the answer is NO — measured, not
+// argued. `SidechainDetector` is a THRESHOLD detector (1.950 dB of proportional
+// range on THIS pedal's own component values, open loop); this compressor's
+// graded response is its FEEDBACK LOOP, not the detector. A wah has no gain to
+// reduce, needs a proportional follower open loop, and measures 19.085 dB. The
+// substitution was built and every §58.6 number regressed. The wah keeps its own
+// follower and `SidechainDetector` was NOT widened. Read the "THIS IS A
+// *THRESHOLD* DETECTOR" banner in `SidechainDetector.h` before M13.3.
+//
 // ============================================================================
 //  THE CIRCUIT THIS CONFIG DESCRIBES  (see docs §59 for the sources)
 // ============================================================================

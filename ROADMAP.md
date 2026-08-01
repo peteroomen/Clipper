@@ -558,6 +558,13 @@ keeps these slices small:
    two independent routes, leaving the pot taper as the single fitted parameter.
    2.32 octaves; peak 17.90–17.91 dB with 0.010 dB of spread across the whole
    travel. SENSE 0 is bit-identical to a build that never had the envelope mode.)*
+   *(Follow-up CLOSED 2026-08-01 — docs §58.8, **ADR 023**: its envelope follower
+   is deliberately NOT unified with M13.1/M13.6a's shared `SidechainDetector`.
+   That component is a THRESHOLD detector — 1.95 dB of open-loop proportional
+   range on the compressor's own values against 19.09 dB for the wah's one-pole —
+   and a wah, having no gain to reduce, is feed-forward by necessity. The
+   substitution was built and every §58.6 AUTO number regressed. Refusal
+   perturbation-proven by `testFollowerLevelLaw`.)*
 2. **M13.2 — Dyna Comp / Ross compressor** *(M)* — CA3080 OTA, two knobs
    (SUSTAIN + LEVEL). The squishy pedal compressor: country chicken-pickin',
    funk, the always-on sustain trick. Its envelope detector is the noise gate's.
