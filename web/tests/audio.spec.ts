@@ -2132,3 +2132,140 @@ test('wah worklet: POSITION moves the resonance, and SENSE hands it to the envel
   // just a second, louder setting.
   expect(result.tailDiff).toBeLessThan(result.attackDiff * 0.1);
 });
+
+// M13.7 — the CE-1 "Ensemble" chorus (docs §62). Like the wah spec above, this is
+// the ONLY test proving the new pedal reaches audio through the REAL stack: the
+// WASM export list (_chorus_*), the worklet's `chorus` dispatch, and the rig's
+// three param slots. The core suite proves the DSP.
+//
+// It asserts the ONE property that separates this pedal from the amp's chorus and
+// cannot be faked by a gain change: in CHORUS mode the dry path is mixed in, so a
+// steady tone COMBS and its envelope swings; in VIBRATO mode the dry path is gone
+// entirely, so the same tone comes out at a steady level with the modulation
+// living purely in its pitch. Two OfflineAudioContexts only — the config's own
+// note documents a Chromium silent-render flake that fires at six.
+test('chorus worklet: MODE switches between a combing chorus and a dry-free vibrato', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 2.0;
+
+    async function render(params: {
+      distortion: number;
+      filter: number;
+      level: number;
+    }): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      let ctx: OfflineAudioContext | null = null;
+      for (let attempt = 0; attempt < 4 && !ctx; attempt++) {
+        const c = new OfflineAudioContext(1, length, sampleRate);
+        try {
+          await Promise.race([
+            c.audioWorklet.addModule('/generated/clipper-processor.js'),
+            new Promise((_r, rej) => setTimeout(() => rej(new Error('addModule timeout')), 6000)),
+          ]);
+          ctx = c;
+        } catch {
+          /* fresh context, try again */
+        }
+      }
+      if (!ctx) throw new Error('addModule failed after retries');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') {
+            clearTimeout(t);
+            resolve();
+          } else if (e.data?.type === 'error') {
+            clearTimeout(t);
+            reject(new Error(e.data.message));
+          }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 6000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') {
+            clearTimeout(t);
+            resolve();
+          }
+        };
+        // Amp OFF: a pure pedal-DSP proof.
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true });
+        node.port.postMessage({
+          type: 'chain',
+          pedals: [{ id: 'c', type: 'chorus', engaged: true, params }],
+        });
+        node.port.postMessage({ type: 'oversampling', factor: 4 });
+      });
+
+      // Deterministic steady tone built into a buffer (no OscillatorNode).
+      const src = ctx.createBufferSource();
+      const buf = ctx.createBuffer(1, length, sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < length; i++) d[i] = 0.5 * Math.sin((2 * Math.PI * 440 * i) / sampleRate);
+      src.buffer = buf;
+      src.connect(node).connect(ctx.destination);
+      src.start();
+      const out = await ctx.startRendering();
+      return out.getChannelData(0).slice();
+    }
+
+    // Peak-envelope swing (dB) over the settled tail, in 20 ms windows.
+    function envelopeDepthDb(x: Float32Array): number {
+      const w = Math.floor(sampleRate * 0.02);
+      let lo = Infinity;
+      let hi = 0;
+      for (let i = Math.floor(x.length / 2); i + w < x.length; i += w) {
+        let pk = 0;
+        for (let j = 0; j < w; j++) pk = Math.max(pk, Math.abs(x[i + j]));
+        lo = Math.min(lo, pk);
+        hi = Math.max(hi, pk);
+      }
+      return 20 * Math.log10(hi / Math.max(lo, 1e-12));
+    }
+    function rms(x: Float32Array): number {
+      let s = 0;
+      const a = Math.floor(x.length / 2);
+      for (let i = a; i < x.length; i++) s += x[i] * x[i];
+      return Math.sqrt(s / (x.length - a));
+    }
+
+    // Same RATE and DEPTH both times; only MODE moves (slot 2 = level).
+    const chorus = await render({ distortion: 0.5, filter: 1.0, level: 0.0 });
+    const vibrato = await render({ distortion: 0.5, filter: 1.0, level: 1.0 });
+
+    let finite = true;
+    for (const x of [chorus, vibrato])
+      for (let i = 0; i < x.length; i++) if (!Number.isFinite(x[i])) finite = false;
+
+    return {
+      finite,
+      chorusEnvDb: envelopeDepthDb(chorus),
+      vibratoEnvDb: envelopeDepthDb(vibrato),
+      chorusRms: rms(chorus),
+      vibratoRms: rms(vibrato),
+    };
+  });
+
+  expect(result.finite).toBe(true);
+  // HARNESS GATE: a silent render would make every ratio below meaningless, so it
+  // fails first and by name (the compressor spec's lesson, docs §59).
+  expect(result.chorusRms).toBeGreaterThan(0.01);
+  expect(result.vibratoRms).toBeGreaterThan(0.01);
+  // CHORUS mixes dry + detuned wet, so a steady tone combs and the envelope swings
+  // hard. This is the param slot AND the dispatch AND the mono sum, in one number.
+  expect(result.chorusEnvDb).toBeGreaterThan(6);
+  // VIBRATO removes the dry path entirely, so the same tone holds a steady level —
+  // the modulation is all in the pitch. No gain change can produce this pair.
+  expect(result.vibratoEnvDb).toBeLessThan(1);
+});

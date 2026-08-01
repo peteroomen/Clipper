@@ -49,14 +49,13 @@ const PedalFace kFaces[PEDAL_TYPE_COUNT] = {
      Footswitch::Shape::Round, PedalFace::Layout::Plate, 30.0f,
      {{"Gain", pid::goldGain}, {"Treble", pid::goldTreble}, {"Output", pid::goldLevel}},
      pid::goldOn},
-    // SQUASH — M13.1, the first DYNAMICS pedal and the first non-dirt box. Its
-    // morphology cue is simply that it has TWO knobs where every dirt box has
-    // three: a small MXR-format enclosure over a round stomp. Teal accent (the
-    // real pedal is red, and Rat owns red here). No MXR/Dyna Comp/Ross text.
-    {"Dynamics N\xc2\xba""7 \xc2\xb7 Squash", "Squash", skin::AccentId::Comp,
-     Footswitch::Shape::Round, PedalFace::Layout::Stack, 34.0f,
-     {{"Sustain", pid::compSustain}, {"Level", pid::compLevel}},
-     pid::compOn},
+    // ---- ORDER IS LOAD-BEARING: this array is indexed by PedalType. ----
+    // The two entries below were SWAPPED before M13.7 (Squash sat at index 6 and
+    // Weeper at index 7, while PEDAL_WAH = 6 and PEDAL_COMP = 7), so a wah card
+    // drew the compressor's face and a compressor card drew the wah's. The menu
+    // was right, because pedalMenuLabel uses explicit `case` labels rather than
+    // this array's position — which is exactly why the two disagreed. Corrected
+    // here into enum order; never re-sort this array by anything but PedalType.
     // WAH "Weeper" (docs §58) — the board's first FILTER pedal, and the first one
     // whose real enclosure is a ROCKING TREADLE rather than a box. The treadle
     // footswitch shape is that morphology cue (shared with the Boss-compact SD-1
@@ -68,6 +67,32 @@ const PedalFace kFaces[PEDAL_TYPE_COUNT] = {
      Footswitch::Shape::Treadle, PedalFace::Layout::Stack, 26.0f,
      {{"Position", pid::wahPosition}, {"Sense", pid::wahSense}, {"Voice", pid::wahVoice}},
      pid::wahOn},
+    // SQUASH — M13.1, the first DYNAMICS pedal and the first non-dirt box. Its
+    // morphology cue is simply that it has TWO knobs where every dirt box has
+    // three: a small MXR-format enclosure over a round stomp. Teal accent (the
+    // real pedal is red, and Rat owns red here). No MXR/Dyna Comp/Ross text.
+    {"Dynamics N\xc2\xba""7 \xc2\xb7 Squash", "Squash", skin::AccentId::Comp,
+     Footswitch::Shape::Round, PedalFace::Layout::Stack, 34.0f,
+     {{"Sustain", pid::compSustain}, {"Level", pid::compLevel}},
+     pid::compOn},
+    // RESERVED, in the slot-reservation commit's order. These two are the DELAY
+    // (8) and NOISE GATE (9) slices' to fill — left as explicit empty faces so
+    // this array stays index-aligned with PedalType while those slices are in
+    // flight. An empty face draws no knobs and no wordmark, and is unreachable
+    // anyway: a type is only addable once the front-ends know about it.
+    {},  // PEDAL_DELAY = 8  — M13.4, owned by the delay slice
+    {},  // PEDAL_GATE  = 9  — M13.6a, owned by the gate slice
+    // ENSEMBLE — M13.7, the CE-1 Chorus Ensemble: the second MODULATION pedal and
+    // the first whose circuit the project already owned (it is the JC-120 amp's
+    // chorus in a floor box — docs §62). Morphology cue is the real CE-1's big,
+    // wide, low enclosure, so it takes the milled Plate anatomy rather than the
+    // compact Stack. MAGENTA accent: the phaser owns orange and this is the second
+    // modulation box, so the hue separates the family. No Boss/Roland/CE-1 text.
+    // RATE / DEPTH / MODE, and MODE is a DISCRETE two-position switch in the model.
+    {"Modulation N\xc2\xba""8 \xc2\xb7 Ensemble", "Ensemble", skin::AccentId::Chorus,
+     Footswitch::Shape::Round, PedalFace::Layout::Plate, 34.0f,
+     {{"Rate", pid::ce1Rate}, {"Depth", pid::ce1Depth}, {"Mode", pid::ce1Mode}},
+     pid::ce1On},
 };
 }  // namespace
 
@@ -85,6 +110,7 @@ juce::String pedalMenuLabel(int type) {
         case PEDAL_GOLD:   return "Myth - gold transparent overdrive";
         case PEDAL_COMP:   return "Squash - OTA compressor";
         case PEDAL_WAH:    return "Weeper - wah / envelope filter";
+        case PEDAL_CHORUS: return "Ensemble - CE-1 chorus / vibrato";
         default:           return "Pedal";
     }
 }

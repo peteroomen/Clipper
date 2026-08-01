@@ -305,12 +305,23 @@ export const TOOLS = [
       'dirt is the screaming lead wah), ' +
       "and 'tuner' (a chromatic tuner — no " +
       'tone, but when stomped ON it MUTES the rig so the player can tune in ' +
-      'silence; put it first in the chain by convention). Omit `position` to ' +
+      'silence; put it first in the chain by convention), ' +
+      "'chorus' (the 'Ensemble' CHORUS — MODULATION, not dirt: the world's first " +
+      'chorus pedal, and literally the JC-120 amp\'s own chorus circuit in a floor ' +
+      'box. Knobs are RATE, DEPTH and MODE. MODE is a two-position switch: below ' +
+      'halfway it is CHORUS (a lush, wide 1970s shimmer — dry and detuned-wet mixed ' +
+      'together, which is what makes it sound like two guitars slightly out of tune ' +
+      'with each other), at or above halfway it is VIBRATO (the dry signal is gone ' +
+      'entirely, so you get real seasick pitch wobble instead of shimmer). The two ' +
+      'modes also use different, NON-OVERLAPPING speed ranges — chorus is slow ' +
+      '(about 1-3 Hz) and vibrato starts faster than chorus ever gets, so switching ' +
+      'mode is a bigger change than moving RATE. Note DEPTH never fully switches ' +
+      'the effect off, exactly like the real pedal). Omit `position` to ' +
       'append at the end (just before the amp), or give a 0-based slot to insert.',
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'phaser', 'wah', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'phaser', 'wah', 'chorus', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -498,7 +509,7 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'phaser' | 'wah' | 'tuner' =
+    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'phaser' | 'wah' | 'chorus' | 'tuner' =
       input.type === 'tuner' ? 'tuner'
       : input.type === 'sd1' ? 'sd1'
       : input.type === 'ts' ? 'ts'
@@ -507,6 +518,7 @@ export function executeTool(
       : input.type === 'comp' ? 'comp'
       : input.type === 'phaser' ? 'phaser'
       : input.type === 'wah' ? 'wah'
+      : input.type === 'chorus' ? 'chorus'
       : 'rat';
     const rawPos = input.position;
     const position =
@@ -521,6 +533,7 @@ export function executeTool(
                 : type === 'comp' ? 'Squash'
                   : type === 'phaser' ? 'Phaser'
                     : type === 'wah' ? 'Weeper'
+                    : type === 'chorus' ? 'Ensemble'
                     : 'RAT';
     return {
       content: JSON.stringify({ applied: { added: type, index } }),

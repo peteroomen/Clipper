@@ -11348,3 +11348,314 @@ is chosen for distinguishability and the identity is carried by the face. Wordma
 
 **Goldens: all five UNCHANGED at ±0.00 dB, and nothing was blessed.** The
 compressor is in no golden rig, and it touches no other model.
+
+## 62. M13.7 — the Boss CE-1 Chorus Ensemble: the JC-120's chorus, re-voiced
+
+Pedal type `chorus`, slot `PEDAL_CHORUS = 10`, wordmark **"Ensemble"**, model line
+`MODULATION Nº8 · ENSEMBLE`, MAGENTA accent. Three knobs: **RATE / DEPTH / MODE**.
+Wired end to end in one slice — core, C ABI (`chorus_*`), worklet, web face +
+tokens + assistant, native engine / APVTS / `PedalCard`.
+
+### 62.1 The headline, stated plainly
+
+**This is the JC-120's chorus circuit with the CE-1's knob ranges, its LFO
+waveform and its mono output, and that is the honest description.** The Boss CE-1
+(1976, Boss's first pedal and the world's first chorus pedal) *is* the Roland
+JC-120 amplifier's chorus/vibrato circuit put in a floor box the year after the
+amp shipped. This project has modelled that circuit since M6.3 (§11.2), so
+`Ce1Model` **owns a `ChorusModel`** and drives it through a voicing seam. The
+swept BBD delay line, the 4-point Lagrange interpolator, the LFO phase
+accumulator and the ~8 ms control smoothing are the amp's validated code,
+unmodified.
+
+There are exactly **three** differences from the amp's voicing. Each is sourced.
+Nothing else was invented to make the slice look bigger.
+
+### 62.2 Research: sources, and what could not be obtained
+
+The proxy here refuses nearly every audio site. `WebFetch` returned **403 for
+every URL tried** — `djjondent.blogspot.com` (the most detailed CE-1 teardown
+found), `help.uaudio.com` (the manual), `forum.fractalaudio.com`. GitHub clones
+work, but there is **no CE-1 schematic or LTspice model on GitHub** (searched;
+`jpcima/ensemble-chorus` is a string-ensemble model, not this circuit). So the
+channel was **search-result extracts only**, exactly as §57's first Orange release.
+
+**SOURCED (multiple independent extracts agreeing):**
+
+| Fact | Value |
+|---|---|
+| Origin | The JC-120's chorus circuit in a floor box; Boss's first pedal, June 1976 – May 1984 |
+| BBD | Panasonic **MN3002**, 512 stages (discontinued in 1984 — which is why the pedal was) |
+| Chorus-mode LFO rate | **1.0 – 3.0 Hz**, midpoint reported as "about 1.75 Hz" |
+| Vibrato-mode LFO rate | **3.2 – 11.6 Hz** |
+| Non-overlap | Stated in prose: "the fastest LFO rate in Chorus mode is slower than the slowest LFO rate in Vibrato mode" |
+| Delay window | **3–5 ms at minimum DEPTH, 3–7 ms at maximum** |
+| LFO waveform | **Triangle in chorus, roughly sine in vibrato** — the pedal uses a different waveform per mode |
+| Controls | Chorus mode has ONE knob (INTENSITY, ganged); vibrato has TWO (RATE, DEPTH) |
+| INTENSITY | "The only noticeable effect is the RATE of modulation", though it moves depth too |
+| Outputs | **Mono jack = wet and dry MIXED; stereo pair = dry on one jack, wet on the other** |
+| Vibrato | "The wet-only sound of the chorus" |
+| Character | "Dark, full and throaty"; "organic warmth" |
+
+**A cross-check that landed.** The two rate ranges were sourced independently, and
+they do not overlap — 3.0 < 3.2 — *and* the non-overlap is stated separately in
+prose. Three facts agreeing is the strongest check available on this voice, and
+§62.9 asserts it so a later edit cannot quietly break it.
+
+**GAPS, RECORDED RATHER THAN FILLED:**
+
+1. **No schematic was ever read.** Component values, the compander topology and
+   the BBD clock scheme are all unsourced. Nothing in this model claims one.
+2. **No vibrato-mode rate midpoint** was published, so that taper is *carried
+   over* from the chorus law (§62.3) rather than fitted.
+3. **The chorus mode's own delay excursion** was not separately sourced — the
+   3–5 / 3–7 ms window is published for the *vibrato* DEPTH knob (chorus mode has
+   no depth knob on the real panel). The same window is used for both, on the
+   grounds that it is one BBD and one sweep generator with a switched range.
+4. **No BBD bandwidth, filter corner or compander ratio.** See §62.7.
+
+### 62.3 The rate law is DERIVED, and a linear pot is refuted
+
+The endpoints are measured figures. The **taper** is the interesting part, because
+the source publishes a third number: the chorus midpoint at ~1.75 Hz.
+
+| Law | Prediction at knob 0.5 | Error vs the published 1.75 Hz |
+|---|---|---|
+| **log** — `rate = 1.0·(3.0/1.0)^k` | **1.7321 Hz** | **1.03 %** |
+| linear — `rate = 1.0 + 2.0·k` | 2.0000 Hz | 14.29 % |
+
+So the pot is exponential, and the published midpoint *chooses* it — a factor of
+fourteen in the residual. Nothing was fitted. The same law is used for vibrato
+(3.2 → 11.6 Hz): it is one LFO circuit with a switched range, so the pot's own
+taper cannot plausibly change with the switch.
+
+| RATE knob | CHORUS (Hz) | VIBRATO (Hz) |
+|---|---|---|
+| 0.00 | 1.0000 | 3.2000 |
+| 0.25 | 1.3161 | 4.4155 |
+| 0.50 | **1.7321** | 6.0926 |
+| 0.75 | 2.2795 | 8.4068 |
+| 1.00 | 3.0000 | 11.6000 |
+
+Rendered LFO rate (measured from the pitch track of a 440 Hz probe in vibrato)
+tracks the set rate to **1.5 %** or better across the travel, and is identical to
+four decimal places at 44.1 / 48 / 88.2 / 96 kHz.
+
+### 62.4 The delay window, read literally, and the floor that is not a bug
+
+"3–5 ms at minimum, 3–7 ms at maximum" says the delay **floor is pinned at 3 ms**
+and the **ceiling opens from 5 to 7 ms**. As a centred sweep:
+
+```
+centre D0 = (3 + ceiling)/2 = 4 + depth   ms
+amplitude A = (ceiling - 3)/2 = 1 + depth  ms
+```
+
+both exactly linear in the knob, both straight off the source, no taper invented.
+
+| DEPTH | base (ms) | sweep A (ms) | window (ms) | rendered peak deviation @3.2 Hz |
+|---|---|---|---|---|
+| 0.00 | 4.000 | 1.000 | 3.000 – 5.000 | **35.2 cents** |
+| 0.50 | 4.500 | 1.500 | 3.000 – 6.000 | 53.0 cents |
+| 1.00 | 5.000 | 2.000 | 3.000 – 7.000 | 71.0 cents |
+
+Rendered agrees with the swept-delay physics (`peak = (1200/ln2)·A·2πf`) to
+**within 2.1 %** at every point.
+
+**THE DEPTH KNOB AT ZERO STILL MODULATES — 35 cents of it.** That is the circuit,
+not an oversight, and it is the single most likely thing for a later slice to
+"fix" by mistake. It is asserted. Turning the effect off is the pedal's own
+bypass, not the depth knob.
+
+At the extremes the numbers get large and are **reported, not tamed**: vibrato at
+maximum RATE and DEPTH measures **272 cents** of peak deviation (2.7 semitones).
+A CE-1's vibrato at full tilt genuinely is that wild.
+
+### 62.5 Mono is the FACTORY output, and it is why this pedal is not the amp's
+
+This is the difference that matters most, and it is the opposite of what a mono
+host usually forces. **The CE-1 has both a stereo pair (dry on one jack, wet on
+the other) and a MONO jack that mixes wet and dry internally.** The pedal chain
+here is mono, so we ship the factory mono output — a real output on a real pedal,
+not a sum we invented.
+
+The audible consequence is the whole point. Mixing dry and wet **electrically**
+produces **comb filtering**. The amp's chorus never combs, because `ChorusModel`
+in CHORUS mode is a *split*: L is the bit-exact dry input and R is the wet one,
+and the comb only ever happens acoustically in the room.
+
+Measured, a 440 Hz tone at RATE 0.5 / DEPTH 1.0:
+
+| | envelope swing |
+|---|---|
+| **CE-1 chorus (mono jack)** | **14.72 dB** |
+| amp chorus, LEFT channel — what a mono host takes | **0.00 dB** (max abs difference from the input: **0.000e+00**) |
+
+A mono host taking the amp's chorus gets **no chorus whatsoever**. That single row
+is the justification for the pedal existing.
+
+The comb is in the right place, and it moves. At DEPTH 0 the delay centres on
+4.00 ms, so a dry+wet mix nulls first at `1/(2·4 ms) = 125 Hz` and peaks at
+`1/4 ms = 250 Hz`:
+
+| probe | DEPTH 0 | DEPTH 1 | note |
+|---|---|---|---|
+| 125 Hz | **0.02517** | 0.17751 | **+16.97 dB** — rises out of the null as the base moves to 5 ms |
+| 250 Hz | 0.40825 | — | the peak; **24.20 dB** of comb against the 125 Hz null |
+| 100 Hz | 0.15038 | 0.06140 | **−7.78 dB** — sinks toward the 5 ms delay's own first null |
+| 125 Hz, VIBRATO | 0.42624 | — | **24.57 dB above** the chorus null: no dry path, so no comb at all |
+
+**WHAT IS LOST:** the stereo image. A real CE-1 into two amps is wide; this is
+not, and no mono model can be. Documented, not papered over.
+
+### 62.6 The one deliberate departure from the real control layout
+
+**ADR NUMBER NEEDED** — this is an ADR-worthy decision and numbers are assigned
+centrally, so one is requested rather than picked.
+
+The real CE-1's panel is asymmetric: CHORUS mode has **one** knob (INTENSITY,
+ganged — it moves rate and depth together, and the rate is the part you notice),
+VIBRATO has **two** (RATE and DEPTH). Reproducing that gang would leave one of our
+three slots doing **nothing** in chorus mode, and this codebase forbids dead UI in
+terms ("Don't ship dead UI … or a knob whose top half does nothing").
+
+**Decision:** RATE and DEPTH are independent in **both** modes. MODE selects which
+rate RANGE and which WAVEFORM apply. A player who wants the factory chorus feel
+moves RATE alone.
+
+**Cost:** the chorus mode's knob feel is not the real pedal's. You can set a
+combination (slow rate, deep sweep) that a real CE-1's single INTENSITY knob
+cannot reach. Recorded here so a future slice does not "discover" the gang and
+re-introduce it without knowing the trade was deliberate.
+
+MODE itself is **genuinely discrete** — a real footswitch between two circuits —
+so unlike §58's wah SENSE it is not smuggled into a continuous law. The threshold
+is explicit (`< 0.5` chorus, `>= 0.5` vibrato) and both ends plus the boundary are
+asserted.
+
+### 62.7 What is NOT modelled, named rather than guessed
+
+The CE-1 is a **bucket-brigade** circuit: an MN3002 behind a compander, with an
+anti-alias filter in front and a reconstruction filter after. Sources describe the
+result as "dark, full and throaty".
+
+**None of that is modelled.** The wet path is a clean Lagrange-interpolated delay,
+exactly as the amp's chorus is, and this pedal **inherits that approximation
+rather than adding a new one**. No corner frequency, compander ratio or BBD
+bandwidth figure could be sourced, and inventing one to chase an adjective is
+precisely the fitting this project forbids (§57.1's rule). **It is the largest
+known gap on this voice**, and the fix is a schematic, not a filter chosen by ear.
+
+### 62.8 Two defects this slice's own tests found, and one numeric fact
+
+**(1) Switching the LFO waveform mid-cycle STEPS the delay.** The first
+implementation flipped a `waveform` flag. Sine and triangle share their zero
+crossings and their sign, so switching *at* a zero crossing is seamless — but they
+agree nowhere in between: at phase π/4 sine is 0.7071 and triangle is 0.5000, so
+the flip **jumps the read pointer by 0.207·A**, about 14 samples at a 1.4 ms sweep
+at 48 kHz. Audible click. Fixed by making the waveform a **smoothed blend** on the
+same ~8 ms constant, with a `blend <= 0.0` fast path so every JC-120 caller still
+evaluates `std::sin` and nothing else.
+
+**(2) Forwarding the mode to `ChorusModel` CLICKED — measured at 17.02× the
+signal's own slew.** `ChorusModel`'s mode is a *hard* switch by its own documented
+convention, and switching it makes the L channel change meaning from dry to wet in
+one sample while our dry mix weight is still mid-ramp at 0.5, so the output jumps
+from `(dry+wet)/2` to `wet`. **Fixed by never switching it:** the owned
+`ChorusModel` stays in `MODE_CHORUS` for both of our modes, and vibrato is that
+same dry/wet pair with the dry weight taken to zero. Seam **17.02× → 0.95×**, and
+it makes "vibrato is the wet path alone" structurally true rather than a second
+code path that has to agree. Do not "simplify" it back.
+
+**(3) `OnePoleSmoother` converges EXACTLY to a zero target and NOT to a nonzero
+one.** Worth knowing before writing the next smoother test. Approaching zero the
+value keeps halving until the residual drops under the 1e-30 guard, which then
+snaps it — so the vibrato dry weight really does reach **exactly 0.0**, which is
+what lets "the dry path is absent" be an `==` rather than a tolerance. Approaching
+a *nonzero* target the guard cannot fire: the ramp stalls once the increment falls
+below half a float ULP at the target, i.e. at a residual of about
+`ULP/coeff = 1.19e-7 / 0.0026 ≈ 4.6e-5`. Measured: the wet weight settles at
+**0.99998856**, 1.14e-5 short (−98.8 dB). Inaudible, but an `==` there would be a
+flake.
+
+### 62.9 The suite, and what it is pointed at
+
+`clipper_ce1_tests` (core ctest **29 → 30 entries**, 30/30). Every bar is a
+player-observable property; there is no comparison against an analytic expression
+derived from the same code.
+
+1. **Rate law** — endpoints against the teardown's measured figures, monotone in
+   both modes, and the **derived taper**: within 3 % of the published midpoint,
+   with the assertion that a linear pot would be >10 % off, so the refuted
+   alternative stays refuted.
+2. **The non-overlap cross-check** — fastest chorus < slowest vibrato, and the
+   vibrato top is >3.5× the chorus top.
+3. **Depth in CENTS** off a rendered pitch track, agreeing with the swept-delay
+   physics to 15 %; both ends of the published window asserted; and the DEPTH-0
+   floor asserted to still detune.
+4. **Chorus vs vibrato as two measurable states** — the vibrato dry weight is
+   `== 0.0` exactly, and on audio the envelope swings **15.12 dB** in chorus
+   against **0.00 dB** in vibrato, while vibrato still moves the pitch by 137.8
+   cents. A flat envelope with moving pitch is not something a gain change can
+   fake.
+5. **The comb** — position, depth, and that it MOVES with DEPTH (§62.5's table).
+6. **Against the amp's chorus** — the §62.5 mono row, plus the range comparison.
+7. Housekeeping: DC on signal (clean **0.026 %** of peak; with +0.1 V of input
+   offset the offset **passes through**, because a linear delay with no coupling
+   cap does not block DC — stated, bounded, not hidden), `reset()` (**0.000e+00**
+   against a never-played model), the NaN guard (1/256 non-finite in →
+   **0/48000** after reset; non-finite params rejected), no zipper (RATE slam
+   **0.98× / 1.00×**, MODE switch **0.95×**), block-size invariance
+   (**0.000e+00** ragged vs 128), rate independence (**0.00 %** spread over
+   44.1–96 kHz), the ADR 006 resting state (delay line **exactly 0.0**), and the
+   MODE mapping at both ends and across the threshold.
+
+**Denormals (ADR 006).** The delay ring is a pure FIFO of the input with **no
+recursion into it**, so on silence it reaches exactly 0.0 after one buffer length
+— asserted, not assumed — and no flush is reachable. The two mix-weight smoothers
+rest on their targets and `OnePoleSmoother` snaps exactly (see §62.8(3)). This
+file adds **no new guard**, and that is a measured conclusion rather than an
+omission.
+
+**Latency 0 and no oversampling**, asserted: the effect is linear time-varying, so
+there is nothing to alias, and its modulated delay IS the effect rather than a
+compensable latency (the phaser precedent, §12).
+
+### 62.10 The amp's chorus is BIT-IDENTICAL, proven twice
+
+`ChorusModel` gained a voicing seam (`setBaseDelayMs` / `setSweepMs` /
+`setRateHz` / `setWaveform`), a base-delay smoother and a waveform blend. All of
+it defaults to the JC-120 values, so:
+
+- **108 render hashes** (3 sample rates × 3 modes × 4 speeds × 3 depths, ragged
+  block sizes, FNV-1a over both channels' raw float bits) are **identical** to the
+  pre-slice source, re-verified after the waveform-blend change.
+- **All five goldens UNCHANGED at ±0.00, and `clean120_chorus` — the one that
+  would move if this slice had disturbed the amp — is among them.** Nothing was
+  blessed.
+
+Two implementation details carry that: `baseSamples` is an `OnePoleSmootherT<double>`
+whose settled `next()` returns its target bit-exactly, and `lfo()` takes a
+`blend <= 0.0` branch that is `std::sin(phase)` and nothing else.
+
+### 62.11 Wiring, and a pre-existing bug found on the way
+
+Slot `PEDAL_CHORUS = 10` (reserved before the slice, never renumbered), the
+`_chorus` C-ABI prefix, `Pedal.tsx` FACES entry on the `plate` anatomy,
+`tokens.css` `--accent-chorus` (magenta — the phaser owns orange and this is the
+second modulation pedal), four APVTS parameters, a `PedalCard` face, and an
+assistant block that covers what MODE actually does, the non-overlapping speed
+ranges, the fact that DEPTH 0 does not switch it off, and that a chorus usually
+goes **after** the dirt.
+
+**A PRE-EXISTING BUG, FOUND AND FIXED — REPORT IT.** `PedalCard.cpp`'s `kFaces` is
+a **positional** array indexed by `PedalType`, and the wah/compressor merge left
+**Squash at index 6 and Weeper at index 7** while `PEDAL_WAH = 6` and
+`PEDAL_COMP = 7`. So in the native plugin **a wah card drew the compressor's face
+and a compressor card drew the wah's** — wrong wordmark, wrong accent, wrong knob
+labels and wrong param attachments. `pedalMenuLabel` uses explicit `case` labels
+and was right, which is exactly why the menu and the card disagreed. Corrected
+into enum order here, because this slice extends that same array and shipping one
+it had just edited while knowing it was wrong would be worse. Indices 8 and 9 are
+left as **explicit empty faces**, reserved for the delay and gate slices to fill,
+so the array stays index-aligned while they are in flight.

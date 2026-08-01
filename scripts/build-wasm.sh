@@ -99,6 +99,9 @@ EMCC_ARGS=(
     "$CORE_DIR/src/dsp/WahModel.cpp"
     "$CORE_DIR/src/dsp/AmpModel.cpp"
     "$CORE_DIR/src/dsp/ChorusModel.cpp"
+    # M13.7 — the CE-1 chorus pedal. It OWNS a ChorusModel (above), so it must be
+    # listed after it for readability; link order does not matter here.
+    "$CORE_DIR/src/dsp/Ce1Model.cpp"
     "$CORE_DIR/src/dsp/ReverbModel.cpp"
     "$CORE_DIR/src/dsp/CabConvolver.cpp"
     "$CORE_DIR/src/dsp/CabIR.cpp"
@@ -148,7 +151,7 @@ EMCC_ARGS=(
     # in step with clipper_c_api.cpp. The *_reset entries are the recovery path for
     # audit finding 1 (docs §28): without them a poisoned engine can only be
     # recovered by tearing the whole worklet graph down.
-    -s EXPORTED_FUNCTIONS='["_clipper_create","_clipper_destroy","_clipper_set_param","_clipper_process","_rat_create","_rat_destroy","_rat_set_param","_rat_set_oversampling","_rat_latency_samples","_rat_process","_sd_create","_sd_destroy","_sd_set_param","_sd_set_oversampling","_sd_latency_samples","_sd_process","_ts_create","_ts_destroy","_ts_set_param","_ts_set_oversampling","_ts_latency_samples","_ts_process","_muff_create","_muff_destroy","_muff_set_param","_muff_set_oversampling","_muff_latency_samples","_muff_process","_gold_create","_gold_destroy","_gold_set_param","_gold_set_oversampling","_gold_latency_samples","_gold_process","_comp_create","_comp_destroy","_comp_set_param","_comp_set_oversampling","_comp_latency_samples","_comp_process","_phaser_create","_phaser_destroy","_phaser_set_param","_phaser_set_oversampling","_phaser_latency_samples","_phaser_process","_wah_create","_wah_destroy","_wah_set_param","_wah_set_oversampling","_wah_latency_samples","_wah_process","_amp_create","_amp_destroy","_amp_set_param","_amp_set_model","_amp_latency_samples","_amp_process","_amp_process_stereo","_amp_set_cab_builtin","_amp_load_custom_ir","_amp_prepare_cab_builtin","_amp_prepare_cab_custom","_amp_commit_cab","_clipper_reset","_rat_reset","_sd_reset","_ts_reset","_muff_reset","_gold_reset","_comp_reset","_phaser_reset","_wah_reset","_amp_reset","_malloc","_free"]' \
+    -s EXPORTED_FUNCTIONS='["_clipper_create","_clipper_destroy","_clipper_set_param","_clipper_process","_rat_create","_rat_destroy","_rat_set_param","_rat_set_oversampling","_rat_latency_samples","_rat_process","_sd_create","_sd_destroy","_sd_set_param","_sd_set_oversampling","_sd_latency_samples","_sd_process","_ts_create","_ts_destroy","_ts_set_param","_ts_set_oversampling","_ts_latency_samples","_ts_process","_muff_create","_muff_destroy","_muff_set_param","_muff_set_oversampling","_muff_latency_samples","_muff_process","_gold_create","_gold_destroy","_gold_set_param","_gold_set_oversampling","_gold_latency_samples","_gold_process","_comp_create","_comp_destroy","_comp_set_param","_comp_set_oversampling","_comp_latency_samples","_comp_process","_phaser_create","_phaser_destroy","_phaser_set_param","_phaser_set_oversampling","_phaser_latency_samples","_phaser_process","_wah_create","_wah_destroy","_wah_set_param","_wah_set_oversampling","_wah_latency_samples","_wah_process","_chorus_create","_chorus_destroy","_chorus_set_param","_chorus_set_oversampling","_chorus_latency_samples","_chorus_process","_amp_create","_amp_destroy","_amp_set_param","_amp_set_model","_amp_latency_samples","_amp_process","_amp_process_stereo","_amp_set_cab_builtin","_amp_load_custom_ir","_amp_prepare_cab_builtin","_amp_prepare_cab_custom","_amp_commit_cab","_clipper_reset","_rat_reset","_sd_reset","_ts_reset","_muff_reset","_gold_reset","_comp_reset","_phaser_reset","_wah_reset","_chorus_reset","_amp_reset","_malloc","_free"]' \
     -s EXPORTED_RUNTIME_METHODS='["HEAPF32","HEAPU8"]'
 )
 # --- STAMP:EMCC-ARGS END ---

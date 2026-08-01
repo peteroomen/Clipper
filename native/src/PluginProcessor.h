@@ -55,6 +55,19 @@ inline constexpr const char* goldLevel   = "goldLevel";
 inline constexpr const char* compOn      = "compOn";
 inline constexpr const char* compSustain = "compSustain";
 inline constexpr const char* compLevel   = "compLevel";
+// M13.7: the CE-1 "Ensemble" chorus. THREE knobs — RATE, DEPTH and MODE. MODE is
+// a plain 0..1 knob rather than a Choice deliberately: it is the shared slot-2 of
+// the pedal-agnostic positional ABI, so making it a Choice here would put the
+// native and web parameter spaces out of step for one pedal. The model applies
+// the < 0.5 / >= 0.5 threshold (docs §62).
+// NAME NOTE: `ce1*`, not `chorus*`. The AMP's chorus already owns `chorusMode`
+// and `chorusDepth` in this same namespace, and these strings are also the HOST
+// automation ids — a collision would be a redefinition AND would point two
+// different controls at one automation lane.
+inline constexpr const char* ce1On    = "ce1On";
+inline constexpr const char* ce1Rate  = "ce1Rate";
+inline constexpr const char* ce1Depth = "ce1Depth";
+inline constexpr const char* ce1Mode  = "ce1Mode";
 // Post-v1.1 — the "Weeper" wah / envelope filter, the board's first FILTER pedal
 // (docs §58). POSITION is the treadle (heel->toe) and is an ordinary automatable
 // parameter; SENSE at 0 is exactly that manual pedal and above 0 hands the same
