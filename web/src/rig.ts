@@ -80,7 +80,13 @@ export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'gate'
 // mid, the six-position F.A.C. rotary (its own param, `fac`), NO master volume
 // (VOLUME is the whole amp — the power section is the overdrive), and the shared
 // 'presence' param (id 11) REUSED as its H.F. BOOST. Docs §57.
-export type AmpType = 'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange';
+// M10.7 adds 'rockerverb' — the MODERN Orange (Rockerverb 100, dirty channel):
+// FOUR gain stages behind a GANGED dual GAIN pot, a Marshall-lineage FMV tone
+// stack (so it has a MIDDLE control, unlike the OR120), a real post-stack MASTER
+// so drive and level are independent, and an authentic valve-driven spring
+// reverb. No new params: gain (10), master (12) and bass/middle/treble (1/2/3)
+// all mean what they already meant. Docs §63.
+export type AmpType = 'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange' | 'rockerverb';
 
 // Cab expansion: which speaker cabinet IR the amp runs. 'clean212' is the
 // built-in Clean 2x12 (the JC-120 platform), 'brit412' the darker/thicker Brit
@@ -112,6 +118,7 @@ export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
   'twin',
   'ac30',
   'orange',
+  'rockerverb',
 ];
 
 export type ParamName = 'distortion' | 'filter' | 'level';
@@ -523,6 +530,7 @@ export function normalizeRig(raw: unknown): RigState {
     : a.type === 'twin' ? 'twin'
     : a.type === 'ac30' ? 'ac30'
     : a.type === 'orange' ? 'orange'
+    : a.type === 'rockerverb' ? 'rockerverb'
     : 'clean120';
 
   return {

@@ -115,6 +115,12 @@ add_library(clipper_dsp STATIC
     src/dsp/OrangePreamp.cpp
     src/dsp/OrangePowerAmp.cpp
     src/dsp/OrangeAmp.cpp
+    # M10.7 — the Orange Rockerverb 100 dirty channel (docs §63). The preamp is
+    # TRANSCRIBED from a real netlist; the power section reuses the shared
+    # LtpInverter + Koren EL34 machinery and is a documented reconstruction.
+    src/dsp/RockerverbPreamp.cpp
+    src/dsp/RockerverbPowerAmp.cpp
+    src/dsp/RockerverbAmp.cpp
 )
 target_include_directories(clipper_dsp PUBLIC include)
 target_link_libraries(clipper_dsp PUBLIC chowdsp_wdf)
@@ -371,6 +377,22 @@ if(NOT EMSCRIPTEN)
     # H.F. Boost network (measured identical at boost 0 / 0.5 / 1.0). Owned by an OR120
     # oversampling slice — one shared OS domain around the whole cascade — never a lower bar.
     clipper_add_xfail_ledger(clipper_orange_tests)
+
+    # --- M10.7: Orange Rockerverb 100 amp tests -------------------------------
+    add_executable(clipper_rockerverb_tests tests/test_rockerverb_amp.cpp)
+    target_link_libraries(clipper_rockerverb_tests PRIVATE clipper_dsp)
+    target_include_directories(clipper_rockerverb_tests PRIVATE tools)
+    clipper_add_test_flags(clipper_rockerverb_tests)
+    add_test(NAME clipper_rockerverb_tests COMMAND clipper_rockerverb_tests)
+    # ONE known-bad property: `rockerverb-alias-44k1`, and it is the SAME defect the
+    # OR120 registered in docs §57.7. The composed cranked alias floor is −80.1 dB at
+    # 48 kHz / 4× and −52.7 dB at 44.1 kHz against the same −56 dB bar. It improves
+    # 11.3 dB at 8× and beats 1× by 28.1 dB, so it is genuine foldover rather than
+    # docs §54's rail-clipping signature. TWO amps failing the same bar at the same
+    # rate, both running per-triode oversampling domains into a separately
+    # oversampled power section, is the architecture speaking — owned by a shared-
+    # oversampling-domain slice, never by a lower bar.
+    clipper_add_xfail_ledger(clipper_rockerverb_tests)
 
     # --- M11: Player Expectations Suite ---------------------------------------
     # Tests the PLAYER'S expectations, not the circuit (docs §26): universal gear

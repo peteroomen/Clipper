@@ -78,6 +78,7 @@ const AMP_TYPE_LABEL: Record<string, string> = {
   twin: 'Twin Sixty-Five (Fender style)',
   ac30: 'AC30 (Vox top boost)',
   orange: 'Overdrive 120 (Orange style)',
+  rockerverb: 'Rocker Verb (modern Orange)',
 };
 const CAB_LABEL: Record<'clean212' | 'brit412' | 'orange412', string> = {
   clean212: 'Clean 2×12 (JC platform)',

@@ -310,6 +310,8 @@ export default function App() {
       setCabNote('Thirty loaded — try the Clean 2×12 (the closest 2×12 platform for its chime).');
     } else if (type === 'orange' && rigRef.current.amp.cabModel !== 'orange412') {
       setCabNote('Overdrive 120 loaded — try the Orange 4×12 (its own cab: big bottom, upper-mid bark).');
+    } else if (type === 'rockerverb' && rigRef.current.amp.cabModel !== 'orange412') {
+      setCabNote('Rocker Verb loaded — try the Orange 4×12 (the same PPC-style cab the OR120 uses).');
     } else {
       setCabNote(null);
     }
@@ -442,7 +444,8 @@ export default function App() {
           type === 'jcm800' ||
           type === 'twin' ||
           type === 'ac30' ||
-          type === 'orange'
+          type === 'orange' ||
+          type === 'rockerverb'
         )
           setAmpType(type);
       },
