@@ -15,6 +15,7 @@
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/CompModel.h"
+#include "clipper/dsp/DelayModel.h"
 #include "clipper/dsp/GateModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/MuffModel.h"
@@ -154,6 +155,15 @@ int main(int argc, char** argv) {
         m.setParameter(clipper::dsp::GateModel::PARAM_THRESHOLD, 0.35f);
         m.setParameter(clipper::dsp::GateModel::PARAM_DECAY, 0.5f);
         benchUnit("curfew (noise gate)", riff,
+                  [&](const float* i, float* o, int n) { m.process(i, o, n); });
+    }
+    if (want("delay")) {
+        clipper::dsp::DelayModel m;
+        m.prepare(kSr, kBlock);
+        m.setParameter(clipper::dsp::DelayModel::PARAM_DELAY, 0.35f);
+        m.setParameter(clipper::dsp::DelayModel::PARAM_FEEDBACK, 0.3f);
+        m.setParameter(clipper::dsp::DelayModel::PARAM_BLEND, 0.35f);
+        benchUnit("echoman (BBD analog delay)", riff,
                   [&](const float* i, float* o, int n) { m.process(i, o, n); });
     }
     if (want("phaser")) {

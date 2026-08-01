@@ -2,7 +2,8 @@
 //
 // This is the SINGLE place the native plugin composes the portable C++ core into
 // the rig signal chain. It uses the core classes DIRECTLY (RatModel, SdModel,
-// TsModel, MuffModel, PhaserModel, GoldModel, WahModel, CompModel, Ce1Model, AmpModel + owned ChorusModel,
+// TsModel, MuffModel, PhaserModel, GoldModel, WahModel, CompModel, GateModel, Ce1Model,
+// DelayModel, AmpModel + owned ChorusModel,
 // CabConvolver x2, OutputLimiter) — NOT the C ABI. The chain mirrors
 // web/worklet/clipper-processor.js exactly:
 //
@@ -90,6 +91,7 @@
 #include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/Ce1Model.h"
 #include "clipper/dsp/CompModel.h"
+#include "clipper/dsp/DelayModel.h"
 #include "clipper/dsp/GateModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/WahModel.h"
@@ -252,6 +254,16 @@ struct Params {
     bool  gateOn = true;
     float gateThreshold = 0.35f;
     float gateDecay = 0.5f;
+
+    // "Echoman" BBD analog delay (M13.4) — the lineup's FIRST DELAY, and a new
+    // DSP family. Three real knobs, the shared positional slots reading as
+    // DELAY / FEEDBACK / BLEND; defaults mirror web DELAY_KNOB_DEFAULTS. DELAY is
+    // the bucket-brigade CLOCK, so turning it up lengthens the echo AND darkens
+    // the repeats; BLEND 0 is bit-identical to bypass. Docs §60.
+    bool  delayOn = true;
+    float delayTime = 0.35f;
+    float delayFeedback = 0.3f;
+    float delayBlend = 0.35f;
 
     // THE BOARD: which pedal types are on it, in signal order (guitar -> chain[0]
     // -> ... -> amp). Each type appears at most once. This is the parity feature —
@@ -453,6 +465,7 @@ private:
     clipper::dsp::CompModel comp_;    // the "Squash" OTA compressor (M13.1)
     clipper::dsp::GateModel gate_;    // the "Curfew" noise gate (M13.6a)
     clipper::dsp::Ce1Model  ce1_;     // the CE-1 "Ensemble" chorus (M13.7)
+    clipper::dsp::DelayModel delay_;  // the "Echoman" BBD analog delay (M13.4)
     clipper::dsp::AmpModel amp_;      // Clean 120
     clipper::dsp::Jcm800Amp jcm_;     // JCM800 2204 (mono head, M9.4)
     clipper::dsp::TwinAmp twin_;      // Fender blackface Twin (mono combo, M10.1)

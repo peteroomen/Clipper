@@ -47,6 +47,14 @@ export type SourceKind = 'test' | 'live';
 // at 0 is exactly that manual pedal and above 0 hands the SAME resonant tank to
 // an envelope follower (Mu-Tron-style auto-wah); VOICE is the documented "vocal
 // mod" — it changes the resonance's WIDTH only, not its centre. Docs §58.
+// M13.4 adds 'delay' (the "Echoman" — the lineup's FIRST DELAY, and a whole new
+// DSP family): a Deluxe Memory Man-class BUCKET-BRIGADE analog delay. SAME
+// three-knob shape/ABI, its slots reading as DELAY / FEEDBACK / BLEND
+// (distortion==Delay, filter==Feedback, level==Blend). The delay time changes
+// because the BBD's CLOCK changes while its filters stay put, which is why the
+// repeats get darker the longer you set it; the repeats also degrade cumulatively,
+// because each one goes back through the whole device. BLEND 0 is bit-identical
+// to bypass. Docs §60.
 // M13.6a adds 'gate' (the "Curfew" noise gate — the lineup's first UTILITY, and
 // the pedal that makes a high-gain rig playable). SAME three-slot shape/ABI, but
 // only TWO of the slots are real knobs — slot 0 (distortion) is THRESHOLD and
@@ -54,7 +62,7 @@ export type SourceKind = 'test' | 'live';
 // compressor carries it. THRESHOLD really IS a threshold: it moves the level at
 // which the gate opens by 40 dB and moves the gain the pedal applies when open by
 // 0.00 dB (docs §61.4) — the exact opposite of the compressor's SUSTAIN.
-export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'tuner';
+export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
@@ -95,7 +103,7 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412' | 'orange412', num
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'gate', 'phaser', 'wah', 'chorus', 'tuner'];
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
@@ -289,6 +297,18 @@ export const WAH_KNOB_DEFAULTS: PedalParams = {
   level: 0.5,
 };
 
+// Delay ("Echoman", M13.4) opening state. DELAY 0.35 puts the BBD clock at
+// 19.9 kHz = 212 ms, a musical eighth-note-ish echo that is obviously an analog
+// delay without being a wash. FEEDBACK 0.30 gives a few audible repeats that die
+// away rather than a self-oscillating swamp. BLEND 0.35 keeps the dry in front —
+// the repeats sit behind the note, which is how a Memory Man is normally used.
+// See DelayModel / docs §60.
+export const DELAY_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.35,
+  filter: 0.3,
+  level: 0.35,
+};
+
 // CE-1 Chorus Ensemble (M13.7) opening state. RATE 0.35 lands at ~1.30 Hz in
 // chorus mode — the slow, wide 1970s shimmer the pedal is famous for, and well
 // inside its 1.0-3.0 Hz range. DEPTH 0.5 is the middle of the 3-6 ms delay
@@ -324,6 +344,7 @@ export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   phaser: PHASER_KNOB_DEFAULTS,
   wah: WAH_KNOB_DEFAULTS,
   chorus: CHORUS_KNOB_DEFAULTS,
+  delay: DELAY_KNOB_DEFAULTS,
   // The tuner has no knobs; params are unused but keep the shared shape.
   tuner: KNOB_DEFAULTS,
 };
@@ -436,6 +457,7 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
     : p.type === 'phaser' ? 'phaser'
     : p.type === 'wah' ? 'wah'
     : p.type === 'chorus' ? 'chorus'
+    : p.type === 'delay' ? 'delay'
     : 'rat';
   return {
     id,

@@ -16,6 +16,7 @@
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/Ce1Model.h"
 #include "clipper/dsp/CompModel.h"
+#include "clipper/dsp/DelayModel.h"
 #include "clipper/dsp/GateModel.h"
 #include "clipper/dsp/WahModel.h"
 #include "clipper/dsp/GoldModel.h"
@@ -666,6 +667,69 @@ void gate_process(void* handle, const float* in_ptr, float* out_ptr,
     if (!handle) return;
     static_cast<clipper::dsp::GateModel*>(handle)->process(in_ptr, out_ptr,
                                                            num_frames);
+}
+
+// --- M13.4: BBD analog delay exports -----------------------------------------
+//
+// Additive alongside rat_*/sd_*/ts_*/muff_*/gold_*/comp_*/phaser_*/wah_*, and
+// byte-for-byte the same opaque-handle ABI, so the worklet drives the lineup's
+// first DELAY exactly like any other pedal. Param slots: 0 = DELAY (the BBD
+// clock, 30..550 ms), 1 = FEEDBACK, 2 = BLEND. Under the hood it is a sampled
+// bucket-brigade device with an NE570 compander around it (DelayModel), but the
+// ABI is identical, so a chain can mix it with anything.
+//
+// Two things a caller should know. `delay_latency_samples` returns 0 BY DESIGN:
+// the dry path never enters the oversampled domain (that is what keeps BLEND 0
+// bit-identical to bypass), so the pedal adds no latency to the dry signal.
+// And `delay_set_oversampling` really does matter here — the shipped default is
+// 8x, derived from the device's own 136.5 kHz maximum clock (docs §60.5), not
+// the house 4x.
+
+EMSCRIPTEN_KEEPALIVE
+void* delay_create(float sample_rate) {
+    auto* m = new clipper::dsp::DelayModel();
+    m->prepare(static_cast<double>(sample_rate), 128);
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void delay_destroy(void* handle) {
+    delete static_cast<clipper::dsp::DelayModel*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void delay_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
+    static_cast<clipper::dsp::DelayModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clear the line, the filters, the compander envelopes and the
+// clock phase; keep the knobs / rate / factor. See the banner above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void delay_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::DelayModel*>(handle)->reset();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void delay_set_oversampling(void* handle, int factor) {
+    if (!handle) return;
+    static_cast<clipper::dsp::DelayModel*>(handle)->setOversampling(factor);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int delay_latency_samples(void* handle) {
+    if (!handle) return 0;
+    return static_cast<clipper::dsp::DelayModel*>(handle)->latencySamples();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void delay_process(void* handle, const float* in_ptr, float* out_ptr,
+                   int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::DelayModel*>(handle)->process(in_ptr, out_ptr,
+                                                             num_frames);
 }
 
 // --- M5: clean amp + cab exports ---------------------------------------------

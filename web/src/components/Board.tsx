@@ -69,6 +69,7 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   phaser: 'Script phaser',
   wah: 'Weeper wah / envelope filter',
   chorus: 'Ensemble chorus / vibrato',
+  delay: 'Echoman analog delay (bucket brigade)',
   tuner: 'Chromatic tuner',
 };
 const AMP_TYPE_LABEL: Record<string, string> = {

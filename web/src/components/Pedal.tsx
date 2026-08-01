@@ -46,7 +46,7 @@ interface KnobSpec {
   param: ParamName;
   testId: string;
 }
-type FaceLayout = 'stack' | 'compact' | 'slim' | 'single' | 'wide' | 'plate' | 'rocker';
+type FaceLayout = 'stack' | 'compact' | 'slim' | 'single' | 'wide' | 'plate' | 'rocker' | 'bank';
 interface PedalFace {
   layout: FaceLayout;
   model: string; // small model line (top eyebrow)
@@ -197,6 +197,27 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Position', aria: 'Position', param: 'distortion', testId: 'knob-position' },
       { name: 'Sense', aria: 'Sensitivity', param: 'filter', testId: 'knob-sense' },
       { name: 'Voice', aria: 'Voice', param: 'level', testId: 'knob-voice' },
+    ],
+  },
+  // M13.4 "Echoman": the lineup's FIRST DELAY, and the first member of a new DSP
+  // family. Morphology cue is the WIDE, low chassis of a Memory Man-format
+  // enclosure — a delay is not a small box, and it reads as one at a glance among
+  // the compact dirt stack. DEEP BLUE accent (tokens.css --accent-delay): the
+  // furthest hue from every dirt/mod/filter box on the board, chosen so a player
+  // finds the repeats knob without reading. "Echoman" is the wink; no
+  // Electro-Harmonix / Memory Man / Deluxe wording anywhere on the face (docs §17).
+  delay: {
+    layout: 'bank',
+    model: 'DELAY Nº8 · BUCKET BRIGADE',
+    wordmark: 'Echoman',
+    knobs: [
+      // Slot 0 = DELAY, and on a bucket brigade that knob is the CLOCK: turning it
+      // up slows the device down, which is why the repeats also get darker.
+      // Slot 1 = FEEDBACK (repeats). Slot 2 = BLEND — at 0 the pedal is bit-exactly
+      // your dry signal.
+      { name: 'Delay', aria: 'Delay', param: 'distortion', testId: 'knob-delay' },
+      { name: 'Feedback', aria: 'Feedback', param: 'filter', testId: 'knob-feedback' },
+      { name: 'Blend', aria: 'Blend', param: 'level', testId: 'knob-blend' },
     ],
   },
   // M13.7 CE-1 "Ensemble": the world's FIRST chorus pedal, and the first pedal

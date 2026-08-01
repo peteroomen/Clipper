@@ -2375,3 +2375,152 @@ test('chorus worklet: MODE switches between a combing chorus and a dry-free vibr
   // the modulation is all in the pitch. No gain change can produce this pair.
   expect(result.vibratoEnvDb).toBeLessThan(1);
 });
+
+
+// M13.4: the "Echoman" BBD analog delay, proved THROUGH THE WORKLET. This is a
+// DELIVERY-PATH test, deliberately — the physics (the clock law, the cumulative
+// repeat degradation, the compander curve) is measured over many renders in the
+// core suite, where it is stable. What can only be proved here is that the web
+// front end actually reaches it:
+//
+//   (a) the worklet routes pedal type 'delay' to the _delay_* C-ABI prefix at all
+//       (before this slice the type fell through to the RAT, which would produce
+//       a distorted note and NO echo);
+//   (b) slot 0 (distortion) really is the DELAY knob and really is the BBD clock —
+//       0.0 vs 1.0 must move the echo by half a second, which is a property no
+//       amount of param-plumbing luck can fake;
+//   (c) slot 2 (level) really is BLEND, and at 0 there is no wet signal at all.
+//
+// THREE OfflineAudioContexts, and no more. playwright.config.ts documents
+// Chromium's silent-render flake once enough contexts exist in one browser
+// process, and the comp spec above was observed tripping it at six.
+test('delay worklet: the DELAY knob moves the echo half a second, and BLEND 0 is dry', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 1.2;
+    const burstAt = 0.05;
+
+    async function render(delayKnob: number, blend: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      let ctx: OfflineAudioContext | null = null;
+      for (let attempt = 0; attempt < 4 && !ctx; attempt++) {
+        const c = new OfflineAudioContext(1, length, sampleRate);
+        try {
+          await Promise.race([
+            c.audioWorklet.addModule('/generated/clipper-processor.js'),
+            new Promise((_r, rej) => setTimeout(() => rej(new Error('addModule timeout')), 6000)),
+          ]);
+          ctx = c;
+        } catch {
+          /* fresh context, retry */
+        }
+      }
+      if (!ctx) throw new Error('addModule failed after retries');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 6000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') { clearTimeout(t); resolve(); }
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true }); // pure pedal proof
+        node.port.postMessage({
+          type: 'chain',
+          pedals: [{
+            id: 'd', type: 'delay', engaged: true,
+            // slot 0 = DELAY (the BBD clock), slot 1 = FEEDBACK (0: exactly one
+            // repeat, so every window below contains at most one thing), slot 2 =
+            // BLEND.
+            params: { distortion: delayKnob, filter: 0.0, level: blend },
+          }],
+        });
+      });
+      // A short plucked burst, then silence for the rest of the render — so any
+      // energy after it can only be an echo.
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 440 });
+      const g = new GainNode(ctx, { gain: 0 });
+      g.gain.setValueAtTime(0, 0);
+      g.gain.setValueAtTime(0.4, burstAt);
+      // TEN ms, not thirty: the shortest DELAY setting is 30 ms, so a 30 ms burst
+      // would still be sounding when its own echo arrives and every window below
+      // would read the dry note instead. (The first version of this test did
+      // exactly that and reported echo@30ms == 0.40000 == the burst, in all three
+      // renders.)
+      g.gain.setValueAtTime(0, burstAt + 0.01);
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+
+    // Peak in a +/-12 ms window around an absolute time. Narrow enough that the
+    // 30 ms echo's window (32 +/- 12 ms after the burst starts) cannot reach back
+    // to the 10 ms burst itself.
+    function peakAt(data: Float32Array, tSec: number): number {
+      const c = Math.floor(tSec * sampleRate);
+      const w = Math.floor(0.012 * sampleRate);
+      let m = 0;
+      for (let i = Math.max(0, c - w); i < Math.min(data.length, c + w); i++)
+        m = Math.max(m, Math.abs(data[i]));
+      return m;
+    }
+    // Everything after the burst has finished ringing.
+    function peakAfterBurst(data: Float32Array): number {
+      let m = 0;
+      for (let i = Math.floor((burstAt + 0.015) * sampleRate); i < data.length; i++)
+        m = Math.max(m, Math.abs(data[i]));
+      return m;
+    }
+
+    const shortD = await render(0.0, 1.0);   // 30 ms
+    const longD = await render(1.0, 1.0);    // 550 ms
+    const dry = await render(0.5, 0.0);      // BLEND 0
+
+    // The echo lands at the device's own time PLUS the oversampler's ~1.75 ms
+    // group delay (docs §60.4), which is why the window centres are 32 and 552 ms
+    // rather than 30 and 550.
+    return {
+      burstPeak: peakAt(shortD, burstAt + 0.005),
+      shortEchoAtShort: peakAt(shortD, burstAt + 0.032),
+      shortEchoAtLong: peakAt(shortD, burstAt + 0.552),
+      longEchoAtShort: peakAt(longD, burstAt + 0.032),
+      longEchoAtLong: peakAt(longD, burstAt + 0.552),
+      dryBurst: peakAt(dry, burstAt + 0.005),
+      dryAfter: peakAfterBurst(dry),
+    };
+  });
+
+  console.log(`[delay] burst ${result.burstPeak.toFixed(5)} dryBurst ${result.dryBurst.toFixed(5)}`);
+  // HARNESS GATE first: the dry burst must exist in every render, or the browser
+  // handed back silence and nothing below means anything.
+  expect(result.burstPeak, 'a render came back silent (Chromium OfflineAudioContext flake)')
+    .toBeGreaterThan(0.01);
+  expect(result.dryBurst).toBeGreaterThan(0.01);
+
+  console.log(`[delay] short: echo@30ms ${result.shortEchoAtShort.toFixed(5)} echo@550ms ` +
+              `${result.shortEchoAtLong.toFixed(5)} | long: echo@30ms ` +
+              `${result.longEchoAtShort.toFixed(5)} echo@550ms ${result.longEchoAtLong.toFixed(5)} | ` +
+              `BLEND 0 after burst ${result.dryAfter.toFixed(6)}`);
+
+  // (a)+(b) The knob moves the echo HALF A SECOND. At DELAY 0 the repeat is at
+  // 30 ms and there is nothing at 550 ms; at DELAY 1 it is the other way round.
+  // If the worklet fell through to the RAT there would be no echo at either time.
+  expect(result.shortEchoAtShort).toBeGreaterThan(10 * result.shortEchoAtLong);
+  expect(result.longEchoAtLong).toBeGreaterThan(10 * result.longEchoAtShort);
+
+  // (c) BLEND 0 is dry: nothing survives past the burst's own ring-down.
+  expect(result.dryAfter).toBeLessThan(0.01 * result.dryBurst);
+});

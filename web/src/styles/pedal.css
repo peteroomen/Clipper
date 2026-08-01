@@ -24,6 +24,7 @@
 .pedal[data-pedal-type="wah"]   { --pedal-accent: var(--accent-wah);   --pedal-accent-glow: var(--accent-wah-glow); }
 .pedal[data-pedal-type="gate"]  { --pedal-accent: var(--accent-gate);  --pedal-accent-glow: var(--accent-gate-glow); }
 .pedal[data-pedal-type="chorus"] { --pedal-accent: var(--accent-chorus); --pedal-accent-glow: var(--accent-chorus-glow); }
+.pedal[data-pedal-type="delay"] { --pedal-accent: var(--accent-delay); --pedal-accent-glow: var(--accent-delay-glow); }
 .pedal.raised {
   background:
     linear-gradient(160deg, var(--chassis-tint, transparent), var(--chassis-tint, transparent)),
@@ -461,3 +462,34 @@
     inset 2px 3px 8px rgba(0, 0, 0, 0.62); }
 .pedal[data-face="rocker"] .treadle-wordmark { font-size: 19px; letter-spacing: .10em; }
 .pedal[data-face="rocker"]:not(.on) .treadle-wordmark { opacity: .55; }
+
+/* ---- Echoman 'bank' face: the BBD analog delay (M13.4) ----
+   A Memory Man is not a small box — it is a wide, low chassis with a row of
+   knobs across a broad face, and that silhouette is the morphology cue for the
+   lineup's first DELAY. Shares the vertical 'stack' skeleton (hero wordmark ->
+   knobs -> round stomp) so nothing new is needed in Pedal.tsx's render branches;
+   only the width, the wordmark scale and the knob spacing change. DEEP BLUE
+   accent (tokens.css --accent-delay). Trademark-safe: "Echoman" only, no
+   Electro-Harmonix / Memory Man wording. */
+.pedal[data-face="bank"] {
+  width: 380px; /* the widest face on the board — a rack-ish delay, not a stomp box */
+  padding-top: 22px;
+}
+.pedal[data-face="bank"] .pedal-logo {
+  font-size: 46px;
+  text-align: center;
+  letter-spacing: .04em;
+  margin: 4px 0 18px;
+}
+/* Three knobs in a single wide ROW across the face — DELAY / FEEDBACK / BLEND,
+   left to right, the order a player reaches for them. */
+.pedal[data-face="bank"] .knob-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  margin: 8px 26px 24px;
+}
+.pedal[data-face="bank"] .k-name { letter-spacing: .16em; }
+.pedal[data-face="bank"] .fsw-zone { margin-top: 18px; }
+.pedal[data-face="bank"] .fsw { width: 96px; height: 96px; }

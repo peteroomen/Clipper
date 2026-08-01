@@ -311,6 +311,15 @@ export const TOOLS = [
       '"vocal mod": low = broad and vowel-less, high = sharp and talkative). ' +
       'Placement matters: BEFORE the dirt is the classic funk/rhythm wah, AFTER the ' +
       'dirt is the screaming lead wah), ' +
+      "'delay' (the 'Echoman' — a Deluxe-Memory-Man-style BUCKET-BRIGADE ANALOG " +
+      'DELAY, and the rig\'s first delay of any kind. Its knobs are DELAY (the echo ' +
+      'time, 30 ms to 550 ms, and on a bucket brigade this knob is the CLOCK, so a ' +
+      'longer setting also makes the repeats DARKER), FEEDBACK (how many repeats; ' +
+      'at the top it self-oscillates into a bounded swirl) and BLEND (wet level; at ' +
+      '0 the pedal is bit-exactly your dry signal). The repeats get darker and ' +
+      'blurrier every pass, which is the whole point of an analog delay — put it ' +
+      'LAST, after the dirt, so it echoes the distorted note rather than ' +
+      'distorting the echoes), ' +
       "and 'tuner' (a chromatic tuner — no " +
       'tone, but when stomped ON it MUTES the rig so the player can tune in ' +
       'silence; put it first in the chain by convention), ' +
@@ -329,7 +338,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'gate', 'phaser', 'wah', 'chorus', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -373,6 +382,12 @@ const PEDAL_PARAM: Record<string, string> = {
   position: 'distortion', // wah POSITION (heel->toe) shares slot 0
   sense: 'filter', // wah SENSITIVITY (0 = manual pedal) shares slot 1
   voice: 'level', // wah VOICE (peak width, the "vocal mod") shares slot 2
+  delay: 'distortion', // delay TIME (the BBD clock) shares slot 0
+  time: 'distortion', // ... and its natural synonym
+  feedback: 'filter', // delay FEEDBACK (repeats) shares slot 1
+  repeats: 'filter', // ... and its natural synonym
+  blend: 'level', // delay BLEND (wet level) shares slot 2
+  mix: 'level', // ... and its natural synonym
   sustain: 'distortion', // Muff SUSTAIN shares the distortion slot (id 0)
   filter: 'filter',
   tone: 'filter', // SD-1/Muff Tone shares the filter slot (id 1)
@@ -517,7 +532,7 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'tuner' =
+    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'tuner' =
       input.type === 'tuner' ? 'tuner'
       : input.type === 'sd1' ? 'sd1'
       : input.type === 'ts' ? 'ts'
@@ -528,6 +543,7 @@ export function executeTool(
       : input.type === 'phaser' ? 'phaser'
       : input.type === 'wah' ? 'wah'
       : input.type === 'chorus' ? 'chorus'
+      : input.type === 'delay' ? 'delay'
       : 'rat';
     const rawPos = input.position;
     const position =
@@ -544,6 +560,7 @@ export function executeTool(
                   : type === 'phaser' ? 'Phaser'
                     : type === 'wah' ? 'Weeper'
                     : type === 'chorus' ? 'Ensemble'
+                    : type === 'delay' ? 'Echoman'
                     : 'RAT';
     return {
       content: JSON.stringify({ applied: { added: type, index } }),

@@ -55,6 +55,12 @@ inline constexpr const char* goldLevel   = "goldLevel";
 inline constexpr const char* compOn      = "compOn";
 inline constexpr const char* compSustain = "compSustain";
 inline constexpr const char* compLevel   = "compLevel";
+// M13.4 — the "Echoman" BBD analog delay (docs §60). DELAY is the bucket-brigade
+// CLOCK, so it lengthens the echo AND darkens the repeats; BLEND 0 is bypass.
+inline constexpr const char* delayOn       = "delayOn";
+inline constexpr const char* delayTime     = "delayTime";
+inline constexpr const char* delayFeedback = "delayFeedback";
+inline constexpr const char* delayBlend    = "delayBlend";
 // M13.6a: the "Curfew" noise gate. TWO knobs, for the same reason as the
 // compressor's — the reference's third control changes the FOOTSWITCH, not the
 // audio, and this board's footswitch is bypass on every pedal.
