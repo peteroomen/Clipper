@@ -54,7 +54,7 @@ export type SourceKind = 'test' | 'live';
 // compressor carries it. THRESHOLD really IS a threshold: it moves the level at
 // which the gate opens by 40 dB and moves the gain the pedal applies when open by
 // 0.00 dB (docs §61.4) — the exact opposite of the compressor's SUSTAIN.
-export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'gate' | 'phaser' | 'wah' | 'tuner';
+export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
@@ -95,7 +95,7 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412' | 'orange412', num
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'gate', 'phaser', 'wah', 'tuner'];
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'gate', 'phaser', 'wah', 'chorus', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
@@ -289,6 +289,17 @@ export const WAH_KNOB_DEFAULTS: PedalParams = {
   level: 0.5,
 };
 
+// CE-1 Chorus Ensemble (M13.7) opening state. RATE 0.35 lands at ~1.30 Hz in
+// chorus mode — the slow, wide 1970s shimmer the pedal is famous for, and well
+// inside its 1.0-3.0 Hz range. DEPTH 0.5 is the middle of the 3-6 ms delay
+// window. MODE 0 is CHORUS; >= 0.5 selects VIBRATO (a DISCRETE two-state switch,
+// matching the real pedal's footswitch). See Ce1Model / docs §62.
+export const CHORUS_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.35,
+  filter: 0.5,
+  level: 0.0,
+};
+
 // Per-type opening knob positions (gear tray "add" / swap use this).
 // "Curfew" noise gate (M13.6a) opening state. THRESHOLD 0.35, which measures a
 // −45.05 dBV open point: a realistic single-coil hiss floor (~−60 dBV) stays shut
@@ -312,6 +323,7 @@ export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   gate: GATE_KNOB_DEFAULTS,
   phaser: PHASER_KNOB_DEFAULTS,
   wah: WAH_KNOB_DEFAULTS,
+  chorus: CHORUS_KNOB_DEFAULTS,
   // The tuner has no knobs; params are unused but keep the shared shape.
   tuner: KNOB_DEFAULTS,
 };
@@ -423,6 +435,7 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
     : p.type === 'gate' ? 'gate'
     : p.type === 'phaser' ? 'phaser'
     : p.type === 'wah' ? 'wah'
+    : p.type === 'chorus' ? 'chorus'
     : 'rat';
   return {
     id,

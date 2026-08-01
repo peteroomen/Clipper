@@ -49,6 +49,12 @@ const PedalFace kFaces[] = {
      Footswitch::Shape::Round, PedalFace::Layout::Plate, 30.0f,
      {{"Gain", pid::goldGain}, {"Treble", pid::goldTreble}, {"Output", pid::goldLevel}},
      pid::goldOn, PEDAL_GOLD},
+    // This array was once indexed BY PedalType, and its Squash/Weeper entries were
+    // SWAPPED (Squash at 6, Weeper at 7, while PEDAL_WAH = 6 and PEDAL_COMP = 7), so
+    // a wah card drew the compressor's face and vice versa. The menu stayed right
+    // because pedalMenuLabel uses explicit `case` labels — which is exactly why the
+    // two could disagree. Each entry now carries its own PedalType and lookup is
+    // KEYED, so position means nothing and that class of bug cannot recur.
     // SQUASH — M13.1, the first DYNAMICS pedal and the first non-dirt box. Its
     // morphology cue is simply that it has TWO knobs where every dirt box has
     // three: a small MXR-format enclosure over a round stomp. Teal accent (the
@@ -77,6 +83,17 @@ const PedalFace kFaces[] = {
      Footswitch::Shape::Round, PedalFace::Layout::Stack, 34.0f,
      {{"Thresh", pid::gateThreshold}, {"Decay", pid::gateDecay}},
      pid::gateOn, PEDAL_GATE},
+    // ENSEMBLE — M13.7, the CE-1 Chorus Ensemble: the second MODULATION pedal and
+    // the first whose circuit the project already owned (it is the JC-120 amp's
+    // chorus in a floor box — docs §62). Morphology cue is the real CE-1's big,
+    // wide, low enclosure, so it takes the milled Plate anatomy rather than the
+    // compact Stack. MAGENTA accent: the phaser owns orange and this is the second
+    // modulation box, so the hue separates the family. No Boss/Roland/CE-1 text.
+    // RATE / DEPTH / MODE, and MODE is a DISCRETE two-position switch in the model.
+    {"Modulation N\xc2\xba""8 \xc2\xb7 Ensemble", "Ensemble", skin::AccentId::Chorus,
+     Footswitch::Shape::Round, PedalFace::Layout::Plate, 34.0f,
+     {{"Rate", pid::ce1Rate}, {"Depth", pid::ce1Depth}, {"Mode", pid::ce1Mode}},
+     pid::ce1On, PEDAL_CHORUS},
 };
 }  // namespace
 
@@ -108,6 +125,7 @@ juce::String pedalMenuLabel(int type) {
         case PEDAL_COMP:   return "Squash - OTA compressor";
         case PEDAL_GATE:   return "Curfew - noise gate";
         case PEDAL_WAH:    return "Weeper - wah / envelope filter";
+        case PEDAL_CHORUS: return "Ensemble - CE-1 chorus / vibrato";
         default:           return "Pedal";
     }
 }

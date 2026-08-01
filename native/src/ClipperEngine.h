@@ -2,7 +2,7 @@
 //
 // This is the SINGLE place the native plugin composes the portable C++ core into
 // the rig signal chain. It uses the core classes DIRECTLY (RatModel, SdModel,
-// TsModel, MuffModel, PhaserModel, GoldModel, WahModel, CompModel, AmpModel + owned ChorusModel,
+// TsModel, MuffModel, PhaserModel, GoldModel, WahModel, CompModel, Ce1Model, AmpModel + owned ChorusModel,
 // CabConvolver x2, OutputLimiter) — NOT the C ABI. The chain mirrors
 // web/worklet/clipper-processor.js exactly:
 //
@@ -88,6 +88,7 @@
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
+#include "clipper/dsp/Ce1Model.h"
 #include "clipper/dsp/CompModel.h"
 #include "clipper/dsp/GateModel.h"
 #include "clipper/dsp/GoldModel.h"
@@ -232,6 +233,17 @@ struct Params {
     bool  compOn = true;
     float compSustain = 0.5f;
     float compLevel = 0.4f;
+    // M13.7 CE-1 "Ensemble" chorus — the board's second MODULATION pedal, and the
+    // JC-120 amp's own chorus circuit in a floor box (docs §62). THREE knobs:
+    // RATE / DEPTH / MODE. Defaults mirror web CHORUS_KNOB_DEFAULTS. MODE is
+    // DISCRETE (< 0.5 chorus, >= 0.5 vibrato) and opens on CHORUS.
+    // NAME NOTE: `ce1*`, not `chorus*`. The AMP's own chorus already owns
+    // `chorusMode` and `chorusDepth` in this same struct (docs §11.2 / §20), and
+    // reusing those names is a redefinition, not just a readability problem.
+    bool  ce1On = true;
+    float ce1Rate = 0.35f;
+    float ce1Depth = 0.5f;
+    float ce1Mode = 0.0f;
 
     // "Curfew" noise gate (M13.6a) — the board's first UTILITY. TWO knobs, for
     // the same reason as the compressor's: the reference gate has two, and its
@@ -440,6 +452,7 @@ private:
     clipper::dsp::WahModel wah_;      // the "Weeper" wah / envelope filter (docs §58)
     clipper::dsp::CompModel comp_;    // the "Squash" OTA compressor (M13.1)
     clipper::dsp::GateModel gate_;    // the "Curfew" noise gate (M13.6a)
+    clipper::dsp::Ce1Model  ce1_;     // the CE-1 "Ensemble" chorus (M13.7)
     clipper::dsp::AmpModel amp_;      // Clean 120
     clipper::dsp::Jcm800Amp jcm_;     // JCM800 2204 (mono head, M9.4)
     clipper::dsp::TwinAmp twin_;      // Fender blackface Twin (mono combo, M10.1)

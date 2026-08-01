@@ -58,6 +58,26 @@ public:
         MODE_VIBRATO = 2,
     };
 
+    // LFO clock waveform. SINE is the JC-120 voicing and the DEFAULT, so an owner
+    // that never calls setWaveform() renders bit-identically to every build before
+    // this seam existed (docs §62; proven by render hash and by the
+    // clean120_chorus golden reading ±0.00).
+    //
+    // TRIANGLE exists because the Boss CE-1 — literally this same circuit in a
+    // floor box — sweeps its BBD clock with a TRIANGLE in CHORUS mode and a sine
+    // in VIBRATO mode, which is a sourced, load-bearing difference rather than a
+    // preference. Note what it does: for delay(t) = D0 + A·tri(ωt) the pitch
+    // deviation is −d(delay)/dt, and the derivative of a triangle is a SQUARE
+    // wave — so a triangle sweep does not "wobble", it alternates between two
+    // FIXED detunings of ∓4·A·f. The header note below calls that out as the
+    // reason the JC voicing chose sine; the CE-1 is the box where the real
+    // circuit does it anyway, and its chorus mode is heard as a comb rather than
+    // as pitch, which is why it gets away with it.
+    enum Waveform : int {
+        WAVE_SINE = 0,
+        WAVE_TRIANGLE = 1,
+    };
+
     ChorusModel();
     ~ChorusModel();
     ChorusModel(const ChorusModel&) = delete;
@@ -77,6 +97,36 @@ public:
     void setMode(int mode);
 
     int mode() const;
+
+    // --- Direct voicing seam (docs §62) -------------------------------------
+    //
+    // setSpeed/setDepth above carry the JC-120's OWN knob tapers (log 0.15..8 Hz,
+    // and a squared depth taper into a fixed 5 ms base). A different box built on
+    // this same circuit has different tapers AND a different delay window, so it
+    // sets the physical quantities directly and does its own knob mapping. These
+    // are voicing setters, not knobs: the values are milliseconds and hertz.
+    //
+    // Every one of them feeds the SAME smoother the knob path feeds, so a moving
+    // base delay or sweep is click-free on exactly the same ~8 ms ramp. An owner
+    // that never calls them keeps the JC defaults, which is why this is additive.
+    //
+    // The delay buffer is sized for the JC's own worst case (base + max sweep +
+    // 3 ms of guard); base+sweep beyond that is clamped per sample by the
+    // existing interpolator floor/ceiling rather than reallocating.
+    void setBaseDelayMs(double ms);
+    void setSweepMs(double ms);
+    void setRateHz(double hz);
+    void setWaveform(int w);
+
+    // --- Measurement hooks (NOT user controls) ------------------------------
+    // The current LFO rate in Hz, AFTER smoothing. A test measuring "what rate
+    // does this knob give" should measure the RENDERED pitch track, not this —
+    // this exists so a harness can confirm the smoother has settled first.
+    double currentRateHz() const;
+    // Largest absolute value in the delay line. The ring is a pure FIFO of the
+    // input (no recursion into it), so on silence it reaches EXACTLY 0.0 after
+    // one buffer length — asserted rather than assumed (ADR 006 scope rule).
+    double maxAbsDelayLine() const;
 
     // Split numFrames of mono audio into a stereo pair. in may alias neither out
     // (outL/outR must be distinct buffers). In OFF mode this is a bit-exact copy

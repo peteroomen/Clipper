@@ -68,6 +68,7 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   gate: 'Curfew noise gate (slate, 2-knob)',
   phaser: 'Script phaser',
   wah: 'Weeper wah / envelope filter',
+  chorus: 'Ensemble chorus / vibrato',
   tuner: 'Chromatic tuner',
 };
 const AMP_TYPE_LABEL: Record<string, string> = {
