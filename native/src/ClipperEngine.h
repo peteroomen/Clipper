@@ -306,7 +306,7 @@ struct Params {
     float jcmPresence = 0.5f;
 
     // M10.3 Orange OR120: it reuses volume/bass/treble/reverb from the shared
-    // fields and REUSES jcmPresence as its HF DRIVE (both are power-amp HF
+    // fields and REUSES jcmPresence as its H.F. BOOST (both are power-amp HF
     // controls in a feedback loop — the same slot-reuse the AC30 makes for TOP
     // CUT). The ONE thing it needs of its own is the F.A.C. rotary: a 0..1 knob
     // the core snaps to the nearest of six detents.

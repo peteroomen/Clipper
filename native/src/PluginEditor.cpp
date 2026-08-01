@@ -682,20 +682,24 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
             chorusMode_.setLabels({"Off", "On"});
             chorusMode_.setAccent(ampAccent_);
             break;
-        case 4:  // Orange OR120 "Overdrive" — orange. Vol Bass Treble F.A.C. HF Reverb.
-            // What is ABSENT is the point (docs §57): no Master (VOLUME is the whole
-            // amp), no Mid (a James stack is bass + treble), no Bright (HF DRIVE is
-            // the brightness control, and it lives in the feedback loop).
+        case 4:  // Orange OR120 "Overdrive" — orange. Gain Bass Treble F.A.C. H.F. Boost Reverb.
+            // What is ABSENT is the point (docs §57): no Master (GAIN is the whole
+            // amp), no Mid (a James stack is bass + treble), no Bright (H.F. BOOST is
+            // the brightness control, and it lives at the driver's cathode).
+            // PANEL NAMES per the Field Guide (docs §57.11): Input - F.A.C. - Bass -
+            // Treble - H.F.Boost - Gain - Reverb. The labels below are the OR120's;
+            // the PARAM IDS underneath are the shared amp slots every voice uses, so
+            // renaming a label never touches automation, saved state or the C ABI.
             ampWordmark_ = "Overdrive";
             ampEyebrow_ = juce::String::fromUTF8("Head Nº5 · One-Twenty");
             ampAccentId_ = skin::AccentId::Orange;
             ampAccent_ = skin::accent(ampAccentId_);
             showBright_ = false;
-            show(volume_, "Vol", ampAccent_);
+            show(volume_, "Gain", ampAccent_);   // pid::volume — printed GAIN here
             show(bass_, "Bass", ampAccent_);
             show(treble_, "Treble", ampAccent_);
             show(fac_, "F.A.C.", ampAccent_);
-            show(presence_, "HF", ampAccent_);  // presence param reused as HF DRIVE
+            show(presence_, "H.F. Boost", ampAccent_);  // pid::presence, printed H.F. BOOST
             show(reverb_, "Reverb", ampAccent_);
             ampPrimaryKnobs_ = {&volume_, &bass_, &treble_, &fac_, &presence_, &reverb_};
             break;

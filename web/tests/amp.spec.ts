@@ -1440,7 +1440,7 @@ test('amp orange: voice 4 is reachable through the worklet and sounds unlike the
         node.port.postMessage({ type: 'param', unit: 'amp', id: 0, value: 0.5 });   // volume (Orange)
         node.port.postMessage({ type: 'param', unit: 'amp', id: 10, value: 0.5 });  // gain (JCM)
         node.port.postMessage({ type: 'param', unit: 'amp', id: 12, value: 0.4 });  // master (JCM)
-        node.port.postMessage({ type: 'param', unit: 'amp', id: 11, value: 0.5 });  // presence / HF DRIVE
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 11, value: 0.5 });  // presence / H.F. BOOST
         node.port.postMessage({ type: 'param', unit: 'amp', id: 13, value: fac });  // F.A.C. (Orange)
         node.port.postMessage({ type: 'ampModel', model });
         node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 });     // cab on -> latency echo
@@ -1501,7 +1501,7 @@ test('amp orange: an orange rig round-trips through JSON literally', async ({ pa
         params: {
           volume: 0.6, bass: 0.5, middle: 0.5, treble: 0.6, bright: 0, cab: 1,
           speed: 0.3, depth: 0.5, chorusMode: 0, reverb: 0.15,
-          // presence is REUSED as the OR120's HF DRIVE; fac is its own field, and a
+          // presence is REUSED as the OR120's H.F. BOOST; fac is its own field, and a
           // distinct value from the 0.2 default is what pins the round-trip.
           gain: 0.5, presence: 0.45, master: 0.4, fac: 0.6,
         },
@@ -1518,7 +1518,10 @@ test('amp orange: an orange rig round-trips through JSON literally', async ({ pa
   expect(rt.back.amp.params.fac).toBe(0.6);
 });
 
-// UI: the face swaps, F.A.C. and HF appear, and what the OR120 does NOT have stays gone.
+// UI: the face swaps, F.A.C. and H.F. BOOST appear, and what the OR120 does NOT have stays
+// gone. The two PRINTED names are asserted because they are the Field Guide's, not ours
+// (docs §57.11): the panel calls slot 0 GAIN and slot 11 H.F. BOOST, and a future slice
+// must not quietly rename them back to the generic "Vol"/"HF" the face used to show.
 test('amp UI: selecting orange swaps to Overdrive (F.A.C. shown, middle/gain/master/bright hidden)', async ({
   page,
 }) => {
@@ -1534,16 +1537,19 @@ test('amp UI: selecting orange swaps to Overdrive (F.A.C. shown, middle/gain/mas
   expect(amp.type).toBe('orange');
   await expect(page.getByTestId('amp-name')).toContainText('Overdrive');
   await expect(page.getByTestId('amp')).toHaveAttribute('data-amp-type', 'orange');
-  // Shown: Volume · Bass · Treble · F.A.C. · HF (bound to knob-presence) · Reverb.
+  // Shown: GAIN · Bass · Treble · F.A.C. · H.F. BOOST (bound to knob-presence) · Reverb.
   await expect(page.getByTestId('knob-volume')).toBeVisible();
+  await expect(page.getByTestId('knob-volume')).toContainText('Gain'); // printed GAIN, not "Vol"
   await expect(page.getByTestId('knob-bass')).toBeVisible();
   await expect(page.getByTestId('knob-treble')).toBeVisible();
   await expect(page.getByTestId('knob-fac')).toBeVisible();
-  await expect(page.getByTestId('knob-presence')).toBeVisible(); // the HF DRIVE knob
-  await expect(page.getByTestId('knob-presence')).toContainText('HF');
+  await expect(page.getByTestId('knob-presence')).toBeVisible(); // the H.F. BOOST knob
+  await expect(page.getByTestId('knob-presence')).toContainText('H.F. Boost');
   await expect(page.getByTestId('knob-reverb')).toBeVisible();
   // Absent, and each absence is a circuit fact (docs §57): no mid (James stack), no
-  // master (VOLUME is the whole amp), no gain, no bright switch (HF DRIVE is it).
+  // master (the single GAIN knob is the whole amp), no bright switch (H.F. BOOST is it).
+  // NOTE knob-gain is still expected ABSENT: that testid is the JCM's separate GAIN
+  // control. The Orange prints "Gain" on the shared VOLUME slot, which is knob-volume.
   await expect(page.getByTestId('knob-middle')).toHaveCount(0);
   await expect(page.getByTestId('knob-gain')).toHaveCount(0);
   await expect(page.getByTestId('knob-master')).toHaveCount(0);
