@@ -95,6 +95,16 @@ public:
     void setIdealOpAmp(bool ideal);
     bool idealOpAmp() const;
 
+    // M6.5 measurement hook, added by docs §66 — the SLEW half of the LM308 model
+    // alone (setIdealOpAmp bypasses the closed-loop bandwidth limit AND the slew
+    // clamp together, so it cannot separate them). With false the bandwidth pole
+    // still runs and only the slew-rate limiter is removed, which is what lets a
+    // test measure the slew rate's own contribution against the datasheet figure
+    // rather than against the two behaviours combined. NOT a user knob and NOT on
+    // the C ABI. Default true (slew modelled).
+    void setSlewLimit(bool enabled);
+    bool slewLimit() const;
+
     // Set a normalized parameter (id in ParamId, value in [0, 1]). Out-of-range
     // values are clamped. Applied with one-pole smoothing inside process().
     void setParameter(int paramId, float value);

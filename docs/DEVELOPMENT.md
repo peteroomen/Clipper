@@ -13836,3 +13836,266 @@ compressor is in no golden rig and touches no other model; the Dyna Comp and the
 noise gate are **bit-identical by render hash** (`clipper-render` renders compared
 byte for byte before and after the slice).
 
+
+## 66. The RAT polish slice — level staging and the LM308 slew rate, both REFUSED on measurement
+
+**Slice:** `claude/rat-polish-6f557i` (2026-08-01). **Touches:**
+`core/src/dsp/RatModel.cpp`, `core/include/clipper/dsp/RatModel.h`,
+`core/tests/test_rat_model.cpp`, `core/CMakeLists.txt`, docs. **No ADR** — nothing
+architectural was decided, and the two decisions taken were decisions *not* to
+change the audio.
+
+§36 (the diode-ideality fix) left one named follow-up: *"What genuinely does want a
+look, as its own slice, is downstream staging — 5 dB more into the amp … is a
+level-structure question."* The open item paired that with *"LM308 slew-rate
+research"*. This slice measured both first, and **shipped no tone change**: the
+staging premise is refuted by the lineup measurement, and the slew rate turned out
+to be modelled already, at the datasheet value, guarded by nothing. **All five
+goldens UNCHANGED at ±0.00 dB, nothing blessed, and the core suite is green.**
+
+What did ship: the ProCo netlist as a source (it is reachable, and this file's
+values had never been checked against one), an un-fitting of the slew rate's
+*justification*, a measurement hook, a model-level slew test replacing a bar that
+could not fail, and one XFAIL registering the approximation the level work found.
+
+### 66.1 The research channel — a real netlist, and no datasheet
+
+Same proxy as §57/§59/§64: `WebFetch` returned **403 for every host tried** — the
+TI LM308N datasheet mirror, `mit.edu`'s copy of the National sheet, `onsemi.com`,
+`studylib.net`, `pdf.direnc.net` — and `electrosmash.com` does not resolve.
+`WebSearch` result summaries work, and **github.com over git** works.
+
+That is enough for one strong source: **`Cushychicken/ltspice-guitar-pedals`,
+`proco-rat-distortion/proco-rat-distortion.asc`** — a full LTspice schematic of the
+RAT with every component value, both pot tapers annotated in the author's own
+notes, and the op-amp's compensation capacitor. It was parsed the way §59 parsed
+the Dyna Comp: `WIRE` / `SYMBOL` / `FLAG` records resolved into nodes.
+
+Weaker, and labelled as such: the LM308's slew rate itself. Search summaries agree
+on **0.3 V/µs with standard compensation** ("around 40 times slower than the
+TL071"; "0.3 V/µs with standard compensation, and the typical and suggested value
+by the datasheet for compensation is 30 pF, same as used in the Rat design"), and
+attach the competing **0.15 V/µs** figure to the **LM308H** — a different package
+of the part. No datasheet PDF could be opened to confirm either. The 30 pF the
+figure is conditioned on is *not* weak: it is C1 in the netlist.
+
+### 66.2 Part 1 — the RAT is NOT mis-staged, and §36 is why
+
+All five dirt pedals at their shipped defaults (rat 0.7/0.4/0.8, sd1 0.5/0.5/0.7,
+ts 0.5/0.5/0.75, muff 0.6/0.5/0.6, gold 0.35/0.5/0.7), 220 Hz, 48 kHz, tail RMS:
+
+| in Vpk | rat | sd1 | ts | muff | gold | spread |
+|---|---|---|---|---|---|---|
+| 0.10 V | **−6.77** | −9.87 | −11.39 | −4.82 | −11.08 | 6.6 dB |
+| 0.15 V | **−6.40** | −7.97 | −9.19 | −4.73 | −8.38 | 4.5 dB |
+| 0.30 V | **−5.86** | −5.82 | −6.68 | −4.63 | −4.16 | 2.5 dB |
+
+THD at 0.15 V: rat 34.9 %, sd1 16.9, ts 10.3, muff 33.9, gold 4.0.
+
+At the unity-trim probe the RAT sits **1.6 dB above the SD-1 and 1.7 dB below the
+Muff**, second loudest of five inside a 4.5 dB spread, and by 0.30 V the whole
+lineup is within 2.5 dB. There is no outlier.
+
+The same table with §36's diode reverted (ideality 1.0, everything else shipped)
+says what the follow-up was really worried about, and reverses its sign:
+
+| in Vpk | rat PRE-§36 | rat SHIPPED | quietest sibling |
+|---|---|---|---|
+| 0.10 V | −11.49 | −6.77 | ts −11.39 |
+| 0.15 V | −11.17 | −6.40 | ts −9.19 |
+| 0.30 V | −10.80 | −5.86 | ts −6.68 |
+
+**Before §36 the RAT was the quietest pedal in the lineup.** §36 did not knock it
+out of staging; it moved it from the bottom of the pack to the middle. **No level
+change ships**, and a compensating trim is not indicated — it would put the pedal
+back where the diode bug had it.
+
+### 66.3 What the netlist DOES say about stage 3 — and the one thing not fixed
+
+Traced node by node against `RatModel.cpp` (the full table is in the file's own
+header comment, which is now the primary place to read it):
+
+* **Exact already:** both feedback legs (R8 560 Ω + C8 4.7 µF → 60.5 Hz; R7 47 Ω +
+  C7 2.2 µF → 1539 Hz), R9 the 100 k gain pot, R10 = 1 kΩ into the diode pair
+  (`kRs`), the antiparallel pair itself, and C1 = 30 pF of compensation.
+* **C9 = 100 pF across the gain pot, not modelled — and it cannot matter.** Its
+  pole is `1/(2π·Rf·C9)`; the closed-loop corner the model already has is
+  `GBW/A ≈ GBW·(R7‖R8)/Rf`. Both scale as `1/Rf`, so the ratio is
+  `1/(2π·C9·GBW·(R7‖R8))` = **36.7×** at every knob position. C9's pole is 36.7×
+  above a pole that is already in the signal path, at every setting: < 0.03 dB in
+  band. A derivation, not an omission.
+* **`kCp` = 10 nF at the clipping node is FABRICATED** — it comes from the WDF
+  library's example. The real node has no cap; it is loaded by the tone network
+  (`R17` 100 k log + `R15` 1.5 k into `C11` 3.3 nF). Named as its own slice: it
+  moves the diode drive above ~10 kHz, the alias floor, and `DiodeClipperADAA`'s
+  calibration together.
+* **The three output high-passes** (C10 4.7 µF/1 k = 33.9 Hz, C12 22 nF/1 M =
+  7.2 Hz, C13 1 µF/100 k = 1.6 Hz) are not modelled: ≤ 0.75 dB at low E, all of it
+  from C10.
+* **The FILTER law** is right in form and approximate in detail: the model
+  log-sweeps the *cutoff* (500 Hz…20 kHz) where the circuit log-sweeps the
+  *resistance* (475 Hz…32.15 kHz).
+
+**And the LEVEL pot, which is the real finding of Part 1.** The netlist's own
+annotation reads `NOTE: R14 is volume pot (100k, logarithmic)`, cross-checked by a
+parts-list extract ("100K-A pots for volume, tone and distortion"). It is the last
+element in the chain, driven by the 2N5458 source follower and loaded only by what
+follows, so its law is the bare audio taper — no divider correction to make.
+`RatModel` maps it `level.setTarget(knob)` and has admitted so since M1: *"A proper
+audio-taper volume law is a future refinement."*
+
+**Measured through the shipped model** with the house `audioTaper` (k = 4, 12.15 %
+at half rotation, inside the 10–20 % audio-taper spec §58 cites) substituted for
+the identity map:
+
+| | shipped (linear) | with the log taper | pre-§36 |
+|---|---|---|---|
+| out at 0.15 V | **−6.40 dBFS** | **−11.61 dBFS** | −11.17 dBFS |
+| out at 0.10 V | −6.77 | −11.98 | −11.49 |
+| rank of five | 2nd loudest | **quietest** | quietest |
+
+**Fixing this pedal's pot alone reproduces the pre-§36 staging to within 0.4 dB.**
+That is the whole argument for not doing it here: a −5.21 dB knob-law change,
+shipped on top of a measurement that says the level is right, would silently undo
+§36 by another route — and it would do it while every sibling keeps the same
+approximation (`OverdriveEngine::setParameter`: `level_.setTarget(knob); //
+identity linear map, as the RAT`). It is a **lineup-wide slice** — five output
+pots, one golden bless — and two of those files belong to a parallel slice.
+
+Not left as prose: `clipper_rat_tests` opens its **first XFAIL ledger**,
+`rat-level-pot-linear-not-log`, which measures the property (LEVEL 0.5 delivers
+**50.0 %** of the LEVEL 1.0 output, against the 10–20 % band) and names the owner.
+Core ctest **35 → 36 entries** (29 real tests + 7 skipped ledgers); repo ledgers **6 → 7**. Note also that
+`testLevelLinearity` *asserts the linear map* — it is a drift guard on a known
+approximation and the fixing slice has to rewrite it; that is now written into the
+test so its being green is not read as evidence the law is right.
+
+### 66.4 Part 2 — the slew rate is modelled, the value is right, the reason was a fit
+
+**The premise is refuted before the first measurement.** `LM308Stage` has carried a
+slew clamp since M6.5 (§11.4): at the op-amp output node, inside oversampling,
+after the gain-tracking bandwidth pole and before the diode clamp, with a `reset()`
+entry, at **0.3 V/µs**. The RAT fits the datasheet's **standard 30 pF**
+compensation (netlist C1), which is the condition that figure is quoted under, so
+the shipped value is the datasheet value and does not move.
+
+What was wrong was the sentence next to it: *"(0.15-0.3 V/us is the cited band; 0.3
+keeps note attack alive while still killing the razor edges — measured.)"* That is
+a value chosen from a band by tonal outcome — the fit this project forbids, in the
+same family as §53's `kClipDriveMax` and §57's `kInterstageScale`. Replaced by the
+derivation, the LM308H disambiguation, and the measurements below. **The band is
+not a tolerance: the two figures are audibly distinguishable here**, and 66.5's
+first bar is exactly that distinction.
+
+**Does the clamp engage at realistic levels?** Instrumented (a scratch copy of
+`LM308Stage` counting clamp events), 4× at 48 kHz, percentage of oversampled
+samples at which the clamp binds, with the slope the node demanded:
+
+| stimulus (default knobs unless noted) | clamp % | demanded | delivered |
+|---|---|---|---|
+| 220 Hz 0.10 V | 0.000 % | 0.0158 V/µs | 0.0158 |
+| 220 Hz 0.15 V | 0.000 % | 0.0237 | 0.0237 |
+| 220 Hz 0.15 V, DISTORTION 1.0 | 0.000 % | 0.0774 | 0.0774 |
+| 1 kHz 0.15 V | 0.000 % | 0.1026 | 0.1026 |
+| low-E pluck 0.15 V | 0.000 % | 0.1117 | 0.1117 |
+| **low-E pluck 0.30 V** | **0.000 %** | **0.2235 (74.5 % of the limit)** | 0.2235 |
+| high-E pluck 0.15 V | 0.000 % | 0.2167 | 0.2167 |
+| **high-E pluck 0.30 V, dist 1.0** | **1.257 %** | **21.33** | 0.3000 |
+| **4186 Hz 0.15 V** | **92.97 %** | **2.4949** | 0.3000 |
+| **4186 Hz 0.15 V, dist 1.0** | **97.84 %** | **6.8330** | 0.3000 |
+
+So the LM308's slew limit is **dormant on low and mid notes at any realistic level
+and dominant on high ones** — the mechanism the sources describe ("upper
+frequencies zero-cross faster than the slew rate can keep up"), as a number. It is
+neither decoration nor a wall.
+
+**What is it worth audibly?** Same binary, only the constant changed:
+
+| case | 0.15 V/µs | **0.3 (shipped)** | 0.6 | ∞ (no clamp) |
+|---|---|---|---|---|
+| 220 Hz 0.15 V, rms dBFS | −6.403 | **−6.403** | −6.403 | −6.403 |
+| 1 kHz 0.15 V, rms dBFS | −6.076 | **−6.076** | −6.076 | −6.076 |
+| low-E pluck 0.30 V, rms | −30.577 | **−30.577** | −30.577 | −30.577 |
+| 4186 Hz 0.15 V, rms | −9.150 | **−8.755** | −8.601 | −8.601 |
+| 4186 Hz 0.15 V dist 1.0, rms | −9.150 | **−8.758** | −8.465 | −8.398 |
+| … centroid, Hz | 3530 | **4563** | 4701 | 4697 |
+| high-E pluck 0.30 V dist 1.0, attack peak | 0.5871 | **0.5886** | 0.5973 | 0.5989 |
+
+Two honest readings. **(1)** Below ~1 kHz the constant is worth *exactly* zero —
+those rows are identical to every digit printed, and through the shipped model the
+renders are **bit-identical** (0 differing samples of 66150 / 72000 / 144000 at
+44.1 / 48 / 96 kHz). **(2)** Where it engages it is small but real: **0.343 / 0.360
+/ 0.354 dB** of level at 44.1 / 48 / 96 kHz on the 4186 Hz probe, 134 Hz of
+centroid, 1.7 % off a pick attack.
+
+**Why it is small is structural, and worth recording before someone "fixes" it.**
+The two LM308 behaviours are modelled **in series**, bandwidth first, and the
+closed-loop pole (`GBW/A` = 4.9 kHz at DISTORTION 0.7, **501 Hz** at 1.0) has
+already removed most of the slope demand before the clamp sees it; the diode clamp
+behind it then discards amplitude information. So the slew limiter is the *smaller*
+of the RAT's two op-amp limits at guitar levels — a fact §11.4 half-suspected ("its
+larger quantified wins are the aliasing headroom and the edge/transient rounding")
+and never measured. **Nothing was done about it**: the ordering is the textbook
+single-pole-op-amp cascade and both constants come from the same 30 pF.
+
+### 66.5 The bar that could not fail — found, and replaced
+
+As instructed by six consecutive slices' experience, this slice went looking for
+one and found it immediately. **`testSlewRate` builds its own `LM308Stage` with
+local copies `const double GBW = 1.0e6, SR = 0.3e6;`** and checks the clamp
+arithmetic. Nothing in the suite reads `RatModel.cpp`'s `kOpAmpSlewVoltsPerSec`.
+
+Perturbation-proven: the model's constant was moved to **0.15** and to **3.0 V/µs**
+and `testSlewRate` stayed **green both times**. The only thing that noticed was
+`testFactorOneRegression` — a hardcoded-sample **drift guard** that §36 explicitly
+labels "a drift guard, not a property", whose message says nothing about the
+op-amp, and which is *regenerated* whenever the clipper legitimately changes (§36
+regenerated it). So the RAT's defining op-amp constant had no property guarding it.
+
+Replaced by **`testSlewInModel`**, at 44.1 and 96 kHz, through the shipped signal
+path, using a new measurement hook **`RatModel::setSlewLimit(bool)`** — the
+`setIdealOpAmp` pattern (not a user knob, not on the C ABI), needed because
+`setIdealOpAmp` removes the bandwidth pole *and* the slew clamp together and
+therefore cannot isolate either. Two bars:
+
+* **(a) DORMANCY.** A 0.30 V low-E pluck (a hot humbucker) through the default
+  knobs, and again at DISTORTION 1.0, must be **bit-identical** with the clamp
+  removed. Safe rather than brittle: when the clamp never binds, both builds
+  execute the same adds in the same order. Measured 0.0e+00 at both rates.
+* **(b) ENGAGEMENT.** A 4186 Hz tone at 0.15 V must *not* be bit-identical, and the
+  level it costs must land in **0.20–0.55 dB**. Measured 0.343 / 0.354 dB.
+
+Together they bracket the constant on both sides, against an external reference.
+
+### 66.6 Perturbations — 5 patched, 5 red, restore green
+
+`touch`ed after both patch and restore, per the house rule.
+
+| # | patch | result |
+|---|---|---|
+| P1 | `kOpAmpSlewVoltsPerSec` → **0.15e6** (the LM308H figure) | **RED** — bar (a), at DISTORTION 1.0: the low-E pluck slews. (It still passes at the default knobs, which is why both knob settings are asserted.) |
+| P2 | → **0.6e6** (2× too fast) | **RED** — bar (b): loss falls to 0.067 dB, under the window |
+| P3 | → **16e6** (a TL071) | **RED** — bar (b) first clause: the clamp does nothing at all |
+| P4 | `setSlewLimit()` neutered to a no-op | **RED** — bar (b). *This is the important one:* bar (a) is a bit-identity, so a broken hook satisfies it vacuously; (b) is what stops (a) from being a bar that cannot fail. |
+| P5 | LEVEL map → the house audio taper (k = 4) | **RED** — `testLevelLinearity`'s drift guard first; with that relaxed (P5b) the new XFAIL **XPASSes** at 11.9 % and the suite fails on the XPASS, which is the ratchet working |
+
+Restore → green, including the full `ctest`.
+
+### 66.7 What did not change, and what is left
+
+**No audio changed.** All five goldens report `UNCHANGED ±0.00`. The slice adds a
+measurement hook that is inert unless a test calls it, comments, one XFAIL and one
+test.
+
+Left named rather than done, in the order a future slice should take them:
+
+1. **The output-pot tapers, lineup-wide** (§66.3). Five pedals, one bless. The RAT's
+   own XFAIL is the reminder.
+2. **`kCp` — the fabricated clipping-node pole** (§66.3). The real load is the tone
+   network; this is a §54-shaped clipper slice and `testAdaaTracksWdf` must be
+   re-tied inside it, exactly as §36 had to refit `kDefaultVk`.
+3. **The FILTER law** (sweep the resistance, not the cutoff) and the three output
+   high-passes — both small, both real, neither with a complaint behind them.
+4. **A `--no-slew` flag on `clipper-render`**, if a listening A/B is ever wanted;
+   deliberately not added here to keep the diff out of a file a parallel slice is
+   editing.
