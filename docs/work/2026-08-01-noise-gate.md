@@ -187,7 +187,7 @@ the three WASM artifacts, `web/worklet/clipper-processor.js`, `rig.ts`,
 `PedalCard.*`, `PluginEditor.cpp`, `identical_core_test.cpp`,
 `docs/DEVELOPMENT.md` §61, `CLAUDE.md`.
 
-**ADR number needed** for "the shared detector is a component, not a config
+**ADR 021** records "the shared detector is a component, not a config
 struct — ADR 019's seam corrected by its second consumer". Numbers are assigned
 centrally; ADR 019's own text is amended in this slice with a pointer to §61.2.
 

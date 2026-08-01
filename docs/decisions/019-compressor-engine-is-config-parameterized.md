@@ -1,7 +1,7 @@
 # ADR 019: The compressor is a config-parameterized engine from its first line
 
 Date: 2026-07-31
-Status: Accepted
+Status: Accepted — **amended by ADR 021** (2026-08-01)
 
 ## Context
 
@@ -108,3 +108,16 @@ flight. Unifying them — or deciding they are legitimately different (a wah's
 follower drives a filter, a compressor's drives a gain cell, and their time
 constants are not the same) — is a named follow-up, not a consequence of this
 decision.
+
+
+## Amendment (2026-08-01, ADR 021)
+
+M13.6a's noise gate was the first consumer to actually arrive, and it is the
+test this ADR asked for. **The claim held — the detector really is the shared
+part, and no second envelope follower was written. The seam as WRITTEN did
+not**: `Sidechain` was a config struct with no code attached, the behaviour
+sat in two private methods, and `ControlMap` turned out to be three resistor
+values rather than a policy hook. It was corrected — extracted into a real
+`SidechainDetector` component, compressor bit-identical — rather than widened
+until both voices fit, which is exactly what the Consequences section above
+said to do. See **ADR 021**.
