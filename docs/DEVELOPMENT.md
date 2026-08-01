@@ -10746,11 +10746,22 @@ opens the filter usefully; the acceptance number is the **measured octave
 excursion of a real pluck** (§58.6), not the follower's own output — asserting
 that the follower follows would be a tautology.
 
-**Cross-slice note:** a compressor slice was running in parallel on its own
-branch and is also building an envelope follower. Nothing is shared across
-in-flight branches, by design. **Unifying the two followers into one
-`EnvelopeFollower` primitive is a named follow-up** for a later cleanup pass —
-not a drive-by edit here.
+**Cross-slice note (2026-07-31):** a compressor slice was running in parallel on
+its own branch and is also building an envelope follower. Nothing is shared
+across in-flight branches, by design. Unifying the two followers was a named
+follow-up for a later cleanup pass — not a drive-by edit here.
+
+**SETTLED 2026-08-01 — and the answer is NO, with the measurement in §58.8 and
+the decision in ADR 023.** M13.1's follower became a real component
+(`SidechainDetector`, shared with M13.6a's gate — §61.2, ADR 021), the
+substitution into this pedal was built and run, and it is a **threshold**
+detector where a wah needs a **proportional** one: 1.95 dB of proportional range
+on the compressor's own component values and 6.71 dB on the best wah-plausible
+ones, against **19.09 dB and no threshold** for the one-pole above. Substituted,
+a 0.10 V pick moves this filter **0.000 octaves**. The wah keeps its own
+follower; `SidechainDetector` was **not** widened. Do not re-open this without
+reading §58.8 — and if you do, run the substitution rather than comparing block
+diagrams.
 
 ### 58.6 Validation — `clipper_wah_tests` (44.1 k and 48 k)
 
@@ -10949,13 +10960,189 @@ dispatch (so a wah routes to the RAT) takes the heel-band energy from 5.4e-04 to
    **ADR 018**. Cost: the resonance does not detune or damp when the stage is slammed.
 4. **Inductor core saturation is not modelled** — the measured Fasel-vs-halo
    difference is mostly core behaviour, not inductance (§58.1).
-5. **Two envelope followers now exist in this repo** (this one and the parallel
-   compressor slice's). Unifying them into one primitive is a named follow-up for
-   a later cleanup pass; nothing was shared across in-flight branches by design.
+5. ~~**Two envelope followers now exist in this repo**~~ — **SETTLED 2026-08-01,
+   and the answer is that they are different circuits.** See **§58.8** and
+   **ADR 023**: the substitution was built and measured, and the wah keeps its
+   own follower. This item is closed, not deferred.
 6. **Duplicate instances**: the native engine is one-instance-per-type, so a wah
    before AND after the dirt works on the web and not in the plugin — the
    pre-existing `kMaxChain` limitation, and this pedal is the first one where
    wanting two of them is a normal request.
+
+### 58.8 The follower vs the shared `SidechainDetector` — measured, and REFUSED
+
+**Added 2026-08-01** (branch `claude/wah-detector-unify-6f557i`, plan
+`docs/work/2026-08-01-wah-detector-unify.md`, **ADR 023**). §58.5's cross-slice
+note, §58.7 item 5, ADR 019 and ADR 021 all named the same follow-up: three
+envelope followers were written in one week on three parallel branches, §61
+extracted two of them into a real component (`SidechainDetector`), and the wah's
+was the last one standing. This subsection is the settlement.
+
+**The outcome is (b): they are genuinely different circuits, and the wah keeps
+its own.** ADR 021's prohibition — do not grow the component a parameter per
+consumer until it is a union of three models — bound this slice, so the refusal
+had to be earned with a measurement rather than a block diagram.
+
+#### 58.8.1 The deciding metric, and why it is the right one
+
+`SidechainDetector` is a **THRESHOLD detector**: a DC-restorer clamp into a
+base-emitter junction, whose conduction is exponential and whose collector
+current is orders of magnitude larger than the envelope resistor's pull-up.
+§59 says so in its own words ("the threshold IS a Vbe") and §61.4 *builds* a
+40 dB dB-linear threshold on top of exactly that steepness.
+
+The metric is the **proportional range** — the input dynamic range, in dB, over
+which the envelope travels from 10 % to 90 % of its own full swing. In player
+terms: how much of a pick-strength range the control responds to proportionally.
+Measured open loop on a 146.83 Hz tone, at 48 kHz for the wah row and 176.4 kHz
+(the consumers' own detector rate) for the others:
+
+| detector | envelope pair | 10 % at | 90 % at | proportional range |
+| --- | --- | --- | --- | --- |
+| M13.1 compressor | 10 µF / 150 kΩ | 0.45147 V | 0.56511 V | **1.950 dB** |
+| M13.6a gate | 47 nF / 220 kΩ | 0.43749 V | 0.57566 V | **2.384 dB** |
+| best wah-plausible config found | 10 µF / 16.67 kΩ | 0.54975 V | 1.19046 V | **6.711 dB** |
+| **the wah's shipped follower** | ideal `\|x\|` + one-pole | — | — | **19.085 dB, no threshold** |
+
+**The compressor's own detector is a switch too, and that is the finding that
+settles it.** Its graded compression is the FEEDBACK LOOP, not the detector —
+§59 measured the same fact from the other side (216:1 feed-back against 3.3:1
+feed-forward). **A wah has no gain to reduce**, so it is feed-forward by
+necessity and cannot borrow the loop.
+
+The drive gain in front of the detector is a **pure level translation** — across
+three decades (1 → 300) the range is identical to three decimal places — so with
+the published 166.7 ms release pinned as `R_env·C_env`, the range is set purely
+by the current balance. Pushing R_env down widens it, and it reaches the shipped
+follower's figure only in a limit that is not a part:
+
+| R_env | C_env | proportional range |
+| --- | --- | --- |
+| 16.7 kΩ | 10 µF | 6.639 dB |
+| 5.0 kΩ | 33.3 µF | 10.672 dB |
+| 1.67 kΩ | 100 µF | 13.812 dB |
+| 556 Ω | 300 µF | 15.861 dB |
+| 167 Ω | 1 000 µF | 17.085 dB |
+| 55.6 Ω | 3 000 µF | 17.685 dB |
+| 16.7 Ω | 10 000 µF | 18.094 dB |
+
+(The 16.7 kΩ row reads 6.639 dB here against 6.711 in the table above: the
+extension sweep uses a coarser bisection and a shorter settle so it could cover
+seven decades. The 0.07 dB disagreement is the harness's, not the model's, and
+neither figure is within 12 dB of the follower's.)
+
+**The wah's ideal rectifier IS the R_env → 0 limit of this detector** — the limit
+in which the transistor's exponential is swamped by the pull-up. That is a
+different circuit, not a component value; and a 10 000 µF cap behind a 17 Ω
+resistor across a 9 V rail is a power supply, still 1 dB short.
+
+#### 58.8.2 The substitution, built and run
+
+The refusal is not argued from the table above. `WahModel` was re-plumbed onto a
+`SidechainDetector` in a scratch tree and given the best configuration the
+topology offers: envelope pair 10 µF / 16.667 kΩ (release pinned to the published
+166.7 ms; 10 µF is M13.1's own cap, the largest genuinely-a-part choice), clamp
+network in the gate's op-amp precision-rectifier form (Geofex's cited detector
+*is* a precision rectifier, so equal 1 kΩ leg impedances), and calibrated at ONE
+point — the drive gain set so a steady 0.25 V note lands mid-transfer, the span
+set so the same note reads the env01 the shipped follower gives it. Everything
+below is then a prediction.
+
+**Every §58.6 AUTO number moved** (48 kHz, plucked D at 0.30 V, POSITION 0.10):
+
+| SENSE | octaves before | after | t_peak before | after | t_back before | after |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0.00 | 0.000 | 0.000 | — | — | 0.0 | 0.0 |
+| 0.25 | 0.381 | **0.239** | 82.7 ms | **144.0 ms** | 842.7 ms | **438.7 ms** |
+| 0.50 | 0.762 | **0.478** | 82.7 | **144.0** | 841.3 | **438.7** |
+| 0.75 | 1.146 | **0.718** | 82.7 | **144.0** | 841.3 | **438.7** |
+| 1.00 | **1.534** | **0.958** | 82.7 | **144.0** | 840.0 | **438.7** |
+
+44.1 kHz agrees to the decimal (0.239 / 0.478 / 0.718 / 0.958, t_peak 143.7 ms).
+**0.958 octaves fails §58.6's own acceptance bar** (`prevOct > 1.0` — "a single
+pluck at full SENSITIVITY must be worth more than an octave, otherwise the
+control is decorative"), and it fails it before any new bar is reached. Note the
+t_back moved 840 → 439 ms even though `R_env·C_env` is *exactly* the shipped
+release τ: an identical time constant does not give an identical return, because
+the excursion it is returning from is smaller and the discharge is nonlinear.
+
+**The real damage is level dependence.** Sweep depth at SENS 1.00 against pick
+strength — the shipped follower is exactly proportional across the whole
+realistic range, the substitution is dead below a firm pick and railed above one:
+
+| pick peak | shipped octaves | substituted octaves | shipped t_peak | substituted t_peak |
+| --- | --- | --- | --- | --- |
+| 0.02 V | 0.101 | **0.000** | 82.7 ms | 178.7 ms |
+| 0.05 V | 0.254 | **0.000** | 82.7 | 104.0 |
+| 0.10 V (the house clean probe, §11.1) | 0.508 | **0.000** | 82.7 | 56.0 |
+| 0.15 V | 0.762 | **0.014** | 82.7 | 56.0 |
+| 0.20 V | 1.018 | **0.207** | 82.7 | 89.3 |
+| 0.30 V | 1.534 | 0.958 | 82.7 | 144.0 |
+| 0.50 V | 2.094 (railed) | 2.094 (railed) | 29.3 | 74.7 |
+| 0.80 V | 2.094 (railed) | 2.094 (railed) | 14.7 | 32.0 |
+
+So a substituted wah **does not move at all** at the project's own clean probe
+level, and its time-to-peak is neither constant nor monotone (56–179 ms). §58.6's
+honest note said the 82.7 ms is *the rectifier's own behaviour* on a 147 Hz note
+rather than the 10 ms coefficient — that attribution is confirmed here twice
+over, and it cuts both ways: change the rectifier and the number moves.
+
+**Two more consequences, both structural rather than voicing:**
+
+* `maxAbsRestingState()` goes **exactly 0.0 → 2.675e-13** after a 20 s silent
+  tail, failing the §33/ADR 006 bar the wah suite already asserts. This is not a
+  bug in either design — it is a **formal contradiction between them**. The wah's
+  `env` rests at zero and is therefore `flushDenormal`-guarded and asserted
+  exact; the detector's envelope node rests at the SUPPLY RAIL and is explicitly
+  *not* guarded, with the reasoning written into `SidechainDetector.h`. One
+  object cannot be on both sides of ADR 006's scope rule.
+* CPU rises ~27 % for the whole pedal: interleaved same-machine A/B, six pairs,
+  median **0.484 s → 0.617 s** per 10 s of audio = **4.8 % → 6.1 %** of one
+  48 kHz stream — a Newton solve per leg per sample where there were three flops.
+
+**What survived:** SENS = 0 is still bit-identical (`worst |diff| = 0.000e+00`),
+because the envelope term is multiplied by zero. That bar cannot distinguish the
+two and was never going to.
+
+#### 58.8.3 The bar that gives the refusal teeth
+
+Prose rots; `clipper_wah_tests` gains `testFollowerLevelLaw`, three
+player-observable bars measured on a RENDER (they watch the FILTER, not the
+follower — reading the follower's own output would be a tautology):
+
+| bar | shipped, 44.1 k / 48 k | why it exists |
+| --- | --- | --- |
+| a QUIET 0.05 V pick still opens the filter (`> 0.15 oct`) | **0.254 oct** | a Vbe threshold measures 0.000 |
+| sweep depth is PROPORTIONAL (2× and 4× the pick → 2× and 4× the sweep, ±10 %) | **2.002 / 4.014** | the tank's `f0(p)` law is nonlinear, so proportionality in OCTAVES is a prediction about the FOLLOWER, not an identity |
+| time-to-peak does not move with pick strength (≤ 2 measurement blocks) | **0.00 ms spread across 12 dB** | a current-starved discharge's attack does move — §59 measured 14/10/5/3 ms across SUSTAIN |
+
+**Perturbations (each patched, `touch`ed, rebuilt, run; then restored,
+`touch`ed, rebuilt, run — all restores GREEN):**
+
+| # | patch | result |
+| --- | --- | --- |
+| P1 | the whole `SidechainDetector` substitution | **RED** — and it trips §58.6's *existing* `prevOct > 1.0` first. Re-run with the new test ordered ahead of it: **RED on bar 1**. Re-run again with bars 1–2 removed: **RED on bar 3**. All three bars proven independently. |
+| P2 | a Vbe-style deadband on the ideal rectifier (`max(0, \|x\| − 0.06)`) | **RED** on bar 1 — the threshold, isolated from everything else the detector changes |
+| P3 | attack coefficient scaled *down* by the envelope | **RED** on bar 1 |
+| P3b | attack coefficient scaled *up* by the envelope (`×(1 + 40·env)`, clamped) | **RED** on bar 2 |
+| P4 | a HALF-wave rectifier instead of `\|x\|` | **GREEN, and reported rather than hidden.** t_peak moves **82.7 → 90.0 ms** and depth scales by 0.783 uniformly (0.199/0.398/0.797 oct), but the spread stays **0.00 ms** and the ratios stay 2.001/4.010. That is correct: bar 3 asserts level-INDEPENDENCE, not the value 82.7 ms. The perturbation confirms §58.6's attribution of the constant to the rectifier while showing the *law* belongs to the linear follower. |
+
+#### 58.8.4 What this does and does not license
+
+**Does not close M13.3.** The optical compressor is still expected to reuse
+`SidechainDetector` — it is a feed-back compressor with a gain cell, the case the
+component is built for. The rule this slice adds is procedural, not a veto:
+**build the substitution and measure it.** "Both blocks rectify and integrate" is
+not a reason to share and not a reason to refuse.
+
+**The honest reason the wah is different, stated plainly.** The GCB-95 has **no
+envelope follower at all** — §58's AUTO mode is a synthesised feature, and its
+constants come from a published *behavioural* spec (Geofex: ~10 ms attack,
+~500 ms drift-back) rather than from a transcribed netlist. Forcing it onto
+`SidechainDetector` would have meant inventing component values to reproduce a
+published time constant, i.e. fitting parts to a target — the exact thing §57
+spent a whole slice undoing.
+
 ## 59. M13.1 — the "Squash" OTA compressor (the first DYNAMICS processor)
 
 The lineup's first pedal that is neither dirt nor modulation: an MXR Dyna Comp /

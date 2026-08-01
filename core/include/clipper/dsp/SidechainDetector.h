@@ -41,6 +41,42 @@
 // consumers depend on that sign: the compressor turns a low node into a low
 // bias current, the gate turns a low node into "loud enough, open".
 //
+// ============================================================================
+//  THIS IS A *THRESHOLD* DETECTOR — and the wah is deliberately NOT a consumer
+//  (docs §58.8, ADR 023)
+// ============================================================================
+// Say this before someone reaches for it as a general "envelope follower". The
+// clamp is a DC restorer into a base-emitter junction: conduction is
+// EXPONENTIAL, and a conducting 2N3904's collector current is orders of
+// magnitude larger than the envelope resistor's pull-up. So the transfer from
+// input level to envelope is STEEP. Measured open loop, as the input dB range
+// over which the node travels from 10 % to 90 % of the rail:
+//
+//     M13.1 compressor (10 uF / 150 k) ......  1.950 dB
+//     M13.6a gate      (47 nF / 220 k) ......  2.384 dB
+//
+// That is a switch, and BOTH consumers want one. The compressor's graded
+// response is its FEEDBACK LOOP, not this block (docs §59: 216:1 feed-back vs
+// 3.3:1 feed-forward); the gate feeds it to a comparator and §61.4 builds a
+// 40 dB dB-linear THRESHOLD on top of exactly that steepness.
+//
+// §58's wah needs the opposite: a follower that is PROPORTIONAL to pick
+// strength, open loop (a wah has no gain to reduce, so it cannot borrow the
+// loop), with no threshold at all — its one-pole on |x| measures 19.085 dB of
+// proportional range. The substitution WAS built and measured rather than
+// argued: a substituted wah moves 0.000 octaves on a 0.10 V pick, its full-SENSE
+// sweep drops 1.534 -> 0.958 octaves (failing §58.6's own bar), its
+// time-to-peak stops being level-independent, and its `maxAbsRestingState()`
+// goes from exactly 0.0 to 2.675e-13 — because this node rests at a NONZERO
+// operating point by design, which is the opposite side of ADR 006's scope rule
+// from a wah envelope that rests at zero. Full table: docs §58.8.
+//
+// **Do not add a `rectifierKind` / `idealRectifier` / `asymmetricAttack` field
+// to make a wah fit.** That is the union-of-N-models ADR 021 forbids in terms.
+// The rule for the NEXT consumer (M13.3's optical voice) is procedural, not a
+// veto: build the substitution and measure it. "Both blocks rectify and
+// integrate" is not a reason to share and not a reason to refuse.
+//
 // Platform-free (C++17, no OS/browser/Emscripten). Convention: 1.0f == 1.0 V.
 
 #ifndef CLIPPER_DSP_SIDECHAIN_DETECTOR_H

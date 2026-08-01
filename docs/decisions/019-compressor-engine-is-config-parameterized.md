@@ -109,6 +109,16 @@ follower drives a filter, a compressor's drives a gain cell, and their time
 constants are not the same) — is a named follow-up, not a consequence of this
 decision.
 
+> **SETTLED 2026-08-01 — see ADR 023.** The follow-up was taken and the answer is
+> that they are **legitimately different**, measured rather than argued.
+> `SidechainDetector` is a THRESHOLD detector: **1.950 dB** of open-loop
+> proportional range on this compressor's own component values, against
+> **19.085 dB** for the wah's one-pole. This compressor's graded response is its
+> **feedback loop** (§59: 216:1 feed-back vs 3.3:1 feed-forward), which a wah —
+> having no gain to reduce — cannot borrow. The substitution was built and run;
+> every §58.6 AUTO number regressed and three bars went red. The wah keeps its own
+> follower and the component was **not** widened, per the prohibition below.
+
 
 ## Amendment (2026-08-01, ADR 021)
 

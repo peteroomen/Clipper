@@ -41,6 +41,12 @@
 //   (j) DC OFFSET ON SIGNAL, including the +0.1 V input-offset case.
 //   (k) reset() / NaN: a poisoned engine recovers, and every zero-resting state
 //       reaches EXACTLY 0.0 after a silent tail.
+//   (l) THE FOLLOWER'S LEVEL LAW: the sweep depth is PROPORTIONAL to pick
+//       strength with NO threshold, and time-to-peak does not move with level.
+//       That is the measured reason this pedal does NOT use the shared
+//       `SidechainDetector` (docs §58.8, ADR 023) — that component is a
+//       THRESHOLD detector, which is what its two consumers want and the
+//       opposite of what a wah needs.
 //
 // Full derivations, sources and the measured tables: docs/DEVELOPMENT.md §58.
 
@@ -430,6 +436,96 @@ void testAutoTracking(double fs) {
 }
 
 // -----------------------------------------------------------------------------
+// (l) THE FOLLOWER'S LEVEL LAW — proportional, with NO threshold (docs §58.8)
+//
+// This is the bar that says, as a measurement, that the wah's envelope follower
+// is NOT the shared `SidechainDetector` (docs §61.2) and must not be replaced by
+// it. `SidechainDetector` is a THRESHOLD detector: a DC-restorer clamp into a
+// base-emitter junction, whose conduction is exponential and whose collector
+// current is orders of magnitude larger than the envelope resistor's pull-up.
+// Open loop, its proportional range measures 1.95 dB with M13.1's own component
+// values and 2.38 dB with M13.6a's — it is a switch, and both consumers want one
+// (the compressor closes a feedback loop around it, the gate feeds it to a
+// comparator). A wah has no gain to reduce, so it is feed-forward by necessity
+// and needs the OTHER thing: an envelope that is proportional to pick strength,
+// open loop, all the way down to a quiet note. Full derivation + the substitution
+// experiment: docs §58.8 and ADR 023.
+//
+// Three player-observable bars, all of which the substitution fails:
+//   1. a QUIET pick still opens the filter (a threshold makes it do nothing);
+//   2. sweep depth is PROPORTIONAL to pick strength (a threshold detector's is
+//      exponential — it goes from nothing to railed across ~2 dB of input);
+//   3. time-to-peak does not depend on how hard you pick (the detector's attack
+//      is a current-starved discharge, so it does — §59 measured 14/10/5/3 ms
+//      across SUSTAIN on the compressor).
+// -----------------------------------------------------------------------------
+void testFollowerLevelLaw(double fs) {
+    std::printf("  [follower level law @ %.0f Hz]\n", fs);
+
+    // One pluck at a given peak level, at full SENSITIVITY: how far does the
+    // filter open, and when does it get there? Watches the FILTER, not the
+    // follower — reading the follower's own output would be a tautology.
+    struct Shot { double octaves, tPeakMs; };
+    auto shot = [&](double level) {
+        WahModel m;
+        m.prepare(fs, 128);
+        m.setPosition(0.10f);
+        m.setSensitivity(1.0f);
+        m.setVoice(0.5f);
+        {
+            std::vector<float> z(static_cast<size_t>(0.5 * fs), 0.0f), zo(z.size());
+            m.process(z.data(), zo.data(), static_cast<int>(z.size()));
+        }
+        const std::vector<float> in = pluck(146.83, level, 2.0, fs);
+        std::vector<float> out(64);
+        const double fRest = m.currentCentreHz();
+        double fMax = 0.0;
+        int iMax = 0;
+        for (size_t off = 0; off < in.size(); off += 64) {
+            const int n = static_cast<int>(std::min<size_t>(64, in.size() - off));
+            m.process(in.data() + off, out.data(), n);
+            if (m.currentCentreHz() > fMax) {
+                fMax = m.currentCentreHz();
+                iMax = static_cast<int>(off) + n;
+            }
+        }
+        return Shot{std::log2(fMax / fRest), 1000.0 * iMax / fs};
+    };
+
+    // 0.05 V is a QUIET pick — half the house clean probe (0.10 V, docs §11.1)
+    // and a fifth of the follower's own reference level. 0.20 V is a firm one.
+    const Shot q = shot(0.05), h = shot(0.10), f = shot(0.20);
+    std::printf("     level   octaves   t_peak(ms)\n");
+    std::printf("     0.05 %9.3f %11.1f\n", q.octaves, q.tPeakMs);
+    std::printf("     0.10 %9.3f %11.1f\n", h.octaves, h.tPeakMs);
+    std::printf("     0.20 %9.3f %11.1f\n", f.octaves, f.tPeakMs);
+
+    // 1. A QUIET pick opens the filter by a musically real amount. A threshold
+    //    detector measures 0.000 here — the pedal becomes a static filter until
+    //    you dig in.
+    assert(q.octaves > 0.15);
+
+    // 2. PROPORTIONAL: 2x and 4x the pick strength give 2x and 4x the sweep.
+    //    This is the property a Vbe threshold destroys, and it is not automatic —
+    //    the tank's own f0(p) law is nonlinear, so proportionality in OCTAVES is
+    //    a prediction about the follower, not an identity.
+    std::printf("     ratios: 2x -> %.3f (want 2.00), 4x -> %.3f (want 4.00)\n",
+                h.octaves / q.octaves, f.octaves / q.octaves);
+    assert(std::fabs(h.octaves / q.octaves - 2.0) < 0.20);
+    assert(std::fabs(f.octaves / q.octaves - 4.0) < 0.40);
+
+    // 3. Time-to-peak does not depend on how hard you pick. The measurement grid
+    //    is 64 frames, so "identical" means within two blocks. docs §58.6 records
+    //    that the 82.7 ms is the RECTIFIER's own behaviour on a 147 Hz note
+    //    (|x| crosses zero twice a cycle) rather than the 10 ms coefficient —
+    //    which is exactly why swapping the rectifier moves it.
+    const double lo = std::min(q.tPeakMs, std::min(h.tPeakMs, f.tPeakMs));
+    const double hi = std::max(q.tPeakMs, std::max(h.tPeakMs, f.tPeakMs));
+    std::printf("     t_peak spread across 12 dB of pick strength: %.2f ms\n", hi - lo);
+    assert(hi - lo <= 2.0 * 1000.0 * 64.0 / fs);
+}
+
+// -----------------------------------------------------------------------------
 // (h) no zipper — measured against its own control
 // -----------------------------------------------------------------------------
 void testNoZipper(double fs) {
@@ -726,6 +822,7 @@ int main() {
         testSweepLaw(fs);
         testResonance(fs);
         testAutoTracking(fs);
+        testFollowerLevelLaw(fs);
         testNoZipper(fs);
         testDcOffset(fs);
         testStaging(fs);
