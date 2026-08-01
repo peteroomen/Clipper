@@ -58,6 +58,19 @@ interface PedalFace {
 // Every KNOB pedal gets a faceplate here; the tuner renders via its own component
 // (Tuner.tsx) and never reaches Pedal. To add a future pedal's face, add an entry
 // here and (if a new layout) a `[data-face]` variant in pedal.css — see docs §17.
+//
+// THE MODEL-LINE NUMBER IS PER CATEGORY, NOT PER BOARD. `DRIVE Nº2` means "the
+// second DRIVE", not "the second pedal" — so a new FUZZ is `FUZZ Nº2` even though
+// nine other pedals already exist. Read the number off the pedals sharing YOUR
+// category word and take the next one; never count the whole table.
+//
+// This rule exists because the old board-wide sequence could not survive parallel
+// work: three slices landed at once, each counted the pedals it could see, and all
+// three shipped `Nº8` (on top of a pre-existing `Nº7` collision). Per-category
+// numbering makes that impossible — two slices only collide if they are adding to
+// the same family, which is exactly when they should be talking to each other.
+// Keep this table and native/src/PedalCard.cpp's `kFaces` in step; the tuner keeps
+// its own `IN-TUNE Nº0` and is not part of any sequence.
 const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
   rat: {
     layout: 'stack',
@@ -75,7 +88,7 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
     layout: 'compact',
     // "Super Drive" + "YELLOW" wink at the classic yellow overdrive (and the new
     // yellow accent) without the trademark.
-    model: 'DRIVE Nº2 · YELLOW',
+    model: 'DRIVE Nº1 · YELLOW',
     wordmark: 'Super Drive',
     knobs: [
       { name: 'Drive', aria: 'Drive', param: 'distortion', testId: 'knob-drive' },
@@ -90,7 +103,7 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
   // at a glance. Green accent (arcs/readouts/LED — the green box, everyone gets it).
   ts: {
     layout: 'slim',
-    model: 'DRIVE Nº3 · GREEN',
+    model: 'DRIVE Nº2 · GREEN',
     wordmark: 'Screamer',
     knobs: [
       { name: 'Drive', aria: 'Drive', param: 'distortion', testId: 'knob-drive' },
@@ -107,7 +120,7 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
   // 1=Sustain (top-left), 2=Volume (top-right), 3=Tone (bottom-center).
   muff: {
     layout: 'wide',
-    model: 'FUZZ Nº5 · PI',
+    model: 'FUZZ Nº1 · PI',
     wordmark: 'Pi',
     knobs: [
       { name: 'Sustain', aria: 'Sustain', param: 'distortion', testId: 'knob-sustain' },
@@ -125,7 +138,7 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
   // the trademark, so the plate carries type only.
   gold: {
     layout: 'plate',
-    model: 'DRIVE Nº6 · GOLD',
+    model: 'DRIVE Nº3 · GOLD',
     wordmark: 'Myth',
     knobs: [
       { name: 'Gain', aria: 'Gain', param: 'distortion', testId: 'knob-gain' },
@@ -144,7 +157,7 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
   // names the type. No MXR/Dyna Comp/Ross text anywhere.
   comp: {
     layout: 'stack',
-    model: 'DYNAMICS Nº7 · SQUASH',
+    model: 'DYNAMICS Nº1 · SQUASH',
     wordmark: 'Squash',
     knobs: [
       // TWO real knobs. Slot 0 (distortion) is SUSTAIN — which is NOT a
@@ -163,7 +176,7 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
   // Boss/NS-2/ISP/Decimator text anywhere.
   gate: {
     layout: 'stack',
-    model: 'UTILITY Nº8 · GATE',
+    model: 'UTILITY Nº1 · GATE',
     wordmark: 'Curfew',
     knobs: [
       // TWO real knobs, because the reference has two. Slot 0 (distortion) is
@@ -187,7 +200,7 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
   // Vox / Mu-Tron wording anywhere on the face (docs §17 doctrine).
   wah: {
     layout: 'rocker',
-    model: 'FILTER Nº7 · TREADLE',
+    model: 'FILTER Nº1 · TREADLE',
     wordmark: 'Weeper',
     knobs: [
       // Slot 0 = POSITION (heel -> toe: an ordinary automatable parameter, and the
@@ -208,7 +221,7 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
   // Electro-Harmonix / Memory Man / Deluxe wording anywhere on the face (docs §17).
   delay: {
     layout: 'bank',
-    model: 'DELAY Nº8 · BUCKET BRIGADE',
+    model: 'DELAY Nº1 · BUCKET BRIGADE',
     wordmark: 'Echoman',
     knobs: [
       // Slot 0 = DELAY, and on a bucket brigade that knob is the CLOCK: turning it
@@ -230,7 +243,7 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
   // is the wink at the name; no Boss / Roland / CE-1 wording anywhere.
   chorus: {
     layout: 'plate',
-    model: 'MODULATION Nº8 · ENSEMBLE',
+    model: 'MODULATION Nº1 · ENSEMBLE',
     wordmark: 'Ensemble',
     knobs: [
       // Slot 0 = RATE. Its RANGE depends on MODE (1.0-3.0 Hz chorus, 3.2-11.6 Hz
@@ -250,7 +263,7 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
     // with an ORANGE accent (the orange box, instantly read). "Ninety" is the wink
     // (the script-logo Phase 90); model line names the type without the trademark.
     layout: 'single',
-    model: 'PHASER Nº4 · SCRIPT',
+    model: 'PHASER Nº1 · SCRIPT',
     wordmark: 'Ninety',
     knobs: [
       // ONE real knob. It writes the shared slot 0 (rig param 'distortion'), which
