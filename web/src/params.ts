@@ -34,7 +34,7 @@ export const AMP_PARAM_JCM_MASTER = 12;
 // reused knob slot, because no other voice has a switch there and a stale rig
 // state must never silently mean something else. Everything else the OR120 needs
 // is a documented reuse: volume (0), bass (1), treble (3), presence (11) as its
-// HF DRIVE, reverb (9). Must mirror kAmpParamOrangeFac in clipper_c_api.cpp.
+// H.F. BOOST, reverb (9). Must mirror kAmpParamOrangeFac in clipper_c_api.cpp.
 export const AMP_PARAM_ORANGE_FAC = 13;
 
 // The worklet's amp-model index (mirrors AmpModelId in clipper_c_api.cpp). M10.1

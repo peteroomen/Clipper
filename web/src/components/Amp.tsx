@@ -541,20 +541,26 @@ function Ac30Face({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
 
 // The Orange OR120 face — an early-70s "Overdrive" HEAD, the MID-FORWARD voice
 // (docs §57). A knowing homage: "Overdrive" (model line HEAD Nº5 · ONE-TWENTY) ·
-// a saturated ORANGE accent (--accent-orange). Control row: VOLUME · BASS ·
-// TREBLE · F.A.C. · HF DRIVE · REVERB.
+// a saturated ORANGE accent (--accent-orange). Control row: GAIN · BASS ·
+// TREBLE · F.A.C. · H.F. BOOST · REVERB.
 //
 // What the face DOES NOT have is as load-bearing as what it does: there is NO
-// MASTER (the OR120 has none — VOLUME is the whole amp and the power section is
-// the overdrive), NO MID (the James/Baxandall stack is bass + treble only), and
-// NO BRIGHT switch (the brightness control is HF DRIVE, inside the feedback
-// loop). Hidden accordingly: middle, gain, master, bright, chorus.
+// MASTER (the OR120 has none — the single GAIN knob is the whole amp and the
+// power section is the overdrive), NO MID (the James/Baxandall stack is bass +
+// treble only), and NO BRIGHT switch (the brightness control is H.F. BOOST — and
+// per §57's schematic correction that is a SERIES-RESONANT network at the
+// driver's cathode, ~5.2 kHz, not a shelf in the feedback path). Hidden
+// accordingly: middle, gain, master, bright, chorus.
 //
 // F.A.C. is a SIX-POSITION rotary on the real amp; the knob is continuous here
 // and the core snaps it to the nearest of six detents, so every part of the
 // travel selects a real filter (measured: 17.2 dB of low-E across the switch).
-// HF DRIVE binds to the shared 'presence' param — the C ABI routes id 11 to the
-// Orange's HF DRIVE — but is LABELED "HF".
+// The PANEL NAMES come from the Field Guide (docs §57.11): the OR120 reads
+// Input - F.A.C. - Bass - Treble - H.F.Boost - Gain - Reverb. So the volume
+// control is printed GAIN and the presence control is printed H.F. BOOST. Both
+// bind to the SHARED amp param slots (0 = volume, 11 = presence, the same slot
+// the AC30 prints as TOP CUT) — the label is per voice, the slot is not, so the
+// rig JSON, the testIds and the C ABI ids are untouched by the naming.
 function OrangeFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
   const { params } = amp;
   return (
@@ -571,9 +577,12 @@ function OrangeFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
       </div>
 
       <div className="amp-controls">
+        {/* The panel calls this GAIN, not VOLUME — see the comment above. The rig
+            param and the testId stay `volume`, because they are the shared amp
+            slot 0 that every voice writes; only the printed label is the OR120's. */}
         <Knob
-          name="Vol"
-          ariaLabel="Volume"
+          name="Gain"
+          ariaLabel="Gain"
           value={params.volume}
           defaultValue={AMP_KNOB_DEFAULTS.volume}
           onChange={(v) => onParam('volume', v)}
@@ -603,9 +612,14 @@ function OrangeFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
           onChange={(v) => onParam('fac', v)}
           testId="knob-fac"
         />
+        {/* H.F. BOOST on the panel. It binds to the shared 'presence' slot (id 11),
+            the same slot the AC30 prints as TOP CUT — the label is per voice, the
+            slot is not. It is NOT a presence control in the Marshall sense: §57's
+            correction found a 1 k pot + 2 mH choke + 0.47 uF series-resonant at
+            5191 Hz on the driver's cathode, not a shelf in the feedback path. */}
         <Knob
-          name="HF"
-          ariaLabel="HF Drive"
+          name="H.F. Boost"
+          ariaLabel="H.F. Boost"
           value={params.presence}
           defaultValue={AMP_KNOB_DEFAULTS.presence}
           onChange={(v) => onParam('presence', v)}
