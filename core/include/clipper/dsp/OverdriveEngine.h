@@ -10,7 +10,7 @@
 // a non-inverting op-amp stage whose feedback diodes clip SOFTLY inside the loop
 // (the "+V_in pedestal" — the clean signal always passes), whose gain RISES above
 // a ~720 Hz "mid-hump" corner (the shared Zg = 4.7 k + 0.047 µF leg — the family
-// trait), followed by a treble-tilt tone control, a DC blocker, and LEVEL. The
+// trait), followed by the pedal's own TONE network, a DC blocker, and LEVEL. The
 // M2 antialiasing (oversampled feedback clip), the 4558-class op-amp band-limit +
 // slew (LM308Stage), and the ADAA soft clip (AsymSoftClipper) are all here.
 //
@@ -19,8 +19,14 @@
 //             warmth; DRIVE pot 1 MΩ => plateau +46.6 dB.
 //   - TS808 : SYMMETRIC diodes (Vp == Vn ≈ 0.60 — 1-vs-1)   => odd harmonics
 //             only; DRIVE pot 500 kΩ => plateau +40.6 dB.
-// Everything else (the mid-hump corner, the 4558 op-amp values, the tone/level
-// topology) is IDENTICAL — which is exactly why the two pedals are one engine.
+//   - ...and, since docs §65, their TONE NETWORKS: the same topology
+//     (OverdriveToneStack.h) with the two pedals' own component values. The
+//     SD-1's input leg is 10 k / 18 n against a 10 k bias return, so its tone
+//     stage sits 6.02 dB down behind an 884 Hz low-pass; the TS's is 1 k / 220 n
+//     against the same 10 k, so 0.83 dB down behind a 723 Hz low-pass. That
+//     low-pass is the half of the family's mid HUMP the model used not to have.
+// Everything else (the mid-hump corner, the 4558 op-amp values, the level and
+// output-coupling topology) is IDENTICAL — which is why they are one engine.
 //
 // SdModel and TsModel are thin wrappers that own an OverdriveEngine built from
 // their config; the C ABI (sd_* / ts_*) and the worklet drive them identically.
@@ -36,6 +42,7 @@
 #include "clipper/dsp/AsymSoftClipper.h"
 #include "clipper/dsp/LM308Stage.h"
 #include "clipper/dsp/OnePoleSmoother.h"
+#include "clipper/dsp/OverdriveToneStack.h"
 #include "clipper/dsp/Oversampler.h"
 
 namespace clipper::dsp {
@@ -59,10 +66,14 @@ struct OverdriveConfig {
     double opAmpGbwHz;              // gain-bandwidth product
     double opAmpSlewVoltsPerSec;    // slew rate
 
-    // Stage 3 — tone tilt + output coupling.
-    double tonePivotHz;   // treble-tilt split frequency
-    float toneMaxTiltDb;  // +/- tilt at the TONE extremes
-    double dcBlockHz;     // output coupling-cap high-pass
+    // Stage 3 — the pedal's own TONE network (docs §65) + output coupling.
+    // Until 2026-08-01 this was `tonePivotHz` + `toneMaxTiltDb`: a first-order
+    // treble tilt, transparent at noon, explicitly documented in §11.6/§21 as an
+    // approximation of "the published SD-1 tone response SHAPE". It had NO
+    // low-pass in it, so the family's mid HUMP came out as a high SHELF. It is now
+    // the netlist — see OverdriveToneStack.h for the topology and the derivation.
+    OverdriveToneConfig tone;
+    double dcBlockHz;  // output coupling-cap high-pass
 };
 
 // The shared overdrive engine. Param ids and clip modes mirror SdModel's
@@ -98,6 +109,11 @@ public:
 
     void setParameter(int paramId, float value);
 
+    // Measurement hooks (NOT user knobs): the tone network's own state, so the
+    // discretization bar and the denormal bar can address it directly.
+    const OverdriveToneStack& toneStack() const { return tone_; }
+    double maxAbsToneState() const { return tone_.maxAbsRestingState(); }
+
     // Process numFrames mono, in -> out (may alias). 1.0f == 1.0 V.
     void process(const float* in, float* out, int numFrames);
 
@@ -125,17 +141,16 @@ private:
     double ovVp_ = 0.0, ovVn_ = 0.0;
 
     // Smoothed physical params.
-    OnePoleSmoother driveK_;    // feedback gain K (plateau - 1)
-    OnePoleSmoother toneTilt_;  // treble tilt linear gain
-    OnePoleSmoother level_;     // output gain
+    OnePoleSmoother driveK_;     // feedback gain K (plateau - 1)
+    OnePoleSmootherD tonePot_;   // the TONE pot's wiper fraction (docs §65)
+    OnePoleSmoother level_;      // output gain
 
     // Stage 1 mid-hump high-pass (oversampled rate; hp = x - LP720).
     float midHumpCoef_ = 0.0f;
     float midLpState_ = 0.0f;
 
-    // Stage 3 tone tilt low-pass (base rate) + DC blocker state.
-    float toneCoef_ = 0.0f;
-    float toneLpState_ = 0.0f;
+    // Stage 3 — the tone network (base rate) then the output coupling cap.
+    OverdriveToneStack tone_;
     double dcR_ = 0.0;
     float dcX1_ = 0.0f, dcY1_ = 0.0f;
 

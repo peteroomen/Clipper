@@ -39,12 +39,6 @@ float driveKnobToK(float knob, float minDb, float maxDb) {
     const float db = minDb + (maxDb - minDb) * clamp01(knob);
     return std::pow(10.0f, db / 20.0f) - 1.0f;
 }
-
-// TONE knob (0..1) -> treble tilt LINEAR gain (1.0 == flat at knob 0.5).
-float toneKnobToTilt(float knob, float maxTiltDb) {
-    const float db = (clamp01(knob) - 0.5f) * 2.0f * maxTiltDb;
-    return std::pow(10.0f, db / 20.0f);
-}
 }  // namespace
 
 void OverdriveEngine::applyKnees() {
@@ -73,11 +67,15 @@ void OverdriveEngine::prepare(double sampleRate, int maxBlockSize) {
     maxBlockSize_ = maxBlockSize > 0 ? maxBlockSize : 128;
 
     driveK_.prepare(kSmoothSeconds, sampleRate_);
-    toneTilt_.prepare(kSmoothSeconds, sampleRate_);
+    tonePot_.prepare(kSmoothSeconds, sampleRate_);
     level_.prepare(kSmoothSeconds, sampleRate_);
 
-    toneCoef_ = onePoleCoeff(cfg_.tonePivotHz, sampleRate_);
-    toneLpState_ = 0.0f;
+    // Stage 3 — the pedal's own tone network at the base rate (docs §65), then
+    // the output coupling cap. Both are LINEAR, so they commute; the order here
+    // follows the circuit (the tone stage's op-amp output drives C6, not the
+    // other way round).
+    tone_.prepare(cfg_.tone, sampleRate_);
+    tone_.setPot(tonePot_.value());
     dcR_ = std::exp(-kTwoPi * cfg_.dcBlockHz / sampleRate_);
     dcX1_ = 0.0f;
     dcY1_ = 0.0f;
@@ -94,9 +92,10 @@ void OverdriveEngine::setOversampling(int factor) {
 void OverdriveEngine::reset() {
     // Smoothers first: a poisoned smoother value never recovers on its own.
     driveK_.reset();
-    toneTilt_.reset();
+    tonePot_.reset();
     level_.reset();
-    toneLpState_ = 0.0f;
+    tone_.reset();
+    tone_.setPot(tonePot_.value());
     dcX1_ = 0.0f;
     dcY1_ = 0.0f;
     os_.reset();
@@ -135,7 +134,11 @@ void OverdriveEngine::setParameter(int paramId, float value) {
             driveK_.setTarget(driveKnobToK(knob, cfg_.driveMinDb, cfg_.driveMaxDb));
             break;
         case PARAM_TONE:
-            toneTilt_.setTarget(toneKnobToTilt(knob, cfg_.toneMaxTiltDb));
+            // The knob IS the pot's wiper fraction: 0 = wiper at the op-amp's
+            // non-inverting node (dark), 1 = at the inverting node (bright).
+            // Both transcriptions mark the pot LINEAR (docs §65.1 records that the
+            // real taper letter could not be sourced).
+            tonePot_.setTarget(static_cast<double>(knob));
             break;
         case PARAM_LEVEL:
             level_.setTarget(knob);  // identity linear map, as the RAT
@@ -188,9 +191,13 @@ void OverdriveEngine::processChunk(const float* in, float* out, int numFrames) {
     }
     os_.downsample(out, numFrames);
 
-    // --- Stage 3 (base rate, linear): DC block -> tone tilt -> level. ---
+    // --- Stage 3 (base rate, linear): tone network -> DC block -> level. ---
+    // The tone network's coefficients are rebuilt only while the TONE smoother is
+    // still moving (docs §65.6: ~5 std::exp per sample for the ~5 ms of a knob
+    // move, and nothing at all once parked — OnePoleSmootherT::settled()).
     for (int i = 0; i < numFrames; ++i) {
-        const float v = out[i];
+        if (!tonePot_.settled()) tone_.setPot(tonePot_.next());
+        const float v = tone_.processSample(out[i]);
         // One-pole DC blocker (output coupling cap, ~12 Hz).
         // Anti-denormal (Denormal.h): on silence this degenerates to y = dcR_*dcY1_
         // with dcR_ ~= 0.9984, and in the subnormal range that product ROUNDS BACK
@@ -202,11 +209,7 @@ void OverdriveEngine::processChunk(const float* in, float* out, int numFrames) {
         const float y = v - dcX1_ + static_cast<float>(dcR_) * dcY1_;
         dcX1_ = v;
         dcY1_ = flushDenormal(y);
-        // Treble tilt: scale the HF half (y - LP_pivot) by the tilt gain.
-        toneLpState_ = flushDenormal(toneLpState_ + toneCoef_ * (y - toneLpState_));
-        const float hpTone = y - toneLpState_;
-        const float toned = toneLpState_ + toneTilt_.next() * hpTone;
-        out[i] = toned * level_.next();
+        out[i] = y * level_.next();
     }
 }
 

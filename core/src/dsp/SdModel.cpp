@@ -54,17 +54,32 @@
 //   closed-loop corner is GBW/1 = 3 MHz), so limiting only the high-gain path is
 //   the physically dominant effect.
 //
-// STAGE 3 — SD-1 tone control + level.
-//   The real tone control is a 10k pot blending a 0.018 uF treble-lean path
-//   against a 10k/0.027 uF darker path — a first-order treble TILT about a mid
-//   pivot. We approximate it as: split the signal at kTonePivotHz into low/high
-//   halves and scale the HIGH half by a tilt gain g_t in [-12, +12] dB as TONE
-//   sweeps 0..1 (g_t = 0 dB, i.e. TRANSPARENT, at noon). This matches the
-//   published SD-1 tone response SHAPE (progressive treble cut/boost, bass ~fixed)
-//   without modelling the exact pot law — a documented approximation. LEVEL is a
-//   clean linear output gain (identity map, as in the RAT).
-//   A ~12 Hz output DC-blocker (the real pedal's output coupling cap) removes the
-//   DC the asymmetric clip produces.
+// STAGE 3 — the SD-1's OWN TONE NETWORK (docs §65) + level.
+//   Until 2026-08-01 this was a first-order treble TILT about a 1 kHz pivot,
+//   +/-12 dB, TRANSPARENT at noon — explicitly documented here as an
+//   approximation of "the published SD-1 tone response SHAPE". It was not one:
+//   with no low-pass in it, the family's mid HUMP came out of this model as a
+//   high SHELF (measured at DRIVE 0.5 / TONE noon: a monotone rise to a plateau
+//   that ran FLAT from 4 kHz to 12 kHz).
+//
+//   It is now the netlist, transcribed from LiveSPICE's own
+//   `Boss Super Overdrive SD-1.schx` (Tests/Examples; the file names gmarts.org
+//   as its source) — see OverdriveToneStack.h for the topology and the exact
+//   H(s). The values, with the schematic's designators:
+//       R5  = 10 kOhm   clipper output -> IC1b's NON-inverting input
+//       C4  = 0.018 uF  that node to ground  => a LOW-PASS at 884.2 Hz
+//       R11 = 10 kOhm   that node to the 4.5 V rail (an AC ground)
+//       TONE pot 22 kOhm, LINEAR, wiper -> C5 -> R7 -> ground
+//       C5  = 0.027 uF , R7 = 470 Ohm
+//       R8  = 10 kOhm   feedback around IC1b
+//       C3  = 0.01 uF   ACROSS R8 (the TS has no such cap — see TsModel.cpp)
+//   R5/R11 make the stage's DC gain EXACTLY 0.5 = -6.02 dB. That insertion loss
+//   is real, it is 5.2 dB more than the TS's, and it is NOT compensated anywhere
+//   (docs §65.5 — the §36 / ADR 008 precedent: nothing is re-gained to hide a
+//   circuit correction).
+//   A ~12 Hz output DC-blocker (the real pedal's C6 output coupling cap) removes
+//   the DC the asymmetric clip produces. LEVEL is a clean linear output gain
+//   (identity map, as in the RAT).
 //
 // M2 — antialiasing. Only the nonlinear feedback clip runs oversampled (default
 // 4x); the 4558 op-amp model and the ADAA soft-clip both live at the oversampled
@@ -87,7 +102,7 @@ namespace {
 //   - mid-hump 720.5 Hz  = 1/(2*pi*4.7k*0.047uF), the shared Zg leg;
 //   - DRIVE plateau [12, 46.6] dB, max = 1 + 1M/4.7k ~= 213.8x (+46.6 dB);
 //   - ASYMMETRIC diodes Vp=0.95 (2 diodes) / Vn=0.50 (1 diode) => even harmonics;
-//   - 4558 op-amp 3 MHz GBW / 1.7 V/us slew; tone tilt +/-12 dB about 1 kHz;
+//   - 4558 op-amp 3 MHz GBW / 1.7 V/us slew; the transcribed TONE network;
 //     12 Hz output DC blocker.
 constexpr OverdriveConfig kSdConfig = {
     /* midHumpHz            */ 720.5,
@@ -97,8 +112,17 @@ constexpr OverdriveConfig kSdConfig = {
     /* diodeVn              */ AsymSoftClipper::kDefaultVn,  // 0.50 (1 diode)
     /* opAmpGbwHz           */ 3.0e6,
     /* opAmpSlewVoltsPerSec */ 1.7e6,
-    /* tonePivotHz          */ 1000.0,
-    /* toneMaxTiltDb        */ 12.0f,
+    /* tone                 */
+    {
+        /* rIn   R5  */ 10.0e3,
+        /* cIn   C4  */ 18.0e-9,   // with R5: the 884.2 Hz low-pass
+        /* rBias R11 */ 10.0e3,    // => DC gain exactly 0.5 (-6.02 dB)
+        /* rPot      */ 22.0e3,    // LINEAR (the transcription's own marking)
+        /* rW    R7  */ 470.0,
+        /* cW    C5  */ 27.0e-9,
+        /* rFb   R8  */ 10.0e3,
+        /* cFb   C3  */ 10.0e-9,   // across R8 — the SD-1 has this, the TS does not
+    },
     /* dcBlockHz            */ 12.0,
 };
 }  // namespace
@@ -106,6 +130,8 @@ constexpr OverdriveConfig kSdConfig = {
 struct SdModel::Impl {
     OverdriveEngine engine{kSdConfig};
 };
+
+OverdriveToneConfig SdModel::toneConfig() { return kSdConfig.tone; }
 
 SdModel::SdModel() : impl_(std::make_unique<Impl>()) {}
 SdModel::~SdModel() = default;

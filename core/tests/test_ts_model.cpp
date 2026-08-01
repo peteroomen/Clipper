@@ -97,9 +97,13 @@ double tailRms(const std::vector<float>& x, double fs) {
 }
 
 // --- Test 1: the mid-hump shelf matches 1 + K*HP720 within +/-1.5 dB. --------
-// SHARED family trait (same Zg leg as the SD-1). Small signal, moderate DRIVE,
-// TONE flat; measure dB relative to a 5 kHz plateau reference vs the analytic
-// non-inverting shelf. Pins the 720 Hz corner.
+// SHARED family trait (same Zg leg as the SD-1). Small signal, moderate DRIVE.
+// This measures STAGE 1 on its own, so the TONE NETWORK is divided out (docs §65:
+// since 2026-08-01 TONE=0.5 is NOT transparent — it is the real network, whose
+// 723 Hz low-pass is the other half of the family's mid hump; the old test's
+// "5 kHz plateau" reference no longer exists). The tone half of the reference is
+// validated on its own by testToneNetwork, against Yeh & Abel's published H(s);
+// what THIS test pins is the 720.5 Hz corner of the clipping stage's Zg leg.
 void testMidHumpCorner(double fs) {
     const double driveKnob = 0.5;
     const double K = driveKnobToK(driveKnob);
@@ -115,12 +119,17 @@ void testMidHumpCorner(double fs) {
     };
     const double fRef = 5000.0;
     const float amp = 1e-5f;
+    const auto toneCfg = TsModel::toneConfig();
+    auto toneDb = [&](double f) {
+        return toDb(clipper::dsp::OverdriveToneStack::analyticMag(toneCfg, 0.5,
+                                                                  kTwoPi * f));
+    };
     auto measDbRel = [&](double f) {
         auto o = render(sine(f, amp, 0.5, fs), {(float)driveKnob, 0.5f, 1.0f}, fs);
         auto oRef = render(sine(fRef, amp, 0.5, fs), {(float)driveKnob, 0.5f, 1.0f}, fs);
         const size_t n = o.size(), win = std::min(n, static_cast<size_t>(0.3 * fs));
-        return toDb(goertzelAmp(o, n - win, win, f, fs)) -
-               toDb(goertzelAmp(oRef, n - win, win, fRef, fs));
+        return (toDb(goertzelAmp(o, n - win, win, f, fs)) - toneDb(f)) -
+               (toDb(goertzelAmp(oRef, n - win, win, fRef, fs)) - toneDb(fRef));
     };
     const double probes[] = {82.4, 220.0, 440.0, 720.5, 1500.0, 3000.0, 5000.0};
     double worst = 0.0;
@@ -189,11 +198,178 @@ void testSymmetry(double fs) {
         fs, h2Sym - f1, h2Asym - f1, sd1H2dBc, h2Asym - h2Sym);
 }
 
+// --- Test 2b: THE TONE NETWORK, against an OUTSIDE reference (docs §65). -----
+// Yeh & Abel's DAFx-07 distortion-modelling paper publishes a closed-form H(s)
+// for exactly this tone stage. It is transcribed here from a THIRD party's
+// implementation of it (JamesStubbsEng/TS-808-Ultra, `ToneStage::calcCoefs`) —
+// different author, different derivation, different variable names — and the
+// model's own netlist-derived H(s) has to agree with it. That is the strongest
+// absolute reference available for this network, and it is the bar that says the
+// TOPOLOGY is right rather than merely self-consistent.
+//
+// ONE correction is applied to that transcription and is a finding, not a
+// convenience: its `X` term reads `(Rr/(Rl+Rr)) / ((Rz+par) * Y)`, which is
+// dimensionally Ohm^-3 where the other two terms of the same sum (wp, wz) are
+// rad/s. Deriving the same coefficient from the netlist gives
+// `(Rr/(Rl+Rr)) / (Cs*(Rz+par))` — i.e. the reference substitutes `Y` where `Cs`
+// belongs. With that one fix the two forms agree EXACTLY (worst 0.000000 dB over
+// the whole knob), which is itself the evidence that the fix is the right one:
+// wp, wz, wp*wz, alpha and alpha*W*wz all reproduce term for term untouched.
+double yehMag(double Rl, double Rpot, double w) {
+    const double Cs = 0.22e-6, Rs = 1e3, Ri = 10e3, Cz = 0.22e-6, Rz = 220.0,
+                 Rf = 1e3;  // the paper's TS values
+    const double wp = 1.0 / (Cs * Rs * Ri / (Rs + Ri));
+    const double Rr = Rpot - Rl;
+    const double par = Rl * Rr / (Rl + Rr);
+    const double wz = 1.0 / (Cz * (Rz + par));
+    const double Y = (Rl + Rr) * (Rz + par);
+    const double X = (Rr / (Rl + Rr)) / (Cs * (Rz + par));
+    const double W = Y / ((Rl * Rf) + Y);
+    const double alpha = (Rl * Rf + Y) / (Y * Rs * Cs);
+    // H(s) = (alpha*s + alpha*W*wz) / (s^2 + (wp+wz+X)*s + wp*wz)
+    const double nr = alpha * W * wz, ni = alpha * w;
+    const double dr = wp * wz - w * w, di = (wp + wz + X) * w;
+    return std::sqrt(nr * nr + ni * ni) / std::sqrt(dr * dr + di * di);
+}
+
+void testToneNetwork() {
+    using clipper::dsp::OverdriveToneStack;
+    const double fs = 48000.0;
+    const auto cfg = TsModel::toneConfig();
+
+    auto stackDb = [&](double p, double f, double rate = 48000.0) {
+        OverdriveToneStack t;
+        t.prepare(cfg, rate);
+        t.setPot(p);
+        const int n = static_cast<int>(rate * 0.4);
+        std::vector<float> out(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i)
+            out[static_cast<size_t>(i)] =
+                t.processSample(static_cast<float>(0.1 * std::sin(kTwoPi * f * i / rate)));
+        return toDb(goertzelAmp(out, static_cast<size_t>(rate * 0.2),
+                                static_cast<size_t>(rate * 0.15), f, rate) /
+                    0.1);
+    };
+    auto pedalDb = [&](double f, double tone) {
+        auto o = render(sine(f, 1e-3f, 0.6, fs), {0.5f, (float)tone, 1.0f}, fs);
+        return toDb(goertzelAmp(o, static_cast<size_t>(fs * 0.3),
+                                static_cast<size_t>(fs * 0.25), f, fs) /
+                    1e-3);
+    };
+
+    // BAR 1 — THE OUTSIDE REFERENCE. The netlist's H(s) must be Yeh & Abel's.
+    // The reference's pot value is the paper's own 20 kOhm LITERAL, not cfg.rPot:
+    // this bar is the one thing in the suite that goes red if ANY of the eight
+    // transcribed TS tone values is edited, so it must not track the config.
+    constexpr double kYehPot = 20.0e3;
+    double worstYeh = 0.0;
+    for (double p : {0.0, 0.05, 0.25, 0.5, 0.75, 0.95, 1.0}) {
+        for (int i = 0; i < 200; ++i) {
+            const double f = 20.0 * std::pow(1000.0, i / 199.0);
+            worstYeh = std::max(
+                worstYeh,
+                std::fabs(toDb(OverdriveToneStack::analyticMag(cfg, p, kTwoPi * f)) -
+                          toDb(yehMag(kYehPot * p, kYehPot, kTwoPi * f))));
+        }
+    }
+    assert(worstYeh < 0.05 &&
+           "the TS tone network does not reproduce Yeh & Abel's published H(s)");
+
+    // BAR 2 — THE HEADLINE: a HUMP, not a SHELF. Before docs §65 this model
+    // peaked at 6467 Hz with 3 k / 6 k / 12 k at -0.15 / -0.00 / -0.11 dB re the
+    // peak — a plateau. Measured now: peak 776.8 Hz, 6 kHz -11.75 dB re peak.
+    double peakF = 0.0, peakDb = -1e9;
+    for (int i = 0; i < 25; ++i) {
+        const double f = 200.0 * std::pow(30.0, i / 24.0);
+        const double v = pedalDb(f, 0.5);
+        if (v > peakDb) { peakDb = v; peakF = f; }
+    }
+    const double at6k = pedalDb(6000.0, 0.5);
+    assert(peakF > 500.0 && peakF < 1300.0 &&
+           "TS small-signal peak is not in the upper mids (500..1300 Hz)");
+    assert(peakDb - at6k > 8.0 &&
+           "TS 6 kHz is not >= 8 dB below the upper-mid peak — the response is a "
+           "SHELF, i.e. the 723 Hz low-pass is missing");
+
+    // BAR 3 — TONE is a TREBLE control (authority at 3 kHz, ~none at 100 Hz).
+    const double t3lo = pedalDb(3000.0, 0.0), t3hi = pedalDb(3000.0, 1.0);
+    const double b1lo = pedalDb(100.0, 0.0), b1hi = pedalDb(100.0, 1.0);
+    assert(t3hi - t3lo > 12.0 && "TS TONE has < 12 dB of authority at 3 kHz");
+    assert(std::fabs(b1hi - b1lo) < 1.5 && "TS TONE moves 100 Hz by > 1.5 dB");
+
+    // BAR 4 — THE PEDALS ARE NOT THE SAME PEDAL. They share one engine, so the
+    // easiest way to get this wrong is to give them one tone stage. The TS's
+    // input leg is 1k against a 10k bias return and the SD-1's is 10k against
+    // 10k, so the SD-1's stage costs 5.2 dB MORE. Literal bar, not a recompute.
+    const double sdDcDb = [&] {
+        OverdriveToneStack t;
+        t.prepare(SdModel::toneConfig(), fs);
+        t.setPot(0.5);
+        const int n = static_cast<int>(fs * 0.4);
+        std::vector<float> out(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i)
+            out[static_cast<size_t>(i)] =
+                t.processSample(static_cast<float>(0.1 * std::sin(kTwoPi * 30.0 * i / fs)));
+        return toDb(goertzelAmp(out, static_cast<size_t>(fs * 0.2),
+                                static_cast<size_t>(fs * 0.15), 30.0, fs) /
+                    0.1);
+    }();
+    const double tsDcDb = stackDb(0.5, 30.0);
+    assert(std::fabs(tsDcDb - (-0.828)) < 0.15 &&
+           "TS tone stage DC insertion loss is not the 1k/10k divider (-0.83 dB)");
+    assert(tsDcDb - sdDcDb > 4.0 &&
+           "the TS and SD-1 tone stages have stopped differing — one engine, TWO "
+           "configs (docs §65)");
+
+    // BAR 5 — discretization (mapping check). Worst measured 0.96 dB at 16 kHz /
+    // 44.1 kHz, 0.53 dB below 10 kHz.
+    double worstDisc = 0.0;
+    for (double rate : {44100.0, 96000.0})
+        for (double p : {0.0, 0.25, 0.5, 0.75, 1.0})
+            for (double f : {30.0, 110.0, 440.0, 880.0, 3000.0, 10000.0, 16000.0})
+                worstDisc = std::max(
+                    worstDisc,
+                    std::fabs(stackDb(p, f, rate) -
+                              toDb(OverdriveToneStack::analyticMag(cfg, p, kTwoPi * f))));
+    assert(worstDisc < 1.5 && "tone network discretization drifts > 1.5 dB from H(s)");
+
+    // BAR 6 — ADR 006: every state rests at EXACTLY zero.
+    {
+        OverdriveToneStack t;
+        t.prepare(cfg, fs);
+        t.setPot(0.5);
+        for (int i = 0; i < static_cast<int>(fs * 0.2); ++i)
+            t.processSample(static_cast<float>(0.3 * std::sin(kTwoPi * 220.0 * i / fs)));
+        for (int i = 0; i < static_cast<int>(fs * 4.0); ++i) t.processSample(0.0f);
+        assert(t.maxAbsRestingState() == 0.0 &&
+               "TS tone network state did not reach EXACT zero after a silent tail");
+    }
+
+    // BAR 7 (transcription guard, deliberately last). The famous 723 Hz corner is
+    // 1/(2*pi*R5*C4) and it is the LOW-PASS, not the mid-hump high-pass.
+    assert(cfg.rIn == 1.0e3 && cfg.cIn == 220.0e-9 && cfg.rBias == 10.0e3);
+    assert(cfg.rPot == 20.0e3 && cfg.rW == 220.0 && cfg.cW == 220.0e-9);
+    assert(cfg.rFb == 1.0e3 && cfg.cFb == 0.0 &&
+           "the TS has NO cap across its 1k tone feedback resistor (the SD-1 has "
+           "0.01 uF) — do not 'unify' them");
+    const double lpHz = 1.0 / (kTwoPi * cfg.rIn * cfg.cIn);
+    assert(std::fabs(lpHz - 723.4) < 1.0 && "the TS tone low-pass is not at 723 Hz");
+
+    std::printf(
+        "  [ok] tone network: vs Yeh & Abel DAFx-07 H(s) worst %.6f dB; low-pass "
+        "%.1f Hz; DC loss %.2f dB (TS) vs %.2f dB (SD-1) = %.2f dB apart; peak "
+        "%.0f Hz at %+.2f dB, 6 kHz %.2f dB below it (was a FLAT shelf to 12 kHz); "
+        "TONE 3 kHz span %.2f dB vs 100 Hz %.2f dB; discretization worst %.2f dB\n",
+        worstYeh, lpHz, tsDcDb, sdDcDb, tsDcDb - sdDcDb, peakF, peakDb, peakDb - at6k,
+        t3hi - t3lo, std::fabs(b1hi - b1lo), worstDisc);
+}
+
 // --- Test 3: max-DRIVE plateau ~= 40.6 dB analytic (1 + 500k/4.7k). ----------
 // Small-signal gain well above the mid-hump corner (5 kHz, below the ~28 kHz
-// op-amp corner) IS the plateau 1 + K_max. Absolute out/in gain, TONE + LEVEL
-// flat/unity. Asserts the 500k drive-pot derivation and that it is NOT the SD-1's
-// 46.6 dB. (Op-amp bypassed so the plateau is the clean analytic 1+K.)
+// op-amp corner) IS the plateau 1 + K_max. Absolute out/in gain, LEVEL unity, and
+// the TONE NETWORK divided out (docs §65 — at 5 kHz it is no longer 0 dB).
+// Asserts the 500k drive-pot derivation and that it is NOT the SD-1's 46.6 dB.
+// (Op-amp bypassed so the plateau is the clean analytic 1+K.)
 void testMaxGainPlateau(double fs) {
     const double Kmax = driveKnobToK(1.0);
     const double plateauDbAnalytic = 20.0 * std::log10(1.0 + Kmax);  // ~40.6 dB
@@ -204,7 +380,9 @@ void testMaxGainPlateau(double fs) {
     const size_t n = o.size(), win = std::min(n, static_cast<size_t>(0.3 * fs));
     const double gIn = goertzelAmp(in, n - win, win, fProbe, fs);
     const double gOut = goertzelAmp(o, n - win, win, fProbe, fs);
-    const double plateauDb = toDb(gOut / gIn);
+    const double toneDb = toDb(clipper::dsp::OverdriveToneStack::analyticMag(
+        TsModel::toneConfig(), 0.5, kTwoPi * fProbe));
+    const double plateauDb = toDb(gOut / gIn) - toneDb;
     assert(std::fabs(plateauDb - plateauDbAnalytic) < 1.5 &&
            "TS max-DRIVE plateau not ~ 1 + 500k/4.7k (+40.6 dB)");
     // And distinctly BELOW the SD-1's +46.6 dB plateau (the 500k-vs-1M pot).
@@ -351,6 +529,7 @@ int main() {
     testMidHumpCorner(96000.0);
     testSymmetry(44100.0);
     testSymmetry(96000.0);
+    testToneNetwork();
     testMaxGainPlateau(44100.0);
     testMaxGainPlateau(48000.0);
     testMaxGainPlateau(96000.0);
