@@ -92,6 +92,12 @@
      unspoken-for directions. */
   --accent-delay: #1F5FA0;   /* M13.4 delay — DEEP BLUE (space/repeats) */
   --accent-delay-glow: rgba(50, 130, 210, 0.5);
+  /* M13.3 optical compressor — PERIWINKLE. The EL panel inside a T4B glows
+     blue-green; pushed to blue-violet so it separates from --accent-delay's
+     deep azure and --accent-muff's magenta-violet, both of which can be on the
+     board at the same time. */
+  --accent-opto: #5C6BC0;
+  --accent-opto-glow: rgba(120, 140, 235, 0.5);
   --accent-gate: #4A5568;    /* M13.6a gate — SLATE: deliberately muted, it is a utility */
   --accent-gate-glow: rgba(120, 140, 165, 0.5);
   --accent-chorus: #9B2C6F;  /* M13.7 CE-1 — MAGENTA (modulation, distinct from phaser orange) */

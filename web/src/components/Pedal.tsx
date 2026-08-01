@@ -168,6 +168,34 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Level', aria: 'Level', param: 'level', testId: 'knob-level' },
     ],
   },
+  // M13.3 "Lumen": the SECOND dynamics pedal, and the first face on this board
+  // whose third control is a two-position SWITCH rather than a knob (it renders
+  // as a knob slot, the CE-1 precedent, because the rig's param triple is
+  // positional). Morphology cue is the 'compact' anatomy — a levelling amplifier
+  // is a studio box, not a stomp, so it reads as the tidiest thing on the board.
+  // PERIWINKLE accent (tokens.css --accent-opto): the electroluminescent panel
+  // inside a T4B glows blue-green, pushed to blue-violet here so it is distinct
+  // from the delay's deep azure and the Muff's magenta-violet. "Lumen" is the
+  // wink — the pedal's whole behaviour is a light level. No Teletronix / UREI /
+  // Universal Audio / LA-2A wording anywhere on the face (docs §17 doctrine).
+  opto: {
+    layout: 'compact',
+    model: 'DYNAMICS Nº2 · LEVELER',
+    wordmark: 'Lumen',
+    knobs: [
+      // Slot 0 = PEAK REDUCTION, and unlike the Squash's SUSTAIN it really is a
+      // threshold control: it moves the level at which the pedal starts working
+      // by 45.44 dB and does not change the make-up gain at all.
+      // Slot 1 = MODE, genuinely DISCRETE: < 0.5 COMPRESS, >= 0.5 LIMIT. It is
+      // shipped because it changes the AUDIO by up to 7.71 dB (docs §64.6) —
+      // §61.3 refused to ship the noise gate's MODE for the opposite reason.
+      // Slot 2 = GAIN, the make-up level, which moves the output 32 dB and the
+      // gain reduction 0.0000 dB.
+      { name: 'Peak', aria: 'Peak reduction', param: 'distortion', testId: 'knob-peak' },
+      { name: 'Mode', aria: 'Mode (compress / limit)', param: 'filter', testId: 'knob-mode' },
+      { name: 'Gain', aria: 'Gain', param: 'level', testId: 'knob-gain' },
+    ],
+  },
   // M13.6a "Curfew": the lineup's first UTILITY — it makes no sound of its own,
   // it takes one away. Morphology cue is the SLATE accent and a two-knob face on
   // the small 'stack' anatomy: deliberately the most boring box on the board,

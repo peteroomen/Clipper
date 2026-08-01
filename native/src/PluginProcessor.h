@@ -67,6 +67,13 @@ inline constexpr const char* delayBlend    = "delayBlend";
 inline constexpr const char* gateOn        = "gateOn";
 inline constexpr const char* gateThreshold = "gateThreshold";
 inline constexpr const char* gateDecay     = "gateDecay";
+// M13.3 — the "Lumen" optical compressor. THREE real controls; optoMode is a
+// DISCRETE two-position switch stored in a normalized float slot (< 0.5 COMPRESS,
+// >= 0.5 LIMIT), exactly as ce1Mode is.
+inline constexpr const char* optoOn            = "optoOn";
+inline constexpr const char* optoPeakReduction = "optoPeakReduction";
+inline constexpr const char* optoMode          = "optoMode";
+inline constexpr const char* optoGain          = "optoGain";
 // M13.7: the CE-1 "Ensemble" chorus. THREE knobs — RATE, DEPTH and MODE. MODE is
 // a plain 0..1 knob rather than a Choice deliberately: it is the shared slot-2 of
 // the pedal-agnostic positional ABI, so making it a Choice here would put the

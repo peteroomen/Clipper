@@ -94,6 +94,7 @@
 #include "clipper/dsp/CompModel.h"
 #include "clipper/dsp/DelayModel.h"
 #include "clipper/dsp/GateModel.h"
+#include "clipper/dsp/OptoModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/WahModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
@@ -140,7 +141,13 @@ enum PedalType : int {
     PEDAL_DELAY = 8,    // M13.4  analog delay
     PEDAL_GATE  = 9,    // M13.6a noise gate
     PEDAL_CHORUS = 10,  // M13.7  CE-1 chorus ensemble
-    PEDAL_TYPE_COUNT = 11,
+
+    // M13.3: the "Lumen" OPTICAL compressor — the second DYNAMICS voice.
+    // APPENDED at 11 for the same reason as every type above it: these integers
+    // ARE the packed-snapshot encoding and the APVTS chain-order state, so
+    // renumbering one silently re-points every saved board.
+    PEDAL_OPTO = 11,
+    PEDAL_TYPE_COUNT = 12,
 };
 
 // Each type is instantiable once, so the board can never be longer than this.
@@ -256,6 +263,14 @@ struct Params {
     float gateThreshold = 0.35f;
     float gateDecay = 0.5f;
 
+    // M13.3: the "Lumen" optical compressor. THREE real controls — this is the
+    // first pedal on the board whose middle slot is not carried-and-unused.
+    // MODE is DISCRETE (< 0.5 COMPRESS, >= 0.5 LIMIT), the CE-1 precedent.
+    bool  optoOn = true;
+    float optoPeakReduction = 0.5f;
+    float optoMode = 0.0f;
+    float optoGain = 0.62f;
+
     // "Echoman" BBD analog delay (M13.4) — the lineup's FIRST DELAY, and a new
     // DSP family. Three real knobs, the shared positional slots reading as
     // DELAY / FEEDBACK / BLEND; defaults mirror web DELAY_KNOB_DEFAULTS. DELAY is
@@ -274,7 +289,7 @@ struct Params {
     // hand and only sets ratOn/sdOn (the pre-parity tests, the reference renders)
     // keeps its exact old routing. The PLUGIN's shipped default board is the web
     // app's DEFAULT_RIG instead — a single RAT (see PluginProcessor).
-    int   chain[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    int   chain[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     int   chainLength = 2;
 
     // Amp voice (M9.4/M10.1/M10.2/M10.3/M10.7): 0 = Clean 120, 1 = JCM800,
@@ -449,9 +464,9 @@ private:
 
     // The COMMITTED topology — what process() actually runs. It only ever changes
     // at a declick fade zero, so the audio never sees a mid-block reorder.
-    int  activeChain_[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    int  activeChain_[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     int  activeLength_ = 2;
-    bool activeOn_[PEDAL_TYPE_COUNT] = {true, false, true, true, true, true, true, true, true, true, true};
+    bool activeOn_[PEDAL_TYPE_COUNT] = {true, false, true, true, true, true, true, true, true, true, true, true};
 
     // Declick state machine (mirrors the worklet's): a linear ramp position in
     // [0,1] mapped through a raised cosine, ~6 ms each way.
@@ -471,6 +486,7 @@ private:
     clipper::dsp::WahModel wah_;      // the "Weeper" wah / envelope filter (docs §58)
     clipper::dsp::CompModel comp_;    // the "Squash" OTA compressor (M13.1)
     clipper::dsp::GateModel gate_;    // the "Curfew" noise gate (M13.6a)
+    clipper::dsp::OptoModel opto_;    // the "Lumen" optical compressor (M13.3)
     clipper::dsp::Ce1Model  ce1_;     // the CE-1 "Ensemble" chorus (M13.7)
     clipper::dsp::DelayModel delay_;  // the "Echoman" BBD analog delay (M13.4)
     clipper::dsp::AmpModel amp_;      // Clean 120

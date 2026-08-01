@@ -121,6 +121,18 @@ not a reason to share, and it is also not a reason *not* to: the test is whether
 the shared thing reproduces the consumer's measured behaviour. Run the
 substitution and measure it, as this slice did.
 
+> **SETTLED 2026-08-01 — see ADR 025, and the expectation above was WRONG.** M13.3
+> shipped and it refuses too. It followed this slice's procedure exactly (a replica
+> of its own loop, validated against the shipped model to 0.05 dB, with one block
+> switchable) and measured a proportional range of **14.323 dB** against this
+> detector's 2.031, a ratio curve going non-monotone to **10.40:1** with 0.09 dB of
+> gain reduction at −30 dBV, and its whole acceptance property collapsing from
+> 2.892x to **1.000x**. The physical reason is one this ADR could not have guessed
+> from the category: **that pedal has no envelope capacitor** — an EL panel emits on
+> both polarities, so the panel is the rectifier and the photocell is the
+> integrator. `SidechainDetector` still has exactly two consumers. What the
+> procedure bought was that the question got answered with a number.
+
 **A general lesson, and it is the mirror of ADR 021's.** ADR 021's finding was
 "a config struct is not a seam — extract the block." This one's is the other
 half: **an extracted block is not automatically the right block for the next
