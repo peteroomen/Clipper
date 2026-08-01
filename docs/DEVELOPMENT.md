@@ -10695,7 +10695,7 @@ model splits them (filter -> divider -> transistor), which is what makes the
 filter's coefficients cheap to modulate per sample and keeps the nonlinearity in
 a small oversampled domain. The cost is that the tank does not see the
 transistor's clipped output, so the resonance does not detune or damp when the
-stage is slammed. **ADR number needed** — recorded there, not fitted around.
+stage is slammed. Recorded as **ADR 018**, not fitted around.
 
 ### 58.5 AUTO — the same tank, driven by an envelope, and why SENSITIVITY is the mode
 
@@ -11510,8 +11510,7 @@ not, and no mono model can be. Documented, not papered over.
 
 ### 62.6 The one deliberate departure from the real control layout
 
-**ADR NUMBER NEEDED** — this is an ADR-worthy decision and numbers are assigned
-centrally, so one is requested rather than picked.
+Recorded as **ADR 020** (`docs/decisions/020-ce1-ungangs-intensity.md`).
 
 The real CE-1's panel is asymmetric: CHORUS mode has **one** knob (INTENSITY,
 ganged — it moves rate and depth together, and the rate is the part you notice),
