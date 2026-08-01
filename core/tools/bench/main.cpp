@@ -10,6 +10,7 @@
 // Usage: clipper-bench [--seconds N] [--unit NAME]   (default 10 s, all units)
 
 #include "clipper/dsp/Ac30Amp.h"
+#include "clipper/dsp/RockerverbAmp.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
@@ -245,6 +246,16 @@ int main(int argc, char** argv) {
         m.prepare(kSr, kBlock);
         m.setParameter(clipper::dsp::Ac30Amp::PARAM_VOLUME, 0.5f);
         benchUnit("ac30 (valve amp)", riff,
+                  [&](const float* i, float* o, int n) { m.process(i, o, n); });
+    }
+    if (want("rockerverb")) {
+        // M10.7 (docs §63): four oversampled triode stages + an oversampled
+        // LTP/EL34-quad power section — the deepest cascade of any voice here.
+        clipper::dsp::RockerverbAmp m;
+        m.prepare(kSr, kBlock);
+        m.setParameter(clipper::dsp::RockerverbAmp::PARAM_GAIN, 0.5f);
+        m.setParameter(clipper::dsp::RockerverbAmp::PARAM_VOLUME, 0.1f);
+        benchUnit("rockerverb (valve amp)", riff,
                   [&](const float* i, float* o, int n) { m.process(i, o, n); });
     }
 

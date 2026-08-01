@@ -12729,6 +12729,650 @@ it had just edited while knowing it was wrong would be worse. Indices 8 and 9 ar
 left as **explicit empty faces**, reserved for the delay and gate slices to fill,
 so the array stays index-aligned while they are in flight.
 
+
+## 63. M10.7 — the Orange Rockerverb 100: the MODERN Orange (the sixth amp voice)
+
+The Rockerverb 100's DIRTY CHANNEL joins the lineup as amp voice **5**
+(`rockerverb`), sharing the OR120's `orange412` cab. It is EL34 push-pull like the
+OR120 and the JCM800 and **reuses that power machinery wholesale** — the Koren
+EL34 fit, the per-tube plate-load Newton, the grid-coupling/blocking solve, the OT
+bandwidth pair, the rail/screen sag integrator, and the `LtpInverter` with audit
+finding 7's tail reference (§42). No new device model was fitted for this voice.
+
+It is the second half of the owner's *"or120 and rockverb. I'm an orange man."*
+and the ROADMAP calls it the counterweight to the OR120 the way the OR120 is to
+the JCM800. §63.4 and §63.5 are that bar, and they are hard asserts in dB.
+
+**ONLY THE DIRTY CHANNEL SHIPS, and that is a research decision, not a shortcut.**
+The netlist this voice is transcribed from is the dirty channel's; the clean
+channel would be pure invention, and §57.1's rule — *"do not re-tune any of them
+toward a sound; find the schematic"* — applies to inventing a whole channel too. A
+footswitch in front of a made-up channel is worse than no footswitch. See §63.11.
+
+### 63.1 Provenance — what is TRANSCRIBED and what is RECONSTRUCTED
+
+**Read this before changing any constant in `RockerverbPreamp.h` /
+`RockerverbPowerAmp.h`.**
+
+**The channel that was open, and it is better than §57's was.** The proxy in this
+build container permits **github.com only** — re-confirmed this slice:
+`el34world.com` and `en.wikipedia.org` both fail `CONNECT tunnel failed,
+response 403` under `curl`, and `WebFetch` returns 403 for
+`el34world.com/.../Orange_rockreverb_50w.pdf` and for
+`dirtboxlayouts.blogspot.com`. Orange's own site, prowessamplifiers,
+music-electronics-forum and ampgarage were reachable only as search-result text.
+
+But a GitHub code search found **a real netlist**: `Orange Rockerverb 50
+Preamp.schx`, an example circuit shipped inside **LiveSPICE**
+(`dsharlet/LiveSPICE`, `Tests/Examples/`; the same file is mirrored in four other
+repositories). A `.schx` is a schematic FILE — every component with its value,
+position, rotation and every wire — so the netlist is *recoverable exactly* rather
+than eyeballed off a picture. It was parsed node by node: terminal offsets read
+out of LiveSPICE's own `LayoutSymbol` implementations (`TwoTerminal` ±20,
+`Potentiometer` anode/cathode/wiper, `Triode` plate/grid/cathode), the
+rotation/flip transform out of `Circuit/Schematic/Symbol.cs`, the pot's own
+`R(cathode→wiper) = R·P` convention out of `Potentiometer::Analyze`, and the wire
+graph resolved by union-find with collinear-point merging. The full parsed netlist
+is reproduced in `docs/work/2026-08-01-rockerverb.md`.
+
+#### TRANSCRIBED — the dirty-channel preamp, from the `.schx` netlist
+
+Designators are that file's.
+
+| Element | Value | Note |
+| --- | --- | --- |
+| input → grid stopper | **68 k** (R23) | 1 M grid leak (R20) on S1 |
+| S1 (V9) plate load | **100 k** (R19) → B2 | |
+| S1 cathode | **1k5 ∥ 10 µF** (R2/C14) | fully bypassed |
+| S1 → S2 coupling | **1 n** (C1) | a 398 Hz corner into the network below |
+| GAIN-1 network | **R30 220 k** → (**R1 220 k** ∥ **C2 470 p**) ∥ **GAIN 1 M LOG** | |
+| GAIN-1 bright cap | **100 p** (C16), top lug → **WIPER** | the 2204's trick (§47) |
+| S2 (V10) plate load | **100 k** (R24) → B2, **100 p** (C4) across it | |
+| S2 cathode | **1 k ∥ 10 µF** (R25/C3) | the hottest stage |
+| S2 → S3 coupling | **2n2** (C13) | |
+| GAIN-2 network | **R31 220 k** → **R32 470 k** ∥ **GAIN 1 M LOG** | NO bright cap |
+| S3 (V11) plate load | **100 k** (R26) → B1, **100 p** (C6) across it | |
+| S3 cathode | **2k2 ∥ 10 µF** (R27/C5) | |
+| S3 → S4 | **4n7** (C7) → **470 k** (R6) → **220 k** (R5) to ground | a fixed 0.319 divider |
+| S4 (V12) plate load | **100 k** (R4) → B1 | |
+| S4 cathode | **1k5, NO bypass cap** (R3) | **the cold/tight stage** |
+| tone stack | **560 p** (C24) · **39 k** slope (R43) · **22 n** (C25) · **22 n** (C26) | an **FMV** |
+| TREBLE / BASS / MIDDLE | **250 k LIN** · **500 k LOG** · **25 k LIN** | |
+| VOLUME | **1 M LINEAR**, AFTER the stack | |
+| supply | **400 V** (V8) → **10 k** (R9) → B1 (22 µF) → **10 k** (R42) → B2 (22 µF) | |
+
+**THE TWO GAIN POTS ARE ONE KNOB, AND THAT IS SOURCED, NOT ASSUMED.** Both carry
+`Group="Gain"` in the schematic file — LiveSPICE's own gang marker — and both
+default to the same wipe. One knob drives both wipers here.
+
+**THE VOLUME POT IS LINEAR AND IT SHIPS LINEAR.** The file marks Gain and Bass
+`Logarithmic` and Treble/Middle/Volume `Linear`, i.e. its author distinguished
+them deliberately. A linear master is unusual and puts the useful range low on the
+travel; that is MEASURED and REPORTED in §63.5 rather than "fixed" with an audio
+taper this circuit gives no support for — the same call §59 made for the Dyna
+Comp's SUSTAIN rheostat.
+
+#### SOURCED as prose (search-result text only)
+
+* Four EL34s in the 100 W head; four 12AX7 preamp valves; two 12AT7s for the
+  reverb and the effects loop; a **two-stage clean channel and a four-stage dirty
+  channel** (which the netlist independently confirms).
+* **The phase-inverter valve is an ECC83 in its own socket** — a WHOLE dual triode
+  dedicated to the PI. That is the reason this model uses a **long-tailed pair**:
+  the OR120's Field Guide entry says in terms *"Phase Inverter: Cathodyne type:
+  1/2 x 12ax7"* (HALF a valve), and a cathodyne cannot use the other half. This is
+  an **inference from a sourced fact**, and it is labelled as one — it is a
+  structural property this voice REPORTS (§63.6), never the bar.
+* The front panel: Clean (Volume/Bass/Treble), Dirty (Gain/Volume/Bass/Middle/
+  Treble), shared Reverb, a footswitchable Attenuator. **There is no presence
+  control**, which is why this power section has no presence knob and its feedback
+  loop carries no shaping filter.
+* The reverb is real and valve-driven — it is in the amp's name, so unlike the
+  JCM's (§19) and the OR120's (§57) it is not a usability add.
+
+#### RECONSTRUCTED — named rather than hidden
+
+Everything in `RockerverbPowerAmp.h`: the LTP's plate loads / tail / tail
+reference, the EL34 fixed bias, `Raa`, the OT corners, the supply Thévenin source
+and reservoir, the screen network, the PI→EL34 coupling and the feedback divider.
+Also the **pots' taper LAWS** (the file gives the LETTER; LiveSPICE's own generic
+log curve is `k = 2` and this project's house audio law is `k = 4`, §51 — the
+house law ships, for consistency with every other log pot in the repo, and the
+difference is a recorded gap), and the **PI grid leak** that loads the VOLUME pot
+(1 M, the house value).
+
+Each reconstructed constant is chosen against a PHYSICAL constraint — the triodes
+in the project's window, the EL34s inside their 25 W plate rating, the amp
+reaching its rated power — never against a tone. §57's rule applies verbatim:
+**do not re-tune any of them toward a sound; find the schematic.**
+
+**THE ATTENUATOR IS NOT MODELLED.** It is a post-OT load device, so it belongs
+after this stage, not inside it.
+
+### 63.2 The preamp — `RockerverbPreamp`
+
+```
+guitar in -> 68k grid stopper (1M leak)
+  -> S1  V9   Ra 100k to B2, Rk 1k5 || 10uF          (bypassed)
+  -> C1 1n  -> R30 220k -> [R1 220k || C2 470p] || GAIN-1 1M log
+               with C16 100p bridging the pot's top lug to its WIPER
+  -> S2  V10  Ra 100k to B2 (100p across it), Rk 1k || 10uF
+  -> C13 2n2 -> R31 220k -> R32 470k || GAIN-2 1M log   (the SAME knob)
+  -> S3  V11  Ra 100k to B1 (100p across it), Rk 2k2 || 10uF
+  -> C7 4n7  -> R6 470k -> R5 220k                      (a 0.319 divider)
+  -> S4  V12  Ra 100k to B1, Rk 1k5 UNBYPASSED          (the cold stage)
+  -> FMV tone stack -> VOLUME 1M LINEAR -> the phase inverter's grid
+B1 = 355.18 V, B2 = 331.49 V (solved through the transcribed 10k droppers).
+```
+
+Measured **preamp DC** (identical at 44.1 and 48 kHz):
+
+| stage | Va | Vk | Ip (solver) | Ip (Ohm's law) | plate as % of B+ | rout |
+| --- | --- | --- | --- | --- | --- | --- |
+| S1 | 222.99 V | 1.627 V | 1.0850 mA | 1.0687 mA | 67.8 % | 32.8 k |
+| S2 | 201.91 V | 1.296 V | 1.2958 mA | 1.2828 mA | 61.3 % | 30.8 k |
+| S3 | 259.55 V | 2.104 V | 0.9564 mA | 0.9353 mA | 73.7 % | 35.1 k |
+| S4 | 238.40 V | 1.752 V | 1.1678 mA | 1.1503 mA | 67.6 % | 32.4 k |
+
+**These are ABOVE the project's 0.5–0.9 mA "gain-stage window", and that is
+correct rather than a defect** — the same point §57.3 makes for the OR120's
+driver. A 12AX7 on a **100 k** plate load with a 1–2.2 kΩ cathode from ~340 V is
+the classic British gain stage; the 0.5–0.9 mA window belongs to 220 k-load
+stages. What the test asserts instead is the solver's current against **Ohm's law
+on the transcribed 100 k**, each cathode against its own transcribed resistor, and
+absolute windows on the two dropper voltages (R9 must drop 30–60 V carrying four
+triodes, R42 15–35 V carrying two). The dropper checks are deliberately NOT
+Ohm's-law identities — §57.10 found three bars of exactly that kind that could not
+fail.
+
+Every network is driven from a **PLATE** (rout 30.8–35.1 kΩ). There is no cathode
+follower anywhere in this preamp, which is a real part of why its tone stack is
+softer than a 2204's.
+
+**Discretization check** against each netlist's own complex nodal solve, three
+knob points × 82 Hz…6 kHz for the interstage networks and five knob combinations
+for the stack: worst |error| **0.3022 dB (44.1 kHz) / 0.2524 dB (48 kHz)** for the
+interstage MNAs and **0.5457 / 0.4574 dB** for the tone stack, against a 0.60
+bound that is the bilinear warp figure with margin. The standing §29 limitation
+applies — an analytic reference derived from the same netlist validates the
+DISCRETIZATION and structurally cannot catch a wrong topology. What validates the
+topology here is §63.4.
+
+**THE MID POT IS NOT A RHEOSTAT, and it is transcribed that way.** Both of its
+sections sit between node C and ground, so the resistance C→GND is **25 k at every
+knob position**; what the knob moves is where the 22 n cap TAPS INTO that 25 k. At
+MIDDLE 0 the cap shunts the slope node almost to ground (everything but the treble
+branch is pulled down); at MIDDLE 1 it lands on node C, the canonical FMV
+position. It ships literally, and the test asserts the consequence — MIDDLE moves
+**8.93 dB at 650 Hz** and only **1.85 dB at 20 Hz** — so nobody can quietly
+"tidy" it into a rheostat.
+
+### 63.3 ONE MODELLING DEPARTURE, stated up front
+
+`TriodeStage` conflates its INPUT coupling and its OUTPUT coupling: one
+`(Cc, Rgl)` pair serves both, so a cascade applies every interstage high-pass
+**twice**. In a uniform cascade that is inaudible (the 2204's 22 n into 1 M is
+7 Hz; the OR120's 68 n into 953 k is 2.5 Hz). Here the real interstage caps are
+**1 n into 400 k = 398 Hz**, 2n2 into 540 k = 134 Hz and 4n7 into 690 k = 49 Hz,
+so a doubled corner would be a gross error — a −12 dB/octave rolloff starting at
+400 Hz, on an amp whose whole identity is its low mids.
+
+So every real coupling cap lives **once**, inside the interstage MNA where its
+divider is, and each `TriodeStage` carries a deliberately transparent 1 µF
+coupling with `Rgl` set to the network's real resistive input (which is what loads
+the plate) and `Rg` set to that grid's real series source impedance (the
+transcribed 68 k stopper on S1, the 1 M pots' worst-case Thévenin of 250 k on
+S2/S3, the transcribed 470 k ∥ 220 k = 149.8 k on S4).
+
+**The cost, named:** preamp grid BLOCKING — the slow bias shift as a coupling cap
+charges through grid current — is not modelled in this voice. Grid CONDUCTION
+clamping is (through each grid's real source impedance), and the EL34 grid
+blocking that dominates a cranked amp (§18) is fully present. The real interstage
+τ here are 0.4 / 1.2 / 3.2 ms, so what is lost is fast and bass-dependent rather
+than the 2204's 22 ms "farting". **Do NOT "fix" this by setting `Cc` to the real
+cap — that re-introduces the doubled corner.** The proper fix is independent
+input/output coupling configs on `TriodeStage` (§63.11).
+
+### 63.4 THE BAR, HALF ONE — measurably NOT a re-skinned OR120
+
+The metric is **§57.4's, verbatim**, so the two voices sit on ONE scale: at noon,
+the minimum response across 300–800 Hz relative to the mean of the 100 Hz and
+4 kHz responses. Negative = a mid SCOOP, positive = a mid BUMP. Scale-free, so the
+two stacks' very different insertion losses cannot flatter either one.
+
+The bar rests on a STRUCTURAL difference, because these two amps are the same
+manufacturer, the same output valves and a shared lineage: the OR120's network is
+a **JAMES / passive Baxandall** (two parallel shelving branches, nothing acting on
+the middle) and the Rockerverb's is a **Marshall-lineage FMV** (a slope resistor
+and a treble branch that between them notch the middle). That the modern Orange
+uses a Marshall-family stack is the single most surprising thing the netlist says.
+
+**(a) the tone NETWORKS, at noon, each from its own netlist:**
+
+| | Rockerverb FMV | OR120 James |
+| --- | --- | --- |
+| mid-notch metric @ noon | **−6.01 dB** (a SCOOP) | **+0.75 dB** (a BUMP) |
+| **contrast** | | **6.76 dB** against a **5.0** bar |
+
+dB relative to each network's own 1 kHz:
+
+| f | Rockerverb FMV | OR120 James |
+| --- | --- | --- |
+| 82 Hz | +6.80 | −2.98 |
+| 220 Hz | +2.73 | −1.29 |
+| 440 Hz | −0.99 | −0.27 |
+| 660 Hz | −1.25 | −0.07 |
+| 1 kHz | 0.00 | 0.00 |
+| 2.2 kHz | +2.26 | +0.01 |
+| 5 kHz | +3.06 | +0.01 |
+
+The FMV peaks at BOTH ends and dips in the middle; the James is
+flat-to-slightly-domed through the middle. Note that the Rockerverb's −6.01 dB
+lands within 0.02 dB of the figure §57.4 measures for the actual Marshall FMV
+(−6.03) — which is the point: on this axis the modern Orange is a Marshall and the
+vintage Orange is not.
+
+**Margin, stated plainly: the contrast bar ships at 5.0 against a measured 6.76,
+so 1.76 dB. It was RECORDED, not snugged.** It is deliberately not set just under
+the measurement, because §57.4 shipped 6.0 against 8.35 and a later component
+correction took the measurement to 6.78 — a snugged bound would have failed for a
+reason that was not a regression. The two SIGNS are asserted separately
+(`rvNotch < −3`, `orNotch > 0`) so a change moving both together could not hide.
+
+**(b) the COMPOSED amps, rendered** — both at tone knobs noon, a clean level, the
+same input, deliberately NOT normalized at 1 kHz (the FMV's own notch minimum sits
+near there, so normalizing there would hide the very thing being measured):
+
+| f | Rockerverb (dB re its 660 Hz) | OR120 (dB re its 660 Hz) |
+| --- | --- | --- |
+| 110 Hz | −10.14 | −19.79 |
+| 220 Hz | −3.16 | −10.79 |
+| 330 Hz | −1.56 | −5.86 |
+| 440 Hz | −1.02 | −2.97 |
+| 660 Hz | 0.00 | 0.00 |
+| 1 kHz | +1.98 | +1.78 |
+| 2.2 kHz | +6.14 | +2.94 |
+| 4.4 kHz | +8.47 | +2.53 |
+
+| | Rockerverb | OR120 |
+| --- | --- | --- |
+| composed mid-notch | **−0.72 dB** | **+2.78 dB** |
+| **contrast** | | **3.50 dB** against a **3.0** bar |
+
+**The composed half is the TIGHTER of the two — 0.50 dB of margin — and it is
+reported as such rather than widened.** §63.13's P4 (the GAIN gang broken)
+measures it at **3.11 dB**, which is the composed metric behaving correctly
+rather than being fragile: it is a COMPOSED measurement, so a change to the
+gain structure moves it. That is exactly why the NETWORK half, measured from
+the two netlists with no rendering in it at all, is the half with teeth. The composed figure is shallower than the
+network's because the four-stage preamp's own coupling networks put a large
+top-end tilt on this amp (+8.47 dB at 4.4 kHz against the OR120's +2.53), which
+lifts the reference mean. The network half, measured from the netlists, is the
+half with room in it.
+
+### 63.5 THE BAR, HALF TWO — the MASTER VOLUME decouples drive from level
+
+This is the property an amp with no master **physically cannot have at any
+setting**, which is what makes it the right second half of a bar against a sibling
+that shares this one's power machinery. The OR120 has ONE knob and its power
+section IS the overdrive (§57.5, §46's convention). The Rockerverb's VOLUME sits
+AFTER the tone stack.
+
+Measured LEVEL-MATCHED: both amps bisected onto the same output RMS at the same
+input (0.15 V peak / 220 Hz, tone knobs noon), then their THD compared.
+
+| | knob found | output | THD |
+| --- | --- | --- | --- |
+| Rockerverb | GAIN 0.70, **VOLUME 0.0254** | −20.00 dBFS | **29.75 %** |
+| OR120 | **VOLUME 0.2030** | −20.00 dBFS | **1.89 %** |
+| **ratio at equal level** | | | **15.76× (23.95 dB)** |
+
+**The bar ships at 5× against a measured 15.76× — 3.15× of margin, RECORDED not
+snugged.** The bisection's own level match is asserted first (both within 0.5 dB
+of the target), because the ratio means nothing otherwise.
+
+…and the MECHANISM is asserted separately, so the ratio cannot be produced by an
+amp that is merely dirty everywhere. With GAIN held at 0.70:
+
+| VOLUME | output | THD |
+| --- | --- | --- |
+| 0.010 | −28.08 dBFS | 30.13 % |
+| 0.015 | −24.57 | 30.01 |
+| 0.020 | −22.09 | 29.89 |
+| 0.030 | −18.56 | 29.63 |
+| 0.050 | −14.10 | 29.24 |
+| 0.080 | −10.02 | 29.05 |
+| **0.100** | **−8.19** | **29.26** |
+| 0.150 | −5.68 | 30.40 |
+| 0.200 | −4.90 | 32.26 |
+| 0.300 | −4.79 | 35.49 |
+
+**19.89 dB of level for a THD ratio of 0.971 across VOLUME 0.01 → 0.10.** That is
+a textbook master volume, and it is asserted as one (level span > 15 dB, THD ratio
+in [0.90, 1.10], and THD already > 20 % at the bottom). A pre-stack volume pot —
+the OR120's arrangement, and the §44 defect the Twin had — cannot satisfy it.
+
+**THE LINEAR MASTER, REPORTED NOT FIXED.** Above ~0.15 the level stops moving
+because the power valves are already flat out; the pot's useful range is the
+bottom of its travel, which is what a **linear** 1 M master loaded by a 1 M grid
+leak does. The tone-network law at 1 kHz measures −25.6 / −20.0 / −14.5 / −11.4 /
+−7.3 / −4.3 / 0.0 dB at VOLUME 0.05 / 0.10 / 0.20 / 0.30 / 0.50 / 0.70 / 1.00. The
+assistant coaches 5–15 for a room level rather than apologizing for it (§63.10).
+
+**Breakup vs GAIN**, VOLUME 0.5, the same probe:
+
+| GAIN | THD | RMS |
+| --- | --- | --- |
+| 0.05 | 1.312 % | −47.33 dBFS |
+| 0.10 | 2.429 | −33.45 |
+| 0.15 | 4.818 | −24.43 |
+| **0.20** | **8.098** | −17.23 |
+| 0.30 | 10.102 | −6.66 |
+| 0.40 | 23.662 | −5.47 |
+| 0.50 | 35.950 | −5.24 |
+| 0.70 | 39.255 | −5.26 |
+| 1.00 | 43.660 | −5.44 |
+
+≥5 % THD onset at **GAIN 0.20**, monotone. **That is EARLY, and it is what the
+netlist says rather than something to tune:** this is a four-stage preamp and the
+GAIN pot sits AFTER the first stage, so S1's contribution is there at any knob
+position. For comparison the JCM800 at the same probe onsets at 0.31 (§51) with
+three stages and a COLD second one. The test's window is wide and absolute
+(0.08 < onset < 0.35) — what it forbids is an amp that is either clean at half
+gain or filthy at a tenth of it.
+
+**`kInterstageScale` is an UN-FITTING to 1.0**, for the same reason the OR120's is
+(§57.9): the preamp ends at the VOLUME wiper with the PI's 1 M grid leak already
+stamped into the same matrix, so its output IS the phase inverter's grid voltage
+in volts and there is nothing left for a trim to represent. It was still swept,
+because "the constant is unity" is only defensible if unity is also where the amp
+behaves:
+
+| scale | ≥5 % THD onset (GAIN) | cranked W into 8 Ω (0.15 / 0.30 / 0.50 V in) |
+| --- | --- | --- |
+| 0.05 | 0.35 | 12.2 / 14.1 / 16.4 |
+| 0.10 | 0.30 | 50.8 / 50.9 / 51.1 |
+| 0.25 | 0.25 | 93.9 / 89.1 / 85.4 |
+| 0.50 | 0.20 | 93.0 / 89.9 / 86.1 |
+| **1.00** | **0.20** | **92.5 / 89.7 / 86.2** |
+| 2.00 | 0.15 | 92.4 / 89.9 / 86.6 |
+| 4.00 | 0.10 | 92.3 / 90.1 / 86.3 |
+
+### 63.6 The power section — `RockerverbPowerAmp`
+
+```
+PI: 12AX7 LONG-TAILED PAIR, Ra1 100k / Ra2 120k, Rtail 10k to a -12 V reference
+    B+ = 473.83 V (the main rail behind a 10k dropper)
+    <- global NFB, 47k from the 8 ohm tap with 4k7 to ground (beta = 0.0909),
+       into the SECOND grid. NO presence pot in that leg — this panel has none.
+4x EL34, fixed bias -47 V, 22n/220k grid coupling, Raa 1.7k, solid-state supply
+    -> OT (45 Hz / 14 kHz) -> the 8 ohm tap -> back to the PI
+```
+
+Measured **power-section DC**:
+
+| node | value |
+| --- | --- |
+| EL34 rail / screen | **489.55 V** / 486.10 V |
+| EL34 Ip / Ig2 per tube | **33.89 mA** / 3.45 mA |
+| EL34 plate dissipation | **16.59 W = 66 % of the 25 W rating** |
+| screen drop across the per-tube 1 k | 3.446 V |
+| LTP B+ / Va1 / Va2 | 473.83 V / **390.91 (82.5 %)** / **384.70 (81.2 %)** |
+| LTP tail / Ip1 | 3.719 V / **0.8291 mA** |
+
+Every one of those is inside the project's documented windows (plates 70–85 % of
+B+, 0.5–0.9 mA per triode, the EL34 inside its plate rating) — which is the
+constraint the reconstructed constants were chosen against.
+
+**THE PHASE INVERTER IS A LONG-TAILED PAIR, and its balance is a CALIBRATION where
+the OR120's is a TOPOLOGY.** `Ra2` is asymmetric on purpose: a real LTP with equal
+plate loads does not deliver equal legs, which is audit finding 8's whole subject
+(§45). Swept on this amp's own rail and tail:
+
+| Ra2 | tailRef −10 | −12 | −14 |
+| --- | --- | --- | --- |
+| 100 k | 0.8199 | 0.8280 | 0.8346 |
+| 110 k | 0.8918 | 0.9007 | 0.9081 |
+| **120 k** | 0.9620 | **0.9718** | 0.9800 |
+| 130 k | 0.9703 | 0.9603 | 0.9520 |
+| 140 k | 0.9110 | 0.9014 | 0.8935 |
+| 150 k | 0.8596 | 0.8504 | 0.8428 |
+
+120 k / −12 V ships: balance **0.971988**, legs **−25.4276 / +24.7153**, both
+plates and the standing current in-window (the −14 V column balances marginally
+better and puts Ip1 at 0.926 mA, outside the 0.9 ceiling — the window wins).
+**That is the SAME Ra2 §45's independent sweep landed on for the 2204 — not a
+coincidence and not a copy: same tube, same 10 k tail, a similar B+, so the same
+compensation. Reported.**
+
+The structural contrast against the OR120 is REPORTED, not asserted as the bar,
+because the LTP is an inference rather than a transcription (§63.1):
+
+| property | Rockerverb LTP | OR120 cathodyne (§57.3) |
+| --- | --- | --- |
+| leg balance | **0.971988**, and it took a resistor sweep | **0.999965**, *topological*, no calibration at all |
+| leg gain | **×25.4 / ×24.7** — it AMPLIFIES | ×0.9733 — it cannot |
+| clip mechanism | tail-steering cutoff | compliance (Vk pinned to [0, C+/2]) |
+
+What IS asserted about it: the two legs are **anti-phase** (the signed product of
+the leg gains must be negative — a property a magnitude bar cannot fake), the
+balance clears **0.90** (§45's bar for the 2204), and both legs amplify by ≥ 10×.
+
+**GLOBAL FEEDBACK IS FLAT, and that is the third structural difference.** The
+2204's presence pot lifts its HF by several dB and the OR120's H.F. Boost R-L-C
+peaks 6+ dB at 5.2 kHz; this amp's panel has no presence control, so its loop
+carries no shaping filter at all. Measured loop depth **6.65 dB at 440 Hz**
+(open-loop 0.29442 → closed 0.13689), and **6.45 dB at 220 Hz vs 6.18 dB at
+5 kHz — a spread of 0.26 dB**, asserted under 1.0.
+
+**THE AMP DOES NOT QUITE MAKE ITS RATED 100 W — reported, not tuned away.** The
+composed cranked figures above top out at **93.9 W into 8 Ω**, and the power
+section's own sine ceiling driven directly at the PI grid measures **82.15 W with
+feedback / 84.78 W without**. Both are honest numbers on the same probes §57 used
+(the composed one is peak-derived, so a squarer waveform reads higher than the
+pure-sine ceiling). The §42 criterion "the smallest scale that reaches rated
+power" was therefore **not usable** here either, and unity was justified by the
+sweep above instead. Open item; **do not close it by re-inventing a screen filter,
+softening the grid coupling or raising `kVsupply`** — the same instruction §57.3
+leaves for the OR120's 93 W, and the same suspects.
+
+`kFullScaleSecV = 42.99` is DERIVED by measurement on the composed amp (the §23
+convention — every voice is normalized to its own cranked peak): cranked, a
+220 Hz probe peaks at **0.8999**. The NFB tap reads the real secondary volts,
+never this, so the loop gain is independent of it.
+
+### 63.7 Knob authority — no dead UI
+
+Added for the reason §57.10 found the hard way: the mid-notch metric alone cannot
+see a collapsed pot.
+
+| control | travel | at |
+| --- | --- | --- |
+| BASS | **+9.77 dB** | 82 Hz |
+| MIDDLE | **+8.93 dB** | 650 Hz |
+| TREBLE | **+10.80 dB** | 5 kHz |
+
+GAIN across its travel, measured as preamp output on a 0.01 V input: **−39.7 /
+−12.8 / +4.8 / +18.4 / +21.1 dB** at knob 0.1 / 0.3 / 0.5 / 0.7 / 1.0 — monotone,
+and the span is that of TWO ganged dividers in series.
+
+### 63.8 Antialiasing, DC and the rest
+
+* **Alias floor**, the house composed probe (4186 Hz at 0.3 V into a fully cranked
+  amp — the same stimulus `test_jcm800_power.cpp` and §57.7 use, so the numbers
+  are comparable):
+
+  | factor | 48 kHz | 44.1 kHz |
+  | --- | --- | --- |
+  | 1× | −27.6 dB | −24.6 dB |
+  | 2× | −27.3 | −26.5 |
+  | **4× (shipped)** | **−80.1** | **−52.7** |
+  | 8× | −92.1 | −64.0 |
+
+  **48 kHz passes the −56 dB bar with 24 dB to spare; 44.1 kHz fails it at −52.7
+  and is an XFAIL (`rockerverb-alias-44k1`), not a loosened bound.** This is the
+  SAME defect the OR120 registered in §57.7 (`orange-schematic-alias-44k1`,
+  −50.8 dB at the same rate and factor), and two amps failing the same bar at the
+  same rate — both running per-triode oversampling domains into a separately
+  oversampled power section — is the architecture speaking. It is genuine foldover
+  rather than §54's rail-clipping signature: it improves **11.3 dB going to 8×**
+  and beats 1× by **28.1 dB**. The "4× must beat 1× by ≥ 12 dB" clause stays HARD
+  at both rates. The named fix is one shared oversampling domain around the whole
+  preamp+power cascade — §57.13's own candidate — **never a lower bar**.
+  `clipper_rockerverb_tests` therefore registers a ledger: core ctest **32 → 34
+  entries**, repo ledgers **5 → 6**.
+* **DC offset ON SIGNAL** (§29 / `support/DcOffset.h`), GAIN 0.7 / VOLUME 0.7,
+  220 Hz: **0.2152 % of peak** with a clean input and **0.2157 %** with +0.1 V of
+  DC on the input — the +0.1 V case is the one that makes the assertion able to
+  fail.
+* **reset() + ragged blocking**: a whole-buffer render vs the same render after
+  `reset()` in 128-frame blocks differs by **0.000e+00**; every sample finite.
+* **Rate independence**: −5.236 / −5.237 / −5.242 / −5.243 dBFS over 44.1 / 48 /
+  88.2 / 96 kHz — a spread of **0.007 dB**, THD 35.93–35.95 %.
+* **Latency 360 samples (7.50 ms at 48 kHz)** — four per-stage preamp domains at
+  72 each plus the power section's 72. This is the deepest cascade of any voice
+  here, and it is the second reason the shared-OS-domain slice is worth doing.
+* **CPU**: see §63.12.
+* **Denormals** (§33, ADR 006). The FMV stack's **six** cap companions and each
+  interstage network's up-to-four all rest at exactly zero, so all are guarded;
+  after being driven then silenced for 4 s, `maxAbsRestingState()` measures
+  **exactly 0.0** on the stack and on all three interstage networks. The power
+  section deliberately exposes no accessor, for the reason `Jcm800PowerAmp.h`
+  gives verbatim: every state in it idles at a real operating point.
+
+### 63.9 The cab — REUSED, and decided by measurement
+
+The Rockerverb 100 is a head sold against the same PPC-style 4×12 the OR120 is, so
+this voice ships **no new cab**: it defaults to `orange412` (built-in cab 2, §57.8)
+and the app hints at it exactly as the OR120's does. That is a real decision, and
+the measurement that supports it is §63.4(b): the composed contrast against the
+OR120 is **3.50 dB through the SAME cab**, i.e. the difference between these two
+amps lives entirely in the heads, and a second cab would only add a second,
+unrelated EQ opinion on top of it. Nothing in the native `CabChoice` space moves,
+so §57.11's divergence-at-2 trap is not touched at all.
+
+### 63.10 Wiring — both fronts, and NO new param id
+
+**This voice needs no new parameter.** Its GAIN and its post-tone-stack VOLUME
+mean exactly what the JCM800's GAIN (10) and MASTER (12) mean to a player, and its
+BASS/MIDDLE/TREBLE are the shared tone ids — it is the first Orange in this repo
+with a mid control. §57 gave the F.A.C. a new id because no other voice had a
+six-position switch; here the opposite reasoning applies, and the two together are
+the house rule: **reuse a slot when the FUNCTION matches, take a new one when it
+does not.**
+
+* **C ABI**: voice **5** (`kAmpRockerverb`), cab 2. GAIN → `kAmpParamJcmGain`
+  (10), VOLUME → `kAmpParamJcmMaster` (12), BASS/MIDDLE/TREBLE → 1/2/3,
+  REVERB → 9. The `presence` slot (11) and the F.A.C. (13) never reach it, and it
+  never reads slot 0.
+* **Web**: `params.ts` (`AMP_MODEL_INDEX.rockerverb = 5`), `rig.ts` (`AmpType` +
+  the migration + `AVAILABLE_AMP_TYPES`), `audio.ts`, `Amp.tsx`
+  (`RockerverbFace` — GAIN · BASS · MIDDLE · TREBLE · VOLUME · REVERB),
+  `Board.tsx`, `App.tsx` (the cab hint), `amp.css`. **The accent is the OR120's
+  `--accent-orange`, deliberately** — it is the same manufacturer and the same
+  tolex wink; the identity that matters is the control row.
+* **Native**: `ClipperEngine` (no new `Params` field at all), `PluginProcessor`
+  (`kAmpModelChoices` **appended** — the index is stored in host automation and in
+  saved sessions, so inserting one would silently re-voice every saved rig),
+  `PluginEditor` (`case 5`). `identical_core_test` gains a sixth board case,
+  `TS → Squash → Rocker Verb`, at **0.000e+00** — and that case sets `volume` and
+  `jcmPresence` to non-default values on purpose, because this voice must ignore
+  both and the two renders would diverge if the wrap ever routed them.
+* **Assistant**: `set_amp` `'rockerverb'`, plus a `SYSTEM_PROMPT` block that
+  coaches what actually matters — that GAIN and VOLUME are independent, that the
+  master is LINEAR so 5–15 is a room level, that the amp is gainy enough to crunch
+  by 10–15, and that it has a MID where the OR120 does not.
+
+**The PANEL WORD and the SLOT deliberately disagree in one place, and it is
+documented in three:** the knob printed **VOLUME** binds to the **master** slot,
+because it sits after the tone stack and is a master by function. Same doctrine
+§57.11 records for the OR120 printing GAIN on slot 0 — the label is per voice, the
+slot is not, so rig JSON, testids, host automation and the C ABI are untouched.
+
+**Web spec**: the acceptance bar is NOT reproduced in Playwright, for §57's
+measured reason (the worklet form needs many `OfflineAudioContext`s and Chromium's
+documented silent-render flake makes such a bar a coin flip). The web spec asserts
+the DELIVERY PATH instead — voice 5 reachable, and param id 12 moving the level
+**> 6 dB at a fixed GAIN** (the core measures 19.89 dB) — behind a HARNESS GATE
+that fails first and by name if a render comes back silent.
+
+### 63.12 CPU, and where this voice sits
+
+`clipper-bench`, 8 s riff at 48 kHz in 128-frame blocks, same session and same
+machine (absolute columns are machine-dependent — §35's rule — so the only
+defensible statement is the interleaved comparison):
+
+| unit | × realtime | % of one 48 kHz stream |
+| --- | --- | --- |
+| **rockerverb** | **2.38×** | **42.04 %** |
+| ac30 | 2.74× | 36.51 % |
+| jcm800 | 2.79× | 35.89 % |
+
+The Rockerverb is the most expensive amp in the lineup, and the reason is
+structural rather than wasteful: it is the only voice with **four** oversampled
+triode stages, each in its own 4× domain, feeding a fifth (the power section's).
+That is the same fact behind its 360-sample latency and behind the 44.1 kHz alias
+XFAIL, and the same slice fixes all three.
+
+### 63.13 Perturbation proofs
+
+Patch one constant or one line of topology in a scratch copy, `touch`, rebuild,
+confirm RED, restore FROM THE SCRATCH COPY, `touch`, rebuild, confirm GREEN —
+never `git checkout --` and never `git stash`, both of which have destroyed work
+in this repository.
+
+| # | perturbation | result |
+| --- | --- | --- |
+| P1 | tone-stack slope `kRslope` 39 k → 3.9 k | RED — `orNotch − rvNotch > 5.0`, the network bar |
+| P2 | treble cap `kCt` 560 p → 47 n | RED — `rvNotch < −3.0`, the FMV's own sign |
+| P3 | VOLUME pot `kRV` 1 M → 1 k (a collapsed master) | RED — the level-match gate inside the master-volume bar |
+| P4 | **the GAIN GANG broken** (gang 2 pinned at noon) | RED — the breakup-onset window |
+| P5 | S3→S4 divider `Rgnd` 220 k → 2M2 | **GREEN on the first pass — see below** |
+| P5′ | the same, after the fix | RED — the absolute interstage-divider window |
+| P6 | **LTP made SYMMETRIC** (`Ra2` 120 k → 100 k) | RED — `bal > 0.90` (measures 0.828) |
+| P7 | MID pot made a RHEOSTAT (lower section shorted) | RED — the tone stack vs its own H(jω) |
+| P8 | global NFB disconnected (`kFeedbackBeta` → 0) | RED — the composed mid-notch contrast |
+| P9 | EL34 bias −47 → −56 V (a cold quad) | RED — the plate-dissipation window |
+| P10 | supply dropper R9 10 k → 100 k | RED — the absolute dropper window |
+| — | restore | GREEN |
+
+**P5 IS THE RESULT, not the footnote.** Flattening the transcribed 470 k / 220 k
+divider into S4's grid to 470 k / 2M2 — a 2.6× change in how hard the cold stage
+is driven — left **every bar in the suite GREEN**. The reason is the one §29
+states and §57.10 hit from a different angle: an `H(jω)` check compares a network
+against its OWN netlist and therefore cannot see a wrong component value, and
+every other bar in this suite is either scale-free (the mid-notch metrics) or
+measured somewhere the change happened to land inside a window.
+
+Fixed the way the convention requires — **by adding an ABSOLUTE reference, not by
+narrowing a bar around the perturbation**. Each interstage network's mid-band
+magnitude is now compared against a number **written out in the test from the
+transcribed resistors** rather than read back from its `Config`:
+
+| network | transcribed | measured | window |
+| --- | --- | --- | --- |
+| S1→S2 (R30 220 k · R1 220 k ∥ GAIN 1 M · 470 p · noon wiper) | — | **0.04598** | ±25 % |
+| S2→S3 (R31 220 k · R32 470 k ∥ GAIN 1 M · noon wiper) | — | **0.06626** | ±25 % |
+| S3→S4 (R6 470 k · R5 220 k, no pot) | 220/(35.1+470+220) = **0.3034** | **0.30293** | **±8 %** |
+
+The two GAIN networks carry a pot and a taper, so their windows are loose; the
+fixed divider has nothing free in it, so its window is tight. At `Rgnd` = 2M2 that
+network reads **0.814** and at 22 k it reads **0.042** — both far outside.
+### 63.11 Named follow-ups
+
+* **THE CLEAN CHANNEL** and its footswitch. It needs a netlist; the `.schx` this
+  voice is transcribed from covers the dirty channel only. Do not invent it.
+* **The 44.1 kHz alias floor**, XFAIL `rockerverb-alias-44k1` (§63.8) — the same
+  slice as §57.13's, and now with two amps behind it.
+* **`TriodeStage` independent input/output coupling configs** (§63.3), which would
+  give this voice its preamp grid blocking back without the doubled corner.
+* **The ~93 W ceiling** against the rated 100 W (§63.6).
+* **The Attenuator**, which is a post-OT load device and belongs after the OT.
+* **The pots' taper laws** — the file gives the letter, not the curve; and the
+  VOLUME pot's LINEAR marking is the file's, which is worth confirming against a
+  factory sheet before anyone re-tapers it.
+* A native `rockerverb` snapshot scene for the headless screenshot suite.
+
 ## 64. M13.3 — the "Lumen" optical compressor (the SECOND dynamics voice)
 
 The lineup's second compressor, and deliberately not the first one with different
@@ -13191,3 +13835,4 @@ which is the question a player will actually ask.
 compressor is in no golden rig and touches no other model; the Dyna Comp and the
 noise gate are **bit-identical by render hash** (`clipper-render` renders compared
 byte for byte before and after the slice).
+

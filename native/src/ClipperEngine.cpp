@@ -48,6 +48,7 @@ constexpr int   kAmpJcm800 = 1;  // Params::ampModel value for the JCM
 constexpr int   kAmpTwin = 2;    // Params::ampModel value for the Twin
 constexpr int   kAmpAc30 = 3;    // Params::ampModel value for the AC30
 constexpr int   kAmpOrange = 4;  // Params::ampModel value for the Orange OR120
+constexpr int   kAmpRockerverb = 5;  // Params::ampModel value for the Rockerverb
 }  // namespace
 
 float trimKnobToGain(float knob01) {
@@ -215,6 +216,17 @@ void ClipperEngine::applyParamsToModels() {
     orange_.setParameter(O::PARAM_FAC, p.orangeFac);
     orange_.setParameter(O::PARAM_HF_DRIVE, p.jcmPresence);  // presence slot = HF DRIVE
     orange_.setParameter(O::PARAM_REVERB, p.reverb);
+
+    // Rockerverb 100 (M10.7): NO fields of its own. jcmGain is its GAIN, jcmMaster
+    // its post-tone-stack VOLUME, and bass/middle/treble/reverb the shared ones —
+    // it is the first Orange here with a MID control. No presence of any kind.
+    using RV = clipper::dsp::RockerverbAmp;
+    rockerverb_.setParameter(RV::PARAM_GAIN, p.jcmGain);
+    rockerverb_.setParameter(RV::PARAM_VOLUME, p.jcmMaster);
+    rockerverb_.setParameter(RV::PARAM_BASS, p.bass);
+    rockerverb_.setParameter(RV::PARAM_MID, p.middle);
+    rockerverb_.setParameter(RV::PARAM_TREBLE, p.treble);
+    rockerverb_.setParameter(RV::PARAM_REVERB, p.reverb);
 }
 
 void ClipperEngine::setParams(const Params& p) {
@@ -254,6 +266,7 @@ bool ClipperEngine::chainEditPending() const {
 void ClipperEngine::updateParams(const Params& p) {
     using clipper::dsp::Ac30Amp;
     using clipper::dsp::OrangeAmp;
+    using clipper::dsp::RockerverbAmp;
     using clipper::dsp::AmpModel;
     using clipper::dsp::GoldModel;
     using clipper::dsp::WahModel;
@@ -319,12 +332,15 @@ void ClipperEngine::updateParams(const Params& p) {
         twin_.setParameter(TwinAmp::PARAM_BASS, p.bass);
         ac30_.setParameter(Ac30Amp::PARAM_BASS, p.bass);
         orange_.setParameter(OrangeAmp::PARAM_BASS, p.bass);
+        rockerverb_.setParameter(RockerverbAmp::PARAM_BASS, p.bass);
     }
     if (p.middle != o.middle) {
         amp_.setParameter(AmpModel::PARAM_MIDDLE, p.middle);
         jcm_.setParameter(Jcm800Amp::PARAM_MID, p.middle);
         twin_.setParameter(TwinAmp::PARAM_MID, p.middle);
-        // AC30 top-boost has NO mid control — 'middle' never reaches it.
+        // AC30 top-boost has NO mid control — 'middle' never reaches it. The
+        // Rockerverb's FMV stack DOES have one (M10.7).
+        rockerverb_.setParameter(RockerverbAmp::PARAM_MID, p.middle);
     }
     if (p.treble != o.treble) {
         amp_.setParameter(AmpModel::PARAM_TREBLE, p.treble);
@@ -332,6 +348,7 @@ void ClipperEngine::updateParams(const Params& p) {
         twin_.setParameter(TwinAmp::PARAM_TREBLE, p.treble);
         ac30_.setParameter(Ac30Amp::PARAM_TREBLE, p.treble);
         orange_.setParameter(OrangeAmp::PARAM_TREBLE, p.treble);
+        rockerverb_.setParameter(RockerverbAmp::PARAM_TREBLE, p.treble);
     }
     // BRIGHT feeds clean120 + twin.
     if (p.bright != o.bright) {
@@ -360,12 +377,19 @@ void ClipperEngine::updateParams(const Params& p) {
         twin_.setParameter(TwinAmp::PARAM_REVERB, p.reverb);
         ac30_.setParameter(Ac30Amp::PARAM_REVERB, p.reverb);
         orange_.setParameter(OrangeAmp::PARAM_REVERB, p.reverb);
+        rockerverb_.setParameter(RockerverbAmp::PARAM_REVERB, p.reverb);
     }
 
     // JCM800-only knobs. The presence field is SHARED: it is the JCM's presence AND
     // the AC30's TOP CUT (both are power-amp HF controls, docs §23).
-    if (p.jcmGain != o.jcmGain)         jcm_.setParameter(Jcm800Amp::PARAM_GAIN, p.jcmGain);
-    if (p.jcmMaster != o.jcmMaster)     jcm_.setParameter(Jcm800Amp::PARAM_MASTER, p.jcmMaster);
+    if (p.jcmGain != o.jcmGain) {
+        jcm_.setParameter(Jcm800Amp::PARAM_GAIN, p.jcmGain);
+        rockerverb_.setParameter(RockerverbAmp::PARAM_GAIN, p.jcmGain);  // M10.7
+    }
+    if (p.jcmMaster != o.jcmMaster) {
+        jcm_.setParameter(Jcm800Amp::PARAM_MASTER, p.jcmMaster);
+        rockerverb_.setParameter(RockerverbAmp::PARAM_VOLUME, p.jcmMaster);  // M10.7
+    }
     if (p.jcmPresence != o.jcmPresence) {
         jcm_.setParameter(Jcm800Amp::PARAM_PRESENCE, p.jcmPresence);
         ac30_.setParameter(Ac30Amp::PARAM_TOPCUT, p.jcmPresence);  // reused as TOP CUT
@@ -591,6 +615,8 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     ac30_.prepare(sampleRate_, maxBlock_);
     orange_.setOversampling(kOrangeOversampling);
     orange_.prepare(sampleRate_, maxBlock_);
+    rockerverb_.setOversampling(kOrangeOversampling);
+    rockerverb_.prepare(sampleRate_, maxBlock_);
 
     setPedalOversampling(params_.oversampling);
 
@@ -691,6 +717,12 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
         } else if (p.ampModel == kAmpOrange) {
             // The OR120 is a mono HEAD → dual-mono into the identical cab pair.
             orange_.process(cur, outL, numFrames);
+            for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
+        } else if (p.ampModel == kAmpRockerverb) {
+            // The Rockerverb 100 is a mono HEAD → dual-mono into the identical cab
+            // pair (M10.7). It REUSES the orange412 cab rather than shipping a
+            // second one — see docs §63.9.
+            rockerverb_.process(cur, outL, numFrames);
             for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
         } else {
             amp_.processStereo(cur, outL, outR, numFrames);
@@ -798,6 +830,7 @@ int ClipperEngine::latencySamples() const {
     if (p.ampOn && p.ampModel == kAmpTwin) n += twin_.latencySamples();
     if (p.ampOn && p.ampModel == kAmpAc30) n += ac30_.latencySamples();
     if (p.ampOn && p.ampModel == kAmpOrange) n += orange_.latencySamples();
+    if (p.ampOn && p.ampModel == kAmpRockerverb) n += rockerverb_.latencySamples();
     if (p.ampOn && p.cab) n += kCabPartition;      // cab adds one partition (128)
     n += limiter_.latencySamples();                // lookahead (64)
     return n;

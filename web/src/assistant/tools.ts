@@ -36,7 +36,9 @@ export interface RigController {
   // Never selects 'custom' (that needs a user file upload).
   setCab: (cab: 'clean212' | 'brit412' | 'orange412') => void;
   // M9.4/M10.1/v1.1: swap the amp voice ('clean120' | 'jcm800' | 'twin' | 'ac30').
-  setAmp: (type: 'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange') => void;
+  setAmp: (
+    type: 'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange' | 'rockerverb'
+  ) => void;
   // Chain edits (M6.4). addPedal returns the new instance's chain index.
   addPedal: (type: string, position?: number) => number;
   removePedal: (index: number) => void;
@@ -94,6 +96,18 @@ export const TOOLS = [
       "around 5 kHz at the driver's cathode, not a feedback shelf — the Orange has no " +
       "bright switch, this is it), and 'reverb'. Its panel prints slot 0 as GAIN. It " +
       "IGNORES middle/gain/master/bright/chorus. " +
+      "Rockerverb amp params (only when the Rockerverb is the active amp — see " +
+      "set_amp): it is the one Orange in this rig with BOTH a 'gain' and a 'master', " +
+      "and they are INDEPENDENT — 'gain' sets how dirty (four cascaded valve stages " +
+      "behind one ganged pot) and 'master' sets how loud (a real post-tone-stack " +
+      "volume). That is the whole point of the amp: at the SAME output level it makes " +
+      "about 16x the distortion the OR120 does, so it is the voice to reach for when " +
+      "someone wants saturation at a survivable volume. Its 'master' is a LINEAR pot, " +
+      "so the useful range is the bottom of the travel — 5-15 is a room level, and it " +
+      "stops getting louder above about 20 because the power valves are already flat " +
+      "out. It also has 'bass'/'middle'/'treble' (a full Marshall-lineage stack, so " +
+      "unlike the OR120 it HAS a mid control) and 'reverb' (a real one — it is in the " +
+      "amp's name). It IGNORES volume/presence/fac/bright/chorus. " +
       "Input params: 'trim' — the rig-level INPUT gain BEFORE the pedal " +
       "(0..1 maps to -12..+24 dB, 1/3 = 0 dB). Raise it when the input peak is " +
       "weak (below ~-12 dBFS) so the guitar actually drives the diodes; lower it " +
@@ -247,12 +261,27 @@ export const TOOLS = [
       'F.A.C. rotary (clicks bass and gain away as it climbs) + H.F. BOOST (the presence ' +
       'slot) + REVERB. Reach for it for thick, ' +
       'woolly, midrange-forward British rock and doom/stoner weight — where a JCM cuts, ' +
-      'this one shoves. Pairs with the Orange 4×12. Switching is click-free; the ' +
+      'this one shoves. Pairs with the Orange 4×12. ' +
+      "'rockerverb' — the MODERN Orange (Rockerverb 100, dirty channel): the same " +
+      'maker as the OR120 and the deliberate counterweight to it. FOUR cascaded valve ' +
+      'stages behind one ganged GAIN pot, a Marshall-lineage tone stack (so it HAS a ' +
+      'MIDDLE, and it is mid-SCOOPED where the OR120 is mid-forward — measured, the ' +
+      'two networks sit 6.8 dB apart on the same scale), a real MASTER volume after ' +
+      'the tone stack, and an authentic valve-driven spring REVERB. The master is what ' +
+      'makes it different to play: GAIN and level are independent, so it can be filthy ' +
+      'and quiet — level-matched against the OR120 at the same output it makes about ' +
+      '16x the distortion. Reach for it for modern heavy: doom, sludge, stoner and ' +
+      'anything that wants saturation without the room volume of a cranked ' +
+      'non-master amp. The master is a LINEAR pot so keep it low (5-15). Pairs with ' +
+      'the Orange 4×12, the same cab as the OR120. Switching is click-free; the ' +
       'cab and pedals carry over.',
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['clean120', 'jcm800', 'twin', 'ac30', 'orange'] },
+        type: {
+          type: 'string',
+          enum: ['clean120', 'jcm800', 'twin', 'ac30', 'orange', 'rockerverb'],
+        },
       },
       required: ['type'],
       additionalProperties: false,
@@ -639,6 +668,7 @@ export function executeTool(
       : input.type === 'twin' ? 'twin'
       : input.type === 'ac30' ? 'ac30'
       : input.type === 'orange' ? 'orange'
+      : input.type === 'rockerverb' ? 'rockerverb'
       : 'clean120';
     controller.setAmp(type);
     const chipName =
@@ -646,6 +676,7 @@ export function executeTool(
       : type === 'twin' ? 'Twin Sixty-Five'
       : type === 'ac30' ? 'Thirty'
       : type === 'orange' ? 'Overdrive 120'
+      : type === 'rockerverb' ? 'Rocker Verb'
       : 'Clean 120';
     return {
       content: JSON.stringify({ applied: { amp: type } }),

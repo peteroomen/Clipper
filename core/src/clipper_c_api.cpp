@@ -13,6 +13,7 @@
 #include "clipper/dsp/TwinAmp.h"
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/OrangeAmp.h"
+#include "clipper/dsp/RockerverbAmp.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/Ce1Model.h"
 #include "clipper/dsp/CompModel.h"
@@ -841,6 +842,13 @@ enum AmpModelId {
     kAmpTwin = 2,
     kAmpAc30 = 3,
     kAmpOrange = 4,
+    // M10.7 (docs §63) adds the Orange Rockerverb 100 dirty channel as the SIXTH
+    // voice (index 5), purely additive. It needs NO new param id: its GAIN and its
+    // post-stack VOLUME mean exactly what the JCM800's GAIN (10) and MASTER (12)
+    // mean, and its BASS/MIDDLE/TREBLE are the shared tone ids. The panel WORD for
+    // slot 12 on this amp is "Volume" (the Rockerverb's dirty channel calls its
+    // master that); the SLOT is the master slot because the FUNCTION is a master.
+    kAmpRockerverb = 5,
 };
 
 // The tube amps' fixed internal oversampling. Docs §18/§20/§23 measured 4× as the
@@ -851,6 +859,7 @@ constexpr int kJcmOversampling = 4;
 constexpr int kTwinOversampling = 4;
 constexpr int kAc30Oversampling = 4;
 constexpr int kOrangeOversampling = 4;
+constexpr int kRockerverbOversampling = 4;
 
 // One per-side cab convolver pair (L/R). Two of these live in every AmpChain so a
 // cab change can be BUILT into the spare while the render path keeps using the
@@ -869,6 +878,7 @@ struct AmpChain {
     clipper::dsp::TwinAmp twin;         // Fender blackface Twin (mono combo head)
     clipper::dsp::Ac30Amp ac30;         // Vox AC30 top boost (mono combo head)
     clipper::dsp::OrangeAmp orange;     // Orange OR120 Overdrive (mono head)
+    clipper::dsp::RockerverbAmp rockerverb;  // Orange Rockerverb 100 dirty ch.
     int model = kAmpClean120;
     // M6.3: the amp goes STEREO from the chorus stage on, so the cab IR runs PER
     // SIDE. Two independent CabConvolver instances (same IR) — the wet R side is
@@ -943,6 +953,9 @@ void* amp_create(float sample_rate) {
     // Prepare the Orange up front as well (M10.3) — same lock-free-swap discipline.
     c->orange.setOversampling(kOrangeOversampling);
     c->orange.prepare(sr, 128);
+    // Prepare the Rockerverb up front as well (M10.7) — same discipline.
+    c->rockerverb.setOversampling(kRockerverbOversampling);
+    c->rockerverb.prepare(sr, 128);
     // Load the default IR into BOTH double-buffered pairs. Only the active pair is
     // strictly needed at t=0, but preparing both means every pair is always a valid
     // convolver — amp_commit_cab can never activate an unprepared one, even if a
@@ -969,6 +982,7 @@ void amp_set_model(void* handle, int which) {
              : (which == kAmpTwin)   ? kAmpTwin
              : (which == kAmpAc30)   ? kAmpAc30
              : (which == kAmpOrange) ? kAmpOrange
+             : (which == kAmpRockerverb) ? kAmpRockerverb
                                      : kAmpClean120;
 }
 
@@ -1093,6 +1107,7 @@ void amp_reset(void* handle) {
     c->twin.reset();
     c->ac30.reset();
     c->orange.reset();
+    c->rockerverb.reset();
     for (auto& pair : c->cabs) { pair.l.reset(); pair.r.reset(); }
 }
 
@@ -1134,6 +1149,7 @@ void amp_set_param(void* handle, int param_id, float value) {
     using T = clipper::dsp::TwinAmp;
     using X = clipper::dsp::Ac30Amp;
     using O = clipper::dsp::OrangeAmp;
+    using R = clipper::dsp::RockerverbAmp;
     switch (param_id) {
         case A::PARAM_VOLUME:
             c->amp.setParameter(A::PARAM_VOLUME, value);
@@ -1147,11 +1163,15 @@ void amp_set_param(void* handle, int param_id, float value) {
             c->twin.setParameter(T::PARAM_BASS, value);
             c->ac30.setParameter(X::PARAM_BASS, value);
             c->orange.setParameter(O::PARAM_BASS, value);
+            c->rockerverb.setParameter(R::PARAM_BASS, value);
             break;
         case A::PARAM_MIDDLE:
             c->amp.setParameter(A::PARAM_MIDDLE, value);
             c->jcm.setParameter(J::PARAM_MID, value);
             c->twin.setParameter(T::PARAM_MID, value);
+            // M10.7: the Rockerverb DOES have a mid control (its FMV stack's 25k
+            // pot) — the first Orange in this repo that does.
+            c->rockerverb.setParameter(R::PARAM_MID, value);
             // AC30 top-boost has NO mid control — the 'middle' slot never reaches it.
             break;
         case A::PARAM_TREBLE:
@@ -1160,6 +1180,7 @@ void amp_set_param(void* handle, int param_id, float value) {
             c->twin.setParameter(T::PARAM_TREBLE, value);
             c->ac30.setParameter(X::PARAM_TREBLE, value);
             c->orange.setParameter(O::PARAM_TREBLE, value);
+            c->rockerverb.setParameter(R::PARAM_TREBLE, value);
             break;
         case A::PARAM_BRIGHT:
             c->amp.setParameter(A::PARAM_BRIGHT, value);
@@ -1187,14 +1208,26 @@ void amp_set_param(void* handle, int param_id, float value) {
             c->twin.setParameter(T::PARAM_REVERB, value);
             c->ac30.setParameter(X::PARAM_REVERB, value);
             c->orange.setParameter(O::PARAM_REVERB, value);
+            c->rockerverb.setParameter(R::PARAM_REVERB, value);
             break;
-        case kAmpParamJcmGain:     c->jcm.setParameter(J::PARAM_GAIN, value); break;
+        case kAmpParamJcmGain:
+            c->jcm.setParameter(J::PARAM_GAIN, value);
+            // M10.7: the Rockerverb's GANGED dual GAIN pot — the same meaning to
+            // the player (preamp drive), so the same slot.
+            c->rockerverb.setParameter(R::PARAM_GAIN, value);
+            break;
         case kAmpParamJcmPresence:
             c->jcm.setParameter(J::PARAM_PRESENCE, value);
             c->ac30.setParameter(X::PARAM_TOPCUT, value);  // AC30 reuses the slot as TOP CUT
             c->orange.setParameter(O::PARAM_HF_DRIVE, value);  // Orange: HF DRIVE
             break;
-        case kAmpParamJcmMaster:   c->jcm.setParameter(J::PARAM_MASTER, value); break;
+        case kAmpParamJcmMaster:
+            c->jcm.setParameter(J::PARAM_MASTER, value);
+            // M10.7: the Rockerverb's post-tone-stack VOLUME. The PANEL calls it
+            // Volume; the SLOT is the master slot because the FUNCTION is a master
+            // (docs §63.5). The amp does not listen to slot 0 at all.
+            c->rockerverb.setParameter(R::PARAM_VOLUME, value);
+            break;
         case kAmpParamOrangeFac:   c->orange.setParameter(O::PARAM_FAC, value); break;
         default:
             c->amp.setParameter(param_id, value);
@@ -1215,6 +1248,7 @@ int amp_latency_samples(void* handle) {
     else if (c->model == kAmpTwin) n = c->twin.latencySamples();
     else if (c->model == kAmpAc30) n = c->ac30.latencySamples();
     else if (c->model == kAmpOrange) n = c->orange.latencySamples();
+    else if (c->model == kAmpRockerverb) n = c->rockerverb.latencySamples();
     // Both double-buffered pairs share the 128 partition, so a pending cab change
     // never moves reported latency — but read the ACTIVE pair anyway so this stays
     // correct if a future cab ever uses a different partition size.
@@ -1233,6 +1267,8 @@ void amp_process(void* handle, const float* in_ptr, float* out_ptr,
     else if (c->model == kAmpTwin) c->twin.process(in_ptr, out_ptr, num_frames);
     else if (c->model == kAmpAc30) c->ac30.process(in_ptr, out_ptr, num_frames);
     else if (c->model == kAmpOrange) c->orange.process(in_ptr, out_ptr, num_frames);
+    else if (c->model == kAmpRockerverb)
+        c->rockerverb.process(in_ptr, out_ptr, num_frames);
     else c->amp.process(in_ptr, out_ptr, num_frames);
     if (c->cabOn) c->active().l.process(out_ptr, out_ptr, num_frames);  // in-place ok
 }
@@ -1268,6 +1304,13 @@ void amp_process_stereo(void* handle, const float* in_ptr, float* out_l_ptr,
         // The OR120 is a HEAD into a separate 4x12 — mono, dual-mono into the
         // identical cab pair (M10.3). Natural pairing is the orange412.
         c->orange.process(in_ptr, out_l_ptr, num_frames);
+        for (int i = 0; i < num_frames; ++i) out_r_ptr[i] = out_l_ptr[i];
+    } else if (c->model == kAmpRockerverb) {
+        // The Rockerverb 100 is a HEAD into a separate 4x12 — mono, dual-mono into
+        // the identical cab pair (M10.7). Natural pairing is the orange412: it is
+        // the same PPC412 Orange sells against the OR120, so this voice REUSES that
+        // cab rather than inventing a second one (docs §63.9).
+        c->rockerverb.process(in_ptr, out_l_ptr, num_frames);
         for (int i = 0; i < num_frames; ++i) out_r_ptr[i] = out_l_ptr[i];
     } else {
         c->amp.processStereo(in_ptr, out_l_ptr, out_r_ptr, num_frames);

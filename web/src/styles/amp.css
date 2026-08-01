@@ -85,6 +85,22 @@
   background: color-mix(in srgb, var(--accent-orange) 18%, var(--well));
 }
 
+/* M10.7 Orange Rockerverb 100 face — the SAME accent as the OR120, deliberately:
+   it is the same manufacturer and the same tolex wink, and the identity that
+   matters is the control row (docs §63). */
+.amp[data-amp-type="rockerverb"] {
+  --pedal-accent: var(--accent-orange);
+  --pedal-accent-glow: var(--accent-orange-glow);
+}
+.amp[data-amp-type="rockerverb"] .amp-name { color: var(--accent-orange); }
+.amp[data-amp-type="rockerverb"].on .jewel {
+  background: radial-gradient(circle at 35% 30%, #FFE3C2, var(--accent-orange) 55%, #5A2A00);
+  box-shadow: 0 0 16px var(--accent-orange-glow), 0 0 5px var(--accent-orange-glow);
+}
+.amp[data-amp-type="rockerverb"] .jewel {
+  background: color-mix(in srgb, var(--accent-orange) 18%, var(--well));
+}
+
 /* toggle (bright / cab) — a lever in a carved slot */
 .toggle { display: flex; flex-direction: column; align-items: center; gap: 9px; cursor: pointer;
   background: none; border: none; padding: 0; font: inherit; }

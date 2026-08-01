@@ -27,10 +27,12 @@ const juce::Identifier kCabCustomPath{"customIr"};
 const juce::StringArray kOversampleChoices{"1x", "2x", "4x", "8x"};
 constexpr int kOversampleFactors[] = {1, 2, 4, 8};
 const juce::StringArray kChorusChoices{"Off", "Chorus", "Vibrato"};
-// M9.4/M10.1/M10.2 amp voice: choice index 0 == Clean 120, 1 == JCM800, 2 == Twin,
-// 3 == AC30 (matches Params::ampModel).
+// M9.4/M10.1/M10.2/M10.3/M10.7 amp voice: choice index 0 == Clean 120, 1 == JCM800,
+// 2 == Twin, 3 == AC30, 4 == Overdrive 120, 5 == Rocker Verb (matches
+// Params::ampModel). APPEND ONLY — the index is stored in host automation and in
+// saved sessions, so inserting one would silently re-voice every saved rig.
 const juce::StringArray kAmpModelChoices{"Clean 120", "JCM800", "Twin Sixty-Five",
-                                        "AC30", "Overdrive 120"};
+                                        "AC30", "Overdrive 120", "Rocker Verb"};
 
 // A plain 0..1 knob parameter (the core owns the taper law, so the host sees a
 // linear normalized position — identical to the web knobs).

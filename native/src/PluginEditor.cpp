@@ -625,7 +625,7 @@ void ClipperAudioProcessorEditor::updateAutoScroll() {
 
 void ClipperAudioProcessorEditor::updateAmpFace() {
     auto* mp = proc_.apvts.getParameter(pid::ampModel);
-    ampModel_ = juce::jlimit(0, 4, (int)(mp->convertFrom0to1(mp->getValue()) + 0.5f));
+    ampModel_ = juce::jlimit(0, 5, (int)(mp->convertFrom0to1(mp->getValue()) + 0.5f));
 
     // Hide the whole superset, then re-show per voice.
     for (NeuKnob* k : {&volume_, &bass_, &middle_, &treble_, &presence_, &master_, &gain_,
@@ -702,6 +702,27 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
             show(presence_, "H.F. Boost", ampAccent_);  // pid::presence, printed H.F. BOOST
             show(reverb_, "Reverb", ampAccent_);
             ampPrimaryKnobs_ = {&volume_, &bass_, &treble_, &fac_, &presence_, &reverb_};
+            break;
+        case 5:  // Rockerverb "Rocker Verb" — orange. Gain Bass Mid Treble Volume Reverb.
+            // The MODERN Orange (docs §63), and every difference from case 4 above is
+            // a CIRCUIT difference: it HAS a Mid (a Marshall-lineage FMV stack, where
+            // the OR120's James network has none) and it HAS a master — the knob
+            // printed VOLUME is pid::master, because it sits AFTER the tone stack and
+            // is a master by function. It has no F.A.C., no presence of any kind and
+            // no bright switch. The PARAM IDS are the shared amp slots, so the panel
+            // wording never touches automation or saved state.
+            ampWordmark_ = "Rocker Verb";
+            ampEyebrow_ = juce::String::fromUTF8("Head Nº6 · One-Hundred");
+            ampAccentId_ = skin::AccentId::Orange;
+            ampAccent_ = skin::accent(ampAccentId_);
+            showBright_ = false;
+            show(gain_, "Gain", ampAccent_);
+            show(bass_, "Bass", ampAccent_);
+            show(middle_, "Mid", ampAccent_);
+            show(treble_, "Treble", ampAccent_);
+            show(master_, "Volume", ampAccent_);  // pid::master — printed VOLUME here
+            show(reverb_, "Reverb", ampAccent_);
+            ampPrimaryKnobs_ = {&gain_, &bass_, &middle_, &treble_, &master_, &reverb_};
             break;
         case 3:  // AC30 "Thirty" — copper. Vol Bass Treble Cut Reverb
             ampWordmark_ = "Thirty";

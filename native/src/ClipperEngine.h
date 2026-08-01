@@ -86,6 +86,7 @@
 
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/OrangeAmp.h"
+#include "clipper/dsp/RockerverbAmp.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
@@ -291,8 +292,8 @@ struct Params {
     int   chain[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     int   chainLength = 2;
 
-    // Amp voice (M9.4/M10.1/M10.2/M10.3): 0 = Clean 120, 1 = JCM800, 2 = Twin,
-    // 3 = AC30, 4 = Orange OR120.
+    // Amp voice (M9.4/M10.1/M10.2/M10.3/M10.7): 0 = Clean 120, 1 = JCM800,
+    // 2 = Twin, 3 = AC30, 4 = Orange OR120, 5 = Orange Rockerverb 100.
     // Selects which head process() drives; all are always kept current so a live
     // switch is instant.
     int   ampModel = 0;
@@ -326,6 +327,12 @@ struct Params {
     // CUT). The ONE thing it needs of its own is the F.A.C. rotary: a 0..1 knob
     // the core snaps to the nearest of six detents.
     float orangeFac = 0.2f;
+
+    // M10.7 Orange Rockerverb 100 (docs §63): NO new fields at all. Its GAIN rides
+    // jcmGain and its post-tone-stack VOLUME rides jcmMaster — the same MEANING in
+    // both amps, which is the house reuse rule; its BASS/MIDDLE/TREBLE are the
+    // shared tone fields (it is the first Orange here with a mid) and its reverb is
+    // the shared one. It has no presence control, so jcmPresence never reaches it.
 
     // Nonlinear-stage oversampling for the dirt pedals (1/2/4/8, default 4).
     int oversampling = 4;
@@ -487,6 +494,7 @@ private:
     clipper::dsp::TwinAmp twin_;      // Fender blackface Twin (mono combo, M10.1)
     clipper::dsp::Ac30Amp ac30_;      // Vox AC30 top boost (mono combo, M10.2)
     clipper::dsp::OrangeAmp orange_;  // Orange OR120 Overdrive (mono head, M10.3)
+    clipper::dsp::RockerverbAmp rockerverb_;  // Rockerverb 100 dirty ch. (M10.7)
     // THE DOUBLE-BUFFERED CAB. cab_[pair][0] is the left side, cab_[pair][1] the
     // right. Exactly one pair is live at a time; the message thread only ever
     // touches the other one. Both are plain members, so the "swap" is an index and

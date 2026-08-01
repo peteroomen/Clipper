@@ -122,6 +122,9 @@ EMCC_ARGS=(
     "$CORE_DIR/src/dsp/OrangePreamp.cpp"
     "$CORE_DIR/src/dsp/OrangePowerAmp.cpp"
     "$CORE_DIR/src/dsp/OrangeAmp.cpp"
+    "$CORE_DIR/src/dsp/RockerverbPreamp.cpp"
+    "$CORE_DIR/src/dsp/RockerverbPowerAmp.cpp"
+    "$CORE_DIR/src/dsp/RockerverbAmp.cpp"
     -I "$CORE_DIR/include"
     -isystem "$WDF_INC"
     -O3

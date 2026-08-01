@@ -333,6 +333,11 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   // presence slot as H.F. BOOST, all sent above; F.A.C. is its own id and is sent
   // with the JCM block below.
   else if (opts.ampType === 'orange') engine.setAmpModel('orange');
+  // M10.7: the Orange Rockerverb 100 is voice 5. It needs NO new id — its GAIN and
+  // its post-stack VOLUME ride the JCM's gain/master slots and its BASS/MIDDLE/
+  // TREBLE the shared tone ids, all sent above. It has no presence control, so id
+  // 11 never reaches it.
+  else if (opts.ampType === 'rockerverb') engine.setAmpModel('rockerverb');
   engine.setAmpBypass(!opts.ampEngaged);
 
   // Cab: the worklet's amp_create loads the Clean 2x12 by default. Apply the
