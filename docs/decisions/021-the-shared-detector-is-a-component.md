@@ -84,3 +84,31 @@ precedent: when M13.3 arrives, if the optical voice needs something
 `SidechainDetector` does not offer, the answer is still to report it and correct the
 component — not to grow it a parameter per voice until it is a union of three
 models.
+
+## 2026-08-01 — the prohibition was exercised, and it held (ADR 023)
+
+The next thing to reach for this component was not M13.3 but the wah (§58), the
+repo's last remaining separate envelope follower and a follow-up named in this
+ADR's own text. **The prohibition above is exactly what bound that slice, and the
+outcome is a REFUSAL rather than a widening.**
+
+`SidechainDetector` is a **threshold** detector — measured, open loop, as the
+input dB range from 10 % to 90 % of the rail: **1.950 dB** on M13.1's component
+values, **2.384 dB** on M13.6a's, against **19.085 dB and no threshold** for the
+wah's one-pole on `|x|`. Both existing consumers *want* the steepness (the
+compressor closes a feedback loop around it — §59's 216:1 vs 3.3:1; the gate
+feeds it to a comparator and §61.4 builds a 40 dB dB-linear threshold on it). A
+wah has no gain to reduce, so it is feed-forward by necessity and needs the other
+thing. Making both fit would have required a `rectifierKind` /
+`asymmetricAttack` axis whose two settings share no component — the union of
+three models, named above.
+
+**It was decided by building the substitution, not by comparing block diagrams**,
+and that is the procedural rule this leaves behind for M13.3: every §58.6 AUTO
+number regressed (full-SENSE sweep 1.534 → 0.958 octaves, failing §58's own bar;
+a 0.10 V pick moves the filter 0.000 octaves; time-to-peak stops being
+level-independent; `maxAbsRestingState()` exactly 0.0 → 2.675e-13, because the
+two designs sit on **opposite sides of ADR 006's scope rule**). Details in docs
+**§58.8**; the decision in **ADR 023**. The refusal carries a
+perturbation-proven test (`testFollowerLevelLaw`) so it is not only prose, and
+this component's header now states the threshold property up front.
