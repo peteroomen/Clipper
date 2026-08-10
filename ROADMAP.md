@@ -636,8 +636,66 @@ Gold/Myth transparent-OD territory already shipped. The *combo* is M10.8.
 
 **Standing risk this expansion sharpens:** there is still **no undo path** for
 removing a pedal, and no preset system. At six pedals that is an annoyance; at
-fifteen it is a liability. `feat/undo-ring` exists as a branch — land it before
-the board gets much longer.
+fifteen it is a liability. (An earlier revision of this line claimed
+`feat/undo-ring` already existed as a branch — it does not, on origin or
+locally. The work is unstarted.) Land it before the board gets much longer.
+
+### M14 — The assistant on native *(L, phased — planned 2026-08-10)*
+
+**The gap:** the tone assistant has never existed in the plugin. It is not a
+deferred phase-2 item, it was never recorded at all — `native/` contains **zero**
+references to the assistant, the proxy, or Anthropic. Today the feature is
+web + Electron only: ~2,200 lines of TypeScript in `web/src/assistant/`
+(`client.ts` / `prompt.ts` / `tools.ts` / `history.ts`) plus the zero-dependency
+Node proxy in `server/`. So the plugin — the thing you actually record through —
+is the one surface with no tone coach.
+
+**The decision that shapes the slice (owner, 2026-08-10): the plugin talks to
+`api.anthropic.com` DIRECTLY with a BYO key.** The alternative — requiring the
+desktop proxy on `127.0.0.1` — was rejected because a VST3 running inside a DAW
+cannot assume the Electron app is also running, which would make the assistant
+absent exactly where it is most wanted. **This needs an ADR**, because it
+contradicts the standing rule in CLAUDE.md's env table (`ANTHROPIC_API_KEY` is
+"**server-side only**, never shipped to the browser"). That rule was written for
+a browser context and does not automatically transfer to a native binary the
+user installed themselves — but the amendment must be explicit, not assumed.
+Key storage follows the precedent visual pass 3 set for the theme: a
+`juce::PropertiesFile` outside the APVTS at mode `0600`, so a key can never
+reach host automation or a saved session.
+
+**What is shareable and what is not.** The shape is more favourable than the
+line count suggests: `SYSTEM_PROMPT` is a **single** template literal and `TOOLS`
+is a **declarative** array of seven tools, so both can be extracted to data files
+that the web and the plugin embed from one source — which is what keeps the
+coaching identical on both fronts, the same way the DSP core is shared. What
+cannot be shared is `executeTool`'s allowlist / clamp / dispatch layer: it is
+written against a `RigController` interface over the web rig, and native needs
+its own implementation against the APVTS. **That re-implementation is the risk
+item** — the tool surface is the best-defended boundary in the codebase
+(CLAUDE.md: "keep it that way") and a second executor is a second place for a
+clamp to be missed. It gets the same param-allowlist + range-clamp + reject-
+non-finite treatment, tested directly.
+
+Phase it, because this is an L and the chat UI is independent of the transport:
+
+1. **M14.1 — Shared prompt/tool data + the C++ client** *(M)* — extract
+   `SYSTEM_PROMPT` and the `TOOLS` schema to shared data consumed by both front
+   ends (web keeps its current behaviour **byte-identically** — that is the
+   acceptance bar, and the existing `history` / `server` node suites are the
+   guard). Add an HTTPS + SSE client on a background thread, the tool-use loop,
+   and the APVTS-backed executor with its own clamp tests. **No UI.** Proven by a
+   console target in the `clipper_*_test` house style, run against a real key:
+   "give me a tighter rhythm tone, less saturated" must produce tool calls that
+   land on the plugin's parameters and leave every value in range.
+2. **M14.2 — The chat UI in the editor + key storage** *(M)* — where the
+   conversation lives in a fixed-size skeuomorphic board editor is a genuine
+   design question, not a detail; the web's "applied chip" pattern is the
+   reference. Plus the key-entry affordance and the `PropertiesFile` store.
+
+**Explicitly NOT in this milestone:** replacing the Node proxy (Electron keeps
+it), streaming assistant edits into host automation lanes, and any growth of the
+tool surface — M6's standing rule holds, the assistant gets smarter through
+prompting and rig-state context, not more tools.
 
 ### Parked (unordered)
 
@@ -686,8 +744,12 @@ the board gets much longer.
   native engine is one-instance-per-type; the options and a recommendation are
   written up in `docs/DEVELOPMENT.md` → **Duplicate pedal instances**. See
   `docs/DEVELOPMENT.md` → **Native pedal-board parity**. Remaining phase-2 native
-  work (the **tuner**, **duplicate instances**, a **dark theme** for the native
-  editor, CLAP) stays parked here.
+  work (the **tuner**, **duplicate instances**, CLAP) stays parked here. The
+  **dark theme** came off this list — it shipped in visual pass 3 (2026-07-31),
+  leaving only a Linux OS-theme reader, since JUCE 8.0.4's
+  `Desktop::isDarkModeActive()` has no X11 implementation. **The assistant is
+  NOT parked here** — it was missing from this list entirely and is now
+  **M14**, above.
 - **Riff integration** — Clipper's rig as Riff's practice-tone engine; the
   assistant patterns already converge (both grew an "applied chip" chat UI).
 
