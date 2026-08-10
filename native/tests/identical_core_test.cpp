@@ -58,6 +58,7 @@
 #include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/OptoModel.h"
+#include "clipper/dsp/VibeModel.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/OutputLimiter.h"
 #include "clipper/dsp/RatModel.h"
@@ -341,6 +342,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     CompModel comp;      // the "Squash" OTA compressor (M13.1)
     GateModel gate;      // the "Curfew" noise gate (M13.6a)
     OptoModel opto;      // the "Lumen" optical compressor (M13.3)
+    VibeModel vibe;      // the "Swirl" Uni-Vibe (M13.5)
     DelayModel delayFx;  // the "Echoman" BBD analog delay (M13.4)
     AmpModel amp;        // Clean 120
     Jcm800Amp jcm;       // JCM800 head
@@ -374,6 +376,9 @@ void renderReference(const Params& p, const std::vector<float>& in,
     opto.setParameter(OptoModel::PARAM_PEAK_REDUCTION, p.optoPeakReduction);
     opto.setParameter(OptoModel::PARAM_MODE, p.optoMode);
     opto.setParameter(OptoModel::PARAM_GAIN, p.optoGain);
+    vibe.setParameter(VibeModel::PARAM_SPEED, p.vibeSpeed);
+    vibe.setParameter(VibeModel::PARAM_INTENSITY, p.vibeIntensity);
+    vibe.setParameter(VibeModel::PARAM_MODE, p.vibeMode);
     delayFx.setParameter(DelayModel::PARAM_DELAY, p.delayTime);
     delayFx.setParameter(DelayModel::PARAM_FEEDBACK, p.delayFeedback);
     delayFx.setParameter(DelayModel::PARAM_BLEND, p.delayBlend);
@@ -439,6 +444,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     comp.prepare(kFs, kBlock);
     gate.prepare(kFs, kBlock);
     opto.prepare(kFs, kBlock);
+    vibe.prepare(kFs, kBlock);
     delayFx.prepare(kFs, kBlock);
     amp.prepare(kFs, kBlock);
     // The JCM runs at its fixed 4x internally (set BEFORE prepare so its stages size
@@ -457,6 +463,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     muff.setOversampling(p.oversampling);
     gold.setOversampling(p.oversampling);
     opto.setOversampling(p.oversampling);
+    vibe.setOversampling(p.oversampling);
     // (the phaser has no oversampler — it is linear)
 
     const std::vector<float> ir = generateDefaultCab2x12IR(kFs);
@@ -491,6 +498,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
                 case clipper::native::PEDAL_COMP:   comp.process(cur, other, n); break;
                 case clipper::native::PEDAL_GATE:   gate.process(cur, other, n); break;
                 case clipper::native::PEDAL_OPTO:   opto.process(cur, other, n); break;
+                case clipper::native::PEDAL_VIBE:   vibe.process(cur, other, n); break;
                 case clipper::native::PEDAL_DELAY:  delayFx.process(cur, other, n); break;
                 default: continue;
             }
@@ -541,6 +549,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
             // The gate is not oversampled: zero group delay, like the phaser.
             case clipper::native::PEDAL_GATE: break;
             case clipper::native::PEDAL_OPTO: pedalLatency += opto.latencySamples(); break;
+            case clipper::native::PEDAL_VIBE: pedalLatency += vibe.latencySamples(); break;
             case clipper::native::PEDAL_DELAY: pedalLatency += delayFx.latencySamples(); break;
             default: break;  // the phaser is linear — no group delay
         }
@@ -587,6 +596,15 @@ void renderPlugin(const Params& p, const std::vector<float>& in,
     set(optoPeakReduction, p.optoPeakReduction);
     set(optoMode, p.optoMode);
     set(optoGain, p.optoGain);
+    // M13.5: the Uni-Vibe. Pushed explicitly for the same reason as the opto —
+    // its board case moves all THREE slots away from their APVTS defaults, and
+    // slot 2 (MODE) is a DISCRETE control whose two positions are different
+    // topologies, so a plugin that never delivered it would render the wrong
+    // pedal and every other case here would still pass.
+    set(vibeOn, p.vibeOn ? 1.0f : 0.0f);
+    set(vibeSpeed, p.vibeSpeed);
+    set(vibeIntensity, p.vibeIntensity);
+    set(vibeMode, p.vibeMode);
     // The BOARD is state, not a parameter: push it through the processor's chain API
     // (which also publishes the packed snapshot the audio thread reads).
     {
@@ -728,6 +746,35 @@ Params optoBoardParams() {
     return p;
 }
 
+// NATIVE PARITY case 9 (M13.5) — a board carrying the "Swirl" Uni-Vibe:
+// RAT -> Swirl -> JCM800. Two things make this case worth its runtime rather than
+// being a ninth copy of the same shape. (1) It is the second pedal to reach this
+// test that uses all three slots, and its slot 2 (MODE) selects between two
+// different TOPOLOGIES (dry+wet against wet alone), so a plugin that dropped it
+// would render an audibly different pedal while every other case still passed.
+// (2) It carries a LAMP with a real thermal state and four photocells with their
+// own, so the two sides have to agree on a multi-hundred-millisecond history, not
+// just on a filter's last two samples.
+Params vibeBoardParams() {
+    Params p;
+    p.inputTrim = 0.5f;
+    p.chain[0] = clipper::native::PEDAL_RAT;
+    p.chain[1] = clipper::native::PEDAL_VIBE;
+    p.chainLength = 2;
+    p.ratOn = true;   p.ratDist = 0.35f; p.ratFilter = 0.5f; p.ratLevel = 0.6f;
+    // Every slot away from its APVTS default, MODE in the VIBRATO position.
+    p.vibeOn = true;  p.vibeSpeed = 0.62f; p.vibeIntensity = 0.85f; p.vibeMode = 1.0f;
+    p.optoOn = true;  // ON, but NOT on the board — must be inaudible
+    p.compOn = true;  // likewise
+    p.goldOn = true;  // likewise
+    p.ampModel = kAmpJcm800;
+    p.ampOn = true;  p.volume = 0.5f; p.bass = 0.5f; p.middle = 0.5f; p.treble = 0.6f;
+    p.jcmGain = 0.45f;  p.jcmMaster = 0.4f;
+    p.bright = false; p.cab = true;
+    p.chorusMode = 0;
+    return p;
+}
+
 bool runCase(const char* label, const Params& p, const std::vector<float>& in) {
     std::printf("\n--- case: %s ---\n", label);
 
@@ -826,6 +873,8 @@ int main() {
     ok &= runCase("Board: TS -> Squash -> Rocker Verb", rockerverbBoardParams(), in);
     // M13.3: the Lumen optical compressor on the native board.
     ok &= runCase("Board: Lumen -> RAT -> Twin", optoBoardParams(), in);
+    // M13.5: the Uni-Vibe on the native board.
+    ok &= runCase("Board: RAT -> Swirl -> JCM800", vibeBoardParams(), in);
 
     if (ok) {
         std::printf(

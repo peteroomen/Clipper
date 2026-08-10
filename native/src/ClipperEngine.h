@@ -95,6 +95,7 @@
 #include "clipper/dsp/DelayModel.h"
 #include "clipper/dsp/GateModel.h"
 #include "clipper/dsp/OptoModel.h"
+#include "clipper/dsp/VibeModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/WahModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
@@ -147,7 +148,14 @@ enum PedalType : int {
     // ARE the packed-snapshot encoding and the APVTS chain-order state, so
     // renumbering one silently re-points every saved board.
     PEDAL_OPTO = 11,
-    PEDAL_TYPE_COUNT = 12,
+
+    // M13.5: the "Swirl" UNI-VIBE — the board's second phaser, a lamp lighting
+    // four photocells across four STAGGERED allpass stages. APPENDED at 12 for
+    // the same reason as every type above it: these integers ARE the packed-
+    // snapshot encoding and the APVTS chain-order state, so renumbering one
+    // silently re-points every saved board.
+    PEDAL_VIBE = 12,
+    PEDAL_TYPE_COUNT = 13,
 };
 
 // Each type is instantiable once, so the board can never be longer than this.
@@ -270,6 +278,14 @@ struct Params {
     float optoPeakReduction = 0.5f;
     float optoMode = 0.0f;
     float optoGain = 0.62f;
+
+    // M13.5 the Uni-Vibe. Defaults MUST match VIBE_KNOB_DEFAULTS in web/src/rig.ts
+    // and VibeModel's constructor. MODE is DISCRETE (< 0.5 chorus, >= 0.5 vibrato)
+    // but reaches the model as a smoothed weight, never a branch (docs §62).
+    bool  vibeOn = true;
+    float vibeSpeed = 0.35f;
+    float vibeIntensity = 0.70f;
+    float vibeMode = 0.0f;
 
     // "Echoman" BBD analog delay (M13.4) — the lineup's FIRST DELAY, and a new
     // DSP family. Three real knobs, the shared positional slots reading as
@@ -466,7 +482,7 @@ private:
     // at a declick fade zero, so the audio never sees a mid-block reorder.
     int  activeChain_[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     int  activeLength_ = 2;
-    bool activeOn_[PEDAL_TYPE_COUNT] = {true, false, true, true, true, true, true, true, true, true, true, true};
+    bool activeOn_[PEDAL_TYPE_COUNT] = {true, false, true, true, true, true, true, true, true, true, true, true, true};
 
     // Declick state machine (mirrors the worklet's): a linear ramp position in
     // [0,1] mapped through a raised cosine, ~6 ms each way.
@@ -487,6 +503,7 @@ private:
     clipper::dsp::CompModel comp_;    // the "Squash" OTA compressor (M13.1)
     clipper::dsp::GateModel gate_;    // the "Curfew" noise gate (M13.6a)
     clipper::dsp::OptoModel opto_;    // the "Lumen" optical compressor (M13.3)
+    clipper::dsp::VibeModel vibe_;    // the "Swirl" Uni-Vibe (M13.5)
     clipper::dsp::Ce1Model  ce1_;     // the CE-1 "Ensemble" chorus (M13.7)
     clipper::dsp::DelayModel delay_;  // the "Echoman" BBD analog delay (M13.4)
     clipper::dsp::AmpModel amp_;      // Clean 120

@@ -14413,3 +14413,332 @@ Left named rather than done, in the order a future slice should take them:
 4. **A `--no-slew` flag on `clipper-render`**, if a listening A/B is ever wanted;
    deliberately not added here to keep the diff out of a file a parallel slice is
    editing.
+
+---
+
+## 67. M13.5 — the "Swirl" Uni-Vibe (the board's SECOND phaser)
+
+**Date:** 2026-08-10 · **Branch:** `feat/univibe` · **ADR:** 026 ·
+**Plan:** `docs/work/2026-08-10-univibe.md`
+
+Pedal type `vibe`, slot **12**, AMBER accent, wordmark "Swirl",
+`MODULATION Nº9 · PHOTOCELL`. Three controls — SPEED / INTENSITY / MODE — wired
+end to end in one slice (core, C ABI `vibe_*`, worklet, web face + tokens +
+assistant, native engine + APVTS + `PedalCard`, and `identical_core_test`'s
+plugin driver). **ALL FIVE GOLDENS UNCHANGED at ±0.00, nothing blessed** — a new
+voice is in no golden rig and this slice touches no shared model.
+`PhaserModel` is **bit-identical** (verified by render hash). Core ctest
+**35 → 36 entries**; repo XFAIL ledgers unchanged at **6** (this suite registers
+none — zero known-bad properties).
+
+### 67.1 The research channel, and the SOURCED / RECONSTRUCTED table
+
+**NO SCHEMATIC AND NO NETLIST WAS READ.** Re-probed at the top of the slice:
+
+| Host | Result |
+| --- | --- |
+| `geofex.com` — R.G. Keen, "The Technology of the Univibe" (the canonical article) | **403 at the egress proxy**, `curl` and `WebFetch` alike |
+| `montagar.com/~patj/univibe.txt` — the parts list | **403 at the egress proxy** |
+| GitHub code search (`.asc` / `.sch` netlists) | **Unavailable** — this session's GitHub access is repository-scoped, so even the channel §59/§63 leaned on was closed |
+
+So the channel was **search-result extracts only**: the §57 / §61 / §64 situation,
+not the §59 / §63 one. §57's rule applies verbatim to every RECONSTRUCTED row
+below — **do not re-tune any of them toward a sound; find the schematic.**
+
+**RULE ZERO (§63.14) held.** Three Uni-Vibe implementations exist on GitHub
+(`clevelandmusicco/HothouseExamples`, `Generous-Corp/pulp`,
+`rpowell5064/guitar-amp-mod`). They are other people's models. Nothing in this
+slice is tuned toward, compared against, or copied from any of them; none was
+opened.
+
+**SOURCED** (search-extract grade — weaker than a netlist, and labelled as such):
+
+| # | Fact | What it buys |
+| --- | --- | --- |
+| S1 | The four phase-shift stages use **STAGGERED** capacitors: **0.015 µF · 0.22 µF · 470 pF · 0.0047 µF**. **The sources also state that the reason for these particular values is not known.** | The whole acceptance bar. Shipped literally; asserted literally. No rationale is invented for them. |
+| S2 | One **miniature incandescent lamp** and **four LDRs** inside a reflective box | The lamp is a real device with thermal mass; the four cells see one light |
+| S3 | The phase shifter is built from **TRANSISTOR** stages, not op-amps, and their "imperfections" are part of the sound | **NOT MODELLED** — the largest named gap on this voice |
+| S4 | The LFO is a **phase-shift oscillator** ("implemented oddly") | A sine, so the asymmetry cannot come from the LFO shape |
+| S5 | The mixer sums buffered DRY through a **100 kΩ** and WET through another **100 kΩ** (equal weights); the CHORUS/VIBRATO switch selects the purely wet phase-line output or that ~equal mix | The mixer weights, and the meaning of MODE |
+| S6 | LDR range **10 kΩ…100 kΩ under illumination**, **5 MΩ…20 MΩ** dark | **Derives the lamp's bias and swing** — see §67.2 |
+| S7 | Speed spans roughly **0.1 Hz** to **7.6 Hz** | The knob law, and the refutation in §67.3 |
+| S8 | INTENSITY is an **amplitude control**: a fraction 0…1 of the LFO output into the **lamp driver** | INTENSITY is not a wet/dry mix — see §67.5 |
+
+**RECONSTRUCTED, and named as such:** the phase stage as an ideal first-order
+allpass (S3's transistor imperfections are the gap); the **entire lamp card**
+(`LampSpec` — structure from filament thermodynamics, every constant this model's
+own); and the photocell's **dynamic** constants (§67.3).
+
+### 67.2 What S6 + S8 buy: the lamp's bias and swing are DERIVED
+
+S6 publishes the cell's illuminated range. S8 says INTENSITY scales the LFO into
+the lamp driver. Together they fix the lamp's two drive endpoints without a
+choice being made: the cell must sit at 100 kΩ at the dim end and 10 kΩ at the
+bright end, so `LampDrive::driveForSteadyBrightness` — the closed-form inverse of
+the filament law — says what drive holds each. Measured:
+
+```
+lamp drive endpoints: dim 0.318097 V, bright 1.000000 V   (normalized)
+rendered cell excursion at SPEED min, INTENSITY 1.0:  10 001 … 99 462 Ω
+```
+
+against the published 10 k…100 k. It cannot be exact — the filament does not
+quite reach steady state even at 0.1 Hz — and **that is the voice**.
+`testCellRangeIsThePublishedOne` is the bar that stops this derivation drifting
+into a fit; perturbation **P5** (rLight 10 k → 30 k) takes it red.
+
+### 67.3 The one place a published Uni-Vibe figure would have changed the answer
+
+`OptoCell`'s default card is pinned to the LA-2A's published 10 ms attack and
+0.5–5 s complete release. **Reusing it unchanged is REFUTED by S7**: a cell whose
+slow branch releases over 180 ms…2.7 s cannot deliver "intense vibrato" at 7.6 Hz,
+whose half period is 65.8 ms. That is a published-behaviour refutation, not a
+taste call.
+
+So the release is pinned by the same published figure using the standard
+first-order criterion — the modulation must survive to at least half depth
+(−6.02 dB) at S7's top speed, i.e. `2π·f·τ = √3 → τ = 36.3 ms`. With the trap
+occupancy this pedal actually runs at (§67.8), `tauSlowReleaseSeconds = 0.012`
+and `slowReleaseMemMult = 3.0` give an effective **34.8 ms**. The attack and the
+fast branch keep the device card's own SHAPE, scaled to the same span;
+`fastShare` and `trapHalfFraction` are the device card's, unchanged. **No Uni-Vibe
+LDR speed figure was reachable, so this row is RECONSTRUCTED and is the weakest
+thing on the voice after the lamp.**
+
+### 67.4 THE ACCEPTANCE BAR — notch DISTRIBUTION, and the ROADMAP was wrong
+
+The ROADMAP frames this voice as "four **mismatched** phase stages (not the
+Ninety's matched four)". **That framing is wrong.** `PhaserModel` has carried a
+deterministic **±1.5 %** per-stage detune since M13's phaser slice, specifically
+so its four corners do not stack into one infinitely-deep null. So "mismatched"
+is not the distinction. The **magnitude** is:
+
+| | corner spread |
+| --- | --- |
+| Ninety (`PhaserModel`) | ±1.5 % → **1.0305 : 1 = 0.0433 octaves** |
+| Uni-Vibe (S1's caps) | 0.22 µF / 470 pF → **468.1 : 1 = 8.871 octaves** |
+| ratio | **204.9×** |
+
+A cascade of four first-order allpasses summed with dry has exactly **two**
+notches whatever the corners are, so the player-facing consequence is not the
+notch COUNT — it is the **SPREAD of the pair**. Measured on both models from the
+identical stimulus, grid and notch-finder, at 48 kHz:
+
+```
+[notch] vibe    lo   102.51 Hz  hi   5463.14 Hz  spread 5.7359 oct  deepest -53.82 dB
+[notch] ninety  lo   832.07 Hz  hi   4685.87 Hz  spread 2.4935 oct  deepest -68.87 dB
+[notch] CONTRAST 3.2424 octaves  (2.300x)
+```
+
+Bars shipped `vibe > 5.0` / `ninety < 2.8` / `contrast > 2.5` / `ratio > 2.0`.
+**Margins RECORDED, not snugged.**
+
+**The metric is SCALE-FREE, and that is measured rather than claimed.** The
+spread is set by the cap RATIOS alone, so it must not move as the lamp sweeps the
+cell resistance — which is precisely why none of §67.1's reconstructed constants
+can reach the acceptance bar. `testNotchSpreadIsScaleFree` freezes the LFO at four
+phases and measures:
+
+```
+phase 0.25  R 12 431 Ω   notches  238.7 / 13124.6 Hz   spread 5.7809 oct  (analog 5.7249)
+phase 0.35  R 13 808 Ω   notches  207.1 / 11348.5 Hz   spread 5.7761 oct  (analog 5.7249)
+phase 0.45  R 18 715 Ω   notches  138.7 /  7386.5 Hz   spread 5.7350 oct  (analog 5.7249)
+phase 0.55  R 29 427 Ω   notches   71.7 /  3789.6 Hz   spread 5.7246 oct  (analog 5.7249)
+over a 2.37x resistance excursion: range 0.0563 oct
+```
+
+### 67.5 THE SECOND BAR — the lamp makes the sweep asymmetric IN TIME
+
+The metric is defined once, in the test, so the two models cannot drift on what
+it means: track the allpass corner over the settled tail and compare the mean
+`|d log2(fc)/dt|` while RISING against the same while FALLING, reported as
+max/min. It is deliberately a **slope** ratio and not a time ratio — a lag that
+merely delays a symmetric waveform leaves both half-periods equal, so a time
+ratio would measure phase and call it asymmetry.
+
+| SPEED | vibe rise | vibe fall | **vibe asym** | ninety asym | vibe depth | ninety depth |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0.565 Hz | 3.868 oct/s | 3.303 | **1.1713** | 1.0008 | 3.152 oct | 3.321 |
+| 1.344 Hz | 8.522 | 6.821 | **1.2494** | 1.0029 | 2.773 | 3.322 |
+| 3.196 Hz | 14.763 | 10.693 | **1.3806** | 1.0015 | 1.955 | 3.321 |
+
+Bars `vibe > 1.10` / `ninety < 1.02` at all three speeds, plus `rise > fall`.
+
+**The attribution is measured, not assumed**, with two INDEPENDENT hooks — §66
+records a single hook that removed two behaviours at once producing a bar that
+could not fail. At 1.344 Hz:
+
+| build | asymmetry | depth |
+| --- | --- | --- |
+| shipped | **1.3025** | 2.773 oct |
+| lamp instantaneous | **1.0569** | 3.251 oct |
+| cell memoryless | **1.2385** | 2.811 oct |
+| both removed | **1.0015** | 3.322 oct |
+
+i.e. removing the LAMP collapses it and removing the CELL barely moves it: **the
+asymmetry is the lamp's.** With both gone the sweep is the LFO's own shape, a
+sine, symmetric — which is the check that the metric is measuring what it says.
+
+**A third contrast falls out and is asserted:** the Uni-Vibe LOSES sweep depth as
+it speeds up and the Ninety does not. `3.281 → 0.959 octaves` from SPEED 0.2 to
+1.0, against the Ninety's `3.322 → 3.321`. The lamp cannot keep up; a number
+generator can.
+
+### 67.6 Modes and INTENSITY — the §62 trap avoided on the way in
+
+§62 forwarded a mode to an owned model as a hard switch and it clicked at **17.02×**
+the signal's own slew. So here, from the first line, CHORUS and VIBRATO are the
+SAME dry/wet pair with one smoothed weight, per S5's equal-weight mixer:
+
+```
+dryWeight = 0.5·(1 − m)      wetWeight = 0.5·(1 + m)
+```
+
+There is no second code path, so "vibrato is the wet path alone" is structurally
+true. Measured: the vibrato dry weight is **exactly 0.0** (an `==`, not a
+tolerance — §62's numeric note that `OnePoleSmoother` converges exactly to a zero
+target), and a CHORUS→VIBRATO flip landed **mid-render** over 16 step positions
+measures **0.95×** the signal's own slew. Perturbation **P4** re-introduces the
+hard switch.
+
+**INTENSITY is S8's LFO amplitude control, NOT a wet/dry mix, and the consequence
+is asserted rather than assumed** (the plan asked for exactly this): **INTENSITY 0
+is NOT bypass.** The lamp still sits at its bias point, so the four stages sit at
+a fixed corner set. Measured:
+
+```
+CHORUS,  INTENSITY 0: 110Hz -27.59  220Hz -6.86  440Hz -1.41  880Hz -0.03
+                      1760Hz -2.50  3520Hz -10.62   -> span 27.56 dB  (a real comb)
+corner movement at INTENSITY 0, SPEED max: 0.000e+00 octaves  (genuinely static)
+VIBRATO, INTENSITY 0: worst |gain| deviation 0.0008 dB       (a pure allpass)
+```
+
+**Named research gap:** no source settles whether the real INTENSITY is the LFO
+amplitude (shipped, and S8 says so) or a wet/dry mix. S8 is the stronger reading
+and it is what ships; the alternative is recorded here so a later slice with a
+schematic knows this was a decision and not an oversight. Also NOT modelled: any
+input/output coupling caps (so a DC offset passes straight through — measured
+0.099968 V out for 0.100 V in, bounded and stated, exactly as §62 records for the
+CE-1's delay line).
+
+### 67.7 OVERSAMPLING — measured, and the measurement OVERTURNED the precedent
+
+The plan said "decide by measurement, not by the phaser precedent". It was, and
+the answer is the opposite of what the precedent predicted — **for a reason
+nobody named in advance.**
+
+**(a) There is NO aliasing to remove.** The cells here are lit by an LFO under
+8 Hz and by nothing else, so the audio path never multiplies by an audio-rate
+signal (unlike §64's optical compressor, where the panel is the rectifier). A
+single 9 kHz tone at 0.30 V with the pedal sweeping, worst non-harmonic bin in
+band, **Hann-windowed** (§60's trap: a rectangular window's own sidelobe read as
+a −55.8 dB floor and nearly sent that slice the wrong way):
+
+```
+1x -140.41 dB   2x -142.59   4x -143.05   8x -142.85     spread 2.63 dB
+```
+
+FLAT in the factor is §54's tell for "not aliasing".
+
+**(b) It ships at 4× anyway, and the reason is the 470 pF stage.** S1's stagger
+puts one allpass corner at **14.6 kHz at the pedal's own bias point and 33.9 kHz
+at the bright end of the sweep** — against, and past, Nyquist at the shipped
+rates. A bilinear first-order allpass is exact only AT its corner, so a corner
+that close to Nyquist warps the phase curve, and the phase curve is where the
+notches are. Measured against the **analytic ANALOG network** (the continuous-time
+phase sum of the four staggered RC corners — not derived from this model's
+discretization, so it is a real reference and not an identity), at 44.1 kHz:
+
+| | upper notch | vs analog |
+| --- | --- | --- |
+| vibe 1× | 6405.2 Hz | **+18.49 %** |
+| vibe 4× | 5466.7 Hz | **+1.13 %** |
+| **`PhaserModel` 1× (pre-existing)** | 4678.5 Hz | **−3.10 %** |
+
+0.25 octaves of error at base rate, on a notch a player hears move. The same
+defect exists in the Ninety and is small there only because its corners never
+leave a clean 200 Hz–2 kHz decade.
+
+**So the factor is DERIVED, not defaulted: 4× is the smallest house factor at
+which this voice's discretization error is smaller than the sibling's own.** (2×
+measures 3.61 %, above the Ninety's 3.10 %.) Latency **72 samples / 1.50 ms**.
+The **whole model — the dry sum included — sits inside the one domain**, so the
+group delay is uniform and the dry/wet mixer cannot comb; splitting it would
+manufacture exactly the artefact this pedal is made of. The shipped factor is
+PINNED by the test (§58's could-not-fail finding), and perturbation **P3** takes
+it red.
+
+**Consequence worth recording: this closes a rate-dependence that would otherwise
+have needed an XFAIL.** At 1× the upper notch moves 15.9 % across 44.1→96 kHz; at
+the shipped 4× it moves **0.599 %**, and the notch SPREAD — the acceptance bar —
+moves **0.0085 octaves** across the same four rates.
+
+### 67.8 ADR 006 scope: the SAME class, opposite sides of the rule
+
+`OptoCell`'s three states rest at **exactly zero** inside `OptoModel`, and that
+suite asserts it. **They do not here**, and cannot: a Uni-Vibe's lamp is never
+off, so the cells are continuously lit. Measured after 6 s of silence:
+
+```
+maxAbsRestingState()  = 0            (the four allpass memories, and nothing else)
+lamp 2323.5 K · cell 11 765 Ω · trap occupancy 0.9805   — all REAL operating points
+output peak over the last 3 s of silence = 0            (exact digital silence)
+```
+
+`VibeModel::maxAbsRestingState()` therefore covers the four allpass memories only,
+and the header says which states are excluded and why. `LampDrive` has no
+`maxAbsRestingState()` at all — an assertion there would have no teeth. This
+mirrors ADR 023's finding for the wah's follower (one object cannot be on both
+sides) except that here the two consumers are the **same class**, and it is the
+light source that decides.
+
+**A related honest finding: the trap-occupancy mechanism — the whole point of
+`OptoCell` inside the compressor — is effectively INERT in this pedal.** It
+measures **0.9805** and sits there, because the cells never go dark. It is not
+removed (that would be disabling a real device behaviour by fiat) and its
+effective contribution is folded into the §67.3 release derivation, where it is
+stated.
+
+### 67.9 The rest, measured
+
+- **CPU** — reported, not bounded (see the plan file's table for the run).
+- Ragged-block invariance vs 128 frames: **0.000e+00** (exactly bit-identical).
+- `reset()` vs a never-played model: **0.000e+00**.
+- One NaN in poisons **11 899 / 12 000** samples; after `reset()`, **0 / 12 000**.
+  A non-finite PARAMETER is rejected at the ABI and never reaches the model.
+- Rate independence over 44.1 / 48 / 88.2 / 96 kHz: notch spread range **0.0085
+  oct**, lower notch **+0.010 %**, upper notch **+0.599 %**.
+- DC on signal: **−0.0104 %** of peak clean. With a +0.1 V input offset the offset
+  **passes straight through** (mean 0.099968 V) — the network is linear and this
+  model has no coupling caps, a named gap in §67.6, bounded and stated.
+- Zipper: SPEED min→max mid-render **0.53×**, INTENSITY max→min **0.09×**, MODE
+  flip **0.95×** — all below the signal's own slew.
+- The four cells return **exactly** the same resistance (one lamp, one box —
+  asserted so a future per-cell tolerance has to be a deliberate, sourced act).
+- Notch depth: **−53.82 dB** (the Ninety's is −68.87; the Uni-Vibe's staggered
+  stages genuinely do not stack as deeply, which is the point).
+- Envelope swing on a four-note chord at 0.565 Hz: **vibe 7.69 dB, ninety
+  2.49 dB** — the guard against a voice that is technically correct and inaudible.
+
+### 67.10 Found in passing and fixed
+
+`native/src/PedalCard.cpp`'s `pedalMenuLabel()` had **no `case PEDAL_OPTO`**, so
+M13.3's Lumen showed in the native gear tray and swap menu as the bare word
+"Pedal" while its CARD drew correctly — the same class of defect as §61.10 and
+§62's `kFaces` bug, in the opposite direction (the keyed table was right, the
+switch was incomplete). One line, fixed here because the Uni-Vibe's own entry
+sits beside it.
+
+### 67.11 Named follow-ups this slice leaves
+
+1. **Find the Uni-Vibe schematic.** Every constant outside S1–S8 is a documented
+   reconstruction, and the two weakest are the whole `LampSpec` and the cell's
+   dynamic constants (§67.3). §57's rule.
+2. **S3's transistor stages** — the sources say the "imperfections" of the real
+   transistor phase-shift stages are part of the sound, and this model uses ideal
+   first-order allpasses. That is the largest known gap on the voice.
+3. **INTENSITY's true identity** (§67.6) — LFO amplitude (shipped, S8) versus a
+   wet/dry mix. A schematic settles it.
+4. **`PhaserModel`'s own −3.10 % discretization error** (§67.7) is pre-existing
+   and untouched here. It is small, but it is the same mechanism, and a slice that
+   wanted to close it now has the measurement.

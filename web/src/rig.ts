@@ -69,7 +69,7 @@ export type SourceKind = 'test' | 'live';
 // than after a stab at the same depth, against the OTA voice's 1.000x — docs
 // §64.4), its attack does not move with the knob, and its PEAK REDUCTION moves a
 // THRESHOLD by 45.44 dB where the Squash's SUSTAIN moves GAIN by 25.33 dB.
-export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'tuner';
+export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'vibe' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
@@ -116,7 +116,7 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412' | 'orange412', num
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'tuner'];
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'vibe', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
@@ -360,6 +360,18 @@ export const OPTO_KNOB_DEFAULTS: PedalParams = {
   level: 0.62,
 };
 
+// M13.5 Uni-Vibe opening state. SPEED 0.35 is a slow, lazy throb (0.36 Hz on the
+// published 0.1-7.6 Hz span); INTENSITY 0.70 is most of the lamp's swing without
+// pinning it; MODE 0.0 is CHORUS, the mixed dry+wet position, which is the one
+// everybody means by "Uni-Vibe". Note INTENSITY 0 is NOT bypass on this pedal —
+// the lamp still sits at its bias point, so the four stages become a STATIC comb
+// (docs §67.5). These must match the C++ constructor defaults in VibeModel.cpp.
+export const VIBE_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.35,
+  filter: 0.7,
+  level: 0.0,
+};
+
 export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   rat: KNOB_DEFAULTS,
   sd1: SD1_KNOB_DEFAULTS,
@@ -373,6 +385,7 @@ export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   wah: WAH_KNOB_DEFAULTS,
   chorus: CHORUS_KNOB_DEFAULTS,
   delay: DELAY_KNOB_DEFAULTS,
+  vibe: VIBE_KNOB_DEFAULTS,
   // The tuner has no knobs; params are unused but keep the shared shape.
   tuner: KNOB_DEFAULTS,
 };
@@ -487,6 +500,7 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
     : p.type === 'wah' ? 'wah'
     : p.type === 'chorus' ? 'chorus'
     : p.type === 'delay' ? 'delay'
+    : p.type === 'vibe' ? 'vibe'
     : 'rat';
   return {
     id,

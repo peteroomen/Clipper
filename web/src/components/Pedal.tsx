@@ -196,6 +196,30 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Gain', aria: 'Gain', param: 'level', testId: 'knob-gain' },
     ],
   },
+  // M13.5 the Uni-Vibe: the board's SECOND phaser, and the face has to say so
+  // before a knob is touched. The morphology cue is the KNOB COUNT — the Ninety
+  // is the board's only 'single' face (one big SPEED knob, script-authentic) and
+  // this is a three-knob 'stack' — plus an AMBER accent (tokens.css
+  // --accent-vibe): the colour of the incandescent lamp that is doing the work,
+  // and the warmest thing on a board whose other modulation boxes are magenta
+  // (chorus) and the phaser's own hue. Wordmark "Swirl": the pedal's own word,
+  // no Univox / Uni-Vibe / Shin-ei trademark anywhere (docs §17 doctrine).
+  vibe: {
+    layout: 'stack',
+    model: 'MODULATION Nº9 · PHOTOCELL',
+    wordmark: 'Swirl',
+    knobs: [
+      // Slot 0 = SPEED (the LFO into the lamp driver, 0.1-7.6 Hz log).
+      // Slot 1 = INTENSITY, and it is NOT a wet/dry mix: it is the fraction of
+      // the LFO that reaches the LAMP, so at 0 the lamp sits still and the pedal
+      // becomes a STATIC comb rather than a bypass (docs §67.5).
+      // Slot 2 = MODE, genuinely DISCRETE: < 0.5 CHORUS (dry + wet, the sourced
+      // equal-weight mixer), >= 0.5 VIBRATO (the wet phase line alone).
+      { name: 'Speed', aria: 'Speed', param: 'distortion', testId: 'knob-speed' },
+      { name: 'Intensity', aria: 'Intensity', param: 'filter', testId: 'knob-intensity' },
+      { name: 'Mode', aria: 'Mode (chorus / vibrato)', param: 'level', testId: 'knob-mode' },
+    ],
+  },
   // M13.6a "Curfew": the lineup's first UTILITY — it makes no sound of its own,
   // it takes one away. Morphology cue is the SLATE accent and a two-knob face on
   // the small 'stack' anatomy: deliberately the most boring box on the board,

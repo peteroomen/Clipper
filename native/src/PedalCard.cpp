@@ -101,6 +101,17 @@ const PedalFace kFaces[] = {
      Footswitch::Shape::Pad, PedalFace::Layout::Stack, 30.0f,
      {{"Peak", pid::optoPeakReduction}, {"Mode", pid::optoMode}, {"Gain", pid::optoGain}},
      pid::optoOn, PEDAL_OPTO},
+    // SWIRL — M13.5, the Uni-Vibe: the board's SECOND phaser, and the face has to
+    // say so before a knob is touched. Morphology cue is the real thing's tall,
+    // upright box, so it takes the Stack anatomy with a Round stomp. AMBER accent
+    // (the incandescent lamp inside it), which is the warmest hue on a board whose
+    // other modulation cards are the phaser's orange-red and the CE-1's magenta.
+    // No Univox / Uni-Vibe / Shin-ei wording anywhere. SPEED / INTENSITY / MODE,
+    // and MODE is a DISCRETE two-position switch in the model.
+    {"Modulation N\xc2\xba""2 \xc2\xb7 Photocell", "Swirl", skin::AccentId::Vibe,
+     Footswitch::Shape::Round, PedalFace::Layout::Stack, 34.0f,
+     {{"Speed", pid::vibeSpeed}, {"Intensity", pid::vibeIntensity}, {"Mode", pid::vibeMode}},
+     pid::vibeOn, PEDAL_VIBE},
     // ENSEMBLE — M13.7, the CE-1 Chorus Ensemble: the second MODULATION pedal and
     // the first whose circuit the project already owned (it is the JC-120 amp's
     // chorus in a floor box — docs §62). Morphology cue is the real CE-1's big,
@@ -156,6 +167,12 @@ juce::String pedalMenuLabel(int type) {
         case PEDAL_WAH:    return "Weeper - wah / envelope filter";
         case PEDAL_CHORUS: return "Ensemble - CE-1 chorus / vibrato";
         case PEDAL_DELAY:  return "Echoman - BBD analog delay";
+        // PRE-EXISTING GAP, fixed in passing (M13.5): PEDAL_OPTO had no case
+        // here, so the Lumen showed in the gear tray and swap menu as the
+        // bare word "Pedal" while its CARD drew correctly. Same class of bug
+        // as docs §61.10/§62, opposite direction.
+        case PEDAL_OPTO:   return "Lumen - optical compressor";
+        case PEDAL_VIBE:   return "Swirl - Uni-Vibe photocell phaser";
         default:           return "Pedal";
     }
 }
