@@ -6,6 +6,7 @@
 #include "clipper/dsp/RatModel.h"
 
 #include "clipper/dsp/DiodeClipperADAA.h"
+#include "clipper/dsp/OutputPotTaper.h"
 #include "clipper/dsp/LM308Stage.h"
 #include "measure/AliasMetric.h"
 
@@ -26,27 +27,23 @@ namespace {
 constexpr double kTwoPi = 6.283185307179586;
 using clipper::dsp::RatModel;
 
-// The RAT's LEVEL pot is a 100 kOhm LOGARITHMIC pot — the ProCo netlist says so in
-// its own annotation ("R14 is volume pot (100k, logarithmic)"), and it sits last in
-// the chain, driven by the 2N5458 source follower and loaded only by whatever
-// follows, so its law is the bare audio taper with no divider correction to make.
-// RatModel maps it identity-linear and has said so since M1 ("A proper audio-taper
-// volume law is a future refinement"). Registered here rather than left as prose
-// because the level slice (docs §66) MEASURED it and deliberately did not ship it:
-// every dirt pedal in the lineup carries the same approximation — OverdriveEngine
-// says "identity linear map, as the RAT" — so fixing this pedal alone would move it
-// 5.04 dB at its shipped default and break the level parity §66.2 measured across
-// the five. One slice, five output pots, one owner bless.
-const clipper::test::XfailDecl kXfailLevelPotLinear{
-    "rat-level-pot-linear-not-log",
-    "docs §66.3 (2026-08-01 RAT polish; ProCo netlist annotation on R14)",
-    "the LEVEL knob at half rotation must sit inside the 10-20 % audio-taper band a "
-    "100 k logarithmic pot delivers (the house audioTaper, k = 4, gives 12.15 %), "
-    "not the 50 % of a linear map",
-    "a lineup-wide output-pot taper slice — rat/sd1/ts/muff/gold together, NOT this "
-    "pedal alone (docs §66.3)",
-};
-const clipper::test::XfailDecl kLedger[] = {kXfailLevelPotLinear};
+// --- known-bad properties still open on this branch --------------------------
+//
+// EMPTY as of 2026-08-10 (docs §67). The one entry that lived here is gone
+// because the lineup-wide output-pot taper slice made it XPASS, and
+// support/Xfail.h treats an XPASS as a hard failure precisely so a fixed defect
+// cannot leave a stale ledger line behind:
+//
+//   * `rat-level-pot-linear-not-log` — the LEVEL pot was mapped identity-linear
+//     where the ProCo netlist annotates R14 as "volume pot (100k, logarithmic)".
+//     §66.3 measured it (LEVEL 0.5 delivered 50.0 % against the 10-20 %
+//     audio-taper band) and deliberately did NOT fix it, because every sibling
+//     carried the same approximation and fixing this pedal alone would have made
+//     the RAT the quietest of five and undone §36 by a knob law. All five output
+//     pots moved together in §67; this pedal now measures 11.92 % at half
+//     rotation and the property is asserted outright in `testOutputPotLaw`,
+//     which is the rewritten `testLevelLinearity` §66.3 said the fixing slice
+//     would have to rewrite.
 
 // --- Hand-rolled Goertzel: amplitude estimate at frequency f (Hann-windowed).
 double goertzelAmp(const std::vector<float>& x, size_t start, size_t n, double f,
@@ -505,40 +502,75 @@ void testFilter(double fs) {
                 fs, toDb(h0), toDb(h5), toDb(h1));
 }
 
-// --- Test 4: level linearity. -----------------------------------------------
-void testLevelLinearity() {
+// --- Test 4: the LEVEL pot's law. --------------------------------------------
+//
+// REWRITTEN 2026-08-10 (docs §67). This was `testLevelLinearity` and it asserted
+// the IMPLEMENTATION's identity map — a drift guard on a known approximation that
+// §66.3 labelled as such and told the fixing slice to rewrite. It is rewritten,
+// not deleted, and the XFAIL it carried (`rat-level-pot-linear-not-log`) is gone
+// because the property passes outright now.
+//
+// What is asserted is the CIRCUIT's pot, against references outside this
+// codebase: the ProCo netlist annotates R14 as "volume pot (100k, logarithmic)",
+// and §58 cites 10-20 % at half rotation as what an audio-taper pot delivers.
+void testOutputPotLaw() {
     const double fs = 48000.0;
     auto in = sine(220.0, 0.3f, 0.5, fs);
     auto rmsAt = [&](float lvl) {
         return tailRms(render(in, {0.7f, 0.3f, lvl}, fs), fs);
     };
-    const double r25 = rmsAt(0.25f);
-    const double r50 = rmsAt(0.50f);
     const double r100 = rmsAt(1.0f);
-    // mapped gain == knob (identity), so RMS should scale linearly.
-    //
-    // READ THIS BEFORE TRUSTING IT (docs §66.3): these two asserts pin the
-    // IMPLEMENTATION's map, not the circuit's pot. The real LEVEL pot is
-    // logarithmic, so a slice that fixes the taper MUST rewrite this test —
-    // it is a drift guard on a known approximation, and its being green is
-    // not evidence the law is right. The circuit property is the XFAIL below.
-    assert(std::fabs(r50 / r25 - 2.0) < 0.05 && "RMS not linear 0.25 -> 0.5");
-    assert(std::fabs(r100 / r50 - 2.0) < 0.05 && "RMS not linear 0.5 -> 1.0");
-    std::printf("  [ok] level linearity (the LINEAR map, an approximation): "
-                "r50/r25=%.3f  r100/r50=%.3f\n", r50 / r25, r100 / r50);
+    const double r75 = rmsAt(0.75f);
+    const double r50 = rmsAt(0.50f);
+    const double r25 = rmsAt(0.25f);
 
-    // The circuit property, measured and known-bad. A 100 k audio-taper pot puts
-    // 10-20 % of full output at half rotation (the house audioTaper with k = 4
-    // gives 12.15 %); this model gives 50.0 %, i.e. the bottom of the travel does
-    // all the work in dB and the top half spans only 6 dB where the real pedal
-    // spans ~18. Not fixed here, and the reason is in the declaration.
+    // BAR 1 — the audio-taper band. An EXTERNAL reference (§58's documented
+    // 10-20 %), not a restatement of the law: a linear pot measures 50.0 % here,
+    // which is what this model did until this slice.
     const double halfFraction = r50 / r100;
-    char detail[160];
-    std::snprintf(detail, sizeof(detail),
-                  "LEVEL 0.5 delivers %.1f %% of the LEVEL 1.0 output (audio-taper band "
-                  "10-20 %%; house audioTaper k=4 -> 12.15 %%)",
-                  100.0 * halfFraction);
-    clipper::test::expectXfail(halfFraction <= 0.20, kXfailLevelPotLinear, detail);
+    assert(halfFraction >= 0.10 && halfFraction <= 0.20 &&
+           "LEVEL at half rotation is outside the 10-20 % audio-taper band the "
+           "netlist's 'R14 is volume pot (100k, logarithmic)' implies");
+
+    // BAR 2 — the SHAPE, which is what "audio taper" means to a player: a log pot
+    // spends roughly the same number of dB per quarter turn all the way down,
+    // where a linear pot crams its range into the bottom. Measured as the ratio
+    // of the largest quarter-turn step in dB to the smallest.
+    //   this model (log, unloaded) : 8.97 / 9.51 / 11.41 dB -> 1.272
+    //   the linear map it replaced : 2.50 / 3.52 /  6.02 dB -> 2.409
+    // Bar 1.60 — the margin (1.272) is RECORDED not snugged, and the linear
+    // counterfactual misses it by 50 %.
+    const double s1 = std::fabs(toDb(r75 / r100));
+    const double s2 = std::fabs(toDb(r50 / r75));
+    const double s3 = std::fabs(toDb(r25 / r50));
+    const double stepRatio =
+        std::max(s1, std::max(s2, s3)) / std::min(s1, std::min(s2, s3));
+    assert(stepRatio < 1.60 &&
+           "LEVEL does not spend its dB evenly across the travel — that is a "
+           "linear pot's signature, not an audio taper's");
+
+    // BAR 3 — THE TOP OF THE KNOB DOES NOT MOVE. A taper remaps the travel; it
+    // must not become a level trim (§51's rule, and §66's whole reason for
+    // refusing the one-pedal version). The law is normalised so law(1) is exactly
+    // 1.0, which is what makes the LEVEL 1.0 render bit-identical to the
+    // pre-slice one (render hashes in docs §67.4). Folding a network's fixed
+    // insertion loss in here instead would fail this on the nose.
+    assert(clipper::dsp::pot::ratLevel(1.0) == 1.0 &&
+           "LEVEL 1.0 is no longer exactly unity — the taper has become a trim");
+    assert(clipper::dsp::pot::ratLevel(0.0) == 0.0 && "LEVEL 0 is not silence");
+
+    // BAR 4 — monotone across the whole travel (no dead spot, no fold).
+    double prev = -1.0;
+    for (int i = 0; i <= 20; ++i) {
+        const double g = clipper::dsp::pot::ratLevel(i / 20.0);
+        assert(g > prev && "LEVEL is not monotone");
+        prev = g;
+    }
+
+    std::printf("  [ok] LEVEL pot law (100k LOG, netlist-sourced, unloaded wiper): "
+                "half rotation %.2f %% (band 10-20), quarter-turn steps "
+                "%.2f/%.2f/%.2f dB ratio %.3f (bar 1.60; linear measures 2.409)\n",
+                100.0 * halfFraction, s1, s2, s3, stepRatio);
 }
 
 // --- Test 5: hygiene (no NaN/inf, silence->silence, determinism). -----------
@@ -753,6 +785,19 @@ void testPassbandIntegrity() {
 // 5 dB the corrected diode ceiling grew (e.g. index 2048: -0.34848 -> -0.61019,
 // +4.86 dB; index 4095: -0.35369 -> -0.63336, +5.05 dB), which is the expected
 // magnitude and is the check that nothing else moved with it.
+//
+// REGENERATED AGAIN 2026-08-10 for the output-pot taper slice (docs §67). §66.5
+// predicted this exactly — its P5 perturbation put the house audio taper on the
+// LEVEL map and reported that this guard trips. It renders at LEVEL 0.9, and the
+// pot's law now delivers audioTaper(0.9) = 0.664157 there instead of 0.9.
+//
+// THE CHECK THAT NOTHING ELSE MOVED, and it is stronger here than in §36's
+// regeneration: LEVEL is a pure scalar applied after every other stage, so a
+// correct change must scale ALL SEVEN samples by exactly the same factor. It
+// does — every one moves by 0.737965(4-6), against the analytic
+// law(0.9)/0.9 = 0.737965654 (-2.639 dB). A uniform ratio to six decimals is
+// what says the clipper, the shaping filter, the op-amp and the tone stage are
+// all untouched and only the volume pot moved.
 void testFactorOneRegression() {
     const double fs = 44100.0, f0 = 987.0;
     const int N = 4096;
@@ -762,9 +807,9 @@ void testFactorOneRegression() {
     auto out = renderOS(in, {0.8f, 0.35f, 0.9f}, fs, 1);
     struct G { int i; float v; };
     const G golden[] = {
-        {128, -2.599118650e-01f}, {256, -4.244312048e-01f}, {512, -3.632787466e-01f},
-        {1024, -2.437708825e-01f}, {2048, -6.101886630e-01f}, {3000, 6.327062845e-01f},
-        {4095, -6.333589554e-01f},
+        {128, -1.918060482e-01f}, {256, -3.132155240e-01f}, {512, -2.680872381e-01f},
+        {1024, -1.798944920e-01f}, {2048, -4.502982497e-01f}, {3000, 4.669142365e-01f},
+        {4095, -4.673959017e-01f},
     };
     double maxDiff = 0.0;
     for (const auto& g : golden)
@@ -868,8 +913,7 @@ void testPerfSanity() {
 
 int main(int argc, char** argv) {
     clipper::test::requireAssertsLive();
-    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
-                                                 sizeof(kLedger) / sizeof(kLedger[0]),
+    const int ledger = clipper::test::ledgerMain(argc, argv, nullptr, 0,
                                                  "clipper_rat_tests");
     if (ledger >= 0) return ledger;
     std::printf("Running clipper::dsp::RatModel tests...\n");
@@ -886,7 +930,7 @@ int main(int argc, char** argv) {
     testClippingCeiling();
     testFilter(44100.0);
     testFilter(96000.0);      // Test 6: SR robustness for test 3
-    testLevelLinearity();
+    testOutputPotLaw();
     testHygiene();
     std::printf("Running M2 (antialiasing) tests...\n");
     testAliasingMonotonic(44100.0, /*strict=*/true);

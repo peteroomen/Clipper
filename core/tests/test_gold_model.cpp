@@ -21,6 +21,8 @@
 
 #include "clipper/dsp/GoldModel.h"
 
+#include "clipper/dsp/OutputPotTaper.h"
+
 #include "measure/AliasMetric.h"
 
 #include "support/AssertsLive.h"
@@ -180,13 +182,30 @@ double refPreAmpMag(double f, double g) {
 // With the ganged pot at minimum the clipped half is switched out entirely, so the
 // box is its input buffer + summing amp + output pot: FLAT and CLEAN. OUTPUT at
 // noon (0.5) is the calibration point — kSumGain 2.0 x 0.5 == exactly unity.
+// SPLIT INTO TWO BARS 2026-08-10 (docs §67). This used to measure ONE thing —
+// |gain in dB| at each probe frequency, against 0.25 dB — which silently
+// conflated FLATNESS (is this a buffer or a voice?) with LEVEL (is it unity?).
+// They coincided only because the OUTPUT pot was an identity map and
+// kSumGain 2.0 x 0.5 came out exactly 1.0. With the pot's real network
+// (R25 560 R + 10 k + R28 100 k) noon delivers 0.489758 rather than 0.500, and
+// the conflated bar measured 0.3181 dB and failed — on a 0.18 dB LEVEL move, with
+// the flatness it was written to protect completely unchanged.
+//
+// So the two are now separate, and the flatness half is NOT loosened: it keeps
+// the same 0.25 dB bound and measures 0.1384 dB, having lost whatever help the
+// level term was giving it. Only the level half moved, and it moved by a DERIVED
+// amount, not a fitted one.
 void testTransparency(double fs) {
     const Params p{0.0f, 0.5f, 0.5f};  // GAIN 0, TREBLE flat, OUTPUT noon
     const double probes[] = {60, 100, 220, 440, 1000, 2200, 5000, 8000, 10000};
+    const double ref = gainDbAt(1000.0, p, fs);
     double worst = 0.0, worstF = 0.0;
     for (double f : probes) {
         if (f > fs * 0.45) continue;
-        const double dev = std::fabs(gainDbAt(f, p, fs));
+        // FLATNESS, relative to 1 kHz — the property this bar is actually for.
+        // The OUTPUT pot is a frequency-flat scalar, so this number is untouched
+        // by the taper slice and stays on its original 0.25 dB bound.
+        const double dev = std::fabs(gainDbAt(f, p, fs) - ref);
         if (dev > worst) { worst = dev; worstF = f; }
     }
     // Flat to a QUARTER dB across the guitar band — this is a buffer, not a voice.
@@ -194,12 +213,24 @@ void testTransparency(double fs) {
     // And honestly clean: a hot 0.3 V note at GAIN 0 makes essentially no harmonics.
     const double t = thd(render(sine(220.0, 0.3f, 1.0, fs), p, fs), 220.0, fs);
     assert(t < 0.005 && "GAIN=0 is not clean (THD >= 0.5%)");
-    // Unity at OUTPUT noon (the documented calibration point).
-    const double unityDb = gainDbAt(1000.0, p, fs);
-    assert(std::fabs(unityDb) < 0.1 && "OUTPUT at noon is not unity gain");
+    // LEVEL at OUTPUT noon, DERIVED from two sourced numbers rather than assumed:
+    //   * the summing amp's gain kSumGain = 2.0 (docs §52 — R20·G_clean measures
+    //     1.82-2.28 across the band, so the clean side was already right); and
+    //   * the output network's delivered gain at noon, 0.489758 (docs §67.3, out
+    //     of R25 = 560 R, the 10 k pot and R28 = 100 k).
+    // => 20·log10(2.0 × 0.489758) = -0.1798 dB, and unity now lands at OUTPUT
+    // 0.5105 rather than exactly noon. The bar is 0.25 dB; the measured -0.1798
+    // leaves 0.07 dB of margin, which is RECORDED not snugged. It still fails if
+    // kSumGain or the output network moves materially — the old 0.1 dB bound was
+    // pinning an arithmetic coincidence of the linear map, not a circuit fact.
+    const double unityDb = ref;
+    assert(std::fabs(unityDb) < 0.25 &&
+           "GAIN=0 / OUTPUT noon is not within 0.25 dB of unity — kSumGain or the "
+           "output network has moved (docs §67.3 derives the -0.18 dB)");
     std::printf(
-        "  [ok] transparency @ %.0f Hz: GAIN=0 flat within %.3f dB (worst @ %.0f Hz), "
-        "THD %.4f%%, unity at OUTPUT noon %.3f dB\n",
+        "  [ok] transparency @ %.0f Hz: GAIN=0 FLAT within %.3f dB re 1 kHz "
+        "(worst @ %.0f Hz, bar 0.25), THD %.4f%%; LEVEL at OUTPUT noon %.3f dB "
+        "(derived -0.180 from kSumGain 2.0 x law(0.5) 0.489758, bar 0.25)\n",
         fs, worst, worstF, t * 100.0, unityDb);
 }
 
@@ -519,16 +550,83 @@ void testHeadroomAndOutput(double fs) {
     // A 1 V input at GAIN 0 is still CLEAN — the headroom statement, measured.
     const double tClean = thd(render(hotIn, {0.0f, 0.5f, 0.5f}, fs), 220.0, fs);
     assert(tClean < 0.005 && "the clean path distorts at 1 V (no headroom)");
-    // OUTPUT is a linear pot (house convention).
+    // --- THE OUTPUT POT: the one of five that is NOT an audio taper. ----------
+    //
+    // REWRITTEN 2026-08-10 (docs §67). This used to read "OUTPUT is a linear pot
+    // (house convention)" and assert exactly that. The lineup-wide taper slice
+    // went looking for the convention's justification and found a SOURCE:
+    //
+    //   * the reference's own output stage (jatinchowdhury18/KlonCentaur,
+    //     `OutputStageProcessor.cpp`) is R25 = 560 R in series + a 10 k pot +
+    //     C15 = 4.7 uF, with its `OutputStageWDF.h` sibling naming the wiper's
+    //     load as R28 = 100 k; and
+    //   * the published analyses of the original say its Output pot is a LINEAR
+    //     (B) taper and that an audio taper is a popular MOD — search-summary
+    //     grade, labelled as such (the §66.4 precedent), corroborated
+    //     independently by the reference mapping its control straight to the
+    //     wiper position.
+    //
+    // So the law stayed linear-shaped, and these bars are here because it stayed
+    // that way FOR A REASON. **Do not "tidy" this pedal into the same audioTaper
+    // call the other four use** — bar (c) catches exactly that, and it is the
+    // difference between a derived lineup and one house constant applied five
+    // times (§63.14's lesson).
     const auto in = sine(220.0, 0.2f, 0.5, fs);
     auto rmsAt = [&](float v) { return tailRms(render(in, {0.6f, 0.5f, v}, fs), fs); };
-    const double r25 = rmsAt(0.25f), r50 = rmsAt(0.50f), r100 = rmsAt(1.0f);
-    assert(std::fabs(r50 / r25 - 2.0) < 0.06 && "OUTPUT not linear 0.25 -> 0.5");
-    assert(std::fabs(r100 / r50 - 2.0) < 0.06 && "OUTPUT not linear 0.5 -> 1.0");
+    const double r100 = rmsAt(1.0f), r75 = rmsAt(0.75f);
+    const double r50 = rmsAt(0.50f), r25 = rmsAt(0.25f);
+
+    // (a) The NETWORK is modelled, and it measures within 0.5 dB of the identity
+    //     map it replaced at every position (worst 0.180 dB, at knob 0.60). That
+    //     is the honest headline: this pedal's old "house convention" map was
+    //     already right, and is now right for a SOURCED reason.
+    for (int i = 1; i <= 20; ++i) {
+        const double k = i / 20.0;
+        const double devDb = 20.0 * std::log10(clipper::dsp::pot::goldOutput(k) / k);
+        assert(std::fabs(devDb) < 0.5 &&
+               "the OUTPUT network moved more than 0.5 dB from a plain linear pot "
+               "— R25/R28 cannot do that; something else changed");
+    }
+
+    // (b) It is still recognisably a LINEAR pot at the listening end: half
+    //     rotation delivers ~49 %, nowhere near the 10-20 % an audio taper gives.
+    const double halfFraction = r50 / r100;
+    assert(halfFraction > 0.40 &&
+           "OUTPUT at half rotation has dropped into audio-taper territory — the "
+           "sources say this pedal's pot is LINEAR (B)");
+
+    // (c) THE CONTRAST BAR, and the reason this pedal has one of its own: its dB
+    //     per quarter turn is strongly UNEVEN (2.64 / 3.56 / 5.96 dB -> 2.258),
+    //     a linear pot's signature. Its four siblings measure 1.23-1.27 against
+    //     a < 1.60 bar. Fold the GOLD into the house audioTaper and this ratio
+    //     collapses to ~1.27 and this assert goes red.
+    const double s1 = std::fabs(toDb(r75 / r100));
+    const double s2 = std::fabs(toDb(r50 / r75));
+    const double s3 = std::fabs(toDb(r25 / r50));
+    const double stepRatio =
+        std::max(s1, std::max(s2, s3)) / std::min(s1, std::min(s2, s3));
+    assert(stepRatio > 2.00 &&
+           "OUTPUT now spends its dB evenly across the travel — that is an AUDIO "
+           "taper's signature, and the sources say this pot is linear. If an "
+           "audio taper was applied here because the other four have one, revert "
+           "it: docs §67.5");
+
+    // (d) The top of the knob does not move: R25's fixed 0.519 dB insertion loss
+    //     is normalised out on purpose (a LEVEL fact, not a LAW fact — §67.3), so
+    //     OUTPUT 1.0 renders bit-identically to the pre-slice build.
+    assert(clipper::dsp::pot::goldOutput(1.0) == 1.0 &&
+           "OUTPUT 1.0 is no longer exactly unity — the network's insertion loss "
+           "has leaked into the law");
+    assert(clipper::dsp::pot::goldOutput(0.0) == 0.0 && "OUTPUT 0 is not silence");
+
     std::printf(
         "  [ok] headroom @ %.0f Hz: 1 V in wide open -> peak %.3f V (rails 8.6 V never "
-        "touched), clean-path THD %.4f%%; OUTPUT r50/r25=%.3f r100/r50=%.3f\n",
-        fs, pk, tClean * 100.0, r50 / r25, r100 / r50);
+        "touched), clean-path THD %.4f%%\n"
+        "  [ok] OUTPUT pot law (10k LINEAR + R25 560R + R28 100k, netlist-sourced — "
+        "the ONE pedal of five with no audio taper): half rotation %.2f %% "
+        "(siblings 11.4-11.9), steps %.2f/%.2f/%.2f dB ratio %.3f (bar > 2.00; "
+        "siblings measure 1.23-1.27)\n",
+        fs, pk, tClean * 100.0, 100.0 * halfFraction, s1, s2, s3, stepRatio);
 }
 
 // --- Test 7: analytic laws (the ganged pot, measured against the formulas). ---

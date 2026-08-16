@@ -30,6 +30,7 @@
 #include "clipper/dsp/BjtStage.h"
 #include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/OnePoleSmoother.h"
+#include "clipper/dsp/OutputPotTaper.h"
 #include "clipper/dsp/Oversampler.h"
 #include "clipper/dsp/ParamGuard.h"
 
@@ -404,7 +405,12 @@ void MuffModel::setParameter(int paramId, float value) {
             impl_->tone.setTone(knob);
             break;
         case PARAM_VOLUME:
-            impl_->volume.setTarget(knob);
+            // The A-taper VOLUME pot's bare audio taper (docs §67). Q4's 10 k
+            // collector load sits in series AHEAD of the whole pot, so it scales
+            // every wiper position alike (-0.34 dB, law-neutral) and the wiper
+            // goes straight to the output jack — nothing loads it, so there is
+            // no divider correction. Sourcing in OutputPotTaper.h.
+            impl_->volume.setTarget(static_cast<float>(pot::muffVolume(knob)));
             break;
         default:
             break;

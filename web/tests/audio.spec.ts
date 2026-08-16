@@ -146,9 +146,23 @@ test('RAT worklet: high distortion yields odd harmonics; LEVEL scales RMS', asyn
   expect(result.h3).toBeGreaterThan(result.h2 * 8);
   expect(result.h2).toBeLessThan(result.f1 * 0.1);
 
+  // LEVEL is the 100 k LOGARITHMIC volume pot, not a linear one (docs §67).
+  //
+  // REWRITTEN 2026-08-10. This used to assert `1.8 < rmsFull/rmsHalf < 2.2` — the
+  // identity map — and it is the SIXTH site in the repo that did (the other five
+  // are the core suites' `testLevelLinearity` / `testVolumeLinearity` / "OUTPUT is
+  // a linear pot (house convention)"). Rewritten, not loosened: the band below
+  // EXCLUDES the linear map rather than accommodating it.
+  //
+  // What this bar is for, per §57.13's precedent: the CORE suite owns the pot's
+  // SHAPE (the 10-20 % band, the even-dB-per-quarter-turn test), measured over
+  // many renders where it is stable. What the WEB spec can prove that the core
+  // cannot is the DELIVERY PATH — that param id 2 travels through the worklet and
+  // arrives at the core carrying the real law. A linear map measures 2.0 here and
+  // misses by a factor of four.
   const ratio = result.rmsFull / result.rmsHalf;
-  expect(ratio).toBeGreaterThan(1.8);
-  expect(ratio).toBeLessThan(2.2);
+  expect(ratio).toBeGreaterThan(8.0); // audioTaper(k=4): 1/0.11920 = 8.389
+  expect(ratio).toBeLessThan(8.8); //   a LINEAR pot would measure 2.0
 });
 
 test('RAT worklet: bypass passes input through untouched', async ({ page }) => {

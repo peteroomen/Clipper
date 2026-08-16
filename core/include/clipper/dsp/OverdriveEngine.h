@@ -22,6 +22,17 @@
 // Everything else (the mid-hump corner, the 4558 op-amp values, the tone/level
 // topology) is IDENTICAL — which is exactly why the two pedals are one engine.
 //
+// ONE HONESTY NOTE ON THAT SENTENCE, added 2026-08-10 (docs §67). The shared
+// "tone/level topology" is a MODELLING POSITION, not a sourced fact for both
+// members: a TS808 netlist is reachable and annotates its level pot
+// ("R15 is level pot (1-100k, log)"), and no SD-1 netlist or parts list could be
+// reached from this container at all. So the SD-1's output-pot law is that
+// documented inheritance — unchanged in KIND by the taper slice (it was the TS's
+// identity map before and it is the TS's sourced law now), but it is a
+// reconstruction and it is the largest gap that slice leaves. §57's rule applies
+// verbatim: do not re-tune it toward a sound; find the schematic. The law is
+// carried in OverdriveConfig so one pedal can move alone when it is found.
+//
 // SdModel and TsModel are thin wrappers that own an OverdriveEngine built from
 // their config; the C ABI (sd_* / ts_*) and the worklet drive them identically.
 // SD-1's numeric behaviour is BYTE-IDENTICAL to the pre-refactor SdModel (its
@@ -63,6 +74,16 @@ struct OverdriveConfig {
     double tonePivotHz;   // treble-tilt split frequency
     float toneMaxTiltDb;  // +/- tilt at the TONE extremes
     double dcBlockHz;     // output coupling-cap high-pass
+
+    // Stage 3 — the LEVEL pot's own law (docs §67). The wiper law is the house
+    // audio taper; the NETWORK then bends it, because this family's pot drives
+    // an emitter-follower OUTPUT BUFFER and a loaded wiper does not deliver the
+    // bare taper. Both numbers live in the config rather than in the engine for
+    // one reason: **the SD-1's own schematic was not reachable** and it inherits
+    // the TS's values, so a slice that DOES source the SD-1 must be able to move
+    // one pedal without touching the other. Derivation in OutputPotTaper.h.
+    double levelPotOhms;        // the pot's track resistance
+    double levelWiperLoadOhms;  // load on the wiper (<= 0 means unloaded)
 };
 
 // The shared overdrive engine. Param ids and clip modes mirror SdModel's

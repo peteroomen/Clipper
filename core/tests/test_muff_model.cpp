@@ -26,6 +26,7 @@
 #include "clipper/dsp/MuffModel.h"
 
 #include "clipper/dsp/BjtStage.h"
+#include "clipper/dsp/OutputPotTaper.h"
 #include "measure/AliasMetric.h"
 #include "support/AssertsLive.h"
 #include "support/DcOffset.h"
@@ -620,15 +621,69 @@ void testAliasing(double fs) {
                 fs, w4, wNaive);
 }
 
-// --- Test 6: VOLUME linearity. ------------------------------------------------
-void testVolumeLinearity() {
+// --- Test 6: the VOLUME pot's law. --------------------------------------------
+//
+// REWRITTEN 2026-08-10 (docs §67). This was `testVolumeLinearity` and it asserted
+// the identity map — the same lineup-wide approximation §66.3 registered on the
+// RAT. §66.3 named three files; this is a FOURTH site that carried it (the GOLD's
+// is the fifth), and all five moved in one slice. Rewritten, not deleted.
+//
+// SOURCED: the `Circle-Circuits/motherboard` Big Muff BOM lists "R25 (Level)" as
+// **A250k** while listing the Gain and Tone pots as B100k — an author who writes
+// B for two pots and A for the third is distinguishing them (the same class of
+// evidence §63 took from LiveSPICE's Logarithmic/Linear markings).
+//
+// TOPOLOGY: Q4's 10 k collector load sits in series AHEAD of the whole pot, so it
+// scales every wiper position alike (-0.34 dB, LAW-NEUTRAL) and the wiper goes
+// straight to the output jack — nothing loads it. So this pedal gets the BARE
+// audio taper, identical in shape to the RAT's and NOT the TS's loaded one.
+void testVolumePotLaw() {
     const double fs = 48000.0;
     auto in = sine(220.0, 0.2f, 0.5, fs);
     auto rmsAt = [&](float v) { return tailRms(render(in, {0.8f, 0.5f, v}, fs), fs); };
-    const double r25 = rmsAt(0.25f), r50 = rmsAt(0.50f), r100 = rmsAt(1.0f);
-    assert(std::fabs(r50 / r25 - 2.0) < 0.06 && "VOLUME not linear 0.25 -> 0.5");
-    assert(std::fabs(r100 / r50 - 2.0) < 0.06 && "VOLUME not linear 0.5 -> 1.0");
-    std::printf("  [ok] VOLUME linearity: r50/r25=%.3f r100/r50=%.3f\n", r50 / r25, r100 / r50);
+    const double r100 = rmsAt(1.0f), r75 = rmsAt(0.75f);
+    const double r50 = rmsAt(0.50f), r25 = rmsAt(0.25f);
+
+    // BAR 1 — inside §58's documented 10-20 % audio-taper band. A linear pot
+    // measures 50.0 %, which is what this model did until this slice.
+    const double halfFraction = r50 / r100;
+    assert(halfFraction >= 0.10 && halfFraction <= 0.20 &&
+           "VOLUME at half rotation is outside the 10-20 % audio-taper band the "
+           "BOM's A250k implies");
+
+    // BAR 2 — the SHAPE: even dB per quarter turn (8.97 / 9.51 / 11.41 dB ->
+    // 1.272) where the linear map it replaced gives 2.50 / 3.52 / 6.02 -> 2.409.
+    const double s1 = std::fabs(toDb(r75 / r100));
+    const double s2 = std::fabs(toDb(r50 / r75));
+    const double s3 = std::fabs(toDb(r25 / r50));
+    const double stepRatio =
+        std::max(s1, std::max(s2, s3)) / std::min(s1, std::min(s2, s3));
+    assert(stepRatio < 1.60 &&
+           "VOLUME does not spend its dB evenly across the travel — that is a "
+           "linear pot's signature, not an audio taper's");
+
+    // BAR 3 — the wiper is UNLOADED, so this pedal must land on the BARE taper,
+    // not the TS's loaded one. The two differ by only 0.53 percentage points, so
+    // this is the bar that says the difference is real and modelled rather than
+    // rounded away — and it is what stops a later slice folding all five pedals
+    // into one call.
+    const double bare = clipper::dsp::pot::audioTaperWiper(0.5);
+    assert(std::fabs(halfFraction - bare) < 2e-3 &&
+           "VOLUME is not the BARE audio taper — this pot's wiper drives the "
+           "output jack and nothing else, so nothing should be bending it");
+
+    // BAR 4 — the top of the knob does not move (§51's rule). Q4's 10 k source
+    // resistance is normalised out on purpose: it is a fixed -0.34 dB LEVEL fact,
+    // and this slice moves LAWS. Folding it in here would make VOLUME 1.0 quieter
+    // than it shipped and fail this assert (docs §67.3 records the number).
+    assert(clipper::dsp::pot::muffVolume(1.0) == 1.0 &&
+           "VOLUME 1.0 is no longer exactly unity — the taper has become a trim");
+    assert(clipper::dsp::pot::muffVolume(0.0) == 0.0 && "VOLUME 0 is not silence");
+
+    std::printf("  [ok] VOLUME pot law (A250k, BOM-sourced, unloaded wiper): half "
+                "rotation %.3f %% vs the bare taper's %.3f %% (band 10-20), "
+                "steps %.2f/%.2f/%.2f dB ratio %.3f (bar 1.60)\n",
+                100.0 * halfFraction, 100.0 * bare, s1, s2, s3, stepRatio);
 }
 
 // --- Test 8: idle solver cost — the Muff must not cost MORE when you stop playing.
@@ -969,7 +1024,7 @@ int main(int argc, char** argv) {
     testLowEndResponse(48000.0);
     testAliasing(44100.0);
     testAliasing(96000.0);
-    testVolumeLinearity();
+    testVolumePotLaw();
     testStabilityHygiene();
     testSlamConvergence();
     testStageSlamConvergence();

@@ -15,6 +15,7 @@
 #include "clipper/dsp/SdModel.h"
 
 #include "clipper/dsp/AsymSoftClipper.h"
+#include "clipper/dsp/OutputPotTaper.h"
 #include "clipper/dsp/RatModel.h"
 #include "measure/AliasMetric.h"
 
@@ -310,16 +311,71 @@ void testAliasing(double fs) {
         fs, w4, wAdaa1, wNaive1);
 }
 
-// --- Test 6: level linearity. -------------------------------------------------
-void testLevelLinearity() {
+// --- Test 6: the LEVEL pot's law. ---------------------------------------------
+//
+// REWRITTEN 2026-08-10 (docs §67). This was `testLevelLinearity` and it asserted
+// the identity map §66.3 registered as a lineup-wide approximation. Rewritten,
+// not deleted.
+//
+// READ THIS BEFORE TRUSTING THE NUMBERS: unlike the RAT's and the TS's, **this
+// pedal's pot law is NOT SOURCED.** No SD-1 netlist or parts list was reachable
+// (docs §67.2 lists what was tried; the proxy permits github.com only and the
+// search extracts that exist contradict each other on this exact question). The
+// law here is the TS's, inherited through the shared `OverdriveEngine` exactly as
+// this model has always inherited the TS's tone stack and DC blocker — a
+// DOCUMENTED RECONSTRUCTION, and the largest gap §67 leaves.
+//
+// So what this test asserts is deliberately narrower than the TS's: the class of
+// law (an audio taper inside its documented band, shaped by the buffer load) and
+// the invariants that must hold whatever the letter turns out to be. It does NOT
+// claim the SD-1's pot is a 100 k log part. If a schematic turns up, change
+// `kSdConfig`'s two level fields and re-baseline these prints — the bars below
+// are written so a DIFFERENT audio-taper pot still passes.
+void testOutputPotLaw() {
     const double fs = 48000.0;
     auto in = sine(220.0, 0.3f, 0.5, fs);
     auto rmsAt = [&](float lvl) { return tailRms(render(in, {0.6f, 0.5f, lvl}, fs), fs); };
-    const double r25 = rmsAt(0.25f), r50 = rmsAt(0.50f), r100 = rmsAt(1.0f);
-    assert(std::fabs(r50 / r25 - 2.0) < 0.05 && "RMS not linear 0.25 -> 0.5");
-    assert(std::fabs(r100 / r50 - 2.0) < 0.05 && "RMS not linear 0.5 -> 1.0");
-    std::printf("  [ok] level linearity: r50/r25=%.3f r100/r50=%.3f\n",
-                r50 / r25, r100 / r50);
+    const double r100 = rmsAt(1.0f), r75 = rmsAt(0.75f);
+    const double r50 = rmsAt(0.50f), r25 = rmsAt(0.25f);
+
+    // BAR 1 — inside §58's documented 10-20 % audio-taper band. A linear pot
+    // measures 50.0 %, which is what this model did until this slice.
+    const double halfFraction = r50 / r100;
+    assert(halfFraction >= 0.10 && halfFraction <= 0.20 &&
+           "LEVEL at half rotation is outside the 10-20 % audio-taper band");
+
+    // BAR 2 — the SHAPE: even dB per quarter turn (9.81 / 9.06 / 11.13 dB ->
+    // 1.229) where the linear map it replaced gives 2.50 / 3.52 / 6.02 -> 2.409.
+    const double s1 = std::fabs(toDb(r75 / r100));
+    const double s2 = std::fabs(toDb(r50 / r75));
+    const double s3 = std::fabs(toDb(r25 / r50));
+    const double stepRatio =
+        std::max(s1, std::max(s2, s3)) / std::min(s1, std::min(s2, s3));
+    assert(stepRatio < 1.60 &&
+           "LEVEL does not spend its dB evenly across the travel — that is a "
+           "linear pot's signature, not an audio taper's");
+
+    // BAR 3 — the top of the knob does not move (§51's rule): LEVEL 1.0 renders
+    // bit-identically to the pre-slice build (hashes in docs §67.4).
+    assert(clipper::dsp::pot::tsLevel(1.0) == 1.0 &&
+           "LEVEL 1.0 is no longer exactly unity — the taper has become a trim");
+    assert(clipper::dsp::pot::tsLevel(0.0) == 0.0 && "LEVEL 0 is not silence");
+
+    // BAR 4 — the SD-1 and the TS agree, BY CONSTRUCTION and on purpose. This is
+    // the assertion that keeps the inheritance HONEST rather than accidental: it
+    // will go red the moment someone gives one pedal its own law without giving
+    // the other one too, which is precisely the moment a reader needs to notice
+    // that the SD-1's is a reconstruction. When the SD-1 IS sourced, this bar is
+    // the one to delete — deliberately, not by drift.
+    assert(std::fabs(halfFraction - clipper::dsp::pot::tsLevel(0.5)) < 5e-3 &&
+           "the SD-1's LEVEL law has drifted from the TS's — if that is "
+           "deliberate (an SD-1 schematic was found), delete this bar and say so "
+           "in the header; if it is not, it is a bug");
+
+    std::printf("  [ok] LEVEL pot law (audio taper, wiper loaded — INHERITED from "
+                "the TS, NOT sourced for this pedal): half rotation %.3f %% "
+                "(band 10-20), steps %.2f/%.2f/%.2f dB ratio %.3f (bar 1.60)\n",
+                100.0 * halfFraction, s1, s2, s3, stepRatio);
 }
 
 // --- Test 7: hygiene (finite, silence->silence, deterministic). --------------
@@ -366,7 +422,7 @@ int main() {
     testOpAmpCorner(96000.0);
     testAliasing(44100.0);
     testAliasing(96000.0);
-    testLevelLinearity();
+    testOutputPotLaw();
     testHygiene();
     std::printf("All SdModel tests passed.\n");
     return 0;

@@ -14413,3 +14413,389 @@ Left named rather than done, in the order a future slice should take them:
 4. **A `--no-slew` flag on `clipper-render`**, if a listening A/B is ever wanted;
    deliberately not added here to keep the diff out of a file a parallel slice is
    editing.
+
+## 67. The output-pot tapers, lineup-wide — five pedals, five sourced laws, and only four of them are audio tapers
+
+**Slice:** `feat/output-pot-tapers` (2026-08-10). **Touches:**
+`core/include/clipper/dsp/OutputPotTaper.h` (new),
+`core/src/dsp/{RatModel,OverdriveEngine,SdModel,TsModel,MuffModel,GoldModel}.cpp`,
+`core/include/clipper/dsp/OverdriveEngine.h`,
+`core/tests/test_{rat,sd,ts,muff,gold}_model.cpp`,
+`core/tests/test_player_expectations.cpp`, `core/CMakeLists.txt`, docs. **No ADR**
+— nothing architectural was decided; the decisions were all "what does this
+pedal's netlist say".
+
+This is §66.7's item 1, taken in the shape §66.3 said it had to be taken: **all
+five dirt pedals' output pots at once, one bless.** §66 measured the RAT's LEVEL
+pot as identity-linear where the ProCo netlist annotates it logarithmic, and
+**deliberately refused to fix it**, because substituting the real law on that
+pedal alone measures −11.61 dBFS at the unity-trim probe — the quietest of the
+five, reproducing the pre-§36 staging to within 0.4 dB. A correct knob law would
+have silently undone §36's diode fix.
+
+**The headline: the RAT still measures exactly −11.61 dBFS, and §36 still holds,
+because rank is the property and absolute level is not.** With its four siblings
+moved too, the RAT holds **rank 2 of 5** at the shipped defaults — the same rank
+it had before the slice — where the one-pedal version would have put it at rank
+5. That is the entire argument for the lineup-wide slice, now measured rather
+than predicted.
+
+**The second headline is a refusal.** The GOLD's output pot is **not** an audio
+taper and did not get one. Applying the house `audioTaper(k = 4)` five times
+because it was there would have taken the GOLD 7.71 dB down at its shipped
+default against sources that say its pot is linear.
+
+### 67.1 The research channel, and what each pedal's law is sourced from
+
+Same proxy as §57/§59/§64/§66: **github.com over git only.** Re-confirmed this
+slice — `hobby-hour.com`, `effectslayouts.blogspot.com`, `stompboxschematics.com`,
+`electricdruid.net`, `electrosmash.com`, `kitrae.net` and the ElectroSmash archive
+mirror all fail at the egress proxy, and GitHub's own code search requires a login
+(`WebFetch` on the search URL returns the sign-in page). `WebSearch` extracts work.
+
+| pedal | pot | taper letter | grade | source |
+|---|---|---|---|---|
+| RAT | 100 k | **LOG** | netlist | `Cushychicken/ltspice-guitar-pedals` → `proco-rat-distortion.asc`: `NOTE: R14 is volume pot (100k, logarithmic)`, plus §66.3's parts-list cross-check ("100K-A pots") |
+| TS | 100 k | **LOG** | netlist + independent cross-check | same repo → `ts808_tube_screamer.asc`: `NOTE: R15 is level pot (1-100k, log)`; cross-checked by `UC3Music/IceScreamer`, whose build doc reads "100K logarithmic or lineal installing 10K on R19" (a lin-to-log conversion resistor — i.e. the stock part is log) |
+| **SD-1** | — | **NOT SOURCED** | — | **nothing reachable.** See §67.2 |
+| Muff | 250 k | **AUDIO (A)** | parts list, letters distinguished | `Circle-Circuits/motherboard` BOM: `R25 (Level)` = **A250k** while `R6 (Gain)` / `R20 (Tone)` = **B100k**. An author who writes B for two and A for the third is distinguishing them — the class of evidence §63 took from LiveSPICE's `Logarithmic`/`Linear` markings. Confirmed against the project's schematic SVG (the "A250k" label sits on the VOLUME symbol) |
+| GOLD | 10 k | **LINEAR (B)** | search summary, corroborated | two independent extracts of the ElectroSmash / Coda-Effects Klon analyses state the ORIGINAL uses a linear (B) taper on Output and that an audio taper is a popular MOD — search-summary grade, the §66.4 precedent, labelled as such. **Corroborated independently** by `jatinchowdhury18/KlonCentaur` mapping its `level` control straight to the wiper position |
+
+The GOLD's **network** is a much stronger source than its letter:
+`ChowCentaur/CommonProcessors/OutputStageProcessor.cpp` gives
+`R1 = 560 + (1−level)·10000`, `R2 = level·10000 + 1`, `C1 = 4.7 µF`, and its
+`OutputStageWDF.h` sibling names the wiper's load as `R28 = 100 kΩ`. That is
+netlist-grade, from the same reference §52 and §54 derived the summing weight and
+the clipping stage from.
+
+### 67.2 The SD-1 is NOT sourced, and it is the largest gap this slice leaves
+
+**No SD-1 netlist or parts list was reachable.** No `.asc` exists on GitHub; every
+schematic host is blocked at the proxy; and the search extracts that do exist
+**contradict each other on this exact question** — one build guide calls a 100 k
+AUDIO-taper level pot a *mod*, another reports builders using B100k. They settle
+nothing and none of them is used.
+
+Per §57's rule, no letter was invented for it. What the slice does instead is
+carry forward a relationship that **has already shipped since the v1.1 refactor**
+and is written into `OverdriveEngine.h` in terms: *"Everything else (the mid-hump
+corner, the 4558 op-amp values, the tone/level topology) is IDENTICAL — which is
+exactly why the two pedals are one engine."* The SD-1's output-pot law is that
+same documented inheritance, **unchanged in kind**: it was the TS's identity map
+before and it is the TS's sourced law now.
+
+It is a **documented reconstruction, not a sourced fact.** The two numbers live in
+`OverdriveConfig` rather than in the engine precisely so a slice that finds the
+SD-1 schematic can move one pedal without touching the other, and
+`test_sd_model.cpp`'s bar 4 asserts the two agree so the inheritance cannot drift
+silently — that bar is the one to delete, deliberately, when the SD-1 is sourced.
+**Do not re-tune it toward a sound; find the schematic.**
+
+### 67.3 One network form, and why the normalisation is a scope boundary
+
+Every pot in the lineup is the same network with different values:
+
+```
+   signal ──[ Rs ]──┬──[ (1-w)·Rp ]──┬── wiper ──> out
+                    │                │
+                  (top)            [ w·Rp ]   [ RL ]
+                                     │           │
+                                   AC gnd     AC gnd
+```
+
+**`Rs` and `RL` are not interchangeable, and conflating them is the trap this
+slice exists to avoid.** `Rs` is in series with the *whole* pot, so it scales
+every wiper position by the same `Rp/(Rs+Rp)` — it changes the LEVEL and never the
+SHAPE. `RL` shunts the *bottom leg only*, so it bends the law, most where the
+bottom leg is largest.
+
+| pedal | Rs | Rp | RL | delivered at half rotation |
+|---|---|---|---|---|
+| RAT | ~0 (2N5485 source follower) | 100 k | none (wiper → output jack) | **11.920 %** — the bare taper |
+| TS / SD-1 | 0 (op-amp driven) | 100 k | **226 k** | **11.391 %** — the bare taper, bent |
+| Muff | 10 k (Q4's collector load) | 250 k | none (wiper → output jack) | **11.920 %** — the bare taper |
+| GOLD | 560 Ω (R25) | 10 k | 100 k (R28) | **48.976 %** — a linear pot, barely bent |
+
+The TS's `RL` is `R19 = 510 k` on the wiper, in parallel with `C8` into
+(`R18 = 510 k` ∥ the 2SC4081 follower's base). **The transistor's β is not a fit
+and it barely matters** — across the whole plausible range the delivered
+half-rotation moves 11.354 % (β = 120) → 11.391 (β = 200, shipped) → 11.421
+(β = 400) → 11.449 (β = ∞, i.e. `R19 ∥ R18` alone), a spread of **0.08 dB**. If a
+future slice sources the real part, this constant will not move audibly.
+
+**NORMALISATION — deliberate, and it is a scope boundary not a fudge.** Every law
+is normalised so `law(1) == 1` exactly. Two of the networks have a fixed insertion
+loss at full rotation — the Muff's 10 k source into a 250 k pot is **−0.341 dB**,
+the GOLD's 560 Ω R25 is **−0.519 dB** — and those are LEVEL facts, not LAW facts.
+Shipping them would smuggle an absolute level trim in under a knob-law change,
+which is exactly what §66 refused and what §51 pinned by construction. They are
+measured and recorded here as their own follow-up; they are not lost, they are out
+of scope.
+
+The GOLD's `C15 = 4.7 µF` makes a **3.3 Hz** high-pass with the ~10.3 k the chain
+presents at noon — two decades below the band, 0.00 dB from low E up — and is
+deliberately not modelled.
+
+### 67.4 What it measures, and the proof that ONLY the pot moved
+
+All five at their shipped defaults, 220 Hz, 48 kHz, tail RMS at the 0.15 V
+unity-trim probe (the §66.2 table, re-measured before any edit and again after):
+
+| in Vpk | rat | sd1 | ts | muff | gold | spread |
+|---|---|---|---|---|---|---|
+| 0.10 V BEFORE | −6.77 | −9.87 | −11.39 | −4.82 | −11.08 | 6.6 dB |
+| 0.10 V AFTER | **−11.98** | −18.34 | −18.70 | −14.95 | −11.23 | 7.5 dB |
+| 0.15 V BEFORE | −6.40 | −7.97 | −9.19 | −4.73 | −8.38 | 4.5 dB |
+| 0.15 V AFTER | **−11.61** | −16.44 | −16.50 | −14.85 | −8.54 | 8.0 dB |
+| 0.30 V BEFORE | −5.86 | −5.82 | −6.68 | −4.63 | −4.16 | 2.5 dB |
+| 0.30 V AFTER | **−11.07** | −14.28 | −13.99 | −14.75 | −4.32 | 10.4 dB |
+
+The BEFORE rows are row-for-row identical to §66.2's, which is the scope check.
+
+**Per-pedal change at the shipped default, and every one is the law:**
+rat −5.21 dB · sd1 −8.46 · ts −7.31 · muff −10.13 · gold **−0.16**.
+
+**THREE INDEPENDENT PROOFS THAT NOTHING BUT THE POT MOVED.**
+
+1. **OUTPUT 1.0 is BIT-IDENTICAL on all five.** FNV-1a over the raw float bits of
+   a 220 Hz / 0.15 V / 48 kHz render, this branch against a pristine build of
+   merged `main`: `rat a8c7985150c2276d · sd1 a2f4530be7623650 ·
+   ts 557f5b053df99d03 · muff 1c4d571a02b211e8 · gold 81a2afb82eb16505` — the same
+   on both sides. Every other knob position differs. This is `law(1) = 1` doing
+   what §51 pinned it for, and it is asserted per pedal.
+2. **The RAT's factor-1 drift guard moves by a UNIFORM ratio.** That guard renders
+   at LEVEL 0.9 and had to be regenerated (§36 and §66.5 both label it a drift
+   guard, not a property, and §36 regenerated it for the same reason). LEVEL is a
+   pure scalar applied after every other stage, so a correct change must scale all
+   seven hardcoded samples by exactly the same factor — and it does, every one by
+   **0.737965(4–6)** against the analytic `audioTaper(0.9)/0.9 = 0.737965654`
+   (−2.639 dB). A uniform ratio to six decimals is what says the clipper, the
+   shaping filter, the op-amp and the tone stage are all untouched.
+3. **The A4 level-sanity rows.** Only ONE of the five dirt rows left its window:
+   the Muff, by the derived −10.13 dB. It is re-baselined by SHIFTING the window
+   10 dB (18..38 → 8..28), still exactly 20 dB wide, so it is no easier to pass.
+   rat +18.6 → +16.9, sd1 +15.6 → +7.1, ts +13.1 → +5.8, gold +12.4 → +12.2 all
+   stayed inside their existing windows untouched.
+
+### 67.5 THE ACCEPTANCE BAR AS WRITTEN IS NOT MET, and the cause is the DEFAULTS
+
+The plan's bar was *"lineup spread at shipped defaults tighter than, or comparable
+to, the 4.5 dB baseline — the number recorded, not snugged"*. **It measures 8.0 dB.
+Recorded, not snugged, and reported as a miss.**
+
+The mechanism is measured, not guessed. At a **common** OUTPUT position the spread
+before the slice was **6.40 dB at every position** — a linear pot makes the
+lineup's relative levels pot-independent. After:
+
+| common OUTPUT | before | after |
+|---|---|---|
+| 1.00 | 6.40 dB | **6.40 dB** (bit-identical renders) |
+| 0.75 | 6.40 | 8.57 |
+| 0.70 | 6.40 | 9.71 |
+| 0.50 | 6.40 | 14.07 |
+
+So two separate things widen the spread at the defaults, and **neither is a defect
+in the laws**:
+
+1. **The shipped OUTPUT defaults were a level calibration expressed in
+   linear-pot coordinates.** They are 0.80 / 0.70 / 0.75 / 0.60 / 0.70; on a
+   linear pot those positions span 2.50 dB, and on an audio taper the same
+   positions span 7.42 dB. The defaults had been bringing a 6.40 dB pedal spread
+   down to 4.5 dB; changing the law invalidates the coordinates, not the
+   calibration.
+2. **The GOLD does not move**, because its pot is sourced linear. Had it wrongly
+   received the house audio taper the spread would have come out **4.89 dB** —
+   i.e. the bar would have been "met" by putting a law on a pedal against its own
+   source. §63.14's lesson, from the other direction: a taper cannot fix a level
+   complaint, and the defaults were the real answer.
+
+**NAMED FOLLOW-UP, with the arithmetic already done.** Re-derive the five OUTPUT
+defaults on the new laws. Solving `law_p(x*) = oldDefault_p` per pedal gives the
+knob position that reproduces the pre-slice delivered gain exactly (residual
+≤ 2.2e-16):
+
+| pedal | shipped | reproduces the old gain at |
+|---|---|---|
+| rat | 0.80 | **0.9454** |
+| sd1 | 0.70 | **0.9319** |
+| ts | 0.75 | **0.9461** |
+| muff | 0.60 | **0.8753** |
+| gold | 0.70 | **0.7124** |
+
+That is a separate concern with its own justification and its own golden bless, so
+it is NOT taken here — bundling it would mean asking the owner to bless goldens
+carrying two changes at once with no way to attribute the drift, which is what the
+bless ritual exists to prevent. Note the values are all high (0.87–0.95): with a
+real log pot you sit near the top of the OUTPUT knob for the same level, which is
+itself a fact worth checking against a player before adopting it wholesale.
+
+### 67.6 The tests — SIX rewritten, not three, and the XFAIL closed
+
+§66.3 named three files carrying `testLevelLinearity`. **There were SIX sites
+asserting the linear map** — five in the core suites and one in the web suite —
+and the extra ones are the reason this had to be one slice. In the core: `test_muff_model.cpp`'s `testVolumeLinearity` and `test_gold_model.cpp`'s
+"OUTPUT is a linear pot (house convention)". All five are **rewritten, not
+deleted**, and each now asserts the circuit against a reference outside this
+codebase:
+
+* **bar 1 — the band.** Half rotation inside §58's documented 10–20 %. A linear
+  pot measures 50.0 % and fails.
+* **bar 2 — the shape.** The ratio of the largest quarter-turn step in dB to the
+  smallest: rat/muff **1.272**, ts/sd1 **1.229**, against a **1.60** bar. The
+  linear map they replaced measures **2.409**. This is what "audio taper" means to
+  a player, and it is separable from bar 1.
+* **bar 3 — the LOAD.** The TS must sit measurably BELOW the bare taper and by the
+  derived amount (bracketed on both sides); the Muff must sit ON it. The two
+  differ by only 0.53 percentage points, and that bar is what stops a later slice
+  folding five pedals into one call.
+* **bar 4 — the top of the knob does not move.** `law(1) == 1` exactly, per pedal.
+* **the GOLD's own contrast bar.** Half rotation **> 0.40** and a step ratio
+  **> 2.00** (measured 48.98 % and 2.258) — it asserts that this pedal is NOT an
+  audio taper, and it goes red the moment someone tidies it into the house one.
+
+**`rat-level-pot-linear-not-log` is deleted** — it XPASSes at 11.92 %, and an XPASS
+is a hard failure. `clipper_rat_tests` loses its `clipper_add_xfail_ledger`
+registration and the RAT suite has ZERO known-bad properties. **Core ctest
+35 → 34 entries; repo ledgers 6 → 5.**
+
+**AND A SIXTH SITE, IN THE WEB SUITE.** `web/tests/audio.spec.ts`'s *"RAT worklet:
+… LEVEL scales RMS"* asserted `1.8 < rmsFull/rmsHalf < 2.2` — the identity map
+again. Rewritten, not loosened: the band now **excludes** it (`8.0 … 8.8`; the
+audio taper gives 1/0.11920 = **8.389**, a linear pot gives 2.0, so it misses by a
+factor of four). Per §57.13's division of labour the core suite owns the pot's
+SHAPE and the web spec owns the **DELIVERY PATH** — that param id 2 travels
+through the worklet and arrives at the core carrying the real law.
+
+**One more web clause had to be RE-DERIVED, and the replacement is stronger.**
+`web/tests/cab.spec.ts`'s *"four edits in one declick fade window"* proved its
+batch had landed with `afterRms < beforeRms * 0.6` — a RELATIVE proxy. It broke
+because the driven rig at RAT LEVEL 0.9 / TS LEVEL 0.7 is now much quieter
+(beforeRms 0.331 → 0.092) while `afterRms`, which is the BYPASSED input, did not
+move at all: the proxy was measuring the pedals' gain, not whether the edits
+landed. Replaced by the absolute target its own comment always described — with no
+pedals and the amp down the worklet passes the trimmed input, so `afterRms` must be
+the oscillator's own RMS, `0.1/√2 = 0.070711`. **Measured 0.0707107, agreeing to
+seven significant figures.** That is strictly stronger than "less than 60 % of
+before" and it cannot be broken by a future knob-law change, because it does not
+reference the pedals' gain at all.
+
+**New: `testDirtLineupStaging` (A5) in the player-expectations suite** — the bar
+the whole slice turns on. It renders all five at the shipped defaults on the §66.2
+probe and asserts the RAT is not the quietest. It prints the spread rather than
+asserting it, with §67.5's reason written next to it.
+
+### 67.7 Perturbations
+
+`touch`ed after both patch and restore, per the house rule.
+
+| # | patch | result |
+|---|---|---|
+| P1 | RAT LEVEL → back to the identity linear map | **RED** — bar 1: 50.0 % is outside the 10–20 % band |
+| P1b | P1 **and bar 1 disabled** | **RED** — bar 2 (the shape), proving it independently: the linear map's step ratio is 2.409 against the 1.60 bar |
+| P2 | TS wiper load REMOVED (i.e. "apply `audioTaper` and stop") | **RED** — bar 3's first clause: it lands on the bare taper |
+| P3 | TS wiper load 226 k → 80 k (a load the netlist does not support) | **RED** — bar 3's second clause. Chosen deliberately at 80 k rather than 50 k: 50 k drops the pot below the 10 % band and would have tripped bar 1 instead, proving nothing about the load |
+| P4 | Muff given the TS's LOADED law instead of its own bare one | **RED** — muff bar 3. The two laws differ by **0.53 percentage points** and the bar sees it |
+| P5 | GOLD given the house audio taper — **the "apply k = 4 five times" mistake** | **RED**, and *on a pre-existing bar*: `testTransparency`'s level clause catches it before the new bars are reached. Reported as-is — the mistake is guarded twice over |
+| P5g | P5 + `testHeadroomAndOutput` ordered ahead + bar (a) off | **RED** — gold bar (b): half rotation drops into audio-taper territory |
+| P5h | P5g + bar (b) off | **RED** — gold bar (c), **THE CONTRAST BAR**: the step ratio collapses 2.258 → ~1.27 |
+| P6 | GOLD network shipped **UN-NORMALISED** (R25's 0.519 dB becomes a level trim) | **RED** — `testTransparency`'s level clause again |
+| P6c | P6 + transparency off + bar (a) widened to 1 dB | **RED** — gold bar (d): `goldOutput(1.0) != 1.0` |
+| P6d | GOLD's own law given an audio-taper wiper, ordered ahead | **RED** — gold bar (a), the 0.5 dB network window |
+| P7 | Muff shipped **UN-NORMALISED** (Q4's 10 k source becomes a 0.34 dB trim) | **RED** — muff bar 4, **and only bar 4 can see it**: a constant factor cancels in every ratio bars 1–3 measure. That is the perturbation that says bar 4 is not decoration |
+| P8 | **§66's OWN SCENARIO**: the RAT keeps its log law, the four siblings go back to linear | **RED** — A5: *"the RAT is the QUIETEST of the five dirt pedals"*. This is the slice's thesis, failing exactly when it should |
+| P9 | SD-1 given its own law, diverging from the TS it inherits from | **RED** — sd bar 4, the inheritance guard |
+
+Every restore GREEN, **with one standing exception that is not a failure**:
+`clipper_player_expectations_tests` cannot be green on this branch at all, because
+four goldens are un-blessed by design (§67.9). Its restore was verified by hand
+instead: A5 returns to *"RAT at −11.61 dBFS with 3 of 4 siblings below it"* and the
+only assert that fires is `compareGolden`.
+
+**Two findings from the perturbation run itself, both worth keeping.**
+
+1. **A bar that could not fail, found and fixed mid-run.** `tsLevel()` was written
+   as a test-facing convenience while `OverdriveEngine` inlined the *same
+   expression* at its call site. So P8's first form patched `tsLevel`, the test's
+   idea of the law moved, and **the audio did not** — and `test_sd_model.cpp`'s
+   bar 4, which compares the SD-1's rendered half-rotation against `tsLevel(0.5)`,
+   would have agreed for the wrong reason. Fixed by extracting
+   `pot::loadedLogPot(knob, rPot, rLoad)` and having the engine call it: one
+   function, both callers. This is the §58.7/§64.9 pattern — the perturbation run
+   is where you find the bar that cannot fail.
+2. **Two of the GOLD's bars read the LAW FUNCTION and two read the RENDER**, so a
+   perturbation of the call site reaches only (b)/(c) and a perturbation of the
+   function reaches only (a)/(d). That is deliberate — a contract plus a
+   player-observable property — and between them the two halves cover both places
+   an edit can land. It is recorded because a reader running only P5 would
+   otherwise conclude (a) has no teeth.
+
+### 67.8 What did not change
+
+* **`clean120_chorus` is UNCHANGED at ±0.00 dB** — the only golden rig with no
+  dirt pedal in it, and the scope check.
+* **OUTPUT 1.0 is bit-identical on all five pedals** (§67.4), so nothing at the
+  top of any knob moved.
+* **GAIN / DISTORTION / SUSTAIN behaviour is untouched.** The RAT's factor-1 drift
+  guard moving by a single uniform ratio across all seven samples is the proof.
+* No new parameter, no ABI change, no worklet or native change: the law lives
+  entirely inside the core's `setParameter`, so both front ends inherit it through
+  the rebuilt artifact.
+* `OutputPotTaper.h` is **header-only on purpose** — a new `.cpp` has to be added
+  to `scripts/build-wasm.sh`'s source list inside the `STAMP:EMCC-ARGS` markers,
+  which §60 and §64 both record forgetting.
+
+**The plan's two edge cases, measured on all five** (220 Hz / 0.15 V / 48 kHz):
+
+| pedal | OUTPUT 0 tail peak | OUTPUT min→max slam in ONE block |
+|---|---|---|
+| rat | **0.000e+00** | 0.13727 vs a settled 0.13728 → **1.00×** |
+| sd1 | **0.000e+00** | 0.03674 vs 0.03674 → **1.00×** |
+| ts | **0.000e+00** | 0.02599 vs 0.02599 → **1.00×** |
+| muff | **0.000e+00** | 0.41819 vs 0.41852 → **1.00×** |
+| gold | **0.000e+00** | 0.02492 vs 0.02492 → **1.00×** |
+
+OUTPUT 0 is exact digital silence, not a floor — `law(0) = 0` exactly on every
+pedal, and it is asserted. The zipper convention is §62's: the largest
+sample-to-sample step during the slam over the same quantity at steady state, so
+1.00× means the smoother contributes nothing the signal was not already doing.
+Structurally expected — the law changes the smoother's TARGET, not its range
+(0 → 1 either way) — but measured rather than assumed.
+
+### 67.9 ⚠️ This slice is NOT finishable without the owner
+
+Four of the five goldens carry one of these pedals, so four move **by
+construction**. Measured with `--golden-report` (report only — nothing written):
+
+| golden | RMS Δ | worst band Δ | at |
+|---|---|---|---|
+| `rat_jcm800` | **−1.20 dB** | 14.63 dB | 252 Hz |
+| `sd1_twin_reverb` | **−8.57 dB** | 8.67 dB | 2540 Hz |
+| `muff_twin` | **−10.23 dB** | 10.60 dB | 5080 Hz |
+| `ts_ac30` | **−7.17 dB** | 7.64 dB | 1600 Hz |
+| `clean120_chorus` | **UNCHANGED −0.00** | 0.11 dB | 252 Hz |
+
+**NOTHING WAS BLESSED and `--update-goldens` was not run.** Re-blessing is a
+ritual, not a command: it needs a confirmation typed at `/dev/tty`, which this
+environment does not have. The core suite is therefore RED at exactly those four
+golden asserts **and nowhere else** — the §36/§47/§51/§55 precedent, and the
+design working rather than something to fix.
+
+Note `rat_jcm800` moves only −1.20 dB where the RAT itself drops 5.21 dB: the
+JCM800 is being driven less hard and gives some of it back, which is why its worst
+BAND delta (14.63 dB at 252 Hz) is the larger number and the one to listen to.
+
+### 67.10 Named follow-ups, in the order a future slice should take them
+
+1. **Re-derive the five shipped OUTPUT defaults** on the new laws (§67.5). The
+   arithmetic is done; what it needs is a decision about whether to reproduce the
+   old levels exactly or re-centre the lineup, and an owner bless.
+2. **Find the SD-1 schematic** (§67.2). Its output-pot law is the one
+   reconstruction in this slice. When it is found, change `kSdConfig`'s two level
+   fields and delete `test_sd_model.cpp`'s bar 4 deliberately.
+3. **The two un-normalised insertion losses** (§67.3) — the Muff's −0.341 dB from
+   Q4's 10 k source and the GOLD's −0.519 dB from R25. Both are real and both are
+   absolute-level facts this slice deliberately kept out; they belong with a
+   staging slice, not a knob-law one.
+4. Confirm the GOLD's taper letter against a schematic rather than a published
+   analysis — it is the weakest source in the table (§67.1), even though the
+   reference implementation agrees with it.

@@ -39,6 +39,7 @@
 
 #include "clipper/dsp/TsModel.h"
 
+#include "clipper/dsp/OutputPotTaper.h"
 #include "clipper/dsp/OverdriveEngine.h"
 
 namespace clipper::dsp {
@@ -58,6 +59,14 @@ constexpr OverdriveConfig kTsConfig = {
     /* tonePivotHz          */ 1000.0,  // TS tone tilt, SHARED topology with SD-1
     /* toneMaxTiltDb        */ 12.0f,
     /* dcBlockHz            */ 12.0,
+    // LEVEL pot — SOURCED (docs §67). The ts808_tube_screamer.asc annotation
+    // reads "R15 is level pot (1-100k, log)", cross-checked independently by the
+    // IceScreamer clone's build doc ("100K logarithmic"). The wiper is LOADED:
+    // R19 510 k to the bias rail, in parallel with C8 into (R18 510 k ∥ the
+    // 2SC4081 follower's ~2 M base impedance) = 226 k. The load is what makes
+    // this pedal's law differ from the RAT's unloaded pot.
+    /* levelPotOhms         */ pot::kTsPotOhms,
+    /* levelWiperLoadOhms   */ pot::kTsWiperLoadOhms,
 };
 
 // The SD-1's ASYMMETRIC 2-vs-1 knees — the even-harmonic reference the TS symmetry

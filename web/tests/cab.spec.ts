@@ -388,9 +388,25 @@ test('four edits in one declick fade window: all land at output zero', async ({ 
   expect(result.nan).toBe(false);
   // The batch genuinely landed: both pedals left the circuit and the amp powered
   // down, so the level fell to the raw trimmed input.
+  //
+  // RE-DERIVED 2026-08-10 (docs §67). This clause used to read
+  // `afterRms < beforeRms * 0.6` — a RELATIVE proxy, and it broke when the output
+  // pots got their real logarithmic law, because the driven rig at RAT LEVEL 0.9 /
+  // TS LEVEL 0.7 is now much quieter (beforeRms 0.331 -> 0.092) while afterRms,
+  // which is the BYPASSED input, obviously did not move at all. The proxy was
+  // measuring the pedals' gain, not whether the edits landed.
+  //
+  // Replaced by the ABSOLUTE target the comment above always described: with no
+  // pedals in the chain and the amp powered down, the worklet passes the trimmed
+  // input, so afterRms must be the oscillator's own RMS — 0.1 peak / sqrt(2) =
+  // 0.070711. Measured 0.0707107, agreeing to 7 significant figures. This is a
+  // STRICTLY STRONGER statement than "less than 60 % of before" (any pedal left in
+  // circuit, or the amp still on, moves it), and it cannot be broken by a future
+  // knob-law change because it does not reference the pedals' gain at all.
+  const inputRms = 0.1 / Math.SQRT2;
   expect(result.beforeRms).toBeGreaterThan(0.01);
   expect(result.afterRms).toBeGreaterThan(0.001);       // still a real note
-  expect(result.afterRms).toBeLessThan(result.beforeRms * 0.6);
+  expect(Math.abs(result.afterRms - inputRms)).toBeLessThan(inputRms * 0.05);
   // ...and it landed at output zero, so there is no step. Pre-fix the first two
   // edits committed at a declick gain of 1.0 — a full-amplitude waveform step.
   expect(result.editDelta).toBeLessThan(result.baseline * 2.0 + 0.02);

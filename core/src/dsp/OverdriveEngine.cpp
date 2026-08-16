@@ -11,6 +11,7 @@
 #include "clipper/dsp/OverdriveEngine.h"
 
 #include "clipper/dsp/Denormal.h"
+#include "clipper/dsp/OutputPotTaper.h"
 #include "clipper/dsp/ParamGuard.h"
 
 #include <algorithm>
@@ -138,7 +139,12 @@ void OverdriveEngine::setParameter(int paramId, float value) {
             toneTilt_.setTarget(toneKnobToTilt(knob, cfg_.toneMaxTiltDb));
             break;
         case PARAM_LEVEL:
-            level_.setTarget(knob);  // identity linear map, as the RAT
+            // The LOG level pot, LOADED by the output buffer's base network —
+            // 11.391 % at half rotation against the bare taper's 11.920 %
+            // (docs §67; OutputPotTaper.h carries the trace and the sourcing,
+            // including that the SD-1 inherits these numbers).
+            level_.setTarget(static_cast<float>(pot::loadedLogPot(
+                knob, cfg_.levelPotOhms, cfg_.levelWiperLoadOhms)));
             break;
         default:
             break;

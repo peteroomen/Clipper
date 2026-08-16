@@ -495,7 +495,17 @@ std::vector<Gear> allGear() {
     window("rat", 7.0, 27.0);
     window("sd1", 4.0, 24.0);
     window("ts", 1.0, 21.0);
-    window("muff", 18.0, 38.0);
+    // RE-BASELINED 2026-08-10 (docs §67, the output-pot taper slice) — and it is
+    // the ONLY one of the five dirt rows that had to move, which is itself the
+    // scope check. The VOLUME pot is now the A250k audio taper its BOM says it
+    // is, and at the shipped 0.6 default that is worth a DERIVED
+    // 20·log10(audioTaper(0.6)/0.6) = -10.13 dB. Measured +27.7 -> +17.6, i.e.
+    // -10.1 dB: the move is the pot law to within 0.03 dB and nothing else.
+    // The window is SHIFTED by that same 10 dB, not widened: 18..38 -> 8..28,
+    // still exactly 20 dB wide, so it is no easier to pass than it was. The other
+    // four dirt rows stayed inside their existing windows and were NOT touched:
+    // rat +18.6 -> +16.9, sd1 +15.6 -> +7.1, ts +13.1 -> +5.8, gold +12.4 -> +12.2.
+    window("muff", 8.0, 28.0);
     window("gold", 9.0, 29.0);  // §52 summing network re-centred this from −3..17
                                 // (itself re-centred from 3..23 by §50) on a measured
                                 // +19.3 dB. §54's clipping-stage trio measures +12.5,
@@ -885,6 +895,74 @@ void testLevelSanity(const std::vector<Gear>& gear) {
                "'no balls' / 'blows the mix apart')");
     }
     std::printf("  [ok] A4 level sanity: all gear inside its documented default-level window\n");
+}
+
+// --- A5 — THE DIRT LINEUP'S STAGING SURVIVES THE OUTPUT-POT LAWS. ------------
+//
+// Added 2026-08-10 (docs §67). This is the bar the whole output-pot slice turns
+// on, and it exists because §66 REFUSED to fix one pedal on exactly this ground.
+//
+// The argument, as §66.3 made it: the RAT's LEVEL pot is logarithmic and the
+// model mapped it linear. Substituting the real law on the RAT ALONE measures
+// -11.61 dBFS at the unity-trim probe, which makes it the QUIETEST of the five
+// and reproduces the pre-§36 staging to within 0.4 dB — i.e. a correct knob law
+// would have silently undone §36's diode fix. The cure was never "leave it
+// linear", it was "move all five together", and this test is what proves the
+// cure worked rather than asserting that it did.
+//
+// So: the RAT must NOT be the quietest of the five at the shipped defaults. It
+// measures -11.61 dBFS — the SAME absolute number §66 measured for the one-pedal
+// version — and yet it holds RANK 2 OF 5, because its siblings moved too. The
+// absolute level is not the property; the rank is.
+//
+// The spread is PRINTED, not asserted. §67.5 records why: it widens 4.5 -> 8.0 dB
+// and the cause is the shipped OUTPUT DEFAULTS, which were chosen against linear
+// pots and are now the wrong coordinates. That is a named follow-up, not a
+// failure of the laws, and snugging a bar around it would hide it.
+void testDirtLineupStaging(const std::vector<Gear>& gear) {
+    // The docs §66.2 probe, exactly: 220 Hz at the 0.15 V unity trim, 48 kHz,
+    // shipped defaults, tail RMS.
+    const double f0 = 220.0;
+    const size_t n = static_cast<size_t>(kFs);
+    std::vector<float> tone(n);
+    for (size_t i = 0; i < n; ++i)
+        tone[i] = 0.15f * static_cast<float>(std::sin(kTwoPi * f0 * i / kFs));
+
+    const char* kDirt[] = {"rat", "sd1", "ts", "muff", "gold"};
+    double ratDb = 0.0, lo = 1e9, hi = -1e9;
+    int quieterThanRat = 0, dirtSeen = 0;
+    std::printf("  [A5] dirt lineup at shipped defaults, 220 Hz / 0.15 V / 48 kHz:\n");
+    for (const char* want : kDirt) {
+        for (const auto& g : gear) {
+            if (g.name != want) continue;
+            std::vector<float> out;
+            g.render(defaults(g), tone, out);
+            // Skip the smoothing transient, exactly as the pedal suites do.
+            const size_t skip = std::min(out.size(), static_cast<size_t>(0.2 * kFs));
+            double acc = 0.0;
+            size_t cnt = 0;
+            for (size_t i = skip; i < out.size(); ++i) { acc += double(out[i]) * out[i]; ++cnt; }
+            const double db = toDb(cnt ? std::sqrt(acc / cnt) : 0.0);
+            std::printf("       %-5s %7.2f dBFS\n", want, db);
+            if (g.name == "rat") ratDb = db;
+            else ++dirtSeen, quieterThanRat += (db < ratDb ? 1 : 0);
+            lo = std::min(lo, db);
+            hi = std::max(hi, db);
+            break;
+        }
+    }
+    // `quieterThanRat` is only meaningful once the RAT has been measured, and it
+    // is first in kDirt, so every sibling is compared against a real number.
+    assert(dirtSeen == 4 && "the dirt lineup did not resolve five pedals");
+    assert(quieterThanRat > 0 &&
+           "the RAT is the QUIETEST of the five dirt pedals at the shipped "
+           "defaults — that is the pre-§36 staging returning through a knob law, "
+           "which is exactly what docs §66.3 refused to ship. Some sibling's "
+           "output pot has gone back to a linear map.");
+    std::printf("  [ok] A5 lineup staging: RAT at %.2f dBFS with %d of 4 siblings "
+                "below it (§36 holds); spread %.1f dB — RECORDED, not asserted "
+                "(docs §67.5: the OUTPUT defaults are the follow-up)\n",
+                ratDb, quieterThanRat, hi - lo);
 }
 
 // ---------------------------------------------------------------------------
@@ -1550,6 +1628,7 @@ int main(int argc, char** argv) {
     testHumTorture(gear);
     testKnobMonotonicity(gear);
     testLevelSanity(gear);
+    testDirtLineupStaging(gear);
     testLiveConvention();
     // In update mode the blocks above still run: never bless a render that fails
     // min-knob usability or the hum torture.
