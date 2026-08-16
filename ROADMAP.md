@@ -636,9 +636,19 @@ Gold/Myth transparent-OD territory already shipped. The *combo* is M10.8.
 
 **Standing risk this expansion sharpens:** there is still **no undo path** for
 removing a pedal, and no preset system. At six pedals that is an annoyance; at
-fifteen it is a liability. (An earlier revision of this line claimed
-`feat/undo-ring` already existed as a branch — it does not, on origin or
-locally. The work is unstarted.) Land it before the board gets much longer.
+fifteen it is a liability. `feat/undo-ring` **does exist on origin** and carries
+real work — one commit, `0ef2dd5 wip: undo ring + assistant cancel (audit UI/UX
+cluster) — UNVERIFIED`, ~1900 insertions including **ADR 011**, a plan file,
+`web/src/undo.ts` and a 593-line `web/tests/undo.spec.ts`. It is branched from a
+**2026-07-25-era** commit, so it is many slices behind `main` and needs a rebase
+before it means anything. Its own commit message says UNVERIFIED. Land it before
+the board gets much longer.
+
+*(A 2026-08-10 revision of this line briefly claimed the branch did not exist.
+That was wrong, and the mistake is worth recording because the method was the
+problem: `git branch -a` was used to make a claim about **origin**, and this
+clone had not fetched the remote-tracking refs, so it printed nothing. Use
+`git ls-remote --heads origin <name>` — it asks the remote.)*
 
 ### M14 — The assistant on native *(L, phased — planned 2026-08-10)*
 
