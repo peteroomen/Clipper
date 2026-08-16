@@ -1439,6 +1439,36 @@ constexpr double kQuantizationFloorDb = 0.15;
 
 enum class GoldenStatus { Ok, Missing, FormatDrift, LengthDrift };
 
+// The 16-bit storage LSB. A correct round-trip through writeGolden() quantizes
+// each sample and must return it within one of these; see kWriteBackLsbBar.
+constexpr double kStorageLsb = 1.0 / 32768.0;
+
+// The WRITE-PATH bar, and it is deliberately a PER-SAMPLE one (docs §67.11).
+//
+// This used to be `worstBandDb <= kQuantizationFloorDb` — a per-third-octave-BAND
+// proxy — and the output-pot taper slice proved that proxy unsound. It is bounded
+// by 16-bit quantization only if the render's quietest COMPARED band sits well
+// above the LSB, and the comparison window admits every band within 55 dB of the
+// loudest. Make a rig quieter and its quiet bands close on the floor: measured
+// round-trip error against the quietest compared band, across the five rigs,
+//   rat -3.59 dB -> 0.0005 | muff -24.50 -> 0.0009 | ts -29.26 -> 0.0097
+//   clean120 -38.03 -> 0.1059 | sd1 -40.27 -> 0.1585
+// — monotonic, and the SD-1 (8.57 dB quieter after §67) went through the 0.15 bar
+// on an honest 16-bit round-trip. `clean120_chorus` was already at 0.1059, i.e.
+// 70 % of budget, on a golden that slice never touched.
+//
+// The round-trip is a per-SAMPLE property, so measure it as one. It is completely
+// level-independent — all five rigs measure 1.51-1.59 LSB whatever their level —
+// and it is STRICTLY STRONGER as a write-path check: 8-bit storage would read
+// ~256 LSB, a channel-count or format error is garbage, and a truncated file is
+// caught by the frame count. It also cannot be confused with the voicing gate,
+// which the old form's own comment worried about.
+//
+// 1.5 rather than 0.5 LSB because the writer's float->int16 scaling is not a plain
+// truncation; the bar is 2.0 to leave the measured 1.59 a little room without
+// admitting anything a real format regression could produce.
+constexpr double kWriteBackLsbBar = 2.0;
+
 struct GoldenDelta {
     GoldenStatus status = GoldenStatus::Ok;
     double rmsDeltaDb = 0.0;
@@ -1446,6 +1476,9 @@ struct GoldenDelta {
     double worstHz = 0.0;
     int bandsCompared = 0;
     drwav_uint64 goldenFrames = 0;
+    // Largest per-sample difference between the golden ON DISK and this render,
+    // in LSBs of 16-bit storage. Only meaningful right after writeGolden().
+    double maxSampleLsb = 0.0;
 };
 
 // Measure a fresh render against the golden ON DISK. Pure measurement: it asserts
@@ -1481,6 +1514,18 @@ GoldenDelta measureAgainstGolden(const RigRender& rig) {
     drwav_free(raw, nullptr);
 
     d.rmsDeltaDb = toDb(rmsOf(rig.audio)) - toDb(rmsOf(gold));
+
+    // Per-SAMPLE agreement, in LSBs of 16-bit storage. Enormous when the golden
+    // is a different render (that is what the band deltas are for); ~1.5 when the
+    // golden was just written from this render, which is what the write-back
+    // check reads (see kWriteBackLsbBar).
+    {
+        const size_t n = std::min(gold.size(), rig.audio.size());
+        double worst = 0.0;
+        for (size_t i = 0; i < n; ++i)
+            worst = std::max(worst, std::fabs(static_cast<double>(gold[i]) - rig.audio[i]));
+        d.maxSampleLsb = worst / kStorageLsb;
+    }
 
     // Per-third-octave-band comparison on every band within 55 dB of the golden's
     // loudest band (quieter bands are noise).
@@ -1575,13 +1620,16 @@ void testGoldenRenders(bool update) {
         // point of a re-bless — then overwrite.
         printDeltaLine(r, measureAgainstGolden(r));
         writeGolden(r);
-        // Now that the reference IS this render, a round-trip must land within the
-        // storage floor. This is a check of the WRITE PATH (wav format, bit depth,
-        // channel count), NOT the voicing gate: it is bounded by 16-bit
-        // quantization by construction and can never catch drift.
+        // Now that the reference IS this render, the round-trip must be exact to
+        // within the storage LSB. This is a check of the WRITE PATH (wav format,
+        // bit depth, channel count), NOT the voicing gate: it is bounded by 16-bit
+        // quantization by construction and can never catch drift. See
+        // kWriteBackLsbBar for why this is per-SAMPLE and not per-band.
         const GoldenDelta after = measureAgainstGolden(r);
         assert(after.status == GoldenStatus::Ok && "golden write-back is unreadable");
-        assert(after.worstBandDb <= kQuantizationFloorDb &&
+        std::printf("  [C ] %-18s write-back round-trip %.3f LSB (bar %.1f)\n",
+                    r.name, after.maxSampleLsb, kWriteBackLsbBar);
+        assert(after.maxSampleLsb <= kWriteBackLsbBar &&
                "golden write path is lossy beyond 16-bit quantization");
     }
     if (update) {

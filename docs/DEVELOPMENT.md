@@ -14784,6 +14784,52 @@ Note `rat_jcm800` moves only −1.20 dB where the RAT itself drops 5.21 dB: the
 JCM800 is being driven less hard and gives some of it back, which is why its worst
 BAND delta (14.63 dB at 252 Hz) is the larger number and the one to listen to.
 
+### 67.11 The bless found a bar that was unsound, and it was not the voicing gate
+
+**Found while running the bless ritual, not by reading.** `--update-goldens`
+writes each golden then re-reads it and requires the round-trip to land inside the
+16-bit storage floor. It wrote `rat_jcm800`, then **aborted on
+`sd1_twin_reverb`** — and the abort was correct.
+
+That check was `worstBandDb <= kQuantizationFloorDb` (0.15 dB), a per-third-octave
+**BAND** proxy. Its own comment claimed it is "bounded by 16-bit quantization by
+construction" — but that only holds if the render's quietest COMPARED band sits
+well above the LSB, and the comparison window admits every band within 55 dB of
+the loudest. Measured round-trip error against the quietest compared band:
+
+| rig | quietest compared band | round-trip error |
+|---|---|---|
+| `rat_jcm800` | −3.59 dB | 0.0005 dB |
+| `muff_twin` | −24.50 dB | 0.0009 dB |
+| `ts_ac30` | −29.26 dB | 0.0097 dB |
+| `clean120_chorus` | −38.03 dB | **0.1059 dB** |
+| `sd1_twin_reverb` | −40.27 dB | **0.1585 dB** — over the bar |
+
+**Monotonic**, which identifies the mechanism: the error is set by how close the
+quietest compared band sits to the storage floor, and §67's level drop pushed the
+SD-1's reverb tail there. Note `clean120_chorus` was already at 0.1059 — **70 % of
+budget on a golden this slice never touches** — so the proxy was already fragile
+and the taper slice only exposed it.
+
+**The fix is not a bigger number.** `kQuantizationFloorDb` is shared with
+`statusWord()`, so raising it to clear a 0.0085 dB overshoot would permanently
+coarsen the UNCHANGED/CHANGED classification for every future bless — spending the
+project's anti-drift mechanism to get one bless through, which is the exact failure
+mode the ritual exists to prevent.
+
+**A round-trip is a per-SAMPLE property, so it is now measured as one.**
+`kWriteBackLsbBar = 2.0` LSBs of 16-bit storage, against a measured **1.51–1.59
+LSB on all five rigs** — completely level-independent, whatever the render's level
+or spectrum. It is strictly stronger as a write-path check (8-bit storage reads
+~256 LSB; a channel-count or format error is garbage; a truncated file is caught by
+the frame count) and it cannot be confused with the voicing gate, which the old
+form's own comment worried about. `kQuantizationFloorDb` is untouched and still
+decides UNCHANGED vs CHANGED.
+
+**P10, perturbation-proven:** coarsen the write path to 8 bits
+(`pcm[i] = (pcm[i]/256)*256`) → **RED** on `after.maxSampleLsb <=
+kWriteBackLsbBar`; restore → GREEN, goldens byte-identical to the commit.
+
 ### 67.10 Named follow-ups, in the order a future slice should take them
 
 1. **Re-derive the five shipped OUTPUT defaults** on the new laws (§67.5). The
