@@ -43,6 +43,85 @@ All five: 2.0 s standard pluck, 16-bit mono 48 kHz.
 
 <!-- New entries go directly below this line, newest first. -->
 
+## 2026-08-10 — 4 golden(s) re-blessed
+
+- **Blessed by:** Claude
+- **On top of:** `038b7a9` fix: the golden write-back check is a per-sample round-trip, not a band delta
+
+| Golden | Status | Broadband RMS Δ | Worst third-octave band Δ | Bands |
+| --- | --- | --- | --- | --- |
+| `rat_jcm800` | CHANGED | -1.20 dB | 14.63 dB @ 252 Hz | 12 |
+| `sd1_twin_reverb` | CHANGED | -8.57 dB | 8.67 dB @ 2540 Hz | 12 |
+| `muff_twin` | CHANGED | -10.23 dB | 10.60 dB @ 5080 Hz | 12 |
+| `ts_ac30` | CHANGED | -7.17 dB | 7.64 dB @ 1600 Hz | 8 |
+| `clean120_chorus` | UNCHANGED | -0.00 dB | 0.11 dB @ 252 Hz | 7 |
+
+Per-band tables. Three of the four moved essentially FLAT — the signature of a
+level change with the voice intact, not a redistribution:
+
+| `sd1_twin_reverb` Hz | 200 | 252 | 400 | 504 | 635 | 800 | 1008 | 1270 | 1600 | 2016 | 2540 | 3200 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Δ dB | -8.47 | -8.41 | -8.49 | -8.53 | -8.53 | -8.56 | -8.60 | -8.63 | -8.28 | -8.42 | -8.67 | -8.22 |
+
+| `muff_twin` Hz | 200 | 400 | 635 | 800 | 1008 | 1270 | 1600 | 2016 | 2540 | 3200 | 4032 | 5080 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Δ dB | -10.10 | -10.37 | -9.68 | -10.07 | -10.29 | -9.87 | -10.13 | -10.12 | -10.10 | -10.36 | -10.40 | -10.60 |
+
+| `ts_ac30` Hz | 200 | 400 | 635 | 800 | 1008 | 1270 | 1600 | 2016 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Δ dB | -7.29 | -7.25 | -7.21 | -7.15 | -7.11 | -7.10 | -7.64 | -7.33 |
+
+| `rat_jcm800` Hz | 200 | 252 | 400 | 635 | 800 | 1008 | 1270 | 1600 | 2016 | 2540 | 3200 | 4032 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Δ dB | -2.51 | **-14.63** | -2.80 | -3.38 | -4.32 | -4.98 | -5.30 | -6.81 | -6.02 | -3.81 | -5.17 | -5.23 |
+
+**Justification:** The lineup-wide output-pot tapers (docs §67). Every dirt pedal's
+output pot now delivers what its own netlist says it delivers instead of a linear
+fraction of the knob: the RAT's and the Muff's are unloaded audio tapers (11.920 %
+at half rotation), the TS's is an audio taper bent by the 226 k its output buffer
+puts on the wiper (11.391 %), and the GOLD's is LINEAR and deliberately did not
+change. The old goldens encoded a knob law that three independent netlists
+contradict, so these renders are the correct ones.
+
+The three flat tables are the argument. `sd1_twin_reverb` moves -8.2 to -8.7 dB in
+every one of twelve bands (spread 0.45 dB), `muff_twin` -9.7 to -10.6 across twelve
+(spread 0.92), `ts_ac30` -7.1 to -7.6 across eight (spread 0.54). A pot is a
+frequency-flat scalar and that is exactly what these measure: the rigs are quieter
+and otherwise unchanged.
+
+`rat_jcm800` is the one that is NOT flat, and the reason is worth reading before
+approving it. Broadband it moves only -1.20 dB although the RAT itself drops
+5.21 dB, because the JCM800 is being driven less hard and gives most of it back —
+that is the amp compressing, not the pedal failing to change. The harmonic bands
+move progressively with frequency (-2.51 at 200 Hz = the 220 Hz fundamental, then
+-2.80 / -3.38 / -4.32 / -4.98 / -5.30 at the 2nd through 6th harmonics), which is
+the signature of less high-order harmonic generation. **The 14.63 dB outlier at
+252 Hz is a band that contains no harmonic of the stimulus at all**: the pluck is
+f0 = 220 Hz and the 252 Hz third-octave band spans 224-283 Hz, between the
+fundamental and the 2nd harmonic. It carries only the amp's own distortion
+products, and those collapse when the amp is driven less hard. The biggest number
+in this bless is therefore in the band with no signal in it, which is reassuring
+rather than alarming.
+
+`clean120_chorus` is UNCHANGED and its file is byte-identical on disk — it is the
+only golden rig with no dirt pedal in it, and that is the scope check.
+
+**What is NOT in this bless, deliberately:** the shipped OUTPUT knob defaults were
+a level calibration expressed in linear-pot coordinates, and re-deriving them
+(§67.5 carries the solved positions) would restore the old levels and undo most of
+these deltas. That is a separate concern with its own justification; bundling it
+here would have left a reviewer unable to attribute the drift.
+
+Owner authorized explicitly on 2026-08-10 ("bless and merge") after being shown the
+per-golden delta table above. Same hand-run ritual as the 2026-07-31 entries — no
+/dev/tty in this environment, so: clean tree verified, `--golden-report` re-checked
+against the approved figures immediately before `--update-goldens`, and this entry
+committed with the `.wav` files. Note the first attempt at this bless ABORTED on
+the write-back check and that abort was correct — see docs §67.11; the check is now
+a per-sample round-trip (1.51-1.59 LSB across all five) instead of a band delta,
+fixed in its own commit before this one, and `kQuantizationFloorDb` was left alone.
+
+
 ## 2026-07-31 — 1 golden(s) re-blessed
 
 - **Blessed by:** Claude
