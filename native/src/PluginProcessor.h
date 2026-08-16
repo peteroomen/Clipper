@@ -74,6 +74,13 @@ inline constexpr const char* optoOn            = "optoOn";
 inline constexpr const char* optoPeakReduction = "optoPeakReduction";
 inline constexpr const char* optoMode          = "optoMode";
 inline constexpr const char* optoGain          = "optoGain";
+// M13.5 the "Swirl" Uni-Vibe. SPEED / INTENSITY / MODE — all three real
+// controls; MODE is DISCRETE (< 0.5 chorus, >= 0.5 vibrato) but stays a float
+// parameter because the slot is, and it reaches the model as a smoothed weight.
+inline constexpr const char* vibeOn            = "vibeOn";
+inline constexpr const char* vibeSpeed         = "vibeSpeed";
+inline constexpr const char* vibeIntensity     = "vibeIntensity";
+inline constexpr const char* vibeMode          = "vibeMode";
 // M13.7: the CE-1 "Ensemble" chorus. THREE knobs — RATE, DEPTH and MODE. MODE is
 // a plain 0..1 knob rather than a Choice deliberately: it is the shared slot-2 of
 // the pedal-agnostic positional ABI, so making it a Choice here would put the

@@ -189,6 +189,12 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::optoPeakReduction, "Lumen Peak Reduction", 0.5f));
     layout.add(knob(pid::optoMode, "Lumen Mode", 0.0f));
     layout.add(knob(pid::optoGain, "Lumen Gain", 0.62f));
+    // M13.5 the Uni-Vibe. Defaults MUST match VIBE_KNOB_DEFAULTS (web/src/rig.ts)
+    // and VibeModel's constructor, or the plugin and the web app open differently.
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::vibeOn, 1}, "Swirl On", true));
+    layout.add(knob(pid::vibeSpeed, "Swirl Speed", 0.35f));
+    layout.add(knob(pid::vibeIntensity, "Swirl Intensity", 0.70f));
+    layout.add(knob(pid::vibeMode, "Swirl Mode", 0.0f));
 
     // M13.4 — the "Echoman" BBD analog delay. Defaults mirror web
     // DELAY_KNOB_DEFAULTS: 212 ms, a few repeats, wet behind the dry.
@@ -464,6 +470,10 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.optoPeakReduction = f(pid::optoPeakReduction);
     p.optoMode = f(pid::optoMode);
     p.optoGain = f(pid::optoGain);
+    p.vibeOn = f(pid::vibeOn) >= 0.5f;
+    p.vibeSpeed = f(pid::vibeSpeed);
+    p.vibeIntensity = f(pid::vibeIntensity);
+    p.vibeMode = f(pid::vibeMode);
     p.ce1On = f(pid::ce1On) >= 0.5f;
     p.ce1Rate = f(pid::ce1Rate);
     p.ce1Depth = f(pid::ce1Depth);

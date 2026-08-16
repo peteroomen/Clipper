@@ -333,6 +333,19 @@ export const TOOLS = [
       "threshold; GAIN is make-up only and changes no compression. MODE is a " +
       'two-position switch: COMPRESS is the gentler setting, LIMIT clamps peaks ' +
       "harder. Put it FIRST in the chain, before the dirt), " +
+      "'vibe' (the 'Swirl' UNI-VIBE — the board's SECOND phaser, and it is NOT " +
+      'the Phaser with different knobs. Inside it one small incandescent LAMP ' +
+      'shines on four light-sensitive resistors, and those four are NOT matched: ' +
+      'their capacitors are staggered nearly 470:1, so its two notches sit far ' +
+      'further apart than the Phaser\'s and the sweep is lumpy and vocal rather ' +
+      'than even. The lamp also has to heat up and cool down, so the sweep RISES ' +
+      'faster than it FALLS — that throb is the whole character, and it is why ' +
+      'the effect gets shallower the faster you run it. Three controls: SPEED, ' +
+      'INTENSITY and MODE. INTENSITY is how far the lamp swings, NOT a wet/dry ' +
+      'mix, so at 0 the pedal is still in circuit as a fixed filter rather than ' +
+      'bypassed. MODE is a two-position switch: CHORUS mixes dry and wet (the ' +
+      'familiar swirl), VIBRATO is the wet path alone (pitch wobble, no comb). ' +
+      'Try it AFTER the dirt for classic late-60s swirl), ' +
       "'gate' (the 'Curfew' NOISE GATE — a utility, not a voice: it makes no " +
       'sound of its own, it takes one away. Two knobs, THRESHOLD and DECAY. ' +
       'THRESHOLD really IS a threshold (unlike the compressor\'s SUSTAIN): below ' +
@@ -381,7 +394,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'vibe', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -575,7 +588,7 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'tuner' =
+    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'vibe' | 'tuner' =
       input.type === 'tuner' ? 'tuner'
       : input.type === 'sd1' ? 'sd1'
       : input.type === 'ts' ? 'ts'
@@ -588,6 +601,7 @@ export function executeTool(
       : input.type === 'wah' ? 'wah'
       : input.type === 'chorus' ? 'chorus'
       : input.type === 'delay' ? 'delay'
+      : input.type === 'vibe' ? 'vibe'
       : 'rat';
     const rawPos = input.position;
     const position =
@@ -606,6 +620,7 @@ export function executeTool(
                     : type === 'wah' ? 'Weeper'
                     : type === 'chorus' ? 'Ensemble'
                     : type === 'delay' ? 'Echoman'
+                    : type === 'vibe' ? 'Swirl'
                     : 'RAT';
     return {
       content: JSON.stringify({ applied: { added: type, index } }),

@@ -98,6 +98,11 @@
      board at the same time. */
   --accent-opto: #5C6BC0;
   --accent-opto-glow: rgba(120, 140, 235, 0.5);
+  /* M13.5 the Uni-Vibe: AMBER, the colour of the incandescent lamp that drives
+     its four photocells. Distinct from the phaser's indigo and the chorus's
+     magenta so the board's three modulation boxes never read as a set. */
+  --accent-vibe: #E8A33D;
+  --accent-vibe-glow: rgba(240, 178, 90, 0.5);
   --accent-gate: #4A5568;    /* M13.6a gate — SLATE: deliberately muted, it is a utility */
   --accent-gate-glow: rgba(120, 140, 165, 0.5);
   --accent-chorus: #9B2C6F;  /* M13.7 CE-1 — MAGENTA (modulation, distinct from phaser orange) */
