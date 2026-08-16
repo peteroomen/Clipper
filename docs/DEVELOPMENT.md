@@ -14761,7 +14761,7 @@ sample-to-sample step during the slam over the same quantity at steady state, so
 Structurally expected — the law changes the smoother's TARGET, not its range
 (0 → 1 either way) — but measured rather than assumed.
 
-### 67.9 ⚠️ This slice is NOT finishable without the owner
+### 67.9 The goldens — measured, presented, and RE-BLESSED on owner authorization
 
 Four of the five goldens carry one of these pedals, so four move **by
 construction**. Measured with `--golden-report` (report only — nothing written):
@@ -14774,15 +14774,37 @@ construction**. Measured with `--golden-report` (report only — nothing written
 | `ts_ac30` | **−7.17 dB** | 7.64 dB | 1600 Hz |
 | `clean120_chorus` | **UNCHANGED −0.00** | 0.11 dB | 252 Hz |
 
-**NOTHING WAS BLESSED and `--update-goldens` was not run.** Re-blessing is a
-ritual, not a command: it needs a confirmation typed at `/dev/tty`, which this
-environment does not have. The core suite is therefore RED at exactly those four
-golden asserts **and nowhere else** — the §36/§47/§51/§55 precedent, and the
-design working rather than something to fix.
+The table above was presented to the owner with nothing written, and
+**`--update-goldens` was not run until they authorized it explicitly on 2026-08-10
+("bless and merge")**. Re-blessing is a ritual, not a command: it needs a
+confirmation typed at `/dev/tty`, which this environment does not have, so the
+script's gates were run BY HAND on that authorization — the documented 2026-07-31
+precedent. In order: clean tree verified; `--golden-report` re-run and checked
+row-for-row against the approved figures immediately before writing; then
+`--update-goldens`; then the justification into `GOLDENS.md` in the same commit as
+the `.wav` files. **Exactly four files changed on disk** — `clean120_chorus.wav`
+was rewritten byte-identically, which is the scope check at file level.
 
-Note `rat_jcm800` moves only −1.20 dB where the RAT itself drops 5.21 dB: the
-JCM800 is being driven less hard and gives some of it back, which is why its worst
-BAND delta (14.63 dB at 252 Hz) is the larger number and the one to listen to.
+The first attempt **aborted**, and correctly: see §67.11. The write-back check was
+unsound for quiet renders and is fixed in its own commit before the bless, with
+`kQuantizationFloorDb` left alone.
+
+**Three of the four moved essentially FLAT**, which is the signature of a level
+change with the voice intact rather than a redistribution: `sd1_twin_reverb`
+−8.2…−8.7 dB across twelve bands (spread **0.45 dB**), `muff_twin` −9.7…−10.6
+across twelve (**0.92**), `ts_ac30` −7.1…−7.6 across eight (**0.54**). A pot is a
+frequency-flat scalar and that is exactly what these measure.
+
+**`rat_jcm800` is the one that is not flat, and it is the one to read.** Broadband
+it moves only −1.20 dB although the RAT itself drops 5.21 — the JCM800 is driven
+less hard and gives most of it back. Its harmonic bands move progressively with
+frequency (−2.51 dB at 200 Hz = the 220 Hz fundamental, then −2.80 / −3.38 / −4.32
+/ −4.98 / −5.30 at the 2nd through 6th), the signature of less high-order harmonic
+generation. **The 14.63 dB outlier at 252 Hz is a band that contains no harmonic of
+the stimulus at all** — the pluck is f0 = 220 Hz and that third-octave band spans
+224–283 Hz, between the fundamental and the 2nd harmonic. It carries only the amp's
+own distortion products, and those collapse when the amp is driven less hard. The
+largest number in the bless is in the band with no signal in it.
 
 ### 67.11 The bless found a bar that was unsound, and it was not the voicing gate
 

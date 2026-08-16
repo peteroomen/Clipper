@@ -227,11 +227,21 @@ Goldens: four CHANGED, `clean120_chorus` UNCHANGED at −0.00.
 ## Status
 
 - [ ] In progress
-- [ ] Complete
-- [x] **Partial — BLOCKED ON THE OWNER, as this plan predicted.**
+- [x] **Complete.**
+- [ ] Partial — see deferred
 
-The code, the tests, the XFAIL closure and the docs are done. What is left is the
-one thing this environment cannot do: **four goldens need re-blessing and there is
-no `/dev/tty` to confirm at.** Nothing was blessed and `--update-goldens` was never
-run. The measured `--golden-report` table is in §67.9 and in the PR body, and the
-core suite is red at exactly those four asserts and nowhere else.
+The plan predicted this slice could not finish without the owner, and that was
+right: the four goldens were presented as a measured `--golden-report` table with
+nothing written, and **the owner authorized the bless explicitly on 2026-08-10
+("bless and merge")**. The script's gates were then run by hand — clean tree,
+report re-checked against the approved figures immediately before writing,
+justification into `GOLDENS.md` in the same commit — the documented 2026-07-31
+precedent for an environment with no `/dev/tty`.
+
+**The bless's first attempt aborted, and the abort was correct.** The golden
+write-back check turned out to be unsound for quiet renders (docs §67.11): it was a
+per-third-octave BAND proxy, and this slice's level drop pushed `sd1_twin_reverb`'s
+reverb tail close enough to the 16-bit floor to trip it. Fixed in its own commit
+first — the round-trip is now measured per SAMPLE (1.51–1.59 LSB on all five,
+level-independent), `kQuantizationFloorDb` untouched so UNCHANGED/CHANGED keeps its
+resolution, and perturbation-proven.
