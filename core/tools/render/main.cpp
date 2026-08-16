@@ -34,6 +34,7 @@
 #include "clipper/dsp/DelayModel.h"
 #include "clipper/dsp/GateModel.h"
 #include "clipper/dsp/OptoModel.h"
+#include "clipper/dsp/VibeModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/AmpModel.h"
@@ -184,8 +185,9 @@ struct OldSpringReverb {
         "M2 flags: --os 1|2|4|8 (oversampling, default 4), --stage2 wdf|adaa (default wdf),\n"
         "          --alias-report (print the aliasing metric table for os=1/2/4/8 and exit).\n"
         "M6.5:     --ideal-opamp (bypass the op-amp model: ideal op-amp A/B),\n"
-        "M8/v1.1:  --pedal rat|sd1|ts|muff|gold|phaser|comp|opto|gate|delay (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
+        "M8/v1.1:  --pedal rat|sd1|ts|muff|gold|phaser|comp|opto|gate|delay|vibe (rat = RAT hard clip; sd1 = SD-1 soft/asymmetric;\n"
         "          opto = the M13.3 optical compressor (--distortion = PEAK REDUCTION, --filter = MODE, --level = GAIN);\n"
+        "          vibe = the M13.5 Uni-Vibe (--distortion = SPEED, --filter = INTENSITY, --level = MODE);\n"
         "          gate = the M13.6a noise gate (2 knobs: --distortion = THRESHOLD, --level = DECAY);\n"
         "          delay = the M13.4 BBD analog delay (--distortion = DELAY, --filter = FEEDBACK, --level = BLEND);\n"
         "          comp = the M13.1 OTA compressor (2 knobs: --distortion = SUSTAIN, --level = LEVEL);\n"
@@ -789,6 +791,18 @@ int main(int argc, char** argv) {
         model.setParameter(clipper::dsp::OptoModel::PARAM_GAIN, a.level);
         if (!input.empty())
             model.process(input.data(), out.data(), static_cast<int>(input.size()));
+    } else if (a.pedal == "vibe") {
+        // M13.5: the "Swirl" Uni-Vibe. THREE knobs — flags map positionally:
+        // --distortion -> SPEED, --filter -> INTENSITY, --level -> MODE
+        // (< 0.5 CHORUS, >= 0.5 VIBRATO).
+        clipper::dsp::VibeModel model;
+        model.prepare(fs, 128);
+        model.setOversampling(a.os);
+        model.setParameter(clipper::dsp::VibeModel::PARAM_SPEED, a.distortion);
+        model.setParameter(clipper::dsp::VibeModel::PARAM_INTENSITY, a.filter);
+        model.setParameter(clipper::dsp::VibeModel::PARAM_MODE, a.level);
+        if (!input.empty())
+            model.process(input.data(), out.data(), static_cast<int>(input.size()));
     } else if (a.pedal == "muff") {
         // v1.1 item 4: the four-transistor Muff fuzz. Knob flags map positionally:
         // --distortion -> SUSTAIN, --filter -> TONE (the mid-scoop), --level -> VOLUME.
@@ -922,6 +936,12 @@ int main(int argc, char** argv) {
             "os=%dx)\n  peak=%.4f  rms=%.4f\n",
             out.size(), fs, a.outFile.c_str(), a.distortion,
             a.filter >= 0.5f ? "limit" : "compress", a.level, a.os, peak, rms);
+    } else if (a.pedal == "vibe") {
+        std::printf(
+            "Rendered %zu frames @ %.0f Hz -> %s  (pedal=vibe speed=%.2f intensity=%.2f "
+            "mode=%s os=%dx)\n  peak=%.4f  rms=%.4f\n",
+            out.size(), fs, a.outFile.c_str(), a.distortion, a.filter,
+            a.level >= 0.5f ? "vibrato" : "chorus", a.os, peak, rms);
     } else if (a.pedal == "muff") {
         std::printf(
             "Rendered %zu frames @ %.0f Hz -> %s  (pedal=muff sustain=%.2f tone=%.2f "

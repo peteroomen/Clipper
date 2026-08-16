@@ -25,7 +25,7 @@ const char* const kPedalKeys[PEDAL_TYPE_COUNT] = {"rat",    "sd1",  "ts",
                                                   "muff",   "phaser", "gold",
                                                   "wah",   "comp",
                                                   "delay", "gate", "chorus",
-                                                  "opto"};
+                                                  "opto",  "vibe"};
 constexpr int   kCabPartition = 128;  // == worklet render quantum / cab partition
 // Extra samples to HOLD the output at zero after a CAB swap, before the fade back
 // in. Mirrors CAB_SWAP_DEAD_SAMPLES in web/worklet/clipper-processor.js and exists
@@ -81,6 +81,7 @@ bool Params::pedalOn(int type) const {
         case PEDAL_COMP:   return compOn;
         case PEDAL_GATE:   return gateOn;
         case PEDAL_OPTO:   return optoOn;
+        case PEDAL_VIBE:   return vibeOn;
         case PEDAL_CHORUS: return ce1On;
         case PEDAL_DELAY:  return delayOn;
         default:           return false;
@@ -145,6 +146,12 @@ void ClipperEngine::applyParamsToModels() {
     opto_.setParameter(clipper::dsp::OptoModel::PARAM_PEAK_REDUCTION, p.optoPeakReduction);
     opto_.setParameter(clipper::dsp::OptoModel::PARAM_MODE, p.optoMode);
     opto_.setParameter(clipper::dsp::OptoModel::PARAM_GAIN, p.optoGain);
+    // M13.5 the Uni-Vibe — SPEED / INTENSITY / MODE, all three real. MODE is
+    // DISCRETE inside the model (< 0.5 chorus, >= 0.5 vibrato) and reaches it as
+    // a SMOOTHED dry/wet weight rather than a branch (docs §62's 17.02x lesson).
+    vibe_.setParameter(clipper::dsp::VibeModel::PARAM_SPEED, p.vibeSpeed);
+    vibe_.setParameter(clipper::dsp::VibeModel::PARAM_INTENSITY, p.vibeIntensity);
+    vibe_.setParameter(clipper::dsp::VibeModel::PARAM_MODE, p.vibeMode);
     // CE-1 "Ensemble" chorus (M13.7) — the same positional slot ABI, reading as
     // RATE / DEPTH / MODE. MODE is DISCRETE inside the model (< 0.5 chorus,
     // >= 0.5 vibrato); it is a float here only because the slot is.
@@ -274,6 +281,7 @@ void ClipperEngine::updateParams(const Params& p) {
     using clipper::dsp::DelayModel;
     using clipper::dsp::GateModel;
     using clipper::dsp::OptoModel;
+    using clipper::dsp::VibeModel;
     using clipper::dsp::Jcm800Amp;
     using clipper::dsp::MuffModel;
     using clipper::dsp::PhaserModel;
@@ -312,6 +320,10 @@ void ClipperEngine::updateParams(const Params& p) {
         opto_.setParameter(OptoModel::PARAM_PEAK_REDUCTION, p.optoPeakReduction);
     if (p.optoMode != o.optoMode) opto_.setParameter(OptoModel::PARAM_MODE, p.optoMode);
     if (p.optoGain != o.optoGain) opto_.setParameter(OptoModel::PARAM_GAIN, p.optoGain);
+    if (p.vibeSpeed != o.vibeSpeed) vibe_.setParameter(VibeModel::PARAM_SPEED, p.vibeSpeed);
+    if (p.vibeIntensity != o.vibeIntensity)
+        vibe_.setParameter(VibeModel::PARAM_INTENSITY, p.vibeIntensity);
+    if (p.vibeMode != o.vibeMode) vibe_.setParameter(VibeModel::PARAM_MODE, p.vibeMode);
     if (p.delayTime != o.delayTime)         delay_.setParameter(DelayModel::PARAM_DELAY, p.delayTime);
     if (p.delayFeedback != o.delayFeedback) delay_.setParameter(DelayModel::PARAM_FEEDBACK, p.delayFeedback);
     if (p.delayBlend != o.delayBlend)       delay_.setParameter(DelayModel::PARAM_BLEND, p.delayBlend);
@@ -432,6 +444,10 @@ void ClipperEngine::setPedalOversampling(int factor) {
     // carries no group delay (docs §61.7).
     gate_.setOversampling(factor);
     opto_.setOversampling(factor);
+    // The Uni-Vibe IS oversampled, and NOT because of aliasing (its floor is
+    // flat in the factor). The 470 pF stage's corner sits against Nyquist and
+    // the bilinear allpass's phase warps there — docs §67.7.
+    vibe_.setOversampling(factor);
     // ce1_ has no nonlinearity: setOversampling would be a no-op, so it is not called.
     // NOTE: the delay is deliberately NOT re-factored here. Its oversampling is
     // set by the DEVICE (the BBD clock reaches 136.5 kHz, so the internal rate
@@ -575,6 +591,7 @@ void ClipperEngine::processPedal(int type, const float* in, float* out, int numF
         case PEDAL_COMP:   comp_.process(in, out, numFrames); break;
         case PEDAL_GATE:   gate_.process(in, out, numFrames); break;
         case PEDAL_OPTO:   opto_.process(in, out, numFrames); break;
+        case PEDAL_VIBE:   vibe_.process(in, out, numFrames); break;
         case PEDAL_CHORUS: ce1_.process(in, out, numFrames); break;
         case PEDAL_DELAY:  delay_.process(in, out, numFrames); break;
         default: break;
@@ -598,6 +615,7 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     comp_.prepare(sampleRate_, maxBlock_);
     gate_.prepare(sampleRate_, maxBlock_);
     opto_.prepare(sampleRate_, maxBlock_);
+    vibe_.prepare(sampleRate_, maxBlock_);
     ce1_.prepare(sampleRate_, maxBlock_);
     delay_.prepare(sampleRate_, maxBlock_);
     amp_.prepare(sampleRate_, maxBlock_);
@@ -813,6 +831,7 @@ int ClipperEngine::latencySamples() const {
             // gain-reduction divider is a multiply by an audio-rate signal —
             // docs §64.7), so it carries the same OS group delay as a dirt box.
             case PEDAL_OPTO: n += opto_.latencySamples(); break;
+            case PEDAL_VIBE: n += vibe_.latencySamples(); break;
             // The CE-1 chorus is linear time-varying — no oversampling, and its
             // modulated delay IS the effect rather than a compensable latency.
             case PEDAL_CHORUS: break;

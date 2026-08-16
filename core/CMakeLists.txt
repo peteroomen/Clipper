@@ -106,6 +106,11 @@ add_library(clipper_dsp STATIC
     # OptoCell.h, the photocell extracted as a component from the first line
     # (ADR 021's lesson), whose named future consumer is M13.5's Uni-Vibe.
     src/dsp/OptoModel.cpp
+    # M13.5 — the Uni-Vibe. OptoCell's NAMED consumer, and it is held unwidened:
+    # the incandescent lamp is extracted as its own component (LampDrive.h,
+    # header-only) exactly as OptoCell.h's banner instructed, so the cell gains no
+    # `lightSourceKind` axis. Docs §67, ADR 026.
+    src/dsp/VibeModel.cpp
     # M13.7 — the Boss CE-1 Chorus Ensemble. NOT a new delay-line model: it OWNS a
     # ChorusModel (the JC-120 chorus the amp already ships) and drives it through
     # that class's voicing seam. See docs §62 for what the three real differences
@@ -196,7 +201,7 @@ if(NOT EMSCRIPTEN)
     clipper_add_test_flags(clipper_rat_tests)
     add_test(NAME clipper_rat_tests COMMAND clipper_rat_tests)
     # No clipper_add_xfail_ledger: the RAT suite has ZERO known-bad properties as of
-    # docs §67 (the lineup-wide output-pot taper slice made rat-level-pot-linear-not-log
+    # docs §68 (the lineup-wide output-pot taper slice made rat-level-pot-linear-not-log
     # XPASS, and the property is asserted outright in testOutputPotLaw). Registering a
     # ledger with an empty decl list would report Passed instead of ***Skipped.
 
@@ -330,6 +335,22 @@ if(NOT EMSCRIPTEN)
     target_include_directories(clipper_opto_tests PRIVATE tests)
     clipper_add_test_flags(clipper_opto_tests)
     add_test(NAME clipper_opto_tests COMMAND clipper_opto_tests)
+    # --- M13.5: the Uni-Vibe --------------------------------------------------
+    # The acceptance bar is the NOTCH DISTRIBUTION, computed against PhaserModel
+    # from the identical stimulus rather than quoted — because the ROADMAP's
+    # "mismatched vs matched" framing is wrong (the Ninety already carries a
+    # +/-1.5 % per-stage detune) and the real distinction is the MAGNITUDE: 470:1
+    # of capacitance against 3 %. Second bar: the lamp's thermal lag makes the
+    # sweep asymmetric in time, and the Ninety's symmetric triangle measures 1.00
+    # on the same metric. Everything else is either the ONE sourced component set
+    # (the four staggered caps, asserted literally) or a published device figure
+    # (the cell's 10 k...100 kOhm illuminated range). No XFAIL ledger: no
+    # known-bad property. Do not add one without a measured number.
+    add_executable(clipper_vibe_tests tests/test_vibe_model.cpp)
+    target_link_libraries(clipper_vibe_tests PRIVATE clipper_dsp)
+    target_include_directories(clipper_vibe_tests PRIVATE tests)
+    clipper_add_test_flags(clipper_vibe_tests)
+    add_test(NAME clipper_vibe_tests COMMAND clipper_vibe_tests)
     # --- M13.7: the Boss CE-1 Chorus Ensemble ---------------------------------
     # The CE-1 is the JC-120's chorus circuit in a floor box and this pedal owns a
     # ChorusModel, so the bars here are pointed at the question that actually

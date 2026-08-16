@@ -659,6 +659,147 @@ test('gate worklet: THRESHOLD is a real threshold — it gates a hiss floor and 
   expect(db(result.lowHiss)).toBeGreaterThan(db(result.lowNote) - 50.0);
 });
 
+test('vibe worklet: the Uni-Vibe is reachable and ALL THREE slots reach the core', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    // Long enough to contain a couple of LFO cycles at the slow SPEED probe.
+    const seconds = 4.0;
+
+    // FOUR renders, deliberately. Chromium's OfflineAudioContext starts returning
+    // SILENCE once enough contexts exist in one browser process (playwright.
+    // config.ts says so; the comp spec was observed tripping it at six).
+    async function render(speed: number, intensity: number, mode: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      let ctx: OfflineAudioContext | null = null;
+      for (let attempt = 0; attempt < 4 && !ctx; attempt++) {
+        const c = new OfflineAudioContext(1, length, sampleRate);
+        try {
+          await Promise.race([
+            c.audioWorklet.addModule('/generated/clipper-processor.js'),
+            new Promise((_r, rej) => setTimeout(() => rej(new Error('addModule timeout')), 6000)),
+          ]);
+          ctx = c;
+        } catch {
+          /* fresh context, retry */
+        }
+      }
+      if (!ctx) throw new Error('addModule failed after retries');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 6000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') { clearTimeout(t); resolve(); }
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true }); // pure pedal proof
+        node.port.postMessage({
+          type: 'chain',
+          pedals: [{
+            id: 'v', type: 'vibe', engaged: true,
+            params: { distortion: speed, filter: intensity, level: mode },
+          }],
+        });
+      });
+      // A chord, so a MOVING COMB has something to chew on. A single tone would
+      // measure the same swing whatever the notch spacing.
+      const g = new GainNode(ctx, { gain: 0.12 });
+      for (const f of [110, 220, 330, 660]) {
+        const osc = new OscillatorNode(ctx, { type: 'sine', frequency: f });
+        osc.connect(g);
+        osc.start();
+      }
+      g.connect(node).connect(ctx.destination);
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+
+    // How far the output level MOVES over the settled tail, in dB: max/min of a
+    // 20 ms block RMS. That is the swirl, as a number.
+    function envSwingDb(data: Float32Array, sr: number): number {
+      // The window is an INTEGER number of cycles of the chord's 110 Hz
+      // fundamental, not a round 20 ms. A non-integer window makes the block RMS
+      // of a perfectly steady periodic signal wobble with its own alignment —
+      // measured at 0.54 dB here, which is larger than the property this test is
+      // trying to see vanish. Four periods ~ 36 ms, still far finer than the
+      // 0.26 Hz LFO being tracked.
+      const w = 4 * Math.round(sr / 110);
+      let lo = Infinity, hi = 0;
+      for (let i = Math.floor(data.length / 2); i + w < data.length; i += w) {
+        let sum = 0;
+        for (let k = 0; k < w; k++) sum += data[i + k] * data[i + k];
+        const r = Math.sqrt(sum / w);
+        if (r < lo) lo = r;
+        if (r > hi) hi = r;
+      }
+      return 20 * Math.log10(Math.max(hi, 1e-30) / Math.max(lo, 1e-30));
+    }
+    function rms(data: Float32Array): number {
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+      return Math.sqrt(sum / data.length);
+    }
+
+    // SPEED 0.30 is ~0.26 Hz — a couple of cycles inside the render.
+    const swirl = await render(0.30, 1.0, 0.0);   // the pedal working
+    const flat = await render(0.30, 0.0, 0.0);    // INTENSITY 0: a STATIC comb
+    const vibrato = await render(0.30, 1.0, 1.0); // MODE 1: the allpass alone
+    const fast = await render(1.00, 1.0, 0.0);    // SPEED max: the lamp cannot keep up
+    return {
+      swirlSwing: envSwingDb(swirl, sampleRate),
+      flatSwing: envSwingDb(flat, sampleRate),
+      vibratoSwing: envSwingDb(vibrato, sampleRate),
+      fastSwing: envSwingDb(fast, sampleRate),
+      swirlRms: rms(swirl),
+      flatRms: rms(flat),
+      vibratoRms: rms(vibrato),
+    };
+  });
+
+  console.log(
+    `[vibe] swing chorus ${result.swirlSwing.toFixed(2)} dB | INTENSITY 0 ${result.flatSwing.toFixed(2)} dB | ` +
+    `vibrato ${result.vibratoSwing.toFixed(2)} dB | SPEED max ${result.fastSwing.toFixed(2)} dB`);
+
+  // (a) HARNESS GATE, before any DSP claim: every render must have produced
+  // audio. A silent one is Chromium's documented OfflineAudioContext flake, and
+  // it would otherwise read as a spectacular pass on (b) and (c).
+  for (const v of [result.swirlRms, result.flatRms, result.vibratoRms])
+    expect(v, 'a render came back silent (Chromium OfflineAudioContext flake)').toBeGreaterThan(1e-3);
+
+  // (b) THE DELIVERY PATH: `type: 'vibe'` reaches the core and the pedal moves.
+  expect(result.swirlSwing).toBeGreaterThan(3.0);
+
+  // (c) SLOT 1 (INTENSITY) reaches the core — and note what this asserts is NOT
+  // "it goes quiet": at INTENSITY 0 the lamp still sits at its bias point, so the
+  // pedal is a STATIC comb rather than a bypass (docs §67.6). What must vanish is
+  // the MOVEMENT.
+  expect(result.flatSwing).toBeLessThan(0.5);
+  expect(result.swirlSwing - result.flatSwing).toBeGreaterThan(3.0);
+
+  // (d) SLOT 2 (MODE) reaches the core, and it is a structural claim rather than
+  // a level one: VIBRATO is the wet phase line alone, i.e. a pure allpass
+  // cascade, so its MAGNITUDE is flat however hard the notches are sweeping.
+  expect(result.vibratoSwing).toBeLessThan(0.5);
+
+  // (e) SLOT 0 (SPEED) reaches the core, proven through a property of the LAMP
+  // rather than by measuring a rate: the filament cannot keep up at the top of
+  // the knob, so the sweep DEPTH collapses (the core suite measures 3.28 -> 0.96
+  // octaves of corner travel). A JFET phaser does not do this.
+  expect(result.fastSwing).toBeLessThan(result.swirlSwing);
+});
+
 test('opto worklet: the optical compressor is reachable and ALL THREE slots reach the core', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();

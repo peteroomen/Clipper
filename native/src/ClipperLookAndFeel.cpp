@@ -130,6 +130,9 @@ juce::Colour accent(AccentId id) {
         case AccentId::Chorus: return d ? juce::Colour(0xffE86FB8) : juce::Colour(0xff9B2C6F);
         // M13.3 optical compressor — PERIWINKLE (web tokens.css --accent-opto).
         case AccentId::Opto:   return d ? juce::Colour(0xff8E9BE8) : juce::Colour(0xff5C6BC0);
+        // M13.5 the Uni-Vibe: AMBER — the incandescent lamp doing the work.
+        // Mirrors --accent-vibe / its dark sibling in web/src/styles/tokens.css.
+        case AccentId::Vibe:   return d ? juce::Colour(0xffF0B25A) : juce::Colour(0xffE8A33D);
         case AccentId::Jcm:    return d ? juce::Colour(0xffE8B84B) : juce::Colour(0xffA87A18);
         case AccentId::Twin:   return d ? juce::Colour(0xff7FB4E8) : juce::Colour(0xff4E7BA8);
         case AccentId::Ac30:   return d ? juce::Colour(0xffE08A4A) : juce::Colour(0xffB4612C);

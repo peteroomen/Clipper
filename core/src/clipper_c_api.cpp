@@ -26,6 +26,7 @@
 #include "clipper/dsp/RatModel.h"
 #include "clipper/dsp/SdModel.h"
 #include "clipper/dsp/TsModel.h"
+#include "clipper/dsp/VibeModel.h"
 
 #include <cmath>
 #include <vector>
@@ -729,6 +730,71 @@ void opto_process(void* handle, const float* in_ptr, float* out_ptr,
                   int num_frames) {
     if (!handle) return;
     static_cast<clipper::dsp::OptoModel*>(handle)->process(in_ptr, out_ptr,
+                                                           num_frames);
+}
+
+// --- M13.5: Uni-Vibe exports --------------------------------------------------
+//
+// Additive alongside every other pedal prefix and byte-for-byte the same
+// opaque-handle ABI. Param slots: 0 = SPEED, 1 = INTENSITY, 2 = MODE. All three
+// are REAL controls. MODE is DISCRETE (< 0.5 CHORUS, >= 0.5 VIBRATO) but is
+// implemented as a smoothed dry/wet weight rather than a branch — docs §62
+// measured a forwarded mode switch clicking at 17.02x the signal's own slew.
+//
+// Under the hood it is one incandescent lamp (LampDrive) lighting four photocells
+// (OptoCell, unwidened) that sweep four STAGGERED allpass stages — docs §67. Two
+// things a caller should know: `vibe_latency_samples` returns 72 at the shipped
+// 4x, and that factor is NOT about aliasing (the floor is flat in the factor) but
+// about the 470 pF stage's corner sitting against Nyquist — docs §67.7.
+// INTENSITY 0 is NOT bypass: the lamp still sits at its bias point, so the pedal
+// becomes a STATIC comb. That is the circuit, and it is asserted rather than
+// assumed.
+
+EMSCRIPTEN_KEEPALIVE
+void* vibe_create(float sample_rate) {
+    auto* m = new clipper::dsp::VibeModel();
+    m->prepare(static_cast<double>(sample_rate), 128);
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void vibe_destroy(void* handle) {
+    delete static_cast<clipper::dsp::VibeModel*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void vibe_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
+    static_cast<clipper::dsp::VibeModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clear the allpass memories and re-park the lamp and cells at the
+// operating point INTENSITY holds, keeping the knobs / rate / factor. See the
+// banner above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void vibe_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::VibeModel*>(handle)->reset();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void vibe_set_oversampling(void* handle, int factor) {
+    if (!handle) return;
+    static_cast<clipper::dsp::VibeModel*>(handle)->setOversampling(factor);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int vibe_latency_samples(void* handle) {
+    if (!handle) return 0;
+    return static_cast<clipper::dsp::VibeModel*>(handle)->latencySamples();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void vibe_process(void* handle, const float* in_ptr, float* out_ptr,
+                  int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::VibeModel*>(handle)->process(in_ptr, out_ptr,
                                                            num_frames);
 }
 

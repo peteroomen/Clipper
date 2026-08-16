@@ -612,9 +612,19 @@ keeps these slices small:
    biggest hole in the lineup. BBD + compander + degradation. Note the EP-3's
    *preamp* is a tone in its own right (Page, EVH) and is worth exposing even
    with the delay off.
-5. **M13.5 — Uni-Vibe** *(M)* — four **mismatched** phase stages (not the
-   Ninety's matched four), photocell-driven, lamp thermal lag. Genuinely not
-   reproducible with the existing phaser; Hendrix / Trower / Gilmour.
+5. ~~**M13.5 — Uni-Vibe**~~ — **SHIPPED 2026-08-10 (docs §67, ADR 026)** as
+   pedal type `vibe`, slot 12, wordmark "Swirl". **This entry's own framing was
+   wrong and the slice corrected it:** "four **mismatched** phase stages (not the
+   Ninety's matched four)" is not the distinction, because `PhaserModel` already
+   carries a deterministic ±1.5 % per-stage detune so its four corners do not
+   stack into one null. The distinction is the MAGNITUDE — the sourced staggered
+   caps are 0.22 µF against 470 pF, i.e. **468:1 (8.87 octaves) against 0.043
+   octaves** — and the player-facing consequence is the SPREAD OF THE NOTCH PAIR:
+   measured **5.74 octaves against the Ninety's 2.49**, from the identical
+   stimulus. The lamp thermal lag is real and is the second, independent bar
+   (the sweep rises faster than it falls; the Ninety measures 1.00 on the same
+   metric). `OptoCell` was reused **unwidened** — the lamp came out as its own
+   component, `LampDrive.h`, exactly as that header instructed.
 6. **M13.6 — Utility + modulation batch** *(M, splittable)* — **Boss NS-2-style
    noise gate** (mandatory companion to M10.4; reuses 13.2's detector),
    **MXR 10-band graphic EQ** (mandatory for metal; 10 biquads, trivial DSP),
