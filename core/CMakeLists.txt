@@ -130,6 +130,7 @@ add_library(clipper_dsp STATIC
     # TRANSCRIBED from a real netlist; the power section reuses the shared
     # LtpInverter + Koren EL34 machinery and is a documented reconstruction.
     src/dsp/RockerverbPreamp.cpp
+    src/dsp/MesaPreamp.cpp
     src/dsp/RockerverbPowerAmp.cpp
     src/dsp/RockerverbAmp.cpp
 )
