@@ -102,7 +102,7 @@ constexpr OverdriveConfig kSdConfig = {
     /* toneMaxTiltDb        */ 12.0f,
     /* dcBlockHz            */ 12.0,
     // LEVEL pot — INHERITED FROM THE TS808, NOT SOURCED FOR THIS PEDAL.
-    // No SD-1 netlist or parts list was reachable (docs §67.2 lists what was
+    // No SD-1 netlist or parts list was reachable (docs §68.2 lists what was
     // tried); the two published figures that turn up in search extracts
     // contradict each other, so neither is used. These are the TS's traced
     // numbers, carried over exactly as this model has always carried the TS's

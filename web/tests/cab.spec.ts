@@ -389,7 +389,7 @@ test('four edits in one declick fade window: all land at output zero', async ({ 
   // The batch genuinely landed: both pedals left the circuit and the amp powered
   // down, so the level fell to the raw trimmed input.
   //
-  // RE-DERIVED 2026-08-10 (docs §67). This clause used to read
+  // RE-DERIVED 2026-08-10 (docs §68). This clause used to read
   // `afterRms < beforeRms * 0.6` — a RELATIVE proxy, and it broke when the output
   // pots got their real logarithmic law, because the driven rig at RAT LEVEL 0.9 /
   // TS LEVEL 0.7 is now much quieter (beforeRms 0.331 -> 0.092) while afterRms,

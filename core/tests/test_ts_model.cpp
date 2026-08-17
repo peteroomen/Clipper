@@ -278,7 +278,7 @@ void testAliasing(double fs) {
 
 // --- Test 6: the LEVEL pot's law. ---------------------------------------------
 //
-// REWRITTEN 2026-08-10 (docs §67). This was `testLevelLinearity` and it asserted
+// REWRITTEN 2026-08-10 (docs §68). This was `testLevelLinearity` and it asserted
 // the identity map §66.3 registered as a lineup-wide approximation. Rewritten,
 // not deleted.
 //
@@ -330,7 +330,7 @@ void testOutputPotLaw() {
 
     // BAR 4 — the top of the knob does not move (§51's rule). The loading leaves
     // law(1) exactly 1 because the top leg is zero there, so LEVEL 1.0 renders
-    // bit-identically to the pre-slice build (hashes in docs §67.4).
+    // bit-identically to the pre-slice build (hashes in docs §68.4).
     assert(clipper::dsp::pot::tsLevel(1.0) == 1.0 &&
            "LEVEL 1.0 is no longer exactly unity — the taper has become a trim");
     assert(clipper::dsp::pot::tsLevel(0.0) == 0.0 && "LEVEL 0 is not silence");

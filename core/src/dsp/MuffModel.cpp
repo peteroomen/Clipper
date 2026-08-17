@@ -405,7 +405,7 @@ void MuffModel::setParameter(int paramId, float value) {
             impl_->tone.setTone(knob);
             break;
         case PARAM_VOLUME:
-            // The A-taper VOLUME pot's bare audio taper (docs §67). Q4's 10 k
+            // The A-taper VOLUME pot's bare audio taper (docs §68). Q4's 10 k
             // collector load sits in series AHEAD of the whole pot, so it scales
             // every wiper position alike (-0.34 dB, law-neutral) and the wiper
             // goes straight to the output jack — nothing loads it, so there is

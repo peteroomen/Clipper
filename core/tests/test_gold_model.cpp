@@ -182,7 +182,7 @@ double refPreAmpMag(double f, double g) {
 // With the ganged pot at minimum the clipped half is switched out entirely, so the
 // box is its input buffer + summing amp + output pot: FLAT and CLEAN. OUTPUT at
 // noon (0.5) is the calibration point — kSumGain 2.0 x 0.5 == exactly unity.
-// SPLIT INTO TWO BARS 2026-08-10 (docs §67). This used to measure ONE thing —
+// SPLIT INTO TWO BARS 2026-08-10 (docs §68). This used to measure ONE thing —
 // |gain in dB| at each probe frequency, against 0.25 dB — which silently
 // conflated FLATNESS (is this a buffer or a voice?) with LEVEL (is it unity?).
 // They coincided only because the OUTPUT pot was an identity map and
@@ -216,7 +216,7 @@ void testTransparency(double fs) {
     // LEVEL at OUTPUT noon, DERIVED from two sourced numbers rather than assumed:
     //   * the summing amp's gain kSumGain = 2.0 (docs §52 — R20·G_clean measures
     //     1.82-2.28 across the band, so the clean side was already right); and
-    //   * the output network's delivered gain at noon, 0.489758 (docs §67.3, out
+    //   * the output network's delivered gain at noon, 0.489758 (docs §68.3, out
     //     of R25 = 560 R, the 10 k pot and R28 = 100 k).
     // => 20·log10(2.0 × 0.489758) = -0.1798 dB, and unity now lands at OUTPUT
     // 0.5105 rather than exactly noon. The bar is 0.25 dB; the measured -0.1798
@@ -226,7 +226,7 @@ void testTransparency(double fs) {
     const double unityDb = ref;
     assert(std::fabs(unityDb) < 0.25 &&
            "GAIN=0 / OUTPUT noon is not within 0.25 dB of unity — kSumGain or the "
-           "output network has moved (docs §67.3 derives the -0.18 dB)");
+           "output network has moved (docs §68.3 derives the -0.18 dB)");
     std::printf(
         "  [ok] transparency @ %.0f Hz: GAIN=0 FLAT within %.3f dB re 1 kHz "
         "(worst @ %.0f Hz, bar 0.25), THD %.4f%%; LEVEL at OUTPUT noon %.3f dB "
@@ -552,7 +552,7 @@ void testHeadroomAndOutput(double fs) {
     assert(tClean < 0.005 && "the clean path distorts at 1 V (no headroom)");
     // --- THE OUTPUT POT: the one of five that is NOT an audio taper. ----------
     //
-    // REWRITTEN 2026-08-10 (docs §67). This used to read "OUTPUT is a linear pot
+    // REWRITTEN 2026-08-10 (docs §68). This used to read "OUTPUT is a linear pot
     // (house convention)" and assert exactly that. The lineup-wide taper slice
     // went looking for the convention's justification and found a SOURCE:
     //
@@ -609,10 +609,10 @@ void testHeadroomAndOutput(double fs) {
            "OUTPUT now spends its dB evenly across the travel — that is an AUDIO "
            "taper's signature, and the sources say this pot is linear. If an "
            "audio taper was applied here because the other four have one, revert "
-           "it: docs §67.5");
+           "it: docs §68.5");
 
     // (d) The top of the knob does not move: R25's fixed 0.519 dB insertion loss
-    //     is normalised out on purpose (a LEVEL fact, not a LAW fact — §67.3), so
+    //     is normalised out on purpose (a LEVEL fact, not a LAW fact — §68.3), so
     //     OUTPUT 1.0 renders bit-identically to the pre-slice build.
     assert(clipper::dsp::pot::goldOutput(1.0) == 1.0 &&
            "OUTPUT 1.0 is no longer exactly unity — the network's insertion loss "

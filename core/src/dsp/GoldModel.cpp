@@ -188,7 +188,7 @@
 // SECTION 4 — OUTPUT STAGE
 // ---------------------------------------------------------------------------
 // Output buffer + OUTPUT pot (a LINEAR (B) 10 k pot inside the reference's own
-// R25 560 R / R28 100 k network — docs §67, and the one pedal of five whose
+// R25 560 R / R28 100 k network — docs §68, and the one pedal of five whose
 // output pot is NOT an audio taper) + the
 // output coupling cap's DC block at kOutHpHz (~8 Hz). The pot is the pedal's
 // makeup gain. NOTE (docs §50 correction): at GAIN 0 the box is a clean buffer
@@ -825,7 +825,7 @@ void GoldModel::setParameter(int paramId, float value) {
             // 10 k pot with R25 = 560 R in series and R28 = 100 k loading the
             // wiper. This pedal is the one that does NOT get an audio taper —
             // both the reference implementation and the published analyses say
-            // the original's Output pot is linear (docs §67; OutputPotTaper.h).
+            // the original's Output pot is linear (docs §68; OutputPotTaper.h).
             // Measured: within 0.18 dB of the identity map it replaces at every
             // position, so the old "house convention" map was already right and
             // is now right for a SOURCED reason.

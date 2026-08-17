@@ -29,7 +29,7 @@ using clipper::dsp::RatModel;
 
 // --- known-bad properties still open on this branch --------------------------
 //
-// EMPTY as of 2026-08-10 (docs §67). The one entry that lived here is gone
+// EMPTY as of 2026-08-10 (docs §68). The one entry that lived here is gone
 // because the lineup-wide output-pot taper slice made it XPASS, and
 // support/Xfail.h treats an XPASS as a hard failure precisely so a fixed defect
 // cannot leave a stale ledger line behind:
@@ -40,7 +40,7 @@ using clipper::dsp::RatModel;
 //     audio-taper band) and deliberately did NOT fix it, because every sibling
 //     carried the same approximation and fixing this pedal alone would have made
 //     the RAT the quietest of five and undone §36 by a knob law. All five output
-//     pots moved together in §67; this pedal now measures 11.92 % at half
+//     pots moved together in §68; this pedal now measures 11.92 % at half
 //     rotation and the property is asserted outright in `testOutputPotLaw`,
 //     which is the rewritten `testLevelLinearity` §66.3 said the fixing slice
 //     would have to rewrite.
@@ -504,7 +504,7 @@ void testFilter(double fs) {
 
 // --- Test 4: the LEVEL pot's law. --------------------------------------------
 //
-// REWRITTEN 2026-08-10 (docs §67). This was `testLevelLinearity` and it asserted
+// REWRITTEN 2026-08-10 (docs §68). This was `testLevelLinearity` and it asserted
 // the IMPLEMENTATION's identity map — a drift guard on a known approximation that
 // §66.3 labelled as such and told the fixing slice to rewrite. It is rewritten,
 // not deleted, and the XFAIL it carried (`rat-level-pot-linear-not-log`) is gone
@@ -553,7 +553,7 @@ void testOutputPotLaw() {
     // must not become a level trim (§51's rule, and §66's whole reason for
     // refusing the one-pedal version). The law is normalised so law(1) is exactly
     // 1.0, which is what makes the LEVEL 1.0 render bit-identical to the
-    // pre-slice one (render hashes in docs §67.4). Folding a network's fixed
+    // pre-slice one (render hashes in docs §68.4). Folding a network's fixed
     // insertion loss in here instead would fail this on the nose.
     assert(clipper::dsp::pot::ratLevel(1.0) == 1.0 &&
            "LEVEL 1.0 is no longer exactly unity — the taper has become a trim");
@@ -786,7 +786,7 @@ void testPassbandIntegrity() {
 // +4.86 dB; index 4095: -0.35369 -> -0.63336, +5.05 dB), which is the expected
 // magnitude and is the check that nothing else moved with it.
 //
-// REGENERATED AGAIN 2026-08-10 for the output-pot taper slice (docs §67). §66.5
+// REGENERATED AGAIN 2026-08-10 for the output-pot taper slice (docs §68). §66.5
 // predicted this exactly — its P5 perturbation put the house audio taper on the
 // LEVEL map and reported that this guard trips. It renders at LEVEL 0.9, and the
 // pot's law now delivers audioTaper(0.9) = 0.664157 there instead of 0.9.

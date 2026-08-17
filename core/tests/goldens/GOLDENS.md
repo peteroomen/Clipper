@@ -75,7 +75,7 @@ level change with the voice intact, not a redistribution:
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Δ dB | -2.51 | **-14.63** | -2.80 | -3.38 | -4.32 | -4.98 | -5.30 | -6.81 | -6.02 | -3.81 | -5.17 | -5.23 |
 
-**Justification:** The lineup-wide output-pot tapers (docs §67). Every dirt pedal's
+**Justification:** The lineup-wide output-pot tapers (docs §68). Every dirt pedal's
 output pot now delivers what its own netlist says it delivers instead of a linear
 fraction of the knob: the RAT's and the Muff's are unloaded audio tapers (11.920 %
 at half rotation), the TS's is an audio taper bent by the 226 k its output buffer
@@ -108,7 +108,7 @@ only golden rig with no dirt pedal in it, and that is the scope check.
 
 **What is NOT in this bless, deliberately:** the shipped OUTPUT knob defaults were
 a level calibration expressed in linear-pot coordinates, and re-deriving them
-(§67.5 carries the solved positions) would restore the old levels and undo most of
+(§68.5 carries the solved positions) would restore the old levels and undo most of
 these deltas. That is a separate concern with its own justification; bundling it
 here would have left a reviewer unable to attribute the drift.
 
@@ -117,7 +117,7 @@ per-golden delta table above. Same hand-run ritual as the 2026-07-31 entries —
 /dev/tty in this environment, so: clean tree verified, `--golden-report` re-checked
 against the approved figures immediately before `--update-goldens`, and this entry
 committed with the `.wav` files. Note the first attempt at this bless ABORTED on
-the write-back check and that abort was correct — see docs §67.11; the check is now
+the write-back check and that abort was correct — see docs §68.11; the check is now
 a per-sample round-trip (1.51-1.59 LSB across all five) instead of a band delta,
 fixed in its own commit before this one, and `kQuantizationFloorDb` was left alone.
 

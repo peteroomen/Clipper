@@ -146,7 +146,7 @@ test('RAT worklet: high distortion yields odd harmonics; LEVEL scales RMS', asyn
   expect(result.h3).toBeGreaterThan(result.h2 * 8);
   expect(result.h2).toBeLessThan(result.f1 * 0.1);
 
-  // LEVEL is the 100 k LOGARITHMIC volume pot, not a linear one (docs §67).
+  // LEVEL is the 100 k LOGARITHMIC volume pot, not a linear one (docs §68).
   //
   // REWRITTEN 2026-08-10. This used to assert `1.8 < rmsFull/rmsHalf < 2.2` — the
   // identity map — and it is the SIXTH site in the repo that did (the other five
@@ -783,7 +783,7 @@ test('vibe worklet: the Uni-Vibe is reachable and ALL THREE slots reach the core
 
   // (c) SLOT 1 (INTENSITY) reaches the core — and note what this asserts is NOT
   // "it goes quiet": at INTENSITY 0 the lamp still sits at its bias point, so the
-  // pedal is a STATIC comb rather than a bypass (docs §67.6). What must vanish is
+  // pedal is a STATIC comb rather than a bypass (docs §68.6). What must vanish is
   // the MOVEMENT.
   expect(result.flatSwing).toBeLessThan(0.5);
   expect(result.swirlSwing - result.flatSwing).toBeGreaterThan(3.0);

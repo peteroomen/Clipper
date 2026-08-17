@@ -623,7 +623,7 @@ void testAliasing(double fs) {
 
 // --- Test 6: the VOLUME pot's law. --------------------------------------------
 //
-// REWRITTEN 2026-08-10 (docs §67). This was `testVolumeLinearity` and it asserted
+// REWRITTEN 2026-08-10 (docs §68). This was `testVolumeLinearity` and it asserted
 // the identity map — the same lineup-wide approximation §66.3 registered on the
 // RAT. §66.3 named three files; this is a FOURTH site that carried it (the GOLD's
 // is the fifth), and all five moved in one slice. Rewritten, not deleted.
@@ -675,7 +675,7 @@ void testVolumePotLaw() {
     // BAR 4 — the top of the knob does not move (§51's rule). Q4's 10 k source
     // resistance is normalised out on purpose: it is a fixed -0.34 dB LEVEL fact,
     // and this slice moves LAWS. Folding it in here would make VOLUME 1.0 quieter
-    // than it shipped and fail this assert (docs §67.3 records the number).
+    // than it shipped and fail this assert (docs §68.3 records the number).
     assert(clipper::dsp::pot::muffVolume(1.0) == 1.0 &&
            "VOLUME 1.0 is no longer exactly unity — the taper has become a trim");
     assert(clipper::dsp::pot::muffVolume(0.0) == 0.0 && "VOLUME 0 is not silence");

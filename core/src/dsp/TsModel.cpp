@@ -59,7 +59,7 @@ constexpr OverdriveConfig kTsConfig = {
     /* tonePivotHz          */ 1000.0,  // TS tone tilt, SHARED topology with SD-1
     /* toneMaxTiltDb        */ 12.0f,
     /* dcBlockHz            */ 12.0,
-    // LEVEL pot — SOURCED (docs §67). The ts808_tube_screamer.asc annotation
+    // LEVEL pot — SOURCED (docs §68). The ts808_tube_screamer.asc annotation
     // reads "R15 is level pot (1-100k, log)", cross-checked independently by the
     // IceScreamer clone's build doc ("100K logarithmic"). The wiper is LOADED:
     // R19 510 k to the bias rail, in parallel with C8 into (R18 510 k ∥ the

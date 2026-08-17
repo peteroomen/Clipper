@@ -495,7 +495,7 @@ std::vector<Gear> allGear() {
     window("rat", 7.0, 27.0);
     window("sd1", 4.0, 24.0);
     window("ts", 1.0, 21.0);
-    // RE-BASELINED 2026-08-10 (docs §67, the output-pot taper slice) — and it is
+    // RE-BASELINED 2026-08-10 (docs §68, the output-pot taper slice) — and it is
     // the ONLY one of the five dirt rows that had to move, which is itself the
     // scope check. The VOLUME pot is now the A250k audio taper its BOM says it
     // is, and at the shipped 0.6 default that is worth a DERIVED
@@ -899,7 +899,7 @@ void testLevelSanity(const std::vector<Gear>& gear) {
 
 // --- A5 — THE DIRT LINEUP'S STAGING SURVIVES THE OUTPUT-POT LAWS. ------------
 //
-// Added 2026-08-10 (docs §67). This is the bar the whole output-pot slice turns
+// Added 2026-08-10 (docs §68). This is the bar the whole output-pot slice turns
 // on, and it exists because §66 REFUSED to fix one pedal on exactly this ground.
 //
 // The argument, as §66.3 made it: the RAT's LEVEL pot is logarithmic and the
@@ -915,7 +915,7 @@ void testLevelSanity(const std::vector<Gear>& gear) {
 // version — and yet it holds RANK 2 OF 5, because its siblings moved too. The
 // absolute level is not the property; the rank is.
 //
-// The spread is PRINTED, not asserted. §67.5 records why: it widens 4.5 -> 8.0 dB
+// The spread is PRINTED, not asserted. §68.5 records why: it widens 4.5 -> 8.0 dB
 // and the cause is the shipped OUTPUT DEFAULTS, which were chosen against linear
 // pots and are now the wrong coordinates. That is a named follow-up, not a
 // failure of the laws, and snugging a bar around it would hide it.
@@ -961,7 +961,7 @@ void testDirtLineupStaging(const std::vector<Gear>& gear) {
            "output pot has gone back to a linear map.");
     std::printf("  [ok] A5 lineup staging: RAT at %.2f dBFS with %d of 4 siblings "
                 "below it (§36 holds); spread %.1f dB — RECORDED, not asserted "
-                "(docs §67.5: the OUTPUT defaults are the follow-up)\n",
+                "(docs §68.5: the OUTPUT defaults are the follow-up)\n",
                 ratDb, quieterThanRat, hi - lo);
 }
 
@@ -1443,7 +1443,7 @@ enum class GoldenStatus { Ok, Missing, FormatDrift, LengthDrift };
 // each sample and must return it within one of these; see kWriteBackLsbBar.
 constexpr double kStorageLsb = 1.0 / 32768.0;
 
-// The WRITE-PATH bar, and it is deliberately a PER-SAMPLE one (docs §67.11).
+// The WRITE-PATH bar, and it is deliberately a PER-SAMPLE one (docs §68.11).
 //
 // This used to be `worstBandDb <= kQuantizationFloorDb` — a per-third-octave-BAND
 // proxy — and the output-pot taper slice proved that proxy unsound. It is bounded
@@ -1453,7 +1453,7 @@ constexpr double kStorageLsb = 1.0 / 32768.0;
 // round-trip error against the quietest compared band, across the five rigs,
 //   rat -3.59 dB -> 0.0005 | muff -24.50 -> 0.0009 | ts -29.26 -> 0.0097
 //   clean120 -38.03 -> 0.1059 | sd1 -40.27 -> 0.1585
-// — monotonic, and the SD-1 (8.57 dB quieter after §67) went through the 0.15 bar
+// — monotonic, and the SD-1 (8.57 dB quieter after §68) went through the 0.15 bar
 // on an honest 16-bit round-trip. `clean120_chorus` was already at 0.1059, i.e.
 // 70 % of budget, on a golden that slice never touched.
 //

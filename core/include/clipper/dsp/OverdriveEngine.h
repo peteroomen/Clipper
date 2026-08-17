@@ -22,7 +22,7 @@
 // Everything else (the mid-hump corner, the 4558 op-amp values, the tone/level
 // topology) is IDENTICAL — which is exactly why the two pedals are one engine.
 //
-// ONE HONESTY NOTE ON THAT SENTENCE, added 2026-08-10 (docs §67). The shared
+// ONE HONESTY NOTE ON THAT SENTENCE, added 2026-08-10 (docs §68). The shared
 // "tone/level topology" is a MODELLING POSITION, not a sourced fact for both
 // members: a TS808 netlist is reachable and annotates its level pot
 // ("R15 is level pot (1-100k, log)"), and no SD-1 netlist or parts list could be
@@ -75,7 +75,7 @@ struct OverdriveConfig {
     float toneMaxTiltDb;  // +/- tilt at the TONE extremes
     double dcBlockHz;     // output coupling-cap high-pass
 
-    // Stage 3 — the LEVEL pot's own law (docs §67). The wiper law is the house
+    // Stage 3 — the LEVEL pot's own law (docs §68). The wiper law is the house
     // audio taper; the NETWORK then bends it, because this family's pot drives
     // an emitter-follower OUTPUT BUFFER and a loaded wiper does not deliver the
     // bare taper. Both numbers live in the config rather than in the engine for

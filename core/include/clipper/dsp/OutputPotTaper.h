@@ -1,7 +1,7 @@
 // Clipper — portable DSP core.
 //
 // OutputPotTaper — the five dirt pedals' OUTPUT pots, each with the law its own
-// netlist says it has (docs §67).
+// netlist says it has (docs §68).
 //
 // ---------------------------------------------------------------------------
 // WHY THIS FILE EXISTS
@@ -58,7 +58,7 @@
 // Shipping the un-normalised network would smuggle an absolute level trim in
 // under a knob-law change — which is exactly what §66 refused to do and what
 // §51 pinned by construction ("`taper(1) = 1` for ANY k pins the top of the
-// knob EXACTLY"). The losses are MEASURED and RECORDED in docs §67.3 as their
+// knob EXACTLY"). The losses are MEASURED and RECORDED in docs §68.3 as their
 // own follow-up; they are not lost, they are out of scope.
 //
 // Consequence, asserted by every pedal's test: **OUTPUT 1.0 is bit-identical to

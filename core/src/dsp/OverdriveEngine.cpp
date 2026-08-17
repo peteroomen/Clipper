@@ -141,7 +141,7 @@ void OverdriveEngine::setParameter(int paramId, float value) {
         case PARAM_LEVEL:
             // The LOG level pot, LOADED by the output buffer's base network —
             // 11.391 % at half rotation against the bare taper's 11.920 %
-            // (docs §67; OutputPotTaper.h carries the trace and the sourcing,
+            // (docs §68; OutputPotTaper.h carries the trace and the sourcing,
             // including that the SD-1 inherits these numbers).
             level_.setTarget(static_cast<float>(pot::loadedLogPot(
                 knob, cfg_.levelPotOhms, cfg_.levelWiperLoadOhms)));

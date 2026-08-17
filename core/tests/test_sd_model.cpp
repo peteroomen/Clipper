@@ -313,17 +313,17 @@ void testAliasing(double fs) {
 
 // --- Test 6: the LEVEL pot's law. ---------------------------------------------
 //
-// REWRITTEN 2026-08-10 (docs §67). This was `testLevelLinearity` and it asserted
+// REWRITTEN 2026-08-10 (docs §68). This was `testLevelLinearity` and it asserted
 // the identity map §66.3 registered as a lineup-wide approximation. Rewritten,
 // not deleted.
 //
 // READ THIS BEFORE TRUSTING THE NUMBERS: unlike the RAT's and the TS's, **this
 // pedal's pot law is NOT SOURCED.** No SD-1 netlist or parts list was reachable
-// (docs §67.2 lists what was tried; the proxy permits github.com only and the
+// (docs §68.2 lists what was tried; the proxy permits github.com only and the
 // search extracts that exist contradict each other on this exact question). The
 // law here is the TS's, inherited through the shared `OverdriveEngine` exactly as
 // this model has always inherited the TS's tone stack and DC blocker — a
-// DOCUMENTED RECONSTRUCTION, and the largest gap §67 leaves.
+// DOCUMENTED RECONSTRUCTION, and the largest gap §68 leaves.
 //
 // So what this test asserts is deliberately narrower than the TS's: the class of
 // law (an audio taper inside its documented band, shaped by the buffer load) and
@@ -356,7 +356,7 @@ void testOutputPotLaw() {
            "linear pot's signature, not an audio taper's");
 
     // BAR 3 — the top of the knob does not move (§51's rule): LEVEL 1.0 renders
-    // bit-identically to the pre-slice build (hashes in docs §67.4).
+    // bit-identically to the pre-slice build (hashes in docs §68.4).
     assert(clipper::dsp::pot::tsLevel(1.0) == 1.0 &&
            "LEVEL 1.0 is no longer exactly unity — the taper has become a trim");
     assert(clipper::dsp::pot::tsLevel(0.0) == 0.0 && "LEVEL 0 is not silence");

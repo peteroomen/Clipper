@@ -131,7 +131,7 @@ again before merging. Never resolve that conflict by picking a side.
 
 ## What actually happened
 
-Full write-up: **docs §67**. The short version:
+Full write-up: **docs §68**. The short version:
 
 **All five output pots moved, and only four of them got an audio taper.** Each
 pedal's law was sourced from its own netlist rather than from one house constant:
@@ -169,7 +169,7 @@ property; rank was.
    was 6.40 dB before at every position and is 6.40 dB at OUTPUT 1.0 after — the
    shipped defaults were a level calibration expressed in linear-pot coordinates,
    and changing the law invalidates the coordinates, not the calibration. Recorded,
-   not snugged; re-deriving the five defaults is the named follow-up and §67.5
+   not snugged; re-deriving the five defaults is the named follow-up and §68.5
    already carries the solved values.
 
 ## Measured results
@@ -193,7 +193,7 @@ and every one of its seven samples moved by the same **0.737965** = the analytic
 
 Core ctest **35 → 34 entries**, repo ledgers **6 → 5**
 (`rat-level-pot-linear-not-log` XPASSed → deleted → hard).
-**14 perturbations, all RED on the named bar, every restore GREEN** (§67.7).
+**14 perturbations, all RED on the named bar, every restore GREEN** (§68.7).
 
 Goldens: four CHANGED, `clean120_chorus` UNCHANGED at −0.00.
 **NOTHING BLESSED** — see Status.
@@ -209,11 +209,11 @@ Goldens: four CHANGED, `clean120_chorus` UNCHANGED at −0.00.
 - `core/tests/test_{rat,sd,ts,muff,gold}_model.cpp` — five rewritten bars;
   `test_player_expectations.cpp` — the new A5 lineup-staging bar + the Muff's A4
   window shifted 10 dB; `core/CMakeLists.txt` — the RAT ledger registration off.
-- `docs/DEVELOPMENT.md` §67, `CLAUDE.md`, this file.
+- `docs/DEVELOPMENT.md` §68, `CLAUDE.md`, this file.
 
 ## Deferred to next session
 
-1. **Re-derive the five shipped OUTPUT defaults** on the new laws — §67.5 carries
+1. **Re-derive the five shipped OUTPUT defaults** on the new laws — §68.5 carries
    the solved knob positions (rat 0.9454 · sd1 0.9319 · ts 0.9461 · muff 0.8753 ·
    gold 0.7124 reproduce the old delivered gain exactly). Deliberately NOT bundled
    here: it is a second concern with its own bless, and mixing it into these
@@ -239,7 +239,7 @@ justification into `GOLDENS.md` in the same commit — the documented 2026-07-31
 precedent for an environment with no `/dev/tty`.
 
 **The bless's first attempt aborted, and the abort was correct.** The golden
-write-back check turned out to be unsound for quiet renders (docs §67.11): it was a
+write-back check turned out to be unsound for quiet renders (docs §68.11): it was a
 per-third-octave BAND proxy, and this slice's level drop pushed `sd1_twin_reverb`'s
 reverb tail close enough to the 16-bit floor to trip it. Fixed in its own commit
 first — the round-trip is now measured per SAMPLE (1.51–1.59 LSB on all five,

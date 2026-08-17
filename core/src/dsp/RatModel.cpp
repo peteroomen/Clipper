@@ -102,7 +102,7 @@
 //     clockwise (knob -> 1) = DARKER. knob 0 -> kFilterMaxHz (20 kHz, ~open),
 //     knob 1 -> kFilterMinHz (500 Hz, dark); knob 0.5 ~ 3.16 kHz.
 //   * LEVEL knob -> the 100 k LOGARITHMIC volume pot's own law (0 = silence,
-//     1 = unity). FIXED 2026-08-10, docs §67, and only as part of the
+//     1 = unity). FIXED 2026-08-10, docs §68, and only as part of the
 //     lineup-wide slice §66.3 said it had to be: all five dirt pedals' output
 //     pots moved together, because fixing this one alone re-stages the RAT
 //     against four siblings still on the wrong law and undoes §36 by a knob law
@@ -439,7 +439,7 @@ void RatModel::setParameter(int paramId, float value) {
             break;
         case PARAM_LEVEL:
             // The 100 k LOG volume pot's bare audio taper — unloaded wiper, so
-            // no divider correction (docs §67; OutputPotTaper.h carries the
+            // no divider correction (docs §68; OutputPotTaper.h carries the
             // netlist annotation and the topology trace).
             d.level.setTarget(static_cast<float>(pot::ratLevel(knob)));
             break;
