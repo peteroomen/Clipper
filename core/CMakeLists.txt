@@ -131,6 +131,7 @@ add_library(clipper_dsp STATIC
     # LtpInverter + Koren EL34 machinery and is a documented reconstruction.
     src/dsp/RockerverbPreamp.cpp
     src/dsp/MesaPreamp.cpp
+    src/dsp/MesaPowerAmp.cpp
     src/dsp/RockerverbPowerAmp.cpp
     src/dsp/RockerverbAmp.cpp
 )
