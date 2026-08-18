@@ -193,10 +193,22 @@ and every one of its seven samples moved by the same **0.737965** = the analytic
 
 Core ctest **35 → 34 entries**, repo ledgers **6 → 5**
 (`rat-level-pot-linear-not-log` XPASSed → deleted → hard).
-**14 perturbations, all RED on the named bar, every restore GREEN** (§68.7).
+**15 perturbations, all RED on the named bar, every restore GREEN** (§68.7, §68.12).
 
 Goldens: four CHANGED, `clean120_chorus` UNCHANGED at −0.00.
 **NOTHING BLESSED** — see Status.
+
+**Found by CI after everything above was green (§68.12):** `native/tests/chain_edit_test.cpp`
+— a file this slice does not otherwise touch — held a chain edit's seam to a bound
+whose denominator was the **pre-edit** signal's slope. The TS's sourced log law
+makes that signal much quieter at LEVEL 0.6, so the denominator collapsed 0.002488
+→ 0.000567 while the seam step itself went **down** 0.001395 → 0.001087: the bar
+failed on an improvement. `runCabSwapCase` in the same file had already found and
+fixed exactly this ("the honest bound is the larger of the two settled slews");
+`runCase` now does the same. **This is the FIFTH level-calibrated bar in the
+slice** — after the GOLD transparency bar, the web LEVEL ratio, the web declick
+proxy and the golden write-back check — and the pattern is the thing to carry into
+deferred item 1, which moves the levels again.
 
 ## Files created / modified
 
@@ -209,6 +221,8 @@ Goldens: four CHANGED, `clean120_chorus` UNCHANGED at −0.00.
 - `core/tests/test_{rat,sd,ts,muff,gold}_model.cpp` — five rewritten bars;
   `test_player_expectations.cpp` — the new A5 lineup-staging bar + the Muff's A4
   window shifted 10 dB; `core/CMakeLists.txt` — the RAT ledger registration off.
+- `native/tests/chain_edit_test.cpp` — the continuity bound reads BOTH sides of
+  the edit, and each case reports whether its bound bites (§68.12). Found by CI.
 - `docs/DEVELOPMENT.md` §68, `CLAUDE.md`, this file.
 
 ## Deferred to next session
@@ -223,6 +237,11 @@ Goldens: four CHANGED, `clean120_chorus` UNCHANGED at −0.00.
    are absolute-level facts kept out of a knob-law slice.
 4. Confirm the GOLD's taper letter against a schematic rather than a published
    analysis.
+5. **Sweep for level-calibrated bars before item 1 moves the levels again.** Five
+   turned up in this slice (§68.12) and they were found one at a time, by whichever
+   suite happened to run — the last by CI, in a directory this slice never touched.
+   A deliberate pass over the suites for bars shaped "compare a measurement to a
+   level-dependent reference" would find them all at once.
 
 ## Status
 
