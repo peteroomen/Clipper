@@ -86,6 +86,7 @@
 
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/OrangeAmp.h"
+#include "clipper/dsp/MesaAmp.h"
 #include "clipper/dsp/RockerverbAmp.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
@@ -309,7 +310,8 @@ struct Params {
     int   chainLength = 2;
 
     // Amp voice (M9.4/M10.1/M10.2/M10.3/M10.7): 0 = Clean 120, 1 = JCM800,
-    // 2 = Twin, 3 = AC30, 4 = Orange OR120, 5 = Orange Rockerverb 100.
+    // 2 = Twin, 3 = AC30, 4 = Orange OR120, 5 = Orange Rockerverb 100,
+    // 6 = Mesa Dual Rectifier Solo Head (M10.4).
     // Selects which head process() drives; all are always kept current so a live
     // switch is instant.
     int   ampModel = 0;
@@ -349,6 +351,21 @@ struct Params {
     // both amps, which is the house reuse rule; its BASS/MIDDLE/TREBLE are the
     // shared tone fields (it is the first Orange here with a mid) and its reverb is
     // the shared one. It has no presence control, so jcmPresence never reaches it.
+
+    // M10.4 Mesa Dual Rectifier (docs §68): its GAIN rides jcmGain, its MASTER
+    // rides jcmMaster and its PRESENCE rides jcmPresence — the same MEANING in
+    // each case, which is the house reuse rule; bass/middle/treble and reverb are
+    // the shared fields. What it needs of its own is its THREE switches, because
+    // no other voice has any of them. Stored as 0..1 floats so they ride the same
+    // APVTS float-parameter path as every other control and are quantized where
+    // they reach the model.
+    //   mesaMode  0 / .25 / .5 / .75 / 1 -> Clean / Vintage / Modern /
+    //                                       Red Vintage / Red Modern
+    //   mesaRectifier < .5 silicon, >= .5 5U4
+    //   mesaPowerMode < .5 bold,    >= .5 spongy
+    float mesaMode = 1.0f;
+    float mesaRectifier = 0.0f;
+    float mesaPowerMode = 0.0f;
 
     // Nonlinear-stage oversampling for the dirt pedals (1/2/4/8, default 4).
     int oversampling = 4;
@@ -512,6 +529,9 @@ private:
     clipper::dsp::Ac30Amp ac30_;      // Vox AC30 top boost (mono combo, M10.2)
     clipper::dsp::OrangeAmp orange_;  // Orange OR120 Overdrive (mono head, M10.3)
     clipper::dsp::RockerverbAmp rockerverb_;  // Rockerverb 100 dirty ch. (M10.7)
+    clipper::dsp::MesaAmp mesa_;              // Mesa Dual Rectifier (M10.4)
+
+    void applyMesaSwitches(const Params& p);
     // THE DOUBLE-BUFFERED CAB. cab_[pair][0] is the left side, cab_[pair][1] the
     // right. Exactly one pair is live at a time; the message thread only ever
     // touches the other one. Both are plain members, so the "swap" is an index and

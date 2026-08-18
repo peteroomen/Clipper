@@ -49,6 +49,7 @@ constexpr int   kAmpTwin = 2;    // Params::ampModel value for the Twin
 constexpr int   kAmpAc30 = 3;    // Params::ampModel value for the AC30
 constexpr int   kAmpOrange = 4;  // Params::ampModel value for the Orange OR120
 constexpr int   kAmpRockerverb = 5;  // Params::ampModel value for the Rockerverb
+constexpr int   kAmpMesa = 6;        // Params::ampModel value for the Mesa (M10.4)
 }  // namespace
 
 float trimKnobToGain(float knob01) {
@@ -234,6 +235,36 @@ void ClipperEngine::applyParamsToModels() {
     rockerverb_.setParameter(RV::PARAM_MID, p.middle);
     rockerverb_.setParameter(RV::PARAM_TREBLE, p.treble);
     rockerverb_.setParameter(RV::PARAM_REVERB, p.reverb);
+
+    // Mesa Dual Rectifier (M10.4). jcmGain / jcmMaster / jcmPresence carry its
+    // GAIN / MASTER / PRESENCE — the same meaning in each case. Its three
+    // SWITCHES are its own, and they are quantized HERE, at the boundary, so the
+    // model never sees an in-between state (the C ABI does the same).
+    using MZ = clipper::dsp::MesaAmp;
+    mesa_.setParameter(MZ::PARAM_GAIN, p.jcmGain);
+    mesa_.setParameter(MZ::PARAM_MASTER, p.jcmMaster);
+    mesa_.setParameter(MZ::PARAM_PRESENCE, p.jcmPresence);
+    mesa_.setParameter(MZ::PARAM_BASS, p.bass);
+    mesa_.setParameter(MZ::PARAM_MID, p.middle);
+    mesa_.setParameter(MZ::PARAM_TREBLE, p.treble);
+    mesa_.setParameter(MZ::PARAM_REVERB, p.reverb);
+    applyMesaSwitches(p);
+}
+
+// The three discrete switches, quantized from their 0..1 carriers. Split out so
+// the audio-thread setParams path and the prepare path cannot drift on how a
+// float becomes a switch position.
+void ClipperEngine::applyMesaSwitches(const Params& p) {
+    const float m = p.mesaMode < 0.0f ? 0.0f : (p.mesaMode > 1.0f ? 1.0f : p.mesaMode);
+    const int n = static_cast<int>(clipper::dsp::MesaMode::MESA_MODE_COUNT);
+    int idx = static_cast<int>(m * static_cast<float>(n - 1) + 0.5f);
+    if (idx < 0) idx = 0;
+    if (idx > n - 1) idx = n - 1;
+    mesa_.setMode(static_cast<clipper::dsp::MesaMode>(idx));
+    mesa_.setRectifier(p.mesaRectifier < 0.5f ? clipper::dsp::MesaRectifier::Silicon
+                                              : clipper::dsp::MesaRectifier::Valve5U4);
+    mesa_.setPowerMode(p.mesaPowerMode < 0.5f ? clipper::dsp::MesaPowerMode::Bold
+                                              : clipper::dsp::MesaPowerMode::Spongy);
 }
 
 void ClipperEngine::setParams(const Params& p) {
@@ -635,6 +666,11 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     orange_.prepare(sampleRate_, maxBlock_);
     rockerverb_.setOversampling(kOrangeOversampling);
     rockerverb_.prepare(sampleRate_, maxBlock_);
+    // The Mesa runs its fixed 4x internally too, and it is ONE shared domain
+    // around the whole cascade (docs §63.14/§68), so its latency is 72 samples
+    // rather than one per triode.
+    mesa_.setOversampling(kOrangeOversampling);
+    mesa_.prepare(sampleRate_, maxBlock_);
 
     setPedalOversampling(params_.oversampling);
 
@@ -741,6 +777,12 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
             // pair (M10.7). It REUSES the orange412 cab rather than shipping a
             // second one — see docs §63.9.
             rockerverb_.process(cur, outL, numFrames);
+            for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
+        } else if (p.ampModel == kAmpMesa) {
+            // The Dual Rectifier is a mono HEAD -> dual-mono into the identical cab
+            // pair (M10.4). It reuses the brit412 rather than shipping a Mesa
+            // oversized 4x12 IR — named as a follow-up in docs §68.11.
+            mesa_.process(cur, outL, numFrames);
             for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
         } else {
             amp_.processStereo(cur, outL, outR, numFrames);
@@ -850,6 +892,7 @@ int ClipperEngine::latencySamples() const {
     if (p.ampOn && p.ampModel == kAmpAc30) n += ac30_.latencySamples();
     if (p.ampOn && p.ampModel == kAmpOrange) n += orange_.latencySamples();
     if (p.ampOn && p.ampModel == kAmpRockerverb) n += rockerverb_.latencySamples();
+    if (p.ampOn && p.ampModel == kAmpMesa) n += mesa_.latencySamples();
     if (p.ampOn && p.cab) n += kCabPartition;      // cab adds one partition (128)
     n += limiter_.latencySamples();                // lookahead (64)
     return n;

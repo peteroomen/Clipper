@@ -129,6 +129,12 @@ EMCC_ARGS=(
     "$CORE_DIR/src/dsp/RockerverbPreamp.cpp"
     "$CORE_DIR/src/dsp/RockerverbPowerAmp.cpp"
     "$CORE_DIR/src/dsp/RockerverbAmp.cpp"
+    # M10.4 Mesa Dual Rectifier (docs §68). Three .cpp files, inside the
+    # STAMP:EMCC-ARGS markers so the artifact staleness stamp covers them —
+    # §60 and §64 both record forgetting this exact step.
+    "$CORE_DIR/src/dsp/MesaPreamp.cpp"
+    "$CORE_DIR/src/dsp/MesaPowerAmp.cpp"
+    "$CORE_DIR/src/dsp/MesaAmp.cpp"
     -I "$CORE_DIR/include"
     -isystem "$WDF_INC"
     -O3

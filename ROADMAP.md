@@ -336,14 +336,27 @@ independent slices that can interleave anywhere:
   All five goldens unchanged; nothing blessed. Research honesty note: no schematic
   was reachable from the build container — see §57.1 for what is sourced and what
   is reconstruction.)*
-- **M10.4 — Mesa Dual Rectifier** *(L)* — 5+ cascaded stages with heavy
-  interstage voicing, loose/tight modes, graphic-EQ charm (5 biquads).
-  **Rectifier, not Mark series** — the ask is grunge and 90s metal
-  (Soundgarden / Deftones / Korn); the Mark IIC+ is the *…And Justice* /
-  Petrucci voice and is a different amp. **Cost dropped after docs §55:** the
-  Recto's signature TUBE-vs-SILICON rectifier switch ("spongy" vs "bold") is
-  now close to a parameter change on the real Thévenin supply + reservoir droop
-  the AC30 slice built, rather than the new physics it would have been before.
+- ~~**M10.4 — Mesa Dual Rectifier**~~ — **SHIPPED 2026-08-17 (docs §68)** as amp
+  voice **6** (`mesa`), and it is **the first amp voice here TRANSCRIBED from a
+  complete factory drawing set** rather than reconstructed: the owner supplied
+  the `mbdr` sheets (preamp, power amp, supply, switching matrix and a TRUTH
+  TABLE), and they carry the manufacturer's own **marked DC node voltages** — an
+  absolute external reference, which no previous amp slice had. Model vs sheet:
+  V2B plate **0.01 %**, V1A 1.69 %, V2A 1.25 %, V3A 3.98 %, idle rail 0.14 %.
+  **This entry's own framing was partly wrong and the slice corrected it.** The
+  cost estimate was right ("close to a parameter change on the §55 Thévenin
+  supply" — it was), but "loose/tight modes" understates what the drawing says:
+  the two **MODERN** modes switch the power amp's **global negative feedback OFF
+  ENTIRELY** (LDR19 and LDR20 both open), where every other amp in the lineup has
+  a permanently wired loop. Measured loop depth **OR CLN 9.27 / OR NORM 6.19 /
+  RED VINT 6.19 / OR MOD 0.00 / RED MOD 0.00 dB**. That is why a Recto's low end
+  is loose, and it is topology rather than an EQ curve. Also settled by the
+  sheet: **SPONGY/BOLD is a SEPARATE mains-primary-side switch, not the rectifier
+  selector** — the two are routinely conflated. Rectifier droop ratio **2.24×**
+  (5U4 vs silicon). The graphic EQ is NOT part of this amp and was not built
+  (it is M13.6's MXR 10-band). **Open and reported, not fitted: the amp makes
+  ~48 W against a rated 100** — the obvious suspect, the transcribed 1 k screen
+  resistors, was perturbation-tested and REFUTED (ideal screens reach only 56 W).
 - **M10.7 — Orange Rockerverb 100 MkIII** *(M)* — the modern Orange, and the
   second half of the owner's "OR120 and Rockerverb" ask. Deliberately NOT
   bundled with M10.3: it adds footswitchable clean/dirty channel structure, a
