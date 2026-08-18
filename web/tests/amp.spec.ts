@@ -785,6 +785,8 @@ test('amp twin: a twin rig round-trips through JSON literally', async ({ page })
           // M10.3: the Orange's F.A.C. is a real AmpParams field, so it is part of
           // the serialized shape for EVERY voice — the literal has to carry it.
           fac: 0.2,
+          // M10.4: part of the serialized shape for every voice.
+          mesaMode: 1.0, rectifier: 0.0, powerMode: 0.0,
         },
       },
       oversampling: 4,
@@ -1219,6 +1221,7 @@ test('amp ac30: an ac30 rig round-trips through JSON literally', async ({ page }
           // presence is REUSED as the AC30's top CUT (a distinct value pins the round-trip).
           gain: 0.5, presence: 0.35, master: 0.4,
           fac: 0.2,  // M10.3: part of the serialized shape for every voice
+          mesaMode: 1.0, rectifier: 0.0, powerMode: 0.0,  // M10.4, likewise
         },
       },
       oversampling: 4,
@@ -1504,6 +1507,7 @@ test('amp orange: an orange rig round-trips through JSON literally', async ({ pa
           // presence is REUSED as the OR120's H.F. BOOST; fac is its own field, and a
           // distinct value from the 0.2 default is what pins the round-trip.
           gain: 0.5, presence: 0.45, master: 0.4, fac: 0.6,
+          mesaMode: 1.0, rectifier: 0.0, powerMode: 0.0,
         },
       },
       oversampling: 4,
@@ -1625,6 +1629,7 @@ test('amp rockerverb: a rockerverb rig round-trips through JSON literally', asyn
           // gain and master are the two this voice actually reads; presence and fac
           // must survive the round trip untouched even though it ignores them.
           gain: 0.35, presence: 0.85, master: 0.08, fac: 0.2,
+          mesaMode: 1.0, rectifier: 0.0, powerMode: 0.0,
         },
       },
       oversampling: 4,
