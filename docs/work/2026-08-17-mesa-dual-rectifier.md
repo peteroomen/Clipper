@@ -1,4 +1,4 @@
-# Mesa/Boogie Dual Rectifier Solo Head — the SIXTH amp voice (M10.4)
+# Mesa/Boogie Dual Rectifier Solo Head — the SEVENTH amp voice (M10.4)
 
 **Date:** 2026-08-17
 **Branch:** claude/mesa-drop-pedal-setup-9lxs5g
@@ -227,24 +227,113 @@ loads (82k/90k) predict the leg balance without a resistor sweep, unlike §45's 
 
 <!-- Fill in below during/after the session -->
 
+---
+
 ## What actually happened
 
-(in progress)
+**The research channel inverted the whole slice.** The plan was written expecting a
+§57-style documented reconstruction, because all three normally-available channels
+were checked first and all three are dead in this container: `WebFetch` is
+`EGRESS_BLOCKED` (verified on `warpedmusician.wordpress.com` and
+`www.prowessamplifiers.com`), GitHub code search is repository-scoped this session,
+and `dsharlet/LiveSPICE` was cloned and confirmed to carry no Mesa example. **The
+owner then supplied `recto.zip`** — the full `mbdr` factory drawing set — which
+turned the slice into a transcription AND handed it something no previous amp slice
+has had: the manufacturer's own marked DC node voltages, i.e. an absolute external
+reference.
+
+**The plan's acceptance bar (b) was set at ≥3× before anything was measured; it
+lands at 2.24×.** Shipped at a 2.0× bar with the measurement recorded, per the
+house rule that margins are recorded rather than snugged.
+
+**The plan's step list assumed a `MesaPowerAmp` reconstruction.** It is transcribed
+too — sheets `mbdr2` and `mbdr4` carry the LTP's (unequal) plate loads, the tail,
+the couplings, the grid leaks and stoppers, the screens, the bias, both feedback
+resistors, the presence network, the rectifier select and the whole rail ladder.
+Only the device cards, the OT and `kFullScaleSecV` are reconstruction.
+
+**Two things went wrong and were fixed rather than bounded**, and one trap bit that
+this repo has already recorded twice:
+
+1. `reset()` did not reproduce a fresh model (**4.699e-01**). Bisected to
+   `prepare()`, not `reset()` — see §68.9. Now **0.000e+00**.
+2. `kRaa` was set to 3800 Ω, a *pair's* reflected load, where the house value for
+   the same 6L6 quad is 2000 Ω. Found by measuring output power.
+3. `build-wasm.sh`'s emcc source list is EXPLICIT, and the first artifact rebuild
+   failed at `wasm-ld` with undefined `MesaAmp` symbols — exactly as §60 and §64
+   record for the delay and the opto.
+
+**§ number:** CLAUDE.md says section numbers are assigned centrally. §68 was taken
+as the next free number (§67 is the Uni-Vibe, the highest in `DEVELOPMENT.md`). If
+that collides with a parallel slice, this one renumbers.
 
 ## Measured results
 
-(in progress)
+| property | result |
+| --- | --- |
+| V2B plate vs sheet | 384.04 V vs 384 (**0.01 %**) |
+| V1A / V2A / V3A plate | 1.69 % / 1.25 % / 3.98 % |
+| V3B cathode | 222.42 V vs 216 (2.97 %) |
+| idle rail (silicon) | 460.66 V vs marked A = 460 (**0.14 %**) |
+| loop depth per mode | OR CLN 9.27 · OR NORM 6.19 · RED VINT 6.19 · **OR MOD 0.00 · RED MOD 0.00 dB** |
+| rectifier droop | silicon 25.34 V · 5U4 56.66 V = **2.24×** (bar 2.0×) |
+| spongy (silicon) | 65.13 V |
+| input-select tilt | RED +22.23 dB vs ORANGE −1.07 dB = **23.29 dB** |
+| latency | **72 samples / 1.50 ms** (one shared OS domain) |
+| ragged blocks | **0.000e+00** |
+| `reset()` vs fresh | **0.000e+00** (was 4.699e-01) |
+| NaN recovery | 0 / 5120 non-finite after `reset()` |
+| DC on signal | 0.92 … 1.60 % of peak across all five modes |
+| resting state | plateaus 2.40e-08 / 1.04e-08; **0 subnormal output samples** |
+| cranked peak | 0.6759 … 0.9013 (§23's normalization convention) |
+| quad idle | 30.34 mA / 13.97 W = 47 % of a 6L6GC's 30 W (a cool bias) |
+| output power | **~48 W against a rated 100 — open, attributed, NOT fitted** |
+| goldens | **all five UNCHANGED** |
+| WASM artifact | rebuilt, 103 hashed inputs |
+
+**The screen-resistor perturbation, which REFUTED the obvious attribution:**
+
+| kRscreen | max power |
+| --- | --- |
+| 1000 Ω (shipped) | 47.99 W |
+| 470 Ω | 52.26 W |
+| 100 Ω | 55.55 W |
+| 1 Ω | 56.46 W |
 
 ## Files created / modified
 
-(in progress)
+Core: `MesaPreamp.{h,cpp}`, `MesaPowerAmp.{h,cpp}`, `MesaAmp.{h,cpp}`,
+`tests/test_mesa_amp.cpp`, `CMakeLists.txt`, `src/clipper_c_api.cpp`.
+Web: `params.ts`, `rig.ts`, `App.tsx`, `components/Amp.tsx`, `styles/tokens.css`,
+`styles/amp.css`, `assistant/tools.ts`, `assistant/prompt.ts`.
+Native: `ClipperEngine.{h,cpp}`.
+Build/docs: `scripts/build-wasm.sh`, `web/public/generated/*` (artifact + stamp),
+`docs/DEVELOPMENT.md` (§68), `ROADMAP.md`, `CLAUDE.md`.
 
 ## Deferred to next session
 
-(in progress)
+1. **THE DROP PEDAL** — the second half of the owner's ask, deliberately not
+   bundled. New DSP family; `FFT.h` and `DelayLine.h` are the starting points, and
+   the acceptance shape is cents accuracy / latency / artifact floor rather than a
+   measured contrast against a sibling.
+2. A **Mesa oversized 4×12 IR** (the voice reuses `brit412`).
+3. The **effects loop** as a feature; the **EL34 bias option**.
+4. The **power shortfall** (§68.7).
+5. A **series-R field on `TriodeStage`'s cathode network** — the same shared-class
+   change §63.3 already names for the coupling caps.
+6. **Native build not verified in this container** — no JUCE tree exists here and
+   fetching it was out of budget. The edits follow the Rockerverb's pattern exactly
+   and the core they call is green, but `identical_core_test` has NOT been run
+   against this voice, and no `identical_core_test` case was added for it. That is
+   the honest gap; CI's native job will exercise the build.
+7. **The Playwright suite** shows a failure in `amp.spec.ts` (a JCM-vs-clean
+   harmonic ratio) which is pre-existing, unrelated to this voice, and matches
+   `playwright.config.ts`'s own documented Chromium `OfflineAudioContext` flake.
+   Needs an isolation re-run to confirm.
 
 ## Status
 
-- [x] In progress
+- [ ] In progress
 - [ ] Complete
-- [ ] Partial — see deferred
+- [x] Partial — core, ABI, web, docs and artifact done and green; native compile
+      and the full web suite unverified (see Deferred 6 and 7)
