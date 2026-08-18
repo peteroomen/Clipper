@@ -326,14 +326,20 @@ Build/docs: `scripts/build-wasm.sh`, `web/public/generated/*` (artifact + stamp)
    and the core they call is green, but `identical_core_test` has NOT been run
    against this voice, and no `identical_core_test` case was added for it. That is
    the honest gap; CI's native job will exercise the build.
-7. **The Playwright suite** shows a failure in `amp.spec.ts` (a JCM-vs-clean
-   harmonic ratio) which is pre-existing, unrelated to this voice, and matches
-   `playwright.config.ts`'s own documented Chromium `OfflineAudioContext` flake.
-   Needs an isolation re-run to confirm.
+7. ~~The Playwright suite~~ — **RESOLVED in-slice.** The first full run had 5 real
+   failures, all of them the LITERAL rig round-trip fixtures: adding three fields
+   to `AmpParams` changes the serialized shape, exactly the trap §57 recorded for
+   the OR120's `fac`. Fixtures updated; re-run is **52 passed, 1 flaky**
+   (`amp.spec.ts:120`, unrelated, passes on retry, and matches
+   `playwright.config.ts`'s own documented Chromium flake). Node suites and
+   electron (20/20) green.
 
 ## Status
 
 - [ ] In progress
 - [ ] Complete
-- [x] Partial — core, ABI, web, docs and artifact done and green; native compile
-      and the full web suite unverified (see Deferred 6 and 7)
+- [x] Partial — core (37/37), C ABI, web (52 passed), node, electron, docs and the
+      WASM artifact all done and green. The ONE unverified piece is the NATIVE
+      build: no JUCE tree exists in this container and fetching it was out of
+      budget, so `identical_core_test` has not been run against this voice and no
+      case was added for it (see Deferred 6).
