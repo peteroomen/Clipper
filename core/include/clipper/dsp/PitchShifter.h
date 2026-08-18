@@ -254,6 +254,18 @@ private:
     }
 
     static constexpr double kPi = 3.14159265358979323846;
+    // TWO THINGS WERE TRIED HERE AND BOUGHT NOTHING; both are recorded so a later
+    // slice does not spend the same afternoon. (1) Widening the span to 55 or
+    // 58 ms leaves the residual triad spread IDENTICAL to four decimal places, so
+    // the search is already finding the best lag available rather than being
+    // span-limited. (2) Sub-sample refinement of the chosen lag (three-point
+    // parabola on the correlation peak, which readCubic could have used for free)
+    // moved an E major triad at -2 semitones from 2.0280 to 2.0291 cents of
+    // spread — i.e. nothing. The residual is not lag quantization; it is that ONE
+    // lag cannot align a 4:5:6 triad's three partials simultaneously. Removed
+    // rather than kept, because an inert mechanism is complexity with no
+    // measurement behind it.
+    //
     // The SOLA search span. It must reach the COMPOSITE period of the material,
     // not just one note's: a 2:3 power chord repeats at its lower note's period
     // (~12 ms on a low E) but a 4:5:6 triad only repeats at ~48 ms. 50 ms covers
