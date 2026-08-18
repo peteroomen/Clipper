@@ -166,3 +166,20 @@
 .amp.on .rocker::after { background: var(--cap);
   box-shadow: inset 1px 2px 3px var(--sh-light), inset -1px -2px 4px var(--sh-darker); }
 .power:focus-visible { outline: 2px solid var(--ai); outline-offset: 4px; border-radius: 6px; }
+
+/* M10.4 Mesa Dual Rectifier face (docs §69) — same doctrine as every amp face
+   above: the shared chassis is unchanged and identity is a small-area accent, here
+   a DEEP CRIMSON (the Red channel wink). The knob arcs, wordmark and power jewel
+   pick it up; nothing else about the panel changes. */
+.amp[data-amp-type="mesa"] {
+  --pedal-accent: var(--accent-mesa);
+  --pedal-accent-glow: var(--accent-mesa-glow);
+}
+.amp[data-amp-type="mesa"] .amp-name { color: var(--accent-mesa); }
+.amp[data-amp-type="mesa"].on .jewel {
+  background: radial-gradient(circle at 35% 30%, #FFD8DE, var(--accent-mesa) 55%, #4A0D18);
+  box-shadow: 0 0 16px var(--accent-mesa-glow), 0 0 5px var(--accent-mesa-glow);
+}
+.amp[data-amp-type="mesa"] .jewel {
+  background: color-mix(in srgb, var(--accent-mesa) 18%, var(--well));
+}

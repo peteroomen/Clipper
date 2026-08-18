@@ -15271,3 +15271,236 @@ takes follow-up 1, which moves the levels **again**: a bar written as "compare a
 measurement to a level-dependent reference" survives a voicing slice and dies on a
 staging one. The chain-edit and cab-swap bars are now the same shape, which is the
 form that survives.
+
+## 69. M10.4 — the Mesa/Boogie Dual Rectifier: the SEVENTH amp voice, and the FIRST one transcribed from a complete factory drawing set
+
+The grunge / 90s-metal amp, and the roadmap's own framing of M10.4 ("the ask is
+grunge and 90s metal — **Rectifier, not Mark series**"). It ships as amp voice
+**6** (`mesa`), wired end to end in one slice: core, C ABI, worklet-transparent,
+web face + tokens + assistant, native engine.
+
+**What makes this slice different from every amp slice before it is the
+research channel.** §57's OR120 was a documented reconstruction because no
+schematic was reachable; §63's Rockerverb transcribed a preamp-only netlist that
+happened to ship inside LiveSPICE and reconstructed everything after it. Here
+**the owner supplied the factory drawing set**, and it is complete: preamp, power
+amp, effects loop, power supply, switching matrix and a **truth table**. So this
+is a transcription, and — uniquely so far — it includes **the manufacturer's own
+marked DC node voltages**, which is the strongest kind of check this project has
+ever had on an amp: an ABSOLUTE external reference, not an analytic form derived
+from the same netlist (§29's standing complaint).
+
+### 68.1 Provenance — what is transcribed and what is not
+
+`recto.zip`, 11 GIF sheets titled `MESA/BOOGIE DUAL RECTIFIER SOLO HEAD`. All
+legible at 2× LANCZOS upscale.
+
+| Sheet | Contents | Status |
+| --- | --- | --- |
+| `mbdr1` | PREAMP — V1A…V3B, both gain pots, both tone stacks, presence | transcribed |
+| `mbdr2` | POWER AMP — 12AX7 LTP, 4×6L6, OT, NFB, output taps | transcribed |
+| `mbdr3` | EFFECTS LOOP — V4B follower, V4A recovery | bypass path only |
+| `mbdr4` | POWER SUPPLY — rect select, spongy/bold, rail ladder, bias | transcribed |
+| `mbdr5`/`mbdr6` | SWITCHING MATRIX — RY1/RY2, the LDR banks | semantics only |
+| `mbdr7` | **TRUTH TABLE** — every LDR × every mode | transcribed verbatim |
+
+The three channels that would otherwise have been used were all checked and all
+dead: `WebFetch` is **EGRESS_BLOCKED** (verified on `warpedmusician.wordpress.com`
+and `www.prowessamplifiers.com`), GitHub **code search is repository-scoped** this
+session, and `dsharlet/LiveSPICE` was cloned and confirmed to carry **no Mesa
+example** (its "Rectifier" files are literal diode-bridge test circuits).
+
+**RECONSTRUCTION, named rather than hidden:** the 12AX7 and 6L6GC device cards
+(the shared Koren fits), the OT's reflected load and corner frequencies (no
+transformer spec is on the sheet), the pots' taper LAWS (values are given, letters
+are not, so every log pot keeps the house k = 4), the PI's tail reference, the
+5U4 pair's source resistance, and `kFullScaleSecV`.
+
+### 68.2 The marked node voltages — the absolute check
+
+Because the sheets carry measured DC, the model can be checked against the
+factory rather than against itself:
+
+| node | model | sheet | error |
+| --- | --- | --- | --- |
+| V1A plate | 196.63 V | 200 | 1.69 % |
+| V2A plate | 276.50 V | 280 | 1.25 % |
+| V2B plate | 384.04 V | 384 | **0.01 %** |
+| V3A plate | 221.47 V | 213 | 3.98 % |
+| V3B cathode | 222.42 V | 216 | 2.97 % |
+| idle rail (silicon) | 460.66 V | 460 (node A) | 0.14 % |
+
+**Node C needed the phase inverter's and both loop triodes' standing draw**,
+which tap the same rail on sheets 2 and 3 and are not modelled in `MesaPreamp`.
+It is DERIVED from those sheets' own marked voltages over their transcribed
+resistors — `(422−280)/82k + (422−280)/90k + (422−283)/120k + 210/(22k+82k)` =
+**6.4870 mA**, four Ohm's-law terms — not fitted. Without it C sits 23 V high and
+drags every stage above it with it.
+
+**AND THE SHEET IS INTERNALLY INCONSISTENT IN ONE PLACE, which is reported rather
+than smoothed over.** Its marked E = 402 V cannot coexist with its marked V1A
+plate = 200 V through the transcribed 220 k: that plate needs 0.918 mA, which
+drops 20.2 V across the transcribed 22 k and would put D at 422, not the marked
+406. **This model honours the PLATE** (1.69 %) and lands E low (378 V). Asserted,
+so a later slice cannot "fix" E toward 402 and break the plate that sets the tone.
+
+### 68.3 Three structural findings a reconstruction would have got wrong
+
+1. **V3B IS A DIRECT-COUPLED CATHODE FOLLOWER driving the tone stack** — and the
+   marked voltages corroborate it independently: V3A's plate is 213 V and V3B's
+   cathode is 216 V, i.e. Vgk = −3 V. Measured source impedance **375 Ω**, against
+   the OR120's and the Rockerverb's stacks, which hang off a plate (§57 measures
+   45 534 Ω for the OR120's). That is the structural reason this amp's tone
+   controls interact less than either Orange's.
+2. **THE TWO INPUT SELECTS ARE DIFFERENT KINDS OF COMPONENT, not different
+   values.** RED couples through an **82 pF capacitor**, ORANGE through a **2.2 MΩ
+   resistor**. A resistive divider is flat; a capacitor into a 1 M pot is a
+   high-pass. Measured on the network's own H(jω) at the 2 kHz-re-low-E tilt:
+   **RED +22.23 dB vs ORANGE −1.07 dB = 23.29 dB of contrast**. That is the
+   structural half of "the red channel is tighter", and it is asserted on the
+   NETWORK rather than the composed amp because five stages of clipping compress
+   it away downstream.
+3. **EVERY SWITCHED CATHODE BYPASS IS A GAIN SWITCH.** The idiom is the same at
+   V1A, V2A and V3A: a 1 µF cap in series with a 47 kΩ that an LDR **shorts out**.
+   LDR on → full 1 µF across Rk; LDR off → 1 µF + 47 k, which is negligible
+   bypass. Only OR CLN turns them off.
+
+### 68.4 THE ACCEPTANCE BAR (a) — the MODERN modes run OPEN-LOOP
+
+Sheet `mbdr7` switches LDR19 ("FEEDBACK") and LDR20 ("MORE FEEDBACK") per mode,
+and β = 4k7/(4k7 + Rfb) straight off the drawing:
+
+| mode | LDR19 | LDR20 | Rfb | β | measured loop depth |
+| --- | --- | --- | --- | --- | --- |
+| OR CLN | ON | ON | 23.5 k | 0.1667 | **9.27 dB** |
+| OR NORM | ON | OFF | 47 k | 0.0909 | **6.19 dB** |
+| RED VINT | ON | OFF | 47 k | 0.0909 | **6.19 dB** |
+| OR MOD | OFF | OFF | open | 0.0 | **0.00 dB** |
+| RED NORM | OFF | OFF | open | 0.0 | **0.00 dB** |
+
+**This amp's two most popular modes have NO GLOBAL NEGATIVE FEEDBACK AT ALL.**
+Every other amp in this lineup has a permanently wired loop — JCM 6.37 dB (§45),
+OR120 7.81 dB (§57), Rockerverb 6.65 dB (§63). **That is why a Recto's low end is
+loose, and it is a TOPOLOGY, not an EQ curve.** The bar asserts the modern modes
+at **exactly** zero (`< 1e-9`, not "small"), the vintage modes above 4 dB, OR CLN
+at least 2 dB deeper than the single-47 k modes, and the two single-47 k modes
+equal to within 0.01 dB — the last is an identity in the circuit, so a tight bound
+is fair.
+
+A player-facing consequence, coached rather than apologised for: **PRESENCE does
+nothing in the two MODERN modes**, because the loop it works through is open.
+
+### 68.5 THE ACCEPTANCE BAR (b) — the rectifier select moves SAG
+
+Sheet `mbdr4` carries **two independent switches that are routinely conflated**:
+
+1. **`rect select`** — 4 × 1N4007 silicon vs 2 × 5U4 valve. They tap **different
+   HT winding taps** (silicon takes 350 V + the 50 V `blu` boost; valve takes the
+   plain 350 V), so silicon is both higher-B+ and stiffer, and the 0.875
+   open-circuit ratio is transcribed rather than chosen.
+2. **`SPONGY` / `BOLD`** — a **mains-primary-side** switch. Nothing to do with the
+   rectifier valves.
+
+Rail droop on a sustained low E at full drive, on §55's Thévenin-supply machinery:
+
+| setting | droop |
+| --- | --- |
+| SILICON · BOLD | 25.34 V |
+| SILICON · SPONGY | 65.13 V |
+| 5U4 · BOLD | **56.66 V** |
+
+Ratio 5U4:silicon = **2.24×**, against a shipped bar of **2.0×**. The plan file
+said 3.0× *before anything was measured*; the honest value is what shipped, and
+the margin is RECORDED not snugged. SPONGY is asserted to move sag on its own with
+the rectifier held at silicon, so nobody can wire the two together.
+
+### 68.6 Reported, not asserted — the LTP's plate loads are unequal ON THE DRAWING
+
+`Ra(V5B) = 82 k`, `Ra(V5A) = 90 k`. Worth stating loudly: audit finding 8 (§45)
+spent a whole slice sweeping Ra2 on the JCM to balance its legs, and §63.6 swept
+it again on the Rockerverb — both landed on 120 k as a model-parameter
+*calibration*. **Here the factory already did it**, so the value is transcribed and
+the resulting balance is a PREDICTION this model reports rather than a calibration
+it performs.
+
+### 68.7 The power shortfall — measured, attributed, and NOT tuned away
+
+The composed amp makes **~48 W against a rated 100 W**. §57.3 and §63 both
+recorded the same class of shortfall and both refused to close it with a bigger
+supply; the same applies here.
+
+**The obvious suspect was tested and REFUTED.** The transcribed 1 kΩ/2 W screen
+resistors, against this repo's known-hot screen term (audit findings 9/10), look
+like the cause. Perturbed:
+
+| kRscreen | max power |
+| --- | --- |
+| 1000 Ω (shipped) | 47.99 W |
+| 470 Ω | 52.26 W |
+| 100 Ω | 55.55 W |
+| 1 Ω | 56.46 W |
+
+Ideal screens buy 8 W. **Not the cause.** One real error WAS found by measuring
+rather than reading: `kRaa` was first set to 3800 Ω, which is a *pair's* reflected
+load; `TwinPowerAmp` already carries **2000 Ω for the same 6L6 quad**, and that is
+what ships. The residual gap is this amp's drive arrangement — the same power path
+measures 89 W on the Twin — and is left open rather than absorbed into a constant.
+**Do not close it with a higher `kVsupply` or a softer screen network.**
+
+### 68.8 One oversampling domain, from the first commit
+
+§63.14's lesson applied up front rather than retrofitted: both halves are prepared
+**at the oversampled rate** with their own resamplers at **1×** (Oversampler.h's
+documented exact pass-through), so there is one band-limiting in and one out
+around a five-triode cascade plus a power section. **Latency 72 samples / 1.50 ms**
+— one Oversampler's, not seven — and this voice does not inherit the 44.1 kHz
+alias XFAIL that the OR120 and the Rockerverb both opened.
+
+### 68.9 Two real bugs the tests found
+
+1. **`reset()` did not reproduce a fresh model (4.699e-01).** Bisected: the power
+   amp was already exact at 0.000e+00, and `prepare+reset` equalled `junk+reset`
+   exactly — so `reset()` was deterministic and it was **`prepare()`** that
+   differed. `prepare()` ended by setting `primed_ = true`, so the deferred snap
+   §35 documents never fired and a knob pushed after prepare ramped from the
+   default *forever after*. Now `prepare()` snaps and then CLEARS `primed_`, as
+   `Jcm800Preamp` does. Afterwards: **0.000e+00**.
+2. **`kRaa` at 3800 Ω** — see §69.7.
+
+### 68.10 Resting state — the §59 case, decided by measurement (ADR 006)
+
+Both MNA networks would rest at exactly zero if their input did. It does not:
+`TriodeStage`'s nodal Newton exits at a **residual tolerance**, so on silence its
+output floors at a small nonzero value and keeps re-exciting them. Over a 41 s
+silent tail at 192 kHz both decay and then **plateau**:
+
+| t | input network | tone stack |
+| --- | --- | --- |
+| 1 s | 1.77e-04 | 1.24e-05 |
+| 11 s | 2.34e-05 | 1.05e-08 |
+| 41 s | **2.40e-08** (flat) | **1.04e-08** (flat) |
+
+2.4e-08 is ~30 decades above the double subnormal threshold, so these states can
+never become denormal and the `flushDenormal` calls are **guard-rails, not fixes**
+(§33's own instruction to label them as such). The test asserts what the policy is
+actually about: **no subnormal float leaves the model** (0 over a second of
+silence).
+
+### 68.11 Named follow-ups this slice leaves
+
+1. **A Mesa oversized 4×12 IR.** The voice reuses `brit412`; a Recto is normally
+   run into Mesa's own oversized cab and no such IR exists here.
+2. **The EFFECTS LOOP as a feature.** V4A/V4B are transcribed on sheet `mbdr3` and
+   this model runs the sheet's own LOOP BYPASS path. Their standing draw IS
+   accounted for (§69.2).
+3. **The EL34 bias option.** The sheet supports it ("EL34 −39 V", a ½ DPDT bias
+   select and an LDR pair); this voice ships 6L6 at the transcribed −51 V.
+4. **The power shortfall** (§69.7) — open, attributed, deliberately not fitted.
+5. **The cathode-bypass series resistor.** `TriodeStage::Config` has a bare `Ck`
+   with no series R, so the bypass-OFF state ships as unbypassed. Bounded and
+   measured (48.6 kΩ against Rk 1.8 kΩ at 100 Hz = under 0.4 dB), and the proper
+   fix is the same shared-class change §63.3 already names for the coupling caps.
+6. **Three FMV tone stacks now exist** (JCM, Rockerverb, Mesa) with the same
+   topology and different values. A shared component is defensible — but ADR 021's
+   rule applies: extract it when a slice can MEASURE that the union is not a union,
+   not because the pictures rhyme.

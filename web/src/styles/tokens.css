@@ -127,6 +127,13 @@
      once (the amp menu lists ac30 and orange; a phaser may sit on the board). */
   --accent-orange: #C85A00;
   --accent-orange-glow: rgba(200, 90, 0, 0.5);
+  /* M10.4 Mesa Dual Rectifier amp — a DEEP CRIMSON (the Red channel wink, and
+     the amp's own signature colour). Deliberately darker and bluer than
+     --accent-rat's red/orange and far from --accent-orange's tolex, because the
+     amp menu can list orange, rockerverb and mesa at once and a RAT may sit on
+     the board at the same time. */
+  --accent-mesa: #9E2235;
+  --accent-mesa-glow: rgba(190, 55, 75, 0.5);
   /* M6.8 tuner — segmented meter LEDs (recessed neumorphic wells) + the 7-seg
      note "screen" (a dark readout window in both themes; lit segments glow, unlit
      stay faintly visible). */
@@ -198,6 +205,9 @@
     /* M9.4 JCM800 — brighter brass gold, glows on the dark board */
     --accent-jcm: #E8B84B;
     --accent-jcm-glow: rgba(232, 184, 75, 0.55);
+    /* M10.4 Mesa — brighter crimson, glows on the dark board */
+    --accent-mesa: #E4566E;
+    --accent-mesa-glow: rgba(228, 86, 110, 0.55);
     /* M10.1 Twin — brighter cool silver-blue, glows on the dark board */
     --accent-twin: #7FB4E8;
     --accent-twin-glow: rgba(127, 180, 232, 0.55);

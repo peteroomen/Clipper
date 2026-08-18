@@ -13,6 +13,8 @@
 #include "clipper/dsp/TwinAmp.h"
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/OrangeAmp.h"
+#include "clipper/dsp/MesaAmp.h"
+#include "clipper/dsp/ParamGuard.h"
 #include "clipper/dsp/RockerverbAmp.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/Ce1Model.h"
@@ -898,6 +900,29 @@ constexpr int kAmpParamJcmMaster = 12;
 // Must mirror web/src/params.ts AMP_PARAM_ORANGE_FAC.
 constexpr int kAmpParamOrangeFac = 13;
 
+// M10.4 (docs §69): the Mesa Dual Rectifier's THREE switched controls. All three
+// are NEW ids, above every existing one, for the same reason §57 gave the F.A.C.
+// its own: no other voice has any of them, and reusing a knob slot would make a
+// stale rig state silently mean something else.
+//
+//   MODE      — the drawing's five states (OR CLN / OR NORM / OR MOD / RED VINT
+//               / RED NORM). NOT a channel plus a mode: sheet `mbdr7` enumerates
+//               the combinations that actually exist, and two conceivable ones
+//               (RED CLEAN, ORANGE VINTAGE) do not.
+//   RECTIFIER — silicon vs 5U4, the amp's signature switch.
+//   POWERMODE — SPONGY vs BOLD. A SEPARATE mains-primary-side switch, commonly
+//               confused with the rectifier selector; the sheet settles it.
+//
+// Everything else is the house reuse:
+//   GAIN (10) / MASTER (12) — same function as the JCM's, so the same slots
+//   BASS (1) / MID (2) / TREBLE (3) — the shared tone ids (this amp HAS a mid)
+//   PRESENCE (11) — the transcribed 25k pot in the feedback leg
+//   REVERB (9)    — carried for lineup parity; a Solo Head has no tank
+// Must mirror web/src/params.ts AMP_PARAM_MESA_*.
+constexpr int kAmpParamMesaMode = 14;
+constexpr int kAmpParamMesaRectifier = 15;
+constexpr int kAmpParamMesaPowerMode = 16;
+
 // Which amp model the chain's single handle is currently voicing. M10.1 adds the
 // Twin as the THIRD voice (index 2); M10.2 adds the AC30 as the FOURTH voice (index
 // 3), purely additive — clean120/jcm/twin ids unchanged.
@@ -915,6 +940,10 @@ enum AmpModelId {
     // slot 12 on this amp is "Volume" (the Rockerverb's dirty channel calls its
     // master that); the SLOT is the master slot because the FUNCTION is a master.
     kAmpRockerverb = 5,
+    // M10.4 (docs §69) adds the Mesa Dual Rectifier Solo Head as the SEVENTH
+    // voice (index 6), purely additive. Unlike every amp before it this one is
+    // TRANSCRIBED from the factory drawing set rather than reconstructed.
+    kAmpMesa = 6,
 };
 
 // The tube amps' fixed internal oversampling. Docs §18/§20/§23 measured 4× as the
@@ -926,6 +955,7 @@ constexpr int kTwinOversampling = 4;
 constexpr int kAc30Oversampling = 4;
 constexpr int kOrangeOversampling = 4;
 constexpr int kRockerverbOversampling = 4;
+constexpr int kMesaOversampling = 4;
 
 // One per-side cab convolver pair (L/R). Two of these live in every AmpChain so a
 // cab change can be BUILT into the spare while the render path keeps using the
@@ -945,6 +975,7 @@ struct AmpChain {
     clipper::dsp::Ac30Amp ac30;         // Vox AC30 top boost (mono combo head)
     clipper::dsp::OrangeAmp orange;     // Orange OR120 Overdrive (mono head)
     clipper::dsp::RockerverbAmp rockerverb;  // Orange Rockerverb 100 dirty ch.
+    clipper::dsp::MesaAmp mesa;              // Mesa Dual Rectifier Solo Head
     int model = kAmpClean120;
     // M6.3: the amp goes STEREO from the chorus stage on, so the cab IR runs PER
     // SIDE. Two independent CabConvolver instances (same IR) — the wet R side is
@@ -1022,6 +1053,9 @@ void* amp_create(float sample_rate) {
     // Prepare the Rockerverb up front as well (M10.7) — same discipline.
     c->rockerverb.setOversampling(kRockerverbOversampling);
     c->rockerverb.prepare(sr, 128);
+    // Prepare the Mesa up front as well (M10.4) — same discipline.
+    c->mesa.setOversampling(kMesaOversampling);
+    c->mesa.prepare(sr, 128);
     // Load the default IR into BOTH double-buffered pairs. Only the active pair is
     // strictly needed at t=0, but preparing both means every pair is always a valid
     // convolver — amp_commit_cab can never activate an unprepared one, even if a
@@ -1043,12 +1077,14 @@ EMSCRIPTEN_KEEPALIVE
 void amp_set_model(void* handle, int which) {
     if (!handle) return;
     auto* c = static_cast<AmpChain*>(handle);
-    // 0 = Clean 120, 1 = JCM800, 2 = Twin, 3 = AC30, 4 = Orange. Unknown → Clean 120.
+    // 0 = Clean 120, 1 = JCM800, 2 = Twin, 3 = AC30, 4 = Orange, 5 = Rockerverb,
+    // 6 = Mesa Dual Rectifier. Unknown → Clean 120.
     c->model = (which == kAmpJcm800) ? kAmpJcm800
              : (which == kAmpTwin)   ? kAmpTwin
              : (which == kAmpAc30)   ? kAmpAc30
              : (which == kAmpOrange) ? kAmpOrange
              : (which == kAmpRockerverb) ? kAmpRockerverb
+             : (which == kAmpMesa)   ? kAmpMesa
                                      : kAmpClean120;
 }
 
@@ -1174,6 +1210,7 @@ void amp_reset(void* handle) {
     c->ac30.reset();
     c->orange.reset();
     c->rockerverb.reset();
+    c->mesa.reset();
     for (auto& pair : c->cabs) { pair.l.reset(); pair.r.reset(); }
 }
 
@@ -1216,6 +1253,7 @@ void amp_set_param(void* handle, int param_id, float value) {
     using X = clipper::dsp::Ac30Amp;
     using O = clipper::dsp::OrangeAmp;
     using R = clipper::dsp::RockerverbAmp;
+    using M = clipper::dsp::MesaAmp;
     switch (param_id) {
         case A::PARAM_VOLUME:
             c->amp.setParameter(A::PARAM_VOLUME, value);
@@ -1230,6 +1268,7 @@ void amp_set_param(void* handle, int param_id, float value) {
             c->ac30.setParameter(X::PARAM_BASS, value);
             c->orange.setParameter(O::PARAM_BASS, value);
             c->rockerverb.setParameter(R::PARAM_BASS, value);
+            c->mesa.setParameter(M::PARAM_BASS, value);
             break;
         case A::PARAM_MIDDLE:
             c->amp.setParameter(A::PARAM_MIDDLE, value);
@@ -1238,6 +1277,8 @@ void amp_set_param(void* handle, int param_id, float value) {
             // M10.7: the Rockerverb DOES have a mid control (its FMV stack's 25k
             // pot) — the first Orange in this repo that does.
             c->rockerverb.setParameter(R::PARAM_MID, value);
+            // M10.4: the Mesa's FMV stack has a 25k mid pot on BOTH channels.
+            c->mesa.setParameter(M::PARAM_MID, value);
             // AC30 top-boost has NO mid control — the 'middle' slot never reaches it.
             break;
         case A::PARAM_TREBLE:
@@ -1247,6 +1288,7 @@ void amp_set_param(void* handle, int param_id, float value) {
             c->ac30.setParameter(X::PARAM_TREBLE, value);
             c->orange.setParameter(O::PARAM_TREBLE, value);
             c->rockerverb.setParameter(R::PARAM_TREBLE, value);
+            c->mesa.setParameter(M::PARAM_TREBLE, value);
             break;
         case A::PARAM_BRIGHT:
             c->amp.setParameter(A::PARAM_BRIGHT, value);
@@ -1275,17 +1317,24 @@ void amp_set_param(void* handle, int param_id, float value) {
             c->ac30.setParameter(X::PARAM_REVERB, value);
             c->orange.setParameter(O::PARAM_REVERB, value);
             c->rockerverb.setParameter(R::PARAM_REVERB, value);
+            c->mesa.setParameter(M::PARAM_REVERB, value);
             break;
         case kAmpParamJcmGain:
             c->jcm.setParameter(J::PARAM_GAIN, value);
             // M10.7: the Rockerverb's GANGED dual GAIN pot — the same meaning to
             // the player (preamp drive), so the same slot.
             c->rockerverb.setParameter(R::PARAM_GAIN, value);
+            // M10.4: the Mesa's per-channel 1M GAIN pot — same meaning, same slot.
+            c->mesa.setParameter(M::PARAM_GAIN, value);
             break;
         case kAmpParamJcmPresence:
             c->jcm.setParameter(J::PARAM_PRESENCE, value);
             c->ac30.setParameter(X::PARAM_TOPCUT, value);  // AC30 reuses the slot as TOP CUT
             c->orange.setParameter(O::PARAM_HF_DRIVE, value);  // Orange: HF DRIVE
+            // M10.4: the Mesa's transcribed 25k presence pot, in the NFB leg like
+            // the JCM's. In the two MODERN modes the loop is OPEN, so this knob
+            // correctly does nothing there — that is the circuit, not a bug.
+            c->mesa.setParameter(M::PARAM_PRESENCE, value);
             break;
         case kAmpParamJcmMaster:
             c->jcm.setParameter(J::PARAM_MASTER, value);
@@ -1293,8 +1342,32 @@ void amp_set_param(void* handle, int param_id, float value) {
             // Volume; the SLOT is the master slot because the FUNCTION is a master
             // (docs §63.5). The amp does not listen to slot 0 at all.
             c->rockerverb.setParameter(R::PARAM_VOLUME, value);
+            c->mesa.setParameter(M::PARAM_MASTER, value);
             break;
         case kAmpParamOrangeFac:   c->orange.setParameter(O::PARAM_FAC, value); break;
+        // M10.4: the Mesa's three DISCRETE switches. Each arrives as a 0..1 float
+        // (the ABI has no integer parameter path) and is quantized here, at the
+        // boundary, so the model never sees an in-between state. clampParam01
+        // rejects non-finite first (audit finding 1, ADR 002).
+        case kAmpParamMesaMode: {
+            const double v = clipper::dsp::clampParam01(static_cast<double>(value));
+            const int n = static_cast<int>(clipper::dsp::MesaMode::MESA_MODE_COUNT);
+            int idx = static_cast<int>(v * static_cast<double>(n - 1) + 0.5);
+            if (idx < 0) idx = 0;
+            if (idx > n - 1) idx = n - 1;
+            c->mesa.setMode(static_cast<clipper::dsp::MesaMode>(idx));
+            break;
+        }
+        case kAmpParamMesaRectifier:
+            c->mesa.setRectifier(clipper::dsp::clampParam01(static_cast<double>(value)) < 0.5
+                                     ? clipper::dsp::MesaRectifier::Silicon
+                                     : clipper::dsp::MesaRectifier::Valve5U4);
+            break;
+        case kAmpParamMesaPowerMode:
+            c->mesa.setPowerMode(clipper::dsp::clampParam01(static_cast<double>(value)) < 0.5
+                                     ? clipper::dsp::MesaPowerMode::Bold
+                                     : clipper::dsp::MesaPowerMode::Spongy);
+            break;
         default:
             c->amp.setParameter(param_id, value);
             break;
@@ -1315,6 +1388,7 @@ int amp_latency_samples(void* handle) {
     else if (c->model == kAmpAc30) n = c->ac30.latencySamples();
     else if (c->model == kAmpOrange) n = c->orange.latencySamples();
     else if (c->model == kAmpRockerverb) n = c->rockerverb.latencySamples();
+    else if (c->model == kAmpMesa) n = c->mesa.latencySamples();
     // Both double-buffered pairs share the 128 partition, so a pending cab change
     // never moves reported latency — but read the ACTIVE pair anyway so this stays
     // correct if a future cab ever uses a different partition size.
@@ -1335,6 +1409,8 @@ void amp_process(void* handle, const float* in_ptr, float* out_ptr,
     else if (c->model == kAmpOrange) c->orange.process(in_ptr, out_ptr, num_frames);
     else if (c->model == kAmpRockerverb)
         c->rockerverb.process(in_ptr, out_ptr, num_frames);
+    else if (c->model == kAmpMesa)
+        c->mesa.process(in_ptr, out_ptr, num_frames);
     else c->amp.process(in_ptr, out_ptr, num_frames);
     if (c->cabOn) c->active().l.process(out_ptr, out_ptr, num_frames);  // in-place ok
 }
@@ -1370,6 +1446,14 @@ void amp_process_stereo(void* handle, const float* in_ptr, float* out_l_ptr,
         // The OR120 is a HEAD into a separate 4x12 — mono, dual-mono into the
         // identical cab pair (M10.3). Natural pairing is the orange412.
         c->orange.process(in_ptr, out_l_ptr, num_frames);
+        for (int i = 0; i < num_frames; ++i) out_r_ptr[i] = out_l_ptr[i];
+    } else if (c->model == kAmpMesa) {
+        // The Dual Rectifier is a HEAD into a separate 4x12 — mono, dual-mono into
+        // the identical cab pair (M10.4). Natural pairing is the brit412: a Recto
+        // is normally run into a Mesa oversized 4x12, and no such IR exists here
+        // yet, so the closest shipped 4x12 is reused rather than inventing one.
+        // Named as a follow-up in docs §69.11.
+        c->mesa.process(in_ptr, out_l_ptr, num_frames);
         for (int i = 0; i < num_frames; ++i) out_r_ptr[i] = out_l_ptr[i];
     } else if (c->model == kAmpRockerverb) {
         // The Rockerverb 100 is a HEAD into a separate 4x12 — mono, dual-mono into

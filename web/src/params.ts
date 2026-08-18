@@ -36,6 +36,32 @@ export const AMP_PARAM_JCM_MASTER = 12;
 // is a documented reuse: volume (0), bass (1), treble (3), presence (11) as its
 // H.F. BOOST, reverb (9). Must mirror kAmpParamOrangeFac in clipper_c_api.cpp.
 export const AMP_PARAM_ORANGE_FAC = 13;
+// M10.4 Mesa Dual Rectifier: THREE new param ids (14/15/16), for controls no
+// other voice has. Same reasoning as the F.A.C.: reusing a knob slot would make a
+// stale rig state silently mean something else.
+//   MODE (14)      — the drawing's FIVE states, not a channel plus a mode. Sheet
+//                    `mbdr7` enumerates the combinations that exist, and two
+//                    conceivable ones (RED CLEAN, ORANGE VINTAGE) do not.
+//   RECTIFIER (15) — silicon vs 5U4, the amp's signature switch.
+//   POWERMODE (16) — SPONGY vs BOLD. A SEPARATE mains-primary-side switch,
+//                    commonly confused with the rectifier selector.
+// Everything else is a documented reuse: gain (10), master (12), bass/mid/treble
+// (1/2/3 — this amp has a mid on both channels), presence (11), reverb (9).
+// Must mirror kAmpParamMesa* in clipper_c_api.cpp.
+export const AMP_PARAM_MESA_MODE = 14;
+export const AMP_PARAM_MESA_RECTIFIER = 15;
+export const AMP_PARAM_MESA_POWERMODE = 16;
+
+// The five MODE positions, in the drawing's own order, as 0..1 knob values. The
+// ABI quantizes with round(v * 4), so these are the exact centres.
+export const MESA_MODES = [
+  { id: 'orangeClean', label: 'Clean', value: 0.0 },
+  { id: 'orangeNormal', label: 'Vintage', value: 0.25 },
+  { id: 'orangeModern', label: 'Modern', value: 0.5 },
+  { id: 'redVintage', label: 'Red Vintage', value: 0.75 },
+  { id: 'redModern', label: 'Red Modern', value: 1.0 },
+] as const;
+
 // M10.7 Orange Rockerverb 100: NO new param id, deliberately. Its GAIN and its
 // post-tone-stack VOLUME mean exactly what the JCM800's GAIN (10) and MASTER (12)
 // mean to a player, and its BASS/MIDDLE/TREBLE are the shared tone ids (1/2/3) —
@@ -52,7 +78,7 @@ export const AMP_PARAM_ORANGE_FAC = 13;
 // M10.7 adds the Orange Rockerverb 100 as voice 5 (additive; every existing index
 // unchanged).
 export const AMP_MODEL_INDEX: Record<
-  'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange' | 'rockerverb',
+  'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange' | 'rockerverb' | 'mesa',
   number
 > = {
   clean120: 0,
@@ -61,6 +87,7 @@ export const AMP_MODEL_INDEX: Record<
   ac30: 3,
   orange: 4,
   rockerverb: 5,
+  mesa: 6,
 };
 
 // Chorus mode enum (mirrors ChorusModel::Mode). Kept as plain numbers so it flows
@@ -95,6 +122,10 @@ export const AMP_PARAM_ID = {
   master: AMP_PARAM_JCM_MASTER,
   // M10.3 Orange OR120.
   fac: AMP_PARAM_ORANGE_FAC,
+  // M10.4 Mesa Dual Rectifier.
+  mesaMode: AMP_PARAM_MESA_MODE,
+  rectifier: AMP_PARAM_MESA_RECTIFIER,
+  powerMode: AMP_PARAM_MESA_POWERMODE,
 } as const;
 
 // Valid oversampling factors for the nonlinear stage (default 4x). Other values

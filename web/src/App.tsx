@@ -312,6 +312,8 @@ export default function App() {
       setCabNote('Overdrive 120 loaded — try the Orange 4×12 (its own cab: big bottom, upper-mid bark).');
     } else if (type === 'rockerverb' && rigRef.current.amp.cabModel !== 'orange412') {
       setCabNote('Rocker Verb loaded — try the Orange 4×12 (the same PPC-style cab the OR120 uses).');
+    } else if (type === 'mesa' && rigRef.current.amp.cabModel !== 'brit412') {
+      setCabNote('Dual Rectifier loaded — try the Brit 4×12 (closest shipped 4×12; a Recto wants an oversized cab).');
     } else {
       setCabNote(null);
     }
@@ -445,7 +447,8 @@ export default function App() {
           type === 'twin' ||
           type === 'ac30' ||
           type === 'orange' ||
-          type === 'rockerverb'
+          type === 'rockerverb' ||
+          type === 'mesa'
         )
           setAmpType(type);
       },
