@@ -229,7 +229,54 @@ footswitch does is not shippable here. Documented, not built.
 
 ## What actually happened
 
+**Step 1 of the plan — "measure first, build second" — did its job, and it took two
+structural corrections to get a working shifter. Neither was a tuning change.**
+
+**Correction 1: the textbook two-tap arrangement is wrong.** Taps a half window
+apart, sin/cos crossfaded across the whole cycle, is what the plan described and
+what was built first. Both taps then sit at ~0.707 gain for most of the cycle with
+a fixed W/2 delay between them, so the output is a permanent deep comb: **96 % of
+the energy landed off the harmonics**, and the apparent pitch was up to **150 cents**
+wrong. Replaced by ONE live tap at unity gain for 75 % of the window, with a short
+equal-power handover.
+
+**Correction 2: a fixed splice point gives a systematic pitch error.** With the
+structure fixed the output was still sharp, by a margin that scaled with the shift:
+`r_eff = 0.9697*r + 0.0303`, i.e. +3.1 cents at a semitone and **+51.7 cents at an
+octave**, with the exact target sitting **60 dB below the spectral peak**. Bisected:
+the resampling itself is EXACT (0.000 cents with the wrap disabled), so the splice
+was the whole error. A fixed splice jumps the read by a fixed number of samples,
+which is a fixed FRACTION of any given input period — so every grain slips the
+phase the same way, and a constant phase slip per unit time *is* a frequency
+offset. Fixed with **SOLA**: choose the splice by normalised cross-correlation.
+It stays polyphonic because a correlation search forms no opinion about pitch.
+
+**After both: single notes 0.006–0.084 cents, power chords 0.00 cents.**
+
+**The open item is triads, and it is a measured trade rather than a defect.** See
+"Measured results". Bar 2 as written (spread < 2 cents on a major triad) is NOT met
+at the shipped window; it IS met at a wider search span, for 2x the latency.
+
 ## Measured results
+
+48 kHz, 50 ms window, 17.5 ms SOLA span:
+
+| stimulus | worst peak offset |
+| --- | --- |
+| single note, −1 … −12 semitones | **0.006 … 0.084 cents** |
+| E5 power chord (−1 / −2) | **0.00 / 0.25 cents** |
+| E5 + octave | **0.00 cents** |
+| E major triad (−1 / −2) | 9.75 / 22.75 cents |
+| non-harmonic energy, −1 semitone | −17.0 dB |
+| mean algorithmic latency | 31 ms |
+
+The triad/latency trade, measured rather than argued:
+
+| SOLA span | window | latency | E major triad |
+| --- | --- | --- | --- |
+| 17.5 ms | 50 ms | 31 ms | 9.75 … 22.75 cents |
+| 50 ms | 100 ms | 62 ms | 0.75 … 1.25 cents |
+| 50 ms | 120 ms | 75 ms | 0.50 … 1.75 cents |
 
 ## Files created / modified
 
@@ -237,6 +284,9 @@ footswitch does is not shippable here. Documented, not built.
 
 ## Status
 
-- [ ] In progress
+- [x] In progress — the PRIMITIVE works and is measured; the pedal wrapper, the
+      ABI/web/native wiring and the test suite are NOT built yet, pending the
+      owner's call on the latency/triad trade above.
+- [ ] Not complete
 - [ ] Complete
 - [ ] Partial — see deferred
