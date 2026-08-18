@@ -766,8 +766,14 @@ void MesaPreamp::prepare(double sampleRate, int maxBlockSize) {
 
     buf_.assign(static_cast<size_t>(maxBlockSize_), 0.0f);
     buf2_.assign(static_cast<size_t>(maxBlockSize_), 0.0f);
-    primed_ = false;
+    // Snap onto the knobs as they stand NOW, then clear `primed_` so the first
+    // process() snaps AGAIN. The second snap is the load-bearing one: the C ABI's
+    // order is prepare-THEN-set, so without it a knob pushed after prepare would
+    // ramp from the default over the first block while a reset() model would not,
+    // and the two would render differently forever after (measured 1.016e+01 —
+    // that is how this was found). Jcm800Preamp documents the same two-step.
     primeSmoothers();
+    primed_ = false;
 }
 
 void MesaPreamp::setOversampling(int factor) {
@@ -818,6 +824,13 @@ void MesaPreamp::reset() {
 
 void MesaPreamp::process(const float* in, float* out, int numFrames) {
     if (numFrames <= 0) return;
+    // DEFERRED SNAP (audit finding 6, docs §35). prepare() snaps the smoothers onto
+    // whatever the knobs held at the time, but the C ABI's order is prepare-THEN-set,
+    // so knobs pushed after prepare would otherwise RAMP from the defaults on the
+    // first block. Snapping on the first process() is what makes a freshly prepared
+    // model and a reset() model produce identical audio — without it, reset() vs
+    // fresh measures 4.7e-01 (that is how this was found).
+    if (!primed_) primeSmoothers();
     if (static_cast<int>(buf_.size()) < numFrames) {
         buf_.assign(static_cast<size_t>(numFrames), 0.0f);
         buf2_.assign(static_cast<size_t>(numFrames), 0.0f);

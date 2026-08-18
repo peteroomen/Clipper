@@ -177,14 +177,24 @@ public:
     static constexpr double kCreservoir = 110.0e-6;
 
     // --- RECONSTRUCTION (no transformer spec is on the sheet) ---------------
-    static constexpr double kRaa = 3800.0;  // quad 6L6, ~100 W, into 8 ohm
+    // Plate-to-plate reflected load. RECONSTRUCTION (no transformer spec is on
+    // the sheet), but not a free choice: TwinPowerAmp.h carries 2 k for the SAME
+    // 6L6 QUAD into the same 8 ohm, and a quad's Raa is half a pair's. A first
+    // draft here used 3800 (a PAIR's load) and the composed amp topped out at
+    // 52 W against a rated 100 -- measured, then corrected to the house value.
+    static constexpr double kRaa = 2000.0;
     static constexpr double kRppPerTube = kRaa / 2.0;
     static constexpr double kOtLfHz = 40.0;
     static constexpr double kOtHfHz = 13000.0;
     static constexpr double kRdropPi = 10.0e3;
-    static constexpr double kFullScaleSecV = 45.0;
+    // Secondary volts mapping to 1.0 full scale. DERIVED by measurement on the
+    // COMPOSED amp, per the §23 convention that every voice is normalized to its
+    // own cranked peak: the loudest mode (OR MOD) peaked at 0.6933 with a
+    // provisional 45.0, so 45.0 * 0.6933 / 0.90 lands the cranked peak on 0.90.
+    // The NFB tap uses the REAL secondary volts, never this.
+    static constexpr double kFullScaleSecV = 34.66;
 
-    static double otTurnsRatio() { return 21.7945; }  // sqrt(kRaa/8)
+    static double otTurnsRatio() { return 15.8114; }  // sqrt(kRaa/8)
 
     // beta for the CURRENT mode, straight off the truth table.
     double feedbackBeta() const;

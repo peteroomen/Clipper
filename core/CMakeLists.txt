@@ -132,6 +132,7 @@ add_library(clipper_dsp STATIC
     src/dsp/RockerverbPreamp.cpp
     src/dsp/MesaPreamp.cpp
     src/dsp/MesaPowerAmp.cpp
+    src/dsp/MesaAmp.cpp
     src/dsp/RockerverbPowerAmp.cpp
     src/dsp/RockerverbAmp.cpp
 )
@@ -428,6 +429,16 @@ if(NOT EMSCRIPTEN)
     clipper_add_xfail_ledger(clipper_orange_tests)
 
     # --- M10.7: Orange Rockerverb 100 amp tests -------------------------------
+    add_executable(clipper_mesa_tests tests/test_mesa_amp.cpp)
+    target_link_libraries(clipper_mesa_tests PRIVATE clipper_dsp)
+    target_include_directories(clipper_mesa_tests PRIVATE tools)
+    clipper_add_test_flags(clipper_mesa_tests)
+    add_test(NAME clipper_mesa_tests COMMAND clipper_mesa_tests)
+    # NO XFAIL LEDGER — zero known-bad properties. This voice was built with ONE
+    # shared oversampling domain from its first commit (docs §63.14's lesson), so
+    # it does not inherit the 44.1 kHz alias defect the OR120 and the Rockerverb
+    # both opened.
+
     add_executable(clipper_rockerverb_tests tests/test_rockerverb_amp.cpp)
     target_link_libraries(clipper_rockerverb_tests PRIVATE clipper_dsp)
     target_include_directories(clipper_rockerverb_tests PRIVATE tools)
