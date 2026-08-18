@@ -15196,3 +15196,78 @@ kWriteBackLsbBar`; restore → GREEN, goldens byte-identical to the commit.
 4. Confirm the GOLD's taper letter against a schematic rather than a published
    analysis — it is the weakest source in the table (§68.1), even though the
    reference implementation agrees with it.
+
+### 68.12 A fifth bar was calibrated against the old levels, and CI found it
+
+**Found by CI, not by the local run.** The core `ctest` suite, the web suite and
+the goldens were all green and pushed before **Native (JUCE)** came back red on
+`clipper_chain_edit_test` — a file this slice does not otherwise touch, in a
+directory it does not otherwise touch. The same check was green on `main` and on
+`feat/univibe`, so it was mine.
+
+`runCase` renders a chain edit (a pedal bypassed, added, removed, reordered)
+mid-note and asserts the seam carries no step bigger than the signal's own
+steady-state slope:
+
+```
+bound = max(1.25 * slew, 1e-4)      // slew read from the PRE-edit window
+```
+
+**A/B isolated the cause, and it is not a regression.** On the "TS taken off the
+board" case, before and after the tapers:
+
+| | seam step | steady slew | bound | verdict |
+|---|---|---|---|---|
+| before | 0.001395 | 0.002488 | 0.003110 | pass |
+| after | **0.001087** | **0.000567** | 0.000709 | fail |
+
+The seam got **better** — the step went down 22 %. What collapsed was the bound's
+**denominator**: the pre-edit signal is the TS in circuit at LEVEL 0.6, and on the
+real logarithmic law that pot is a far bigger attenuator there, so the reference
+slope fell 4.4×. The fade is doing its job by a wider margin than before — it still
+turns a 0.017348 hard splice into 0.001087, a **16× reduction**.
+
+**The fix was already written, in the same file.** `runCabSwapCase`, added when the
+cab swap started changing level, carries this comment: *"taking only the pre-edit
+slew would hold the fade-in of a louder cab to the quieter cab's slew and fail on
+nothing… The honest bound is the larger of the two settled slews."* A chain edit
+changes level exactly as a cab swap does — it simply never changed it by much until
+this slice. `runCase` now reads both slews, from the two clean standalone renders
+it already computes for the hard-splice comparison (neither carries a fade), and
+takes the larger.
+
+**One case's bar is vacuous, and it now says so rather than reading as a pass.**
+Measured hard-splice steps against the bound: bypass ×5.4, remove ×5.4, add ×12.8 —
+but **reorder ×0.4**. An unfaded splice of the reordered board would pass reorder's
+seam bar, so for that one case the bar proves nothing about level continuity. That
+is a property of the EDIT, not of the widening (which moved reorder's bound by
+1.4 %, 0.000709 → 0.000719), so it is **reported per case, not asserted** — a gated
+assertion would have needed two invented constants and left a band between them
+where an honest edit fails on nothing, which is the §63.14 mistake in miniature.
+
+**Vacuous against a hard splice is not the same as cannot fail**, and P11 below
+shows the difference: the declick holds the output at ZERO between the two
+topologies, so a broken fade steps to silence and back whatever the edit does to the
+level, and reorder goes red at 0.009903 against that same 0.000719 bound. Reorder's
+bar catches a BROKEN declick; what it cannot catch is a MISSING one on an edit that
+was inaudible anyway.
+
+**P11, perturbation-proven:** collapse the fade — `kDeclickSeconds` 0.006 →
+0.000002 in `ClipperEngine.cpp` — → **RED** on "no discontinuity beyond the declick
+envelope" for reorder (0.009903 vs 0.000719), bypass and remove (0.005460 vs
+0.003210) and the cab swap (0.013831 vs 0.000687); restore → GREEN, file
+byte-identical to the commit. The changed bound still catches a collapsed fade on 4
+of the 5 cases. The **"add" case slips under**, 0.000682 against a 0.000709 bound —
+appending a RAT to the END of the board leaves the pre-edit signal near silence, so
+even the zero-hold is a small absolute step there. Carried openly rather than
+papered over: the other four hold the property, and tightening `add`'s bound alone
+would be picking a number to make a table look complete.
+
+**This is the FIFTH bar in this slice that was calibrated against the old output
+levels**, after the GOLD transparency bar (§68.6), the web LEVEL ratio, the web
+declick proxy, and the golden write-back check (§68.10). Four of the five had a
+strictly stronger replacement available; the pattern is worth naming for whoever
+takes follow-up 1, which moves the levels **again**: a bar written as "compare a
+measurement to a level-dependent reference" survives a voicing slice and dies on a
+staging one. The chain-edit and cab-swap bars are now the same shape, which is the
+form that survives.
