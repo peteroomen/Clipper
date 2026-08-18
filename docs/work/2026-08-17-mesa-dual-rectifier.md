@@ -256,16 +256,19 @@ Only the device cards, the OT and `kFullScaleSecV` are reconstruction.
 this repo has already recorded twice:
 
 1. `reset()` did not reproduce a fresh model (**4.699e-01**). Bisected to
-   `prepare()`, not `reset()` — see §68.9. Now **0.000e+00**.
+   `prepare()`, not `reset()` — see §69.9. Now **0.000e+00**.
 2. `kRaa` was set to 3800 Ω, a *pair's* reflected load, where the house value for
    the same 6L6 quad is 2000 Ω. Found by measuring output power.
 3. `build-wasm.sh`'s emcc source list is EXPLICIT, and the first artifact rebuild
    failed at `wasm-ld` with undefined `MesaAmp` symbols — exactly as §60 and §64
    record for the delay and the opto.
 
-**§ number:** CLAUDE.md says section numbers are assigned centrally. §68 was taken
-as the next free number (§67 is the Uni-Vibe, the highest in `DEVELOPMENT.md`). If
-that collides with a parallel slice, this one renumbers.
+**§ number:** CLAUDE.md warns that section numbers are assigned centrally and that
+two slices have collided before. This one collided too: it was written as §68, and
+while it was in flight `feat/output-pot-tapers` landed on `main` **also** as §68. Main
+has precedence, so this slice renumbered to **§69** at merge time — every reference in
+the Mesa files was moved, and main's output-pot-taper references were left alone.
+Exactly the situation CLAUDE.md's "ask rather than guess" note describes.
 
 ## Measured results
 
@@ -308,7 +311,7 @@ Web: `params.ts`, `rig.ts`, `App.tsx`, `components/Amp.tsx`, `styles/tokens.css`
 `styles/amp.css`, `assistant/tools.ts`, `assistant/prompt.ts`.
 Native: `ClipperEngine.{h,cpp}`.
 Build/docs: `scripts/build-wasm.sh`, `web/public/generated/*` (artifact + stamp),
-`docs/DEVELOPMENT.md` (§68), `ROADMAP.md`, `CLAUDE.md`.
+`docs/DEVELOPMENT.md` (§69), `ROADMAP.md`, `CLAUDE.md`.
 
 ## Deferred to next session
 
@@ -318,7 +321,7 @@ Build/docs: `scripts/build-wasm.sh`, `web/public/generated/*` (artifact + stamp)
    measured contrast against a sibling.
 2. A **Mesa oversized 4×12 IR** (the voice reuses `brit412`).
 3. The **effects loop** as a feature; the **EL34 bias option**.
-4. The **power shortfall** (§68.7).
+4. The **power shortfall** (§69.7).
 5. A **series-R field on `TriodeStage`'s cathode network** — the same shared-class
    change §63.3 already names for the coupling caps.
 6. **Native build not verified in this container** — no JUCE tree exists here and

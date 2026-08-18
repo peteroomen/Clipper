@@ -1,4 +1,4 @@
-// Clipper — portable DSP core (M10.4, docs §68).
+// Clipper — portable DSP core (M10.4, docs §69).
 //
 // MesaPreamp: the preamp of a Mesa/Boogie Dual Rectifier Solo Head — FIVE 12AX7
 // gain stages, a CATHODE FOLLOWER driving the tone stack, TWO complete FMV tone
@@ -25,7 +25,7 @@
 //     -> MASTER 1M -> the effects loop -> the phase inverter
 //
 // ===========================================================================
-// PROVENANCE — read docs §68.1 before changing a constant
+// PROVENANCE — read docs §69.1 before changing a constant
 // ===========================================================================
 // EVERY component value above is TRANSCRIBED from the factory drawing set for
 // the MESA/BOOGIE DUAL RECTIFIER SOLO HEAD (sheets `mbdr1`..`mbdr8`), supplied
@@ -86,7 +86,7 @@
 // THE TWO "MODERN" MODES RUN THE POWER AMP WITH NO GLOBAL NEGATIVE FEEDBACK AT
 // ALL. Every other amp in this lineup has a permanently wired loop (JCM 6.37 dB,
 // OR120 7.81 dB, Rockerverb 6.65 dB). That is this slice's acceptance bar and it
-// is TOPOLOGY, not a voicing curve — see docs §68.4. The loop is owned by
+// is TOPOLOGY, not a voicing curve — see docs §69.4. The loop is owned by
 // MesaPowerAmp; MesaPreamp exposes the mode so the composed amp can route it.
 //
 // Convention: 1.0f == 1.0 V. Platform-free C++17 (no OS/browser/Emscripten deps).
@@ -191,7 +191,7 @@ inline constexpr bool mesaModeIsRed(MesaMode m) {
 // pot. So the red channel is not merely "more gain": it is level-matched only at
 // high frequency and rolls its own bottom off before the first gain pot, which
 // is exactly the "tight, no flub in the preamp" behaviour a Recto is bought for.
-// Measured in docs §68.5; asserted, so a later slice cannot tidy the 82p into a
+// Measured in docs §69.5; asserted, so a later slice cannot tidy the 82p into a
 // coupling cap of convenience.
 // ---------------------------------------------------------------------------
 class MesaInputNetwork {
@@ -315,7 +315,7 @@ private:
 // is worth saying plainly because it is the opposite of what players describe:
 // the red channel's extra aggression is NOT its tone stack (680p vs 500p is
 // 2.6 dB of treble-branch corner), it is the 82p input select, the cathode caps
-// and the absent feedback loop. Measured in docs §68.5.
+// and the absent feedback loop. Measured in docs §69.5.
 //
 // NOTE FOR A FUTURE SLICE: this network is the SAME SHAPE as
 // RockerverbToneStack (down to Cm landing on the MID pot's WIPER rather than its

@@ -187,7 +187,9 @@
 // ---------------------------------------------------------------------------
 // SECTION 4 — OUTPUT STAGE
 // ---------------------------------------------------------------------------
-// Output buffer + OUTPUT pot (identity linear map, the house convention) + the
+// Output buffer + OUTPUT pot (a LINEAR (B) 10 k pot inside the reference's own
+// R25 560 R / R28 100 k network — docs §68, and the one pedal of five whose
+// output pot is NOT an audio taper) + the
 // output coupling cap's DC block at kOutHpHz (~8 Hz). The pot is the pedal's
 // makeup gain. NOTE (docs §50 correction): at GAIN 0 the box is a clean buffer
 // whose UNITY sits at OUTPUT 0.5 — kSumGain = 2.0 means OUTPUT 1 is +6.02 dB
@@ -204,6 +206,7 @@
 #include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/LM308Stage.h"
 #include "clipper/dsp/OnePoleSmoother.h"
+#include "clipper/dsp/OutputPotTaper.h"
 #include "clipper/dsp/Oversampler.h"
 #include "clipper/dsp/ParamGuard.h"
 
@@ -818,7 +821,15 @@ void GoldModel::setParameter(int paramId, float value) {
             d.toneTilt.setTarget(toneKnobToTilt(knob));
             break;
         case PARAM_OUTPUT:
-            d.outLevel.setTarget(knob);  // identity linear map, as the RAT/TS
+            // The output network as the reference netlist has it: a LINEAR (B)
+            // 10 k pot with R25 = 560 R in series and R28 = 100 k loading the
+            // wiper. This pedal is the one that does NOT get an audio taper —
+            // both the reference implementation and the published analyses say
+            // the original's Output pot is linear (docs §68; OutputPotTaper.h).
+            // Measured: within 0.18 dB of the identity map it replaces at every
+            // position, so the old "house convention" map was already right and
+            // is now right for a SOURCED reason.
+            d.outLevel.setTarget(static_cast<float>(pot::goldOutput(knob)));
             break;
         default:
             break;

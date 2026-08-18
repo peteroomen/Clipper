@@ -336,7 +336,7 @@ independent slices that can interleave anywhere:
   All five goldens unchanged; nothing blessed. Research honesty note: no schematic
   was reachable from the build container — see §57.1 for what is sourced and what
   is reconstruction.)*
-- ~~**M10.4 — Mesa Dual Rectifier**~~ — **SHIPPED 2026-08-17 (docs §68)** as amp
+- ~~**M10.4 — Mesa Dual Rectifier**~~ — **SHIPPED 2026-08-17 (docs §69)** as amp
   voice **6** (`mesa`), and it is **the first amp voice here TRANSCRIBED from a
   complete factory drawing set** rather than reconstructed: the owner supplied
   the `mbdr` sheets (preamp, power amp, supply, switching matrix and a TRUTH

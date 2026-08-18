@@ -1,4 +1,4 @@
-// Clipper — MesaPowerAmp (M10.4, docs §68). See MesaPowerAmp.h for the topology,
+// Clipper — MesaPowerAmp (M10.4, docs §69). See MesaPowerAmp.h for the topology,
 // the PROVENANCE banner and both halves of the acceptance bar. The numerics —
 // the LTP, the per-tube plate Newton, the grid coupling/blocking, the OT and the
 // Thevenin supply — are the shared M9.3 / §55 machinery; what differs here is
@@ -37,7 +37,7 @@ MesaPowerAmp::MesaPowerAmp() {
     // and §63.6 swept it again on the Rockerverb — both landed on 120k as a
     // model-parameter CALIBRATION. Here the factory drawing already carries
     // unequal loads (82k / 90k), so nothing is swept: the balance this produces
-    // is a PREDICTION, reported in docs §68.6 rather than fitted.
+    // is a PREDICTION, reported in docs §69.6 rather than fitted.
     c.Ra1 = kRa1;
     c.Ra2 = kRa2;
     c.Rtail = kRtail;

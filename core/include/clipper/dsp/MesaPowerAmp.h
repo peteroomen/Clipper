@@ -1,4 +1,4 @@
-// Clipper — portable DSP core (M10.4, docs §68).
+// Clipper — portable DSP core (M10.4, docs §69).
 //
 // MesaPowerAmp: the Dual Rectifier's power section — a 12AX7 long-tailed pair
 // with DELIBERATELY UNEQUAL plate loads, four 6L6GC in push-pull, a SWITCHABLE
@@ -50,7 +50,7 @@
 // THIS IS WHY A RECTO'S LOW END IS "LOOSE" AND IT IS A TOPOLOGY, NOT AN EQ
 // CURVE. Do not "fix" it with a low shelf, and do not give the modern modes a
 // small non-zero beta to tidy the code — the drawing says open, and the bar in
-// docs §68.4 measures it.
+// docs §69.4 measures it.
 //
 // ===========================================================================
 // (b) THE OTHER BAR: THE RECTIFIER SELECT MOVES SAG, NOT LEVEL ALONE

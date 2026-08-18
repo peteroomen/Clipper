@@ -736,7 +736,7 @@ function RockerverbFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
   );
 }
 
-// The Mesa/Boogie Dual Rectifier face (docs §68) — the GRUNGE / 90s-metal head,
+// The Mesa/Boogie Dual Rectifier face (docs §69) — the GRUNGE / 90s-metal head,
 // and the first amp voice in this repo TRANSCRIBED from a complete factory
 // drawing set rather than reconstructed from prose. A knowing homage:
 // "Dual Rectifier" (model line HEAD Nº7 · SOLO) on a slate panel.

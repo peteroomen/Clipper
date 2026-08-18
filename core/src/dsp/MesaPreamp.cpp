@@ -1,4 +1,4 @@
-// Clipper — MesaPreamp (M10.4, docs §68). See MesaPreamp.h for the topology, the
+// Clipper — MesaPreamp (M10.4, docs §69). See MesaPreamp.h for the topology, the
 // PROVENANCE banner (the owner-supplied `mbdr` sheet set) and the one modelling
 // approximation the cathode-bypass idiom forces. This file is the numerics: the
 // input-select MNA, the two interstage networks, the FMV tone-stack MNA, the

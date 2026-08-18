@@ -1,4 +1,4 @@
-// Clipper — portable DSP core (M10.4, docs §68).
+// Clipper — portable DSP core (M10.4, docs §69).
 //
 // MesaAmp: the composed Mesa/Boogie Dual Rectifier Solo Head — MesaPreamp into
 // MesaPowerAmp, in ONE shared oversampling domain.
@@ -106,7 +106,7 @@ public:
     // Rockerverb has four, and its cathode follower drives the stack from ~375
     // ohm instead of a plate, so far more signal survives to the master. The
     // value is DERIVED by §42's criterion — the smallest scale at which a cranked
-    // amp reaches its rated power — and the sweep is in docs §68.7.
+    // amp reaches its rated power — and the sweep is in docs §69.7.
     static constexpr double kInterstageScale = 0.10;
 
 private:

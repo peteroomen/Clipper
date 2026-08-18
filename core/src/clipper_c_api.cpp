@@ -900,7 +900,7 @@ constexpr int kAmpParamJcmMaster = 12;
 // Must mirror web/src/params.ts AMP_PARAM_ORANGE_FAC.
 constexpr int kAmpParamOrangeFac = 13;
 
-// M10.4 (docs §68): the Mesa Dual Rectifier's THREE switched controls. All three
+// M10.4 (docs §69): the Mesa Dual Rectifier's THREE switched controls. All three
 // are NEW ids, above every existing one, for the same reason §57 gave the F.A.C.
 // its own: no other voice has any of them, and reusing a knob slot would make a
 // stale rig state silently mean something else.
@@ -940,7 +940,7 @@ enum AmpModelId {
     // slot 12 on this amp is "Volume" (the Rockerverb's dirty channel calls its
     // master that); the SLOT is the master slot because the FUNCTION is a master.
     kAmpRockerverb = 5,
-    // M10.4 (docs §68) adds the Mesa Dual Rectifier Solo Head as the SEVENTH
+    // M10.4 (docs §69) adds the Mesa Dual Rectifier Solo Head as the SEVENTH
     // voice (index 6), purely additive. Unlike every amp before it this one is
     // TRANSCRIBED from the factory drawing set rather than reconstructed.
     kAmpMesa = 6,
@@ -1452,7 +1452,7 @@ void amp_process_stereo(void* handle, const float* in_ptr, float* out_l_ptr,
         // the identical cab pair (M10.4). Natural pairing is the brit412: a Recto
         // is normally run into a Mesa oversized 4x12, and no such IR exists here
         // yet, so the closest shipped 4x12 is reused rather than inventing one.
-        // Named as a follow-up in docs §68.11.
+        // Named as a follow-up in docs §69.11.
         c->mesa.process(in_ptr, out_l_ptr, num_frames);
         for (int i = 0; i < num_frames; ++i) out_r_ptr[i] = out_l_ptr[i];
     } else if (c->model == kAmpRockerverb) {

@@ -1,4 +1,4 @@
-// Plain-assert tests for the M10.4 Mesa/Boogie Dual Rectifier Solo Head (docs §68)
+// Plain-assert tests for the M10.4 Mesa/Boogie Dual Rectifier Solo Head (docs §69)
 // — the grunge / 90s-metal voice, and the FIRST amp in this repo TRANSCRIBED from a
 // complete factory drawing set rather than reconstructed from prose.
 //
@@ -516,7 +516,7 @@ void testModesAreAudiblyDistinct() {
 
 int main() {
     clipper::test::requireAssertsLive();
-    std::printf("== Mesa Dual Rectifier (M10.4, docs §68) ==\n");
+    std::printf("== Mesa Dual Rectifier (M10.4, docs §69) ==\n");
     std::printf("- truth table (sheet mbdr7)\n");
     testTruthTable();
     std::printf("- marked DC node voltages (sheets mbdr1 / mbdr4)\n");

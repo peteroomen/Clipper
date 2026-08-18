@@ -100,7 +100,7 @@ export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto'
 // the drawing's own truth table), RECTIFIER (silicon vs 5U4) and POWER MODE
 // (spongy vs bold — a separate mains-side switch, not the rectifier selector).
 // Its two MODERN modes run the power amp with global feedback switched OFF
-// entirely, which is why a Recto's low end is loose. Docs §68.
+// entirely, which is why a Recto's low end is loose. Docs §69.
 export type AmpType =
   | 'clean120'
   | 'jcm800'

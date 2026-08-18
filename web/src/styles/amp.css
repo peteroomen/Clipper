@@ -167,7 +167,7 @@
   box-shadow: inset 1px 2px 3px var(--sh-light), inset -1px -2px 4px var(--sh-darker); }
 .power:focus-visible { outline: 2px solid var(--ai); outline-offset: 4px; border-radius: 6px; }
 
-/* M10.4 Mesa Dual Rectifier face (docs §68) — same doctrine as every amp face
+/* M10.4 Mesa Dual Rectifier face (docs §69) — same doctrine as every amp face
    above: the shared chassis is unchanged and identity is a small-area accent, here
    a DEEP CRIMSON (the Red channel wink). The knob arcs, wordmark and power jewel
    pick it up; nothing else about the panel changes. */

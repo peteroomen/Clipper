@@ -76,6 +76,7 @@
 #include "clipper/dsp/SdModel.h"
 
 #include "clipper/dsp/AsymSoftClipper.h"
+#include "clipper/dsp/OutputPotTaper.h"
 #include "clipper/dsp/OverdriveEngine.h"
 
 namespace clipper::dsp {
@@ -100,6 +101,16 @@ constexpr OverdriveConfig kSdConfig = {
     /* tonePivotHz          */ 1000.0,
     /* toneMaxTiltDb        */ 12.0f,
     /* dcBlockHz            */ 12.0,
+    // LEVEL pot — INHERITED FROM THE TS808, NOT SOURCED FOR THIS PEDAL.
+    // No SD-1 netlist or parts list was reachable (docs §68.2 lists what was
+    // tried); the two published figures that turn up in search extracts
+    // contradict each other, so neither is used. These are the TS's traced
+    // numbers, carried over exactly as this model has always carried the TS's
+    // tone stack and DC blocker — a documented reconstruction, and the biggest
+    // gap the taper slice leaves. Do NOT re-tune toward a sound (§57); find the
+    // schematic, then move THIS line and leave TsModel.cpp alone.
+    /* levelPotOhms         */ pot::kTsPotOhms,
+    /* levelWiperLoadOhms   */ pot::kTsWiperLoadOhms,
 };
 }  // namespace
 

@@ -1,4 +1,4 @@
-// Clipper — MesaAmp (M10.4, docs §68). Composition of the Dual Rectifier's
+// Clipper — MesaAmp (M10.4, docs §69). Composition of the Dual Rectifier's
 // preamp and power section in ONE shared oversampling domain. See MesaAmp.h for
 // the domain argument, the interstage-scale derivation and the list of what this
 // voice deliberately does not model.
