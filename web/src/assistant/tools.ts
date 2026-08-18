@@ -37,7 +37,7 @@ export interface RigController {
   setCab: (cab: 'clean212' | 'brit412' | 'orange412') => void;
   // M9.4/M10.1/v1.1: swap the amp voice ('clean120' | 'jcm800' | 'twin' | 'ac30').
   setAmp: (
-    type: 'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange' | 'rockerverb'
+    type: 'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange' | 'rockerverb' | 'mesa'
   ) => void;
   // Chain edits (M6.4). addPedal returns the new instance's chain index.
   addPedal: (type: string, position?: number) => number;
@@ -274,13 +274,28 @@ export const TOOLS = [
       'anything that wants saturation without the room volume of a cranked ' +
       'non-master amp. The master is a LINEAR pot so keep it low (5-15). Pairs with ' +
       'the Orange 4×12, the same cab as the OR120. Switching is click-free; the ' +
-      'cab and pedals carry over.',
+      'cab and pedals carry over. ' +
+      "'mesa' — a Mesa/Boogie Dual Rectifier Solo Head: THE grunge and 90s/2000s " +
+      'metal amp, and the highest-gain voice here. FIVE cascaded valve stages into a ' +
+      'cathode follower, four 6L6 power tubes, and three switches nothing else has. ' +
+      'MODE has five positions off the real amp\'s own switching table — Clean, ' +
+      'Vintage, Modern, Red Vintage, Red Modern — and the two MODERN positions switch ' +
+      'the power amp\'s global negative feedback OFF ENTIRELY, which is exactly why a ' +
+      'Recto\'s low end is loose and huge rather than tight. RECT switches between ' +
+      'silicon and 5U4 valve rectifiers: the valve setting sags about 2.2x more under ' +
+      'a sustained chord, so it blooms and softens where silicon stays bold. POWER is ' +
+      'a separate SPONGY/BOLD switch on the mains side — it is NOT the rectifier ' +
+      'selector, though people constantly confuse the two. Reach for it for down-tuned ' +
+      'riffing, drop tunings, grunge, sludge and modern metal. Start at Red Modern ' +
+      'with GAIN 5-7 and MASTER low. Note PRESENCE does nothing in the two Modern ' +
+      'modes — the feedback loop it works through is open there, which is the real ' +
+      'circuit, not a fault. Pairs with the Brit 4×12. Switching is click-free.',
     input_schema: {
       type: 'object',
       properties: {
         type: {
           type: 'string',
-          enum: ['clean120', 'jcm800', 'twin', 'ac30', 'orange', 'rockerverb'],
+          enum: ['clean120', 'jcm800', 'twin', 'ac30', 'orange', 'rockerverb', 'mesa'],
         },
       },
       required: ['type'],
@@ -684,6 +699,7 @@ export function executeTool(
       : input.type === 'ac30' ? 'ac30'
       : input.type === 'orange' ? 'orange'
       : input.type === 'rockerverb' ? 'rockerverb'
+      : input.type === 'mesa' ? 'mesa'
       : 'clean120';
     controller.setAmp(type);
     const chipName =
@@ -692,6 +708,7 @@ export function executeTool(
       : type === 'ac30' ? 'Thirty'
       : type === 'orange' ? 'Overdrive 120'
       : type === 'rockerverb' ? 'Rocker Verb'
+      : type === 'mesa' ? 'Dual Rectifier'
       : 'Clean 120';
     return {
       content: JSON.stringify({ applied: { amp: type } }),

@@ -93,7 +93,22 @@ export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto'
 // so drive and level are independent, and an authentic valve-driven spring
 // reverb. No new params: gain (10), master (12) and bass/middle/treble (1/2/3)
 // all mean what they already meant. Docs §63.
-export type AmpType = 'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange' | 'rockerverb';
+// M10.4 adds 'mesa' — a Mesa/Boogie Dual Rectifier Solo Head, TRANSCRIBED from
+// the factory drawing set (the first amp voice here that is, rather than
+// reconstructed). FIVE gain stages into a cathode follower, two complete FMV tone
+// stacks, and three switched controls no other voice has: MODE (five states off
+// the drawing's own truth table), RECTIFIER (silicon vs 5U4) and POWER MODE
+// (spongy vs bold — a separate mains-side switch, not the rectifier selector).
+// Its two MODERN modes run the power amp with global feedback switched OFF
+// entirely, which is why a Recto's low end is loose. Docs §68.
+export type AmpType =
+  | 'clean120'
+  | 'jcm800'
+  | 'twin'
+  | 'ac30'
+  | 'orange'
+  | 'rockerverb'
+  | 'mesa';
 
 // Cab expansion: which speaker cabinet IR the amp runs. 'clean212' is the
 // built-in Clean 2x12 (the JC-120 platform), 'brit412' the darker/thicker Brit
@@ -126,6 +141,7 @@ export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
   'ac30',
   'orange',
   'rockerverb',
+  'mesa',
 ];
 
 export type ParamName = 'distortion' | 'filter' | 'level';
@@ -145,7 +161,10 @@ export type AmpParamName =
   | 'presence'
   | 'master'
   // M10.3 Orange-only knob (ignored by every other voice).
-  | 'fac';
+  | 'fac'
+  | 'mesaMode'
+  | 'rectifier'
+  | 'powerMode';
 
 export interface PedalParams {
   distortion: number; // 0..1 knob position
@@ -202,6 +221,14 @@ export interface AmpParams {
   // M10.3 Orange OR120 F.A.C.: a 0..1 knob that the core rounds to one of SIX
   // detents. Its own param rather than a reused slot — see params.ts.
   fac: number;
+  // M10.4 Mesa. All three are DISCRETE switches stored as 0..1 so they flow
+  // through the numeric ABI untouched; the ABI quantizes them at its boundary.
+  //   mesaMode  0 / 0.25 / 0.5 / 0.75 / 1 -> the drawing's five states
+  //   rectifier < 0.5 silicon, >= 0.5 5U4
+  //   powerMode < 0.5 bold,    >= 0.5 spongy
+  mesaMode: number;
+  rectifier: number;
+  powerMode: number;
 }
 
 export interface AmpState {
@@ -414,6 +441,12 @@ export const AMP_KNOB_DEFAULTS: AmpParams = {
   // M10.3: F.A.C. position 2 of 6 (knob 0.2) — the fat, usable setting an OR120
   // spends most of its life on; clicking right thins it out.
   fac: 0.2,
+  // Defaults chosen from the amp's own geometry, not inherited: RED MODERN is
+  // the voice this amp is bought for, silicon is the stock/bolder setting, and
+  // BOLD is the full-power position.
+  mesaMode: 1.0,
+  rectifier: 0.0,
+  powerMode: 0.0,
 };
 
 // Default input trim: unity (0 dB).
@@ -567,6 +600,7 @@ export function normalizeRig(raw: unknown): RigState {
     : a.type === 'ac30' ? 'ac30'
     : a.type === 'orange' ? 'orange'
     : a.type === 'rockerverb' ? 'rockerverb'
+    : a.type === 'mesa' ? 'mesa'
     : 'clean120';
 
   return {
@@ -598,6 +632,9 @@ export function normalizeRig(raw: unknown): RigState {
         presence: clamp01(ar.presence, d.amp.params.presence),
         master: clamp01(ar.master, d.amp.params.master),
         fac: clamp01(ar.fac, d.amp.params.fac),
+        mesaMode: clamp01(ar.mesaMode, d.amp.params.mesaMode),
+        rectifier: clamp01(ar.rectifier, d.amp.params.rectifier),
+        powerMode: clamp01(ar.powerMode, d.amp.params.powerMode),
       },
     },
     oversampling,

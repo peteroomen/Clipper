@@ -736,6 +736,127 @@ function RockerverbFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
   );
 }
 
+// The Mesa/Boogie Dual Rectifier face (docs §68) — the GRUNGE / 90s-metal head,
+// and the first amp voice in this repo TRANSCRIBED from a complete factory
+// drawing set rather than reconstructed from prose. A knowing homage:
+// "Dual Rectifier" (model line HEAD Nº7 · SOLO) on a slate panel.
+//
+// Control row: GAIN · BASS · MIDDLE · TREBLE · MASTER · PRESENCE · MODE ·
+// RECTIFIER · POWER. The three switches are rendered as knobs, exactly as the
+// OR120's six-position F.A.C. is, and the C ABI quantizes them at its boundary
+// so the model never sees an in-between state.
+//
+// WHAT EACH SWITCH ACTUALLY DOES, because two of them are routinely misdescribed:
+//   * MODE has FIVE positions off the drawing's own truth table (sheet mbdr7) —
+//     Clean · Vintage · Modern · Red Vintage · Red Modern. It is NOT a channel
+//     plus a mode: the sheet enumerates the combinations that exist, and two
+//     conceivable ones (RED CLEAN, ORANGE VINTAGE) do not. The two MODERN
+//     positions switch the power amp's global feedback OFF entirely.
+//   * RECTIFIER is silicon vs 5U4 valve. It changes the rail AND its source
+//     impedance, so it moves SAG, not level alone.
+//   * POWER is SPONGY vs BOLD — a SEPARATE mains-primary-side switch. It is not
+//     the rectifier selector, though it is constantly confused with one.
+//
+// PRESENCE binds to the shared slot (id 11), like the JCM's. In the two MODERN
+// modes the feedback loop is OPEN, so the knob correctly does nothing there —
+// that is the circuit, not dead UI.
+function MesaFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
+  const { params } = amp;
+  return (
+    <div
+      className={`amp raised${amp.engaged ? ' on' : ''}`}
+      data-testid="amp"
+      data-engaged={amp.engaged}
+      data-amp-type="mesa"
+    >
+      <div className="amp-head">
+        <div className="amp-name display" data-testid="amp-name">
+          Dual Rectifier<small>Head Nº7 · Solo</small>
+        </div>
+      </div>
+
+      <div className="amp-controls">
+        <Knob
+          name="Gain"
+          ariaLabel="Gain"
+          value={params.gain}
+          defaultValue={AMP_KNOB_DEFAULTS.gain}
+          onChange={(v) => onParam('gain', v)}
+          testId="knob-gain"
+        />
+        <Knob
+          name="Bass"
+          ariaLabel="Bass"
+          value={params.bass}
+          defaultValue={AMP_KNOB_DEFAULTS.bass}
+          onChange={(v) => onParam('bass', v)}
+          testId="knob-bass"
+        />
+        <Knob
+          name="Middle"
+          ariaLabel="Middle"
+          value={params.middle}
+          defaultValue={AMP_KNOB_DEFAULTS.middle}
+          onChange={(v) => onParam('middle', v)}
+          testId="knob-middle"
+        />
+        <Knob
+          name="Treble"
+          ariaLabel="Treble"
+          value={params.treble}
+          defaultValue={AMP_KNOB_DEFAULTS.treble}
+          onChange={(v) => onParam('treble', v)}
+          testId="knob-treble"
+        />
+        <Knob
+          name="Master"
+          ariaLabel="Master"
+          value={params.master}
+          defaultValue={AMP_KNOB_DEFAULTS.master}
+          onChange={(v) => onParam('master', v)}
+          testId="knob-master"
+        />
+        <Knob
+          name="Presence"
+          ariaLabel="Presence"
+          value={params.presence}
+          defaultValue={AMP_KNOB_DEFAULTS.presence}
+          onChange={(v) => onParam('presence', v)}
+          testId="knob-presence"
+        />
+        <Knob
+          name="Mode"
+          ariaLabel="Mode: Clean, Vintage, Modern, Red Vintage, Red Modern"
+          value={params.mesaMode}
+          defaultValue={AMP_KNOB_DEFAULTS.mesaMode}
+          onChange={(v) => onParam('mesaMode', v)}
+          testId="knob-mesa-mode"
+        />
+        <Knob
+          name="Rect"
+          ariaLabel="Rectifier: silicon or valve"
+          value={params.rectifier}
+          defaultValue={AMP_KNOB_DEFAULTS.rectifier}
+          onChange={(v) => onParam('rectifier', v)}
+          testId="knob-mesa-rectifier"
+        />
+        <Knob
+          name="Power"
+          ariaLabel="Power mode: bold or spongy"
+          value={params.powerMode}
+          defaultValue={AMP_KNOB_DEFAULTS.powerMode}
+          onChange={(v) => onParam('powerMode', v)}
+          testId="knob-mesa-power"
+        />
+
+        {/* Cab lever + Power rocker only — a Recto has no bright switch and no
+            reverb tank (that is the Trem-O-Verb, a different amp). */}
+        <AmpRight amp={amp} onToggle={onToggle} onTogglePower={onTogglePower} showBright={false} />
+      </div>
+    </div>
+  );
+}
+
 export function Amp(props: AmpProps) {
   return (
     <div className="amp-wing">
@@ -749,6 +870,8 @@ export function Amp(props: AmpProps) {
         <OrangeFace {...props} />
       ) : props.amp.type === 'rockerverb' ? (
         <RockerverbFace {...props} />
+      ) : props.amp.type === 'mesa' ? (
+        <MesaFace {...props} />
       ) : (
         <Clean120Face {...props} />
       )}
