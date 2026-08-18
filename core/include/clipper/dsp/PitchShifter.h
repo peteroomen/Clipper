@@ -91,34 +91,24 @@
 // ===========================================================================
 // WHAT THIS IS MEASURED TO DO, AND THE ONE CASE IT DOES NOT
 // ===========================================================================
-// Measured at 48 kHz, 50 ms window, 17.5 ms SOLA span (docs §70.4):
+// Measured at 48 kHz with the shipped constants (docs §70.4):
 //
-//     single note          0.006 .. 0.084 cents   across -1 .. -12 semitones
-//     E5 power chord       0.00 cents             (-1), 0.25 cents (-2)
-//     E5 + octave          0.00 cents
-//     E major triad        9.75 cents (-1), 22.75 cents (-2)   <-- THE GAP
+//     single note, -1 .. -12 semitones      0.006 .. 0.084 cents
+//     E5 power chord (-1 / -2)              0.00 / 0.25 cents
+//     E5 + octave                           0.00 cents
+//     E major triad (-1 / -2)               0.50 / 1.25 cents
+//     mean algorithmic latency              36 ms
 //
-// **Single notes and POWER CHORDS are exact; full triads are not, and the reason
-// is structural rather than a tuning miss.** SOLA aligns to where the waveform
-// repeats. A 2:3 power chord repeats at the period of its lower note, which the
-// search span covers easily. A 4:5:6 triad repeats only at its composite period —
-// ~48 ms for an E major triad on E2 — which a 17.5 ms span cannot reach, so the
-// search settles on a partial match and each partial takes a different phase slip.
+// The triad row is the one that took work. At the first shipped triple it read
+// 9.75 / 22.75 cents, and the cause was structural rather than a tuning miss:
+// SOLA aligns to where the waveform REPEATS, and a 4:5:6 triad only repeats at
+// its composite period (~48 ms on E2), which a 17.5 ms search could not reach.
+// Widening the search fixed it — see kCrossfade for how that was bought without
+// paying latency for it.
 //
-// It is a SPAN problem, not a method problem, and that was confirmed by widening
-// the span rather than argued:
-//
-//     span 17.5 ms / window  50 ms : latency 31 ms, triad 9.75 .. 22.75 cents
-//     span 50.0 ms / window 100 ms : latency 62 ms, triad 0.75 ..  1.25 cents
-//     span 50.0 ms / window 120 ms : latency 75 ms, triad 0.50 ..  1.75 cents
-//
-// So triad accuracy is buyable, and the price is LATENCY — the search span must
-// cover the composite period, and the window must be wide enough to still reset
-// the buffer after a splice that far out. That trade is the open question this
-// class leaves for its consumer; see docs §70.5. A frequency-domain shifter
-// (FFT.h) has no splice at all and so no such trade, at the cost of transient
-// smearing — the plan said to build one only when a measurement demanded it, and
-// this is the measurement that would.
+// A frequency-domain shifter (FFT.h) would have no splice and so none of this
+// trade, at the cost of transient smearing. The plan said to build one only when
+// a measurement demanded it; after the fix above, none does.
 //
 // Convention: 1.0f == 1.0 V. Platform-free C++17.
 
@@ -264,17 +254,31 @@ private:
     }
 
     static constexpr double kPi = 3.14159265358979323846;
-    // One period of ~57 Hz — the lowest note a down-tuned guitar into this pedal
-    // can present. Any shorter and the search cannot find the repeat on a low
-    // riff, which is exactly where the pedal is used.
-    static constexpr double kSearchSeconds = 0.0175;
+    // The SOLA search span. It must reach the COMPOSITE period of the material,
+    // not just one note's: a 2:3 power chord repeats at its lower note's period
+    // (~12 ms on a low E) but a 4:5:6 triad only repeats at ~48 ms. 50 ms covers
+    // both, and that is the whole reason triads work — see kCrossfade above.
+    static constexpr double kSearchSeconds = 0.050;
     static constexpr double kCorrSeconds = 0.010;
     static constexpr int kCorrStride = 2;
-    // Fraction of each window spent handing over. DERIVED in docs §70.3 — it is
-    // the trade between how OFTEN the comb appears (all of the time as x -> 1)
-    // and how ABRUPT the handover is (as x -> 0 the crossfade gets short enough
-    // to click).
-    static constexpr double kCrossfade = 0.25;
+    // Fraction of each window spent handing over, and it is DERIVED (docs §70.5)
+    // by a route that is worth knowing, because the obvious reading is backwards.
+    //
+    // A short crossfade looks risky — less smearing of the splice — but SOLA
+    // ALIGNS the splice in phase, so there is little left to smear, and the
+    // crossfade's real job becomes hiding the residual rather than masking a
+    // discontinuity. What a short crossfade BUYS is search span: the splice may
+    // land anywhere in [dMin, dMin + span] and the buffer must still reset, which
+    // requires span < (1 - kCrossfade) * W. So dropping x from 0.25 to 0.10 raises
+    // the affordable span from 0.75*W to 0.90*W at NO latency cost.
+    //
+    // That is what closed the triad gap. Measured, E major triad at -1 / -2:
+    //     x 0.25, span 17.5 ms, W 50 ms -> latency 31 ms, 9.75 / 22.75 cents
+    //     x 0.10, span 50.0 ms, W 60 ms -> latency 33 ms, 0.50 /  1.25 cents
+    //     x 0.10, span 50.0 ms, W 65 ms -> latency 36 ms, 0.50 /  1.25 cents
+    // The shipped triple is the last one: the same accuracy as the 60 ms window
+    // with 8.5 ms of margin on the span constraint instead of 4.
+    static constexpr double kCrossfade = 0.10;
     static constexpr double kCrossfadeStart = 1.0 - kCrossfade;
 
     DelayLine line_;
