@@ -101,14 +101,21 @@
 //   * FILTER knob -> one-pole passive low-pass cutoff, LOG-swept. RAT convention:
 //     clockwise (knob -> 1) = DARKER. knob 0 -> kFilterMaxHz (20 kHz, ~open),
 //     knob 1 -> kFilterMinHz (500 Hz, dark); knob 0.5 ~ 3.16 kHz.
-//   * LEVEL knob -> clean linear output gain, identity map [0, 1] (0 = silence,
-//     1 = unity). The real pot is 100 k LOGARITHMIC (netlist annotation, and a
-//     parts-list cross-check: "100K-A pots for volume, tone and distortion"), so
-//     this is a known approximation and NOT a level trim — docs §66.3 measures
-//     it (-5.04 dB at the shipped 0.8 default) and explains why it is a
-//     lineup-wide slice rather than this pedal's: SdModel/TsModel/MuffModel/
-//     GoldModel all map their output pot the same way, and fixing one alone
-//     would break the level parity §66.2 measured across the five.
+//   * LEVEL knob -> the 100 k LOGARITHMIC volume pot's own law (0 = silence,
+//     1 = unity). FIXED 2026-08-10, docs §68, and only as part of the
+//     lineup-wide slice §66.3 said it had to be: all five dirt pedals' output
+//     pots moved together, because fixing this one alone re-stages the RAT
+//     against four siblings still on the wrong law and undoes §36 by a knob law
+//     (§66.3 measured exactly that: -11.61 dBFS, the quietest of the five,
+//     reproducing the pre-§36 staging to within 0.4 dB).
+//     The law is the BARE audio taper — the netlist annotates R14 as
+//     "volume pot (100k, logarithmic)", it is driven by the 2N5485 source
+//     follower (a few hundred ohms, law-neutral) and its wiper feeds the output
+//     jack unloaded, so there is no divider correction to make. Derivation,
+//     sources and the per-pedal differences are in OutputPotTaper.h; the ledger
+//     entry `rat-level-pot-linear-not-log` is closed.
+//     Measured here: -5.21 dB at the shipped 0.8 default, 11.920 % at half
+//     rotation (was 50.0 %).
 //
 // M2 — antialiasing. Stage 2 (and ONLY stage 2, the nonlinearity) now runs
 // oversampled through a polyphase halfband cascade (1x/2x/4x/8x, default 4x);
@@ -135,6 +142,7 @@
 #include "clipper/dsp/Denormal.h"
 #include "clipper/dsp/DiodeClipperADAA.h"
 #include "clipper/dsp/LM308Stage.h"
+#include "clipper/dsp/OutputPotTaper.h"
 #include "clipper/dsp/Oversampler.h"
 #include "clipper/dsp/ParamGuard.h"
 
@@ -430,7 +438,10 @@ void RatModel::setParameter(int paramId, float value) {
             d.filterCoef.setTarget(d.filterKnobToCoef(knob));
             break;
         case PARAM_LEVEL:
-            d.level.setTarget(knob);  // identity map, 0..1 linear
+            // The 100 k LOG volume pot's bare audio taper — unloaded wiper, so
+            // no divider correction (docs §68; OutputPotTaper.h carries the
+            // netlist annotation and the topology trace).
+            d.level.setTarget(static_cast<float>(pot::ratLevel(knob)));
             break;
         default:
             break;

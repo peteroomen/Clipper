@@ -495,7 +495,17 @@ std::vector<Gear> allGear() {
     window("rat", 7.0, 27.0);
     window("sd1", 4.0, 24.0);
     window("ts", 1.0, 21.0);
-    window("muff", 18.0, 38.0);
+    // RE-BASELINED 2026-08-10 (docs §68, the output-pot taper slice) — and it is
+    // the ONLY one of the five dirt rows that had to move, which is itself the
+    // scope check. The VOLUME pot is now the A250k audio taper its BOM says it
+    // is, and at the shipped 0.6 default that is worth a DERIVED
+    // 20·log10(audioTaper(0.6)/0.6) = -10.13 dB. Measured +27.7 -> +17.6, i.e.
+    // -10.1 dB: the move is the pot law to within 0.03 dB and nothing else.
+    // The window is SHIFTED by that same 10 dB, not widened: 18..38 -> 8..28,
+    // still exactly 20 dB wide, so it is no easier to pass than it was. The other
+    // four dirt rows stayed inside their existing windows and were NOT touched:
+    // rat +18.6 -> +16.9, sd1 +15.6 -> +7.1, ts +13.1 -> +5.8, gold +12.4 -> +12.2.
+    window("muff", 8.0, 28.0);
     window("gold", 9.0, 29.0);  // §52 summing network re-centred this from −3..17
                                 // (itself re-centred from 3..23 by §50) on a measured
                                 // +19.3 dB. §54's clipping-stage trio measures +12.5,
@@ -885,6 +895,74 @@ void testLevelSanity(const std::vector<Gear>& gear) {
                "'no balls' / 'blows the mix apart')");
     }
     std::printf("  [ok] A4 level sanity: all gear inside its documented default-level window\n");
+}
+
+// --- A5 — THE DIRT LINEUP'S STAGING SURVIVES THE OUTPUT-POT LAWS. ------------
+//
+// Added 2026-08-10 (docs §68). This is the bar the whole output-pot slice turns
+// on, and it exists because §66 REFUSED to fix one pedal on exactly this ground.
+//
+// The argument, as §66.3 made it: the RAT's LEVEL pot is logarithmic and the
+// model mapped it linear. Substituting the real law on the RAT ALONE measures
+// -11.61 dBFS at the unity-trim probe, which makes it the QUIETEST of the five
+// and reproduces the pre-§36 staging to within 0.4 dB — i.e. a correct knob law
+// would have silently undone §36's diode fix. The cure was never "leave it
+// linear", it was "move all five together", and this test is what proves the
+// cure worked rather than asserting that it did.
+//
+// So: the RAT must NOT be the quietest of the five at the shipped defaults. It
+// measures -11.61 dBFS — the SAME absolute number §66 measured for the one-pedal
+// version — and yet it holds RANK 2 OF 5, because its siblings moved too. The
+// absolute level is not the property; the rank is.
+//
+// The spread is PRINTED, not asserted. §68.5 records why: it widens 4.5 -> 8.0 dB
+// and the cause is the shipped OUTPUT DEFAULTS, which were chosen against linear
+// pots and are now the wrong coordinates. That is a named follow-up, not a
+// failure of the laws, and snugging a bar around it would hide it.
+void testDirtLineupStaging(const std::vector<Gear>& gear) {
+    // The docs §66.2 probe, exactly: 220 Hz at the 0.15 V unity trim, 48 kHz,
+    // shipped defaults, tail RMS.
+    const double f0 = 220.0;
+    const size_t n = static_cast<size_t>(kFs);
+    std::vector<float> tone(n);
+    for (size_t i = 0; i < n; ++i)
+        tone[i] = 0.15f * static_cast<float>(std::sin(kTwoPi * f0 * i / kFs));
+
+    const char* kDirt[] = {"rat", "sd1", "ts", "muff", "gold"};
+    double ratDb = 0.0, lo = 1e9, hi = -1e9;
+    int quieterThanRat = 0, dirtSeen = 0;
+    std::printf("  [A5] dirt lineup at shipped defaults, 220 Hz / 0.15 V / 48 kHz:\n");
+    for (const char* want : kDirt) {
+        for (const auto& g : gear) {
+            if (g.name != want) continue;
+            std::vector<float> out;
+            g.render(defaults(g), tone, out);
+            // Skip the smoothing transient, exactly as the pedal suites do.
+            const size_t skip = std::min(out.size(), static_cast<size_t>(0.2 * kFs));
+            double acc = 0.0;
+            size_t cnt = 0;
+            for (size_t i = skip; i < out.size(); ++i) { acc += double(out[i]) * out[i]; ++cnt; }
+            const double db = toDb(cnt ? std::sqrt(acc / cnt) : 0.0);
+            std::printf("       %-5s %7.2f dBFS\n", want, db);
+            if (g.name == "rat") ratDb = db;
+            else ++dirtSeen, quieterThanRat += (db < ratDb ? 1 : 0);
+            lo = std::min(lo, db);
+            hi = std::max(hi, db);
+            break;
+        }
+    }
+    // `quieterThanRat` is only meaningful once the RAT has been measured, and it
+    // is first in kDirt, so every sibling is compared against a real number.
+    assert(dirtSeen == 4 && "the dirt lineup did not resolve five pedals");
+    assert(quieterThanRat > 0 &&
+           "the RAT is the QUIETEST of the five dirt pedals at the shipped "
+           "defaults — that is the pre-§36 staging returning through a knob law, "
+           "which is exactly what docs §66.3 refused to ship. Some sibling's "
+           "output pot has gone back to a linear map.");
+    std::printf("  [ok] A5 lineup staging: RAT at %.2f dBFS with %d of 4 siblings "
+                "below it (§36 holds); spread %.1f dB — RECORDED, not asserted "
+                "(docs §68.5: the OUTPUT defaults are the follow-up)\n",
+                ratDb, quieterThanRat, hi - lo);
 }
 
 // ---------------------------------------------------------------------------
@@ -1361,6 +1439,36 @@ constexpr double kQuantizationFloorDb = 0.15;
 
 enum class GoldenStatus { Ok, Missing, FormatDrift, LengthDrift };
 
+// The 16-bit storage LSB. A correct round-trip through writeGolden() quantizes
+// each sample and must return it within one of these; see kWriteBackLsbBar.
+constexpr double kStorageLsb = 1.0 / 32768.0;
+
+// The WRITE-PATH bar, and it is deliberately a PER-SAMPLE one (docs §68.11).
+//
+// This used to be `worstBandDb <= kQuantizationFloorDb` — a per-third-octave-BAND
+// proxy — and the output-pot taper slice proved that proxy unsound. It is bounded
+// by 16-bit quantization only if the render's quietest COMPARED band sits well
+// above the LSB, and the comparison window admits every band within 55 dB of the
+// loudest. Make a rig quieter and its quiet bands close on the floor: measured
+// round-trip error against the quietest compared band, across the five rigs,
+//   rat -3.59 dB -> 0.0005 | muff -24.50 -> 0.0009 | ts -29.26 -> 0.0097
+//   clean120 -38.03 -> 0.1059 | sd1 -40.27 -> 0.1585
+// — monotonic, and the SD-1 (8.57 dB quieter after §68) went through the 0.15 bar
+// on an honest 16-bit round-trip. `clean120_chorus` was already at 0.1059, i.e.
+// 70 % of budget, on a golden that slice never touched.
+//
+// The round-trip is a per-SAMPLE property, so measure it as one. It is completely
+// level-independent — all five rigs measure 1.51-1.59 LSB whatever their level —
+// and it is STRICTLY STRONGER as a write-path check: 8-bit storage would read
+// ~256 LSB, a channel-count or format error is garbage, and a truncated file is
+// caught by the frame count. It also cannot be confused with the voicing gate,
+// which the old form's own comment worried about.
+//
+// 1.5 rather than 0.5 LSB because the writer's float->int16 scaling is not a plain
+// truncation; the bar is 2.0 to leave the measured 1.59 a little room without
+// admitting anything a real format regression could produce.
+constexpr double kWriteBackLsbBar = 2.0;
+
 struct GoldenDelta {
     GoldenStatus status = GoldenStatus::Ok;
     double rmsDeltaDb = 0.0;
@@ -1368,6 +1476,9 @@ struct GoldenDelta {
     double worstHz = 0.0;
     int bandsCompared = 0;
     drwav_uint64 goldenFrames = 0;
+    // Largest per-sample difference between the golden ON DISK and this render,
+    // in LSBs of 16-bit storage. Only meaningful right after writeGolden().
+    double maxSampleLsb = 0.0;
 };
 
 // Measure a fresh render against the golden ON DISK. Pure measurement: it asserts
@@ -1403,6 +1514,18 @@ GoldenDelta measureAgainstGolden(const RigRender& rig) {
     drwav_free(raw, nullptr);
 
     d.rmsDeltaDb = toDb(rmsOf(rig.audio)) - toDb(rmsOf(gold));
+
+    // Per-SAMPLE agreement, in LSBs of 16-bit storage. Enormous when the golden
+    // is a different render (that is what the band deltas are for); ~1.5 when the
+    // golden was just written from this render, which is what the write-back
+    // check reads (see kWriteBackLsbBar).
+    {
+        const size_t n = std::min(gold.size(), rig.audio.size());
+        double worst = 0.0;
+        for (size_t i = 0; i < n; ++i)
+            worst = std::max(worst, std::fabs(static_cast<double>(gold[i]) - rig.audio[i]));
+        d.maxSampleLsb = worst / kStorageLsb;
+    }
 
     // Per-third-octave-band comparison on every band within 55 dB of the golden's
     // loudest band (quieter bands are noise).
@@ -1497,13 +1620,16 @@ void testGoldenRenders(bool update) {
         // point of a re-bless — then overwrite.
         printDeltaLine(r, measureAgainstGolden(r));
         writeGolden(r);
-        // Now that the reference IS this render, a round-trip must land within the
-        // storage floor. This is a check of the WRITE PATH (wav format, bit depth,
-        // channel count), NOT the voicing gate: it is bounded by 16-bit
-        // quantization by construction and can never catch drift.
+        // Now that the reference IS this render, the round-trip must be exact to
+        // within the storage LSB. This is a check of the WRITE PATH (wav format,
+        // bit depth, channel count), NOT the voicing gate: it is bounded by 16-bit
+        // quantization by construction and can never catch drift. See
+        // kWriteBackLsbBar for why this is per-SAMPLE and not per-band.
         const GoldenDelta after = measureAgainstGolden(r);
         assert(after.status == GoldenStatus::Ok && "golden write-back is unreadable");
-        assert(after.worstBandDb <= kQuantizationFloorDb &&
+        std::printf("  [C ] %-18s write-back round-trip %.3f LSB (bar %.1f)\n",
+                    r.name, after.maxSampleLsb, kWriteBackLsbBar);
+        assert(after.maxSampleLsb <= kWriteBackLsbBar &&
                "golden write path is lossy beyond 16-bit quantization");
     }
     if (update) {
@@ -1550,6 +1676,7 @@ int main(int argc, char** argv) {
     testHumTorture(gear);
     testKnobMonotonicity(gear);
     testLevelSanity(gear);
+    testDirtLineupStaging(gear);
     testLiveConvention();
     // In update mode the blocks above still run: never bless a render that fails
     // min-knob usability or the hum torture.

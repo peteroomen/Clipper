@@ -15,6 +15,7 @@
 
 #include "clipper/dsp/TsModel.h"
 
+#include "clipper/dsp/OutputPotTaper.h"
 #include "clipper/dsp/SdModel.h"
 #include "measure/AliasMetric.h"
 
@@ -275,16 +276,69 @@ void testAliasing(double fs) {
         fs, w4, wAdaa1, wNaive1);
 }
 
-// --- Test 6: level linearity. -------------------------------------------------
-void testLevelLinearity() {
+// --- Test 6: the LEVEL pot's law. ---------------------------------------------
+//
+// REWRITTEN 2026-08-10 (docs §68). This was `testLevelLinearity` and it asserted
+// the identity map §66.3 registered as a lineup-wide approximation. Rewritten,
+// not deleted.
+//
+// The TS is the pedal where the LOADING matters, and that is what separates this
+// test from the RAT's. Sourced: `ts808_tube_screamer.asc` annotates
+// "R15 is level pot (1-100k, log)" (cross-checked independently by the
+// IceScreamer clone's build doc, "100K logarithmic"), and the same file's
+// WIRE/FLAG records put R19 = 510 k on the wiper plus C8 into (R18 = 510 k ∥ the
+// 2SC4081 follower's ~2 M base) — a 226 k wiper load. A loaded pot does NOT
+// deliver its bare taper: 11.391 % at half rotation against the RAT's 11.920 %.
+void testOutputPotLaw() {
     const double fs = 48000.0;
     auto in = sine(220.0, 0.3f, 0.5, fs);
     auto rmsAt = [&](float lvl) { return tailRms(render(in, {0.6f, 0.5f, lvl}, fs), fs); };
-    const double r25 = rmsAt(0.25f), r50 = rmsAt(0.50f), r100 = rmsAt(1.0f);
-    assert(std::fabs(r50 / r25 - 2.0) < 0.05 && "RMS not linear 0.25 -> 0.5");
-    assert(std::fabs(r100 / r50 - 2.0) < 0.05 && "RMS not linear 0.5 -> 1.0");
-    std::printf("  [ok] level linearity: r50/r25=%.3f r100/r50=%.3f\n",
-                r50 / r25, r100 / r50);
+    const double r100 = rmsAt(1.0f), r75 = rmsAt(0.75f);
+    const double r50 = rmsAt(0.50f), r25 = rmsAt(0.25f);
+
+    // BAR 1 — inside §58's documented 10-20 % audio-taper band. A linear pot
+    // measures 50.0 %, which is what this model did until this slice.
+    const double halfFraction = r50 / r100;
+    assert(halfFraction >= 0.10 && halfFraction <= 0.20 &&
+           "LEVEL at half rotation is outside the 10-20 % audio-taper band the "
+           "netlist's 'R15 is level pot (1-100k, log)' implies");
+
+    // BAR 2 — the SHAPE: even dB per quarter turn (9.81 / 9.06 / 11.13 dB ->
+    // 1.229) where the linear map it replaced gives 2.50 / 3.52 / 6.02 -> 2.409.
+    const double s1 = std::fabs(toDb(r75 / r100));
+    const double s2 = std::fabs(toDb(r50 / r75));
+    const double s3 = std::fabs(toDb(r25 / r50));
+    const double stepRatio =
+        std::max(s1, std::max(s2, s3)) / std::min(s1, std::min(s2, s3));
+    assert(stepRatio < 1.60 &&
+           "LEVEL does not spend its dB evenly across the travel — that is a "
+           "linear pot's signature, not an audio taper's");
+
+    // BAR 3 — THE LOAD IS MODELLED, and this is the clause that separates a
+    // DERIVED law from "the house audioTaper applied a fifth time". The output
+    // buffer's base network shunts the pot's bottom leg, so this pedal must sit
+    // measurably BELOW the bare taper — and by the derived amount, not just
+    // "less". Bare 11.920 %, loaded 11.391 %; the window brackets it on BOTH
+    // sides so neither dropping the load nor inventing a bigger one passes.
+    const double bare = clipper::dsp::pot::audioTaperWiper(0.5);
+    assert(halfFraction < bare - 0.003 &&
+           "LEVEL at half rotation is the BARE taper — the output buffer's load "
+           "on the wiper is not being modelled");
+    assert(halfFraction > bare - 0.010 &&
+           "LEVEL at half rotation is further below the bare taper than a 226 k "
+           "load on a 100 k pot can explain");
+
+    // BAR 4 — the top of the knob does not move (§51's rule). The loading leaves
+    // law(1) exactly 1 because the top leg is zero there, so LEVEL 1.0 renders
+    // bit-identically to the pre-slice build (hashes in docs §68.4).
+    assert(clipper::dsp::pot::tsLevel(1.0) == 1.0 &&
+           "LEVEL 1.0 is no longer exactly unity — the taper has become a trim");
+    assert(clipper::dsp::pot::tsLevel(0.0) == 0.0 && "LEVEL 0 is not silence");
+
+    std::printf("  [ok] LEVEL pot law (100k LOG, wiper loaded 226k by the output "
+                "buffer): half rotation %.3f %% vs the BARE taper's %.3f %% "
+                "(band 10-20), steps %.2f/%.2f/%.2f dB ratio %.3f (bar 1.60)\n",
+                100.0 * halfFraction, 100.0 * bare, s1, s2, s3, stepRatio);
 }
 
 // --- Test 7: hygiene (finite, silence->silence, deterministic). --------------
@@ -358,7 +412,7 @@ int main() {
     testSoftKnee();
     testAliasing(44100.0);
     testAliasing(96000.0);
-    testLevelLinearity();
+    testOutputPotLaw();
     testHygiene();
     std::printf("All TsModel tests passed.\n");
     return 0;

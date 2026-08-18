@@ -135,24 +135,63 @@ void runCase(const char* label, const Params& edited) {
     bool declicked = false;
     const std::vector<float> out = render(base, edited, &declicked);
 
-    // The signal's own steady-state slew, measured well before the edit.
-    const double slew = maxStep(out, kPre - 8000, kPre - 100);
+    // The signal's own steady-state slew — measured on BOTH sides of the edit and
+    // taken as the LARGER.
+    //
+    // 2026-08-10 (docs §68.12): this used to read the PRE-edit window only, which
+    // is the exact defect `runCabSwapCase` below had already found and fixed for
+    // itself — see its comment, which spells the reasoning out ("taking only the
+    // pre-edit slew would hold the fade-in of a louder cab to the quieter cab's
+    // slew and fail on nothing"). A chain edit changes the LEVEL just as a cab swap
+    // does; it simply never changed it by much until the output-pot tapers landed.
+    //
+    // What that slice exposed, measured on the "TS stomped off" case: with the TS's
+    // LEVEL pot on its real logarithmic law the pedal is a far bigger attenuator at
+    // knob 0.6, so the pre-edit signal is much gentler — its slew fell 0.002488 ->
+    // 0.000567 — while the SEAM step went DOWN, 0.001395 -> 0.001087. The bar failed
+    // because its denominator shrank, not because the fade got worse: the fade still
+    // turns a 0.017348 hard splice into 0.001087, a 16x reduction. Holding a fade
+    // that lands on the LOUDER side to the QUIETER side's slope is the same
+    // "fail on nothing" the cab case describes.
+    // What the SAME edit would have cost with no fade at all: the two topologies
+    // rendered separately and spliced at the edit point. `a` and `b` are also the
+    // cleanest place to read each side's SETTLED slew — neither carries a fade.
+    const std::vector<float> a = render(base, base, nullptr);
+    const std::vector<float> b = render(edited, edited, nullptr);
+
+    const double slewPre = maxStep(a, kPre - 8000, kPre - 100);
+    const double slewPost = maxStep(b, kPre - 8000, kPre - 100);
+    const double slew = std::max(slewPre, slewPost);
     // The seam: the fade is 6 ms each way, so ±25 ms covers it generously.
     const int seamFrom = kPre - 1200;
     const int seamTo = kPre + 2400;
     const double seam = maxStep(out, seamFrom, seamTo);
     const double bound = std::max(1.25 * slew, 1e-4);
-
-    // What the SAME edit would have cost with no fade at all: the two topologies
-    // rendered separately and spliced at the edit point.
-    const std::vector<float> a = render(base, base, nullptr);
-    const std::vector<float> b = render(edited, edited, nullptr);
     const double hardStep =
         std::fabs((double)b[(size_t)kPre] - (double)a[(size_t)(kPre - 1)]);
 
-    std::printf("  steady slew      : %.6f\n", slew);
+    std::printf("  steady slew      : %.6f  (pre %.6f, post-edit %.6f)\n", slew, slewPre,
+                slewPost);
     std::printf("  max step at seam : %.6f  (bound %.6f)\n", seam, bound);
-    std::printf("  hard-switch step : %.6f\n", hardStep);
+    // Is the seam bar below a bar at ALL for this edit? It only bites if an UNFADED
+    // splice would exceed it. Reported per case rather than asserted, because
+    // whether it bites is a property of the EDIT, not of the code under test:
+    // reordering two pedals barely moves the signal (measured hard step 0.000258
+    // against a 0.000719 bound), so that one case's seam check proves nothing and
+    // now says so out loud instead of reading as a pass. This is not an artefact of
+    // widening the bound — the widening moved reorder's bound by 1.4 % (0.000709 ->
+    // 0.000719). Section 5 carries the unconditional sensitivity check on an edit
+    // that does move the level.
+    //
+    // "Vacuous against a hard SPLICE" is not the same as "cannot fail": docs §68.12
+    // records collapsing the fade to ~0 (P11), which puts reorder at 0.009903 against
+    // that same 0.000719 bound. The declick holds the output at ZERO between the two
+    // topologies, so a broken fade steps to silence and back whatever the edit does
+    // to the level. Reorder's bar still catches a broken declick; what it cannot
+    // catch is a MISSING one on an edit that was inaudible anyway.
+    std::printf("  hard-switch step : %.6f  (x%.1f the bound — bound %s)\n", hardStep,
+                bound > 0.0 ? hardStep / bound : 0.0,
+                hardStep > bound ? "bites" : "is VACUOUS for this edit");
 
     check(declicked, "the edit armed the declick fade");
     check(seam <= bound, "no discontinuity beyond the declick envelope");
