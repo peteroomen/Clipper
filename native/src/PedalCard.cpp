@@ -112,6 +112,16 @@ const PedalFace kFaces[] = {
      Footswitch::Shape::Round, PedalFace::Layout::Stack, 34.0f,
      {{"Speed", pid::vibeSpeed}, {"Intensity", pid::vibeIntensity}, {"Mode", pid::vibeMode}},
      pid::vibeOn, PEDAL_VIBE},
+    // BASEMENT — M13.10, the board's FIRST pitch shifter and its SECOND
+    // one-knob face, so the accent has to carry the whole distinction from the
+    // Ninety: GRAPHITE-CYAN against the phaser's burnt orange. One knob because
+    // the reference has one control and no MIX (docs §70.2), and it is a
+    // 9-position ROTARY the core quantizes rather than a sweep. No DigiTech /
+    // Drop / Whammy wording anywhere.
+    {"Pitch N\xc2\xba""1 \xc2\xb7 Poly", "Cellar", skin::AccentId::Drop,
+     Footswitch::Shape::Round, PedalFace::Layout::Single, 34.0f,
+     {{"Amount", pid::dropAmount}},
+     pid::dropOn, PEDAL_DROP},
     // ENSEMBLE — M13.7, the CE-1 Chorus Ensemble: the second MODULATION pedal and
     // the first whose circuit the project already owned (it is the JC-120 amp's
     // chorus in a floor box — docs §62). Morphology cue is the real CE-1's big,
@@ -173,6 +183,7 @@ juce::String pedalMenuLabel(int type) {
         // as docs §61.10/§62, opposite direction.
         case PEDAL_OPTO:   return "Lumen - optical compressor";
         case PEDAL_VIBE:   return "Swirl - Uni-Vibe photocell phaser";
+        case PEDAL_DROP:   return "Cellar - polyphonic drop-tune";
         default:           return "Pedal";
     }
 }

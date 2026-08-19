@@ -195,6 +195,10 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::vibeSpeed, "Swirl Speed", 0.35f));
     layout.add(knob(pid::vibeIntensity, "Swirl Intensity", 0.70f));
     layout.add(knob(pid::vibeMode, "Swirl Mode", 0.0f));
+    // M13.10 drop-tune: one knob. Default 0.0f is the DROP 1 detent (one
+    // semitone down), NOT "off" — the selector has no off position.
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::dropOn, 1}, "Cellar On", true));
+    layout.add(knob(pid::dropAmount, "Cellar Amount", 0.0f));
 
     // M13.4 — the "Echoman" BBD analog delay. Defaults mirror web
     // DELAY_KNOB_DEFAULTS: 212 ms, a few repeats, wet behind the dry.
@@ -474,6 +478,8 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.vibeSpeed = f(pid::vibeSpeed);
     p.vibeIntensity = f(pid::vibeIntensity);
     p.vibeMode = f(pid::vibeMode);
+    p.dropOn = f(pid::dropOn) >= 0.5f;
+    p.dropAmount = f(pid::dropAmount);
     p.ce1On = f(pid::ce1On) >= 0.5f;
     p.ce1Rate = f(pid::ce1Rate);
     p.ce1Depth = f(pid::ce1Depth);

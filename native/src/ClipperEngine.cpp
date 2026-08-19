@@ -25,7 +25,8 @@ const char* const kPedalKeys[PEDAL_TYPE_COUNT] = {"rat",    "sd1",  "ts",
                                                   "muff",   "phaser", "gold",
                                                   "wah",   "comp",
                                                   "delay", "gate", "chorus",
-                                                  "opto",  "vibe"};
+                                                  "opto",  "vibe",
+                                                  "drop"};
 constexpr int   kCabPartition = 128;  // == worklet render quantum / cab partition
 // Extra samples to HOLD the output at zero after a CAB swap, before the fade back
 // in. Mirrors CAB_SWAP_DEAD_SAMPLES in web/worklet/clipper-processor.js and exists
@@ -83,6 +84,7 @@ bool Params::pedalOn(int type) const {
         case PEDAL_GATE:   return gateOn;
         case PEDAL_OPTO:   return optoOn;
         case PEDAL_VIBE:   return vibeOn;
+        case PEDAL_DROP:   return dropOn;
         case PEDAL_CHORUS: return ce1On;
         case PEDAL_DELAY:  return delayOn;
         default:           return false;
@@ -153,6 +155,10 @@ void ClipperEngine::applyParamsToModels() {
     vibe_.setParameter(clipper::dsp::VibeModel::PARAM_SPEED, p.vibeSpeed);
     vibe_.setParameter(clipper::dsp::VibeModel::PARAM_INTENSITY, p.vibeIntensity);
     vibe_.setParameter(clipper::dsp::VibeModel::PARAM_MODE, p.vibeMode);
+
+    // M13.10 the drop-tune — ONE real knob, AMOUNT, quantized by the core to a
+    // 9-position rotary. Slots 1/2 are carried and unused.
+    drop_.setParameter(clipper::dsp::DropModel::PARAM_AMOUNT, p.dropAmount);
     // CE-1 "Ensemble" chorus (M13.7) — the same positional slot ABI, reading as
     // RATE / DEPTH / MODE. MODE is DISCRETE inside the model (< 0.5 chorus,
     // >= 0.5 vibrato); it is a float here only because the slot is.
@@ -355,6 +361,8 @@ void ClipperEngine::updateParams(const Params& p) {
     if (p.vibeIntensity != o.vibeIntensity)
         vibe_.setParameter(VibeModel::PARAM_INTENSITY, p.vibeIntensity);
     if (p.vibeMode != o.vibeMode) vibe_.setParameter(VibeModel::PARAM_MODE, p.vibeMode);
+    if (p.dropAmount != o.dropAmount)
+        drop_.setParameter(clipper::dsp::DropModel::PARAM_AMOUNT, p.dropAmount);
     if (p.delayTime != o.delayTime)         delay_.setParameter(DelayModel::PARAM_DELAY, p.delayTime);
     if (p.delayFeedback != o.delayFeedback) delay_.setParameter(DelayModel::PARAM_FEEDBACK, p.delayFeedback);
     if (p.delayBlend != o.delayBlend)       delay_.setParameter(DelayModel::PARAM_BLEND, p.delayBlend);
@@ -479,6 +487,10 @@ void ClipperEngine::setPedalOversampling(int factor) {
     // flat in the factor). The 470 pF stage's corner sits against Nyquist and
     // the bilinear allpass's phase warps there — docs §67.7.
     vibe_.setOversampling(factor);
+    // The drop-tune accepts and IGNORES this, like the phaser and the gate: its
+    // read tap is a resampling delay, not a nonlinearity, and it was measured
+    // BIT-IDENTICAL at 1x and 8x (docs §70.6).
+    drop_.setOversampling(factor);
     // ce1_ has no nonlinearity: setOversampling would be a no-op, so it is not called.
     // NOTE: the delay is deliberately NOT re-factored here. Its oversampling is
     // set by the DEVICE (the BBD clock reaches 136.5 kHz, so the internal rate
@@ -623,6 +635,7 @@ void ClipperEngine::processPedal(int type, const float* in, float* out, int numF
         case PEDAL_GATE:   gate_.process(in, out, numFrames); break;
         case PEDAL_OPTO:   opto_.process(in, out, numFrames); break;
         case PEDAL_VIBE:   vibe_.process(in, out, numFrames); break;
+        case PEDAL_DROP:   drop_.process(in, out, numFrames); break;
         case PEDAL_CHORUS: ce1_.process(in, out, numFrames); break;
         case PEDAL_DELAY:  delay_.process(in, out, numFrames); break;
         default: break;
@@ -647,6 +660,7 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     gate_.prepare(sampleRate_, maxBlock_);
     opto_.prepare(sampleRate_, maxBlock_);
     vibe_.prepare(sampleRate_, maxBlock_);
+    drop_.prepare(sampleRate_, maxBlock_);
     ce1_.prepare(sampleRate_, maxBlock_);
     delay_.prepare(sampleRate_, maxBlock_);
     amp_.prepare(sampleRate_, maxBlock_);
@@ -874,6 +888,9 @@ int ClipperEngine::latencySamples() const {
             // docs §64.7), so it carries the same OS group delay as a dirt box.
             case PEDAL_OPTO: n += opto_.latencySamples(); break;
             case PEDAL_VIBE: n += vibe_.latencySamples(); break;
+            // The drop-tune reports 0 by design: the read tap is a sawtooth, so
+            // there is no single group delay to compensate (docs §70.6).
+            case PEDAL_DROP: n += drop_.latencySamples(); break;
             // The CE-1 chorus is linear time-varying — no oversampling, and its
             // modulated delay IS the effect rather than a compensable latency.
             case PEDAL_CHORUS: break;

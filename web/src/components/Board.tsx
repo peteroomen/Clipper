@@ -72,6 +72,7 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   chorus: 'Ensemble chorus / vibrato',
   delay: 'Echoman analog delay (bucket brigade)',
   vibe: 'Swirl Uni-Vibe (amber, photocell phaser)',
+  drop: 'Cellar drop-tune (graphite, polyphonic pitch)',
   tuner: 'Chromatic tuner',
 };
 const AMP_TYPE_LABEL: Record<string, string> = {

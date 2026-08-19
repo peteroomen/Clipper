@@ -69,7 +69,7 @@ export type SourceKind = 'test' | 'live';
 // than after a stab at the same depth, against the OTA voice's 1.000x — docs
 // §64.4), its attack does not move with the knob, and its PEAK REDUCTION moves a
 // THRESHOLD by 45.44 dB where the Squash's SUSTAIN moves GAIN by 25.33 dB.
-export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'vibe' | 'tuner';
+export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'vibe' | 'drop' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
@@ -131,7 +131,7 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412' | 'orange412', num
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'vibe', 'tuner'];
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'vibe', 'drop', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
@@ -399,6 +399,20 @@ export const VIBE_KNOB_DEFAULTS: PedalParams = {
   level: 0.0,
 };
 
+// M13.10 drop-tune opening state. AMOUNT 0.0 is the FIRST of nine quantized
+// positions, DROP 1 — one semitone down, i.e. E flat standard, which is the
+// setting this pedal exists for on this board. The knob is a 9-position rotary
+// (docs §70.2), so 0.0 is a detent and not "off": there is no bypass position on
+// the selector, bypass is the footswitch. Slots 1/2 are carried and unused —
+// the reference has ONE control and deliberately no MIX, and shipping a knob
+// that does nothing is forbidden, so the face draws only slot 0.
+// These must match the C++ constructor defaults in DropModel.cpp.
+export const DROP_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.0,
+  filter: 0.5,
+  level: 0.5,
+};
+
 export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   rat: KNOB_DEFAULTS,
   sd1: SD1_KNOB_DEFAULTS,
@@ -413,6 +427,7 @@ export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   chorus: CHORUS_KNOB_DEFAULTS,
   delay: DELAY_KNOB_DEFAULTS,
   vibe: VIBE_KNOB_DEFAULTS,
+  drop: DROP_KNOB_DEFAULTS,
   // The tuner has no knobs; params are unused but keep the shared shape.
   tuner: KNOB_DEFAULTS,
 };
@@ -534,6 +549,7 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
     : p.type === 'chorus' ? 'chorus'
     : p.type === 'delay' ? 'delay'
     : p.type === 'vibe' ? 'vibe'
+    : p.type === 'drop' ? 'drop'
     : 'rat';
   return {
     id,

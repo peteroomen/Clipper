@@ -310,6 +310,26 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Mode', aria: 'Mode (chorus / vibrato)', param: 'level', testId: 'knob-mode' },
     ],
   },
+  // M13.10 "Cellar": the drop-tune, and its face has ONE knob for the same
+  // reason the Ninety does — the reference has one control and no MIX. The
+  // morphology cue is that it is the board's SECOND 'single' face, so it takes a
+  // GRAPHITE accent against the phaser's orange: the two are never confusable by
+  // colour, and graphite is the right read for a box that does not colour the
+  // tone at all. Wordmark "Cellar" is the wink (how far down you are going);
+  // the model line names the type. No DigiTech / Drop / Whammy text anywhere
+  // (docs §17 doctrine).
+  drop: {
+    layout: 'single',
+    model: 'PITCH Nº1 · POLY',
+    wordmark: 'Cellar',
+    knobs: [
+      // ONE real knob, and it is a 9-position ROTARY, not a continuous control:
+      // the core quantizes slot 0 to DROP 1..7 semitones, OCTAVE, OCTAVE+DRY
+      // (docs §70.2). Slots 1/2 are carried and unused. Detent 0 is DROP 1 —
+      // one semitone down, E flat standard.
+      { name: 'Amount', aria: 'Drop amount', param: 'distortion', testId: 'knob-amount' },
+    ],
+  },
   phaser: {
     // The iconic ONE-KNOB face: a single big centered SPEED knob on a dark chassis
     // with an ORANGE accent (the orange box, instantly read). "Ninety" is the wink

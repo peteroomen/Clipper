@@ -41,6 +41,14 @@ const clipper::test::XfailDecl kXfailTriadSpread{
     "a frequency-domain shifter — one SOLA lag cannot align three partials at "
     "once, and neither a wider span nor sub-sample lag refinement moves it"};
 
+// The binary's declared ledger, for `--xfail-ledger` mode. Without this array and
+// the ledgerMain() call in main(), `clipper_add_xfail_ledger` registers a ctest
+// entry that runs the WHOLE suite and reports Passed instead of ***Skipped — so
+// the known defect never appears in a plain `ctest` run, which is the entire
+// point of the ratchet. Caught by measuring the ctest listing rather than
+// trusting the CMake call.
+const clipper::test::XfailDecl kLedger[] = {kXfailTriadSpread};
+
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kBlock = 128;
 constexpr double kSr = 48000.0;
@@ -182,7 +190,7 @@ void testPolyphony() {
                 clipper::test::expectXfail(
                     (hi - lo) < 2.0, kXfailTriadSpread,
                     [&] {
-                        static char buf[240];
+                        static char buf[400];
                         std::snprintf(buf, sizeof(buf),
                                       "E major triad at -2 semitones: partial spread "
                                       "%.4f cents against this slice's own 2.0 target. "
@@ -458,8 +466,12 @@ void testHousekeeping() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     clipper::test::requireAssertsLive();
+    const int ledger = clipper::test::ledgerMain(argc, argv, kLedger,
+                                                 sizeof kLedger / sizeof kLedger[0],
+                                                 "clipper_drop_tests");
+    if (ledger >= 0) return ledger;
     std::printf("== Cellar drop-tune (M13.10, docs §70) ==\n");
     std::printf("- BAR 1: pitch accuracy vs the exact ratio\n");
     testPitchAccuracy();

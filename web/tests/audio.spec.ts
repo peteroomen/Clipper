@@ -800,6 +800,146 @@ test('vibe worklet: the Uni-Vibe is reachable and ALL THREE slots reach the core
   expect(result.fastSwing).toBeLessThan(result.swirlSwing);
 });
 
+test('drop worklet: the drop-tune is reachable and its ONE slot reaches the core', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    // Long enough for the grain to have wrapped several times at every position
+    // measured here (the grain rate is (1-r)/W: 1.1 Hz at a semitone).
+    const seconds = 3.0;
+
+    // THREE renders, deliberately. Chromium's OfflineAudioContext starts
+    // returning SILENCE once enough contexts exist in one browser process
+    // (playwright.config.ts says so; the comp spec was observed tripping it at
+    // six).
+    async function render(amount: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      let ctx: OfflineAudioContext | null = null;
+      for (let attempt = 0; attempt < 4 && !ctx; attempt++) {
+        const c = new OfflineAudioContext(1, length, sampleRate);
+        try {
+          await Promise.race([
+            c.audioWorklet.addModule('/generated/clipper-processor.js'),
+            new Promise((_r, rej) => setTimeout(() => rej(new Error('addModule timeout')), 6000)),
+          ]);
+          ctx = c;
+        } catch {
+          /* fresh context, retry */
+        }
+      }
+      if (!ctx) throw new Error('addModule failed after retries');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 6000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') { clearTimeout(t); resolve(); }
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true }); // pure pedal proof
+        node.port.postMessage({
+          type: 'chain',
+          pedals: [{
+            id: 'd', type: 'drop', engaged: true,
+            params: { distortion: amount, filter: 0.5, level: 0.5 },
+          }],
+        });
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 220 });
+      const g = new GainNode(ctx, { gain: 0.2 });
+      osc.connect(g);
+      osc.start();
+      g.connect(node).connect(ctx.destination);
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+
+    // Pitch by ZERO CROSSINGS over the settled tail. Deliberately not a DFT: the
+    // whole claim here is about the FREQUENCY the worklet delivers, and a
+    // crossing count reads that directly without a window or a bin width to get
+    // wrong. Positive-going crossings only, linearly interpolated.
+    function pitchHz(data: Float32Array, sr: number): number {
+      const from = Math.floor(data.length * 0.5);
+      let first = -1, last = -1, count = 0;
+      for (let i = from + 1; i < data.length; i++) {
+        if (data[i - 1] <= 0 && data[i] > 0) {
+          const frac = data[i] === data[i - 1] ? 0 : -data[i - 1] / (data[i] - data[i - 1]);
+          const t = i - 1 + frac;
+          if (first < 0) first = t; else { last = t; count++; }
+        }
+      }
+      if (count < 2 || last <= first) return 0;
+      return sr * count / (last - first);
+    }
+    function rms(data: Float32Array): number {
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+      return Math.sqrt(sum / data.length);
+    }
+
+    const drop1 = await render(0.0);    // detent 0 — DROP 1, one semitone down
+    const drop4 = await render(0.375);  // detent 3 — DROP 4
+    const octave = await render(0.875); // detent 7 — OCTAVE
+    return {
+      drop1Hz: pitchHz(drop1, sampleRate),
+      drop4Hz: pitchHz(drop4, sampleRate),
+      octaveHz: pitchHz(octave, sampleRate),
+      drop1Rms: rms(drop1),
+      drop4Rms: rms(drop4),
+      octaveRms: rms(octave),
+    };
+  });
+
+  console.log(
+    `[drop] DROP 1 ${result.drop1Hz.toFixed(2)} Hz (want 207.65) | ` +
+    `DROP 4 ${result.drop4Hz.toFixed(2)} Hz (want 174.61) | ` +
+    `OCTAVE ${result.octaveHz.toFixed(2)} Hz (want 110.00)`);
+
+  // (a) HARNESS GATE, before any DSP claim: every render must have produced
+  // audio. A silent one is Chromium's documented OfflineAudioContext flake, and
+  // a zero-crossing count on silence would read as a spectacular failure rather
+  // than as the harness fault it is.
+  for (const v of [result.drop1Rms, result.drop4Rms, result.octaveRms])
+    expect(v, 'a render came back silent (Chromium OfflineAudioContext flake)').toBeGreaterThan(1e-3);
+
+  // (b) THE DELIVERY PATH, and note what this spec owns versus what the core
+  // owns (§57.13). The CORE suite owns the SHAPE — it measures the interval to
+  // 0.00 cents against 2^(-n/12) on nine detents and on chords. This spec owns
+  // the PATH: `type: 'drop'` reaches the core through the worklet's dispatch and
+  // slot 0 arrives QUANTIZED to the right detent. The windows are 1 % — far
+  // looser than the core's 5 cents (0.29 %), because a zero-crossing estimate on
+  // a signal carrying the grain's own crossfade is the coarse instrument here,
+  // and a tight bound would be measuring the estimator rather than the pedal.
+  expect(result.drop1Hz).toBeGreaterThan(207.65 * 0.99);
+  expect(result.drop1Hz).toBeLessThan(207.65 * 1.01);
+
+  // (c) SLOT 0 is a ROTARY, not a sweep, and the two other detents prove the
+  // quantizer arrived intact rather than the knob being read as a continuous
+  // ratio: 0.375 must land on DROP 4 exactly, not somewhere between DROP 3 and
+  // DROP 4.
+  expect(result.drop4Hz).toBeGreaterThan(174.61 * 0.99);
+  expect(result.drop4Hz).toBeLessThan(174.61 * 1.01);
+  expect(result.octaveHz).toBeGreaterThan(110.0 * 0.99);
+  expect(result.octaveHz).toBeLessThan(110.0 * 1.01);
+
+  // (d) The ORDER is a property in its own right: a wired-backwards selector
+  // (detent 8 at knob 0) would still pass (b)-(c) individually on a symmetric
+  // table. Monotone descending is what says the map is the right way round.
+  expect(result.drop1Hz).toBeGreaterThan(result.drop4Hz);
+  expect(result.drop4Hz).toBeGreaterThan(result.octaveHz);
+});
+
 test('opto worklet: the optical compressor is reachable and ALL THREE slots reach the core', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();

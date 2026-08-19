@@ -24,6 +24,7 @@
 .pedal[data-pedal-type="wah"]   { --pedal-accent: var(--accent-wah);   --pedal-accent-glow: var(--accent-wah-glow); }
 .pedal[data-pedal-type="opto"]  { --pedal-accent: var(--accent-opto);  --pedal-accent-glow: var(--accent-opto-glow); }
 .pedal[data-pedal-type="vibe"]  { --pedal-accent: var(--accent-vibe);  --pedal-accent-glow: var(--accent-vibe-glow); }
+.pedal[data-pedal-type="drop"]  { --pedal-accent: var(--accent-drop);  --pedal-accent-glow: var(--accent-drop-glow); }
 .pedal[data-pedal-type="gate"]  { --pedal-accent: var(--accent-gate);  --pedal-accent-glow: var(--accent-gate-glow); }
 .pedal[data-pedal-type="chorus"] { --pedal-accent: var(--accent-chorus); --pedal-accent-glow: var(--accent-chorus-glow); }
 .pedal[data-pedal-type="delay"] { --pedal-accent: var(--accent-delay); --pedal-accent-glow: var(--accent-delay-glow); }

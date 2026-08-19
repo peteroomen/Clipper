@@ -97,6 +97,7 @@
 #include "clipper/dsp/GateModel.h"
 #include "clipper/dsp/OptoModel.h"
 #include "clipper/dsp/VibeModel.h"
+#include "clipper/dsp/DropModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/WahModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
@@ -156,7 +157,13 @@ enum PedalType : int {
     // snapshot encoding and the APVTS chain-order state, so renumbering one
     // silently re-points every saved board.
     PEDAL_VIBE = 12,
-    PEDAL_TYPE_COUNT = 13,
+
+    // M13.10: the "Cellar" drop-tune — the board's FIRST pitch shifter.
+    // APPENDED at 13 for the same reason as every type above it: these integers
+    // ARE the packed-snapshot encoding and the APVTS chain-order state, so
+    // renumbering one silently re-points every saved board.
+    PEDAL_DROP = 13,
+    PEDAL_TYPE_COUNT = 14,
 };
 
 // Each type is instantiable once, so the board can never be longer than this.
@@ -287,6 +294,14 @@ struct Params {
     float vibeSpeed = 0.35f;
     float vibeIntensity = 0.70f;
     float vibeMode = 0.0f;
+
+    // M13.10 the drop-tune. Defaults MUST match DROP_KNOB_DEFAULTS in
+    // web/src/rig.ts and DropModel's constructor. AMOUNT is a 9-position ROTARY
+    // that the core quantizes (docs §70.2), so 0.0f is the DROP 1 detent — one
+    // semitone down — not "off". Slots 1/2 are carried and unused: the
+    // reference has one control and no MIX.
+    bool  dropOn = true;
+    float dropAmount = 0.0f;
 
     // "Echoman" BBD analog delay (M13.4) — the lineup's FIRST DELAY, and a new
     // DSP family. Three real knobs, the shared positional slots reading as
@@ -499,7 +514,8 @@ private:
     // at a declick fade zero, so the audio never sees a mid-block reorder.
     int  activeChain_[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     int  activeLength_ = 2;
-    bool activeOn_[PEDAL_TYPE_COUNT] = {true, false, true, true, true, true, true, true, true, true, true, true, true};
+    bool activeOn_[PEDAL_TYPE_COUNT] = {true, false, true, true, true, true, true,
+                                        true, true, true, true, true, true, true};
 
     // Declick state machine (mirrors the worklet's): a linear ramp position in
     // [0,1] mapped through a raised cosine, ~6 ms each way.
@@ -521,6 +537,7 @@ private:
     clipper::dsp::GateModel gate_;    // the "Curfew" noise gate (M13.6a)
     clipper::dsp::OptoModel opto_;    // the "Lumen" optical compressor (M13.3)
     clipper::dsp::VibeModel vibe_;    // the "Swirl" Uni-Vibe (M13.5)
+    clipper::dsp::DropModel drop_;    // the "Cellar" drop-tune (M13.10)
     clipper::dsp::Ce1Model  ce1_;     // the CE-1 "Ensemble" chorus (M13.7)
     clipper::dsp::DelayModel delay_;  // the "Echoman" BBD analog delay (M13.4)
     clipper::dsp::AmpModel amp_;      // Clean 120

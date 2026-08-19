@@ -59,6 +59,7 @@
 #include "clipper/dsp/MuffModel.h"
 #include "clipper/dsp/OptoModel.h"
 #include "clipper/dsp/VibeModel.h"
+#include "clipper/dsp/DropModel.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/OutputLimiter.h"
 #include "clipper/dsp/RatModel.h"
@@ -343,6 +344,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     GateModel gate;      // the "Curfew" noise gate (M13.6a)
     OptoModel opto;      // the "Lumen" optical compressor (M13.3)
     VibeModel vibe;      // the "Swirl" Uni-Vibe (M13.5)
+    DropModel drop;      // the "Cellar" drop-tune (M13.10)
     DelayModel delayFx;  // the "Echoman" BBD analog delay (M13.4)
     AmpModel amp;        // Clean 120
     Jcm800Amp jcm;       // JCM800 head
@@ -379,6 +381,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     vibe.setParameter(VibeModel::PARAM_SPEED, p.vibeSpeed);
     vibe.setParameter(VibeModel::PARAM_INTENSITY, p.vibeIntensity);
     vibe.setParameter(VibeModel::PARAM_MODE, p.vibeMode);
+    drop.setParameter(DropModel::PARAM_AMOUNT, p.dropAmount);
     delayFx.setParameter(DelayModel::PARAM_DELAY, p.delayTime);
     delayFx.setParameter(DelayModel::PARAM_FEEDBACK, p.delayFeedback);
     delayFx.setParameter(DelayModel::PARAM_BLEND, p.delayBlend);
@@ -445,6 +448,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     gate.prepare(kFs, kBlock);
     opto.prepare(kFs, kBlock);
     vibe.prepare(kFs, kBlock);
+    drop.prepare(kFs, kBlock);
     delayFx.prepare(kFs, kBlock);
     amp.prepare(kFs, kBlock);
     // The JCM runs at its fixed 4x internally (set BEFORE prepare so its stages size
@@ -464,6 +468,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     gold.setOversampling(p.oversampling);
     opto.setOversampling(p.oversampling);
     vibe.setOversampling(p.oversampling);
+    drop.setOversampling(p.oversampling);
     // (the phaser has no oversampler — it is linear)
 
     const std::vector<float> ir = generateDefaultCab2x12IR(kFs);
@@ -499,6 +504,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
                 case clipper::native::PEDAL_GATE:   gate.process(cur, other, n); break;
                 case clipper::native::PEDAL_OPTO:   opto.process(cur, other, n); break;
                 case clipper::native::PEDAL_VIBE:   vibe.process(cur, other, n); break;
+                case clipper::native::PEDAL_DROP:   drop.process(cur, other, n); break;
                 case clipper::native::PEDAL_DELAY:  delayFx.process(cur, other, n); break;
                 default: continue;
             }
@@ -550,6 +556,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
             case clipper::native::PEDAL_GATE: break;
             case clipper::native::PEDAL_OPTO: pedalLatency += opto.latencySamples(); break;
             case clipper::native::PEDAL_VIBE: pedalLatency += vibe.latencySamples(); break;
+            case clipper::native::PEDAL_DROP: pedalLatency += drop.latencySamples(); break;
             case clipper::native::PEDAL_DELAY: pedalLatency += delayFx.latencySamples(); break;
             default: break;  // the phaser is linear — no group delay
         }
@@ -605,6 +612,8 @@ void renderPlugin(const Params& p, const std::vector<float>& in,
     set(vibeSpeed, p.vibeSpeed);
     set(vibeIntensity, p.vibeIntensity);
     set(vibeMode, p.vibeMode);
+    set(dropOn, p.dropOn ? 1.0f : 0.0f);
+    set(dropAmount, p.dropAmount);
     // The BOARD is state, not a parameter: push it through the processor's chain API
     // (which also publishes the packed snapshot the audio thread reads).
     {
@@ -775,6 +784,39 @@ Params vibeBoardParams() {
     return p;
 }
 
+// NATIVE PARITY case 10 (M13.10) — a board carrying the "Cellar" drop-tune:
+// Cellar -> RAT -> JCM800. Two things make it worth its runtime. (1) It is the
+// FIRST case whose pedal has ONE knob and whose knob is QUANTIZED, so a plugin
+// that rounded slot 0 differently from the core would render a different
+// INTERVAL — the loudest possible disagreement — while every other case passed.
+// (2) It runs the pitch shifter FIRST, before the dirt, which is where the
+// coaching puts it: the shifter's grain splice has to agree across a
+// multi-hundred-millisecond search history and then be amplified by a clipper
+// and five triodes, so any per-block divergence is magnified rather than hidden.
+// The amp is the JCM800 and not the Mesa deliberately: this test's REFERENCE
+// chain has no Mesa case at all (M10.4 wired the engine but not this driver), so
+// naming it here would compare the plugin against a reference that cannot build
+// it. That gap is real and belongs to the Mesa's own follow-up.
+Params dropBoardParams() {
+    Params p;
+    p.inputTrim = 0.5f;
+    p.chain[0] = clipper::native::PEDAL_DROP;
+    p.chain[1] = clipper::native::PEDAL_RAT;
+    p.chainLength = 2;
+    // AMOUNT away from its APVTS default (0.0 = DROP 1): 0.25 is the DROP 3
+    // detent, three semitones down.
+    p.dropOn = true;  p.dropAmount = 0.25f;
+    p.ratOn = true;   p.ratDist = 0.4f; p.ratFilter = 0.5f; p.ratLevel = 0.6f;
+    p.vibeOn = true;  // ON, but NOT on the board — must be inaudible
+    p.optoOn = true;  // likewise
+    p.ampModel = kAmpJcm800;
+    p.ampOn = true;  p.volume = 0.5f; p.bass = 0.5f; p.middle = 0.5f; p.treble = 0.6f;
+    p.jcmGain = 0.5f;  p.jcmMaster = 0.35f;
+    p.bright = false; p.cab = true;
+    p.chorusMode = 0;
+    return p;
+}
+
 bool runCase(const char* label, const Params& p, const std::vector<float>& in) {
     std::printf("\n--- case: %s ---\n", label);
 
@@ -875,6 +917,8 @@ int main() {
     ok &= runCase("Board: Lumen -> RAT -> Twin", optoBoardParams(), in);
     // M13.5: the Uni-Vibe on the native board.
     ok &= runCase("Board: RAT -> Swirl -> JCM800", vibeBoardParams(), in);
+    // M13.10: the drop-tune on the native board, FIRST in the chain.
+    ok &= runCase("Board: Cellar -> RAT -> JCM800", dropBoardParams(), in);
 
     if (ok) {
         std::printf(
