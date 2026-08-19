@@ -133,6 +133,7 @@ add_library(clipper_dsp STATIC
     src/dsp/MesaPreamp.cpp
     src/dsp/MesaPowerAmp.cpp
     src/dsp/MesaAmp.cpp
+    src/dsp/DropModel.cpp
     src/dsp/RockerverbPowerAmp.cpp
     src/dsp/RockerverbAmp.cpp
 )
@@ -428,6 +429,16 @@ if(NOT EMSCRIPTEN)
     clipper_add_xfail_ledger(clipper_orange_tests)
 
     # --- M10.7: Orange Rockerverb 100 amp tests -------------------------------
+    add_executable(clipper_drop_tests tests/test_drop.cpp)
+    target_link_libraries(clipper_drop_tests PRIVATE clipper_dsp)
+    target_include_directories(clipper_drop_tests PRIVATE tools)
+    clipper_add_test_flags(clipper_drop_tests)
+    add_test(NAME clipper_drop_tests COMMAND clipper_drop_tests)
+    # ONE known-bad property: `drop-triad-spread-at-minus-2`. It is this slice's
+    # OWN 2-cent spread target, not the perceptual bar (which is met with 3.7
+    # cents to spare) — see test_drop.cpp.
+    clipper_add_xfail_ledger(clipper_drop_tests)
+
     add_executable(clipper_mesa_tests tests/test_mesa_amp.cpp)
     target_link_libraries(clipper_mesa_tests PRIVATE clipper_dsp)
     target_include_directories(clipper_mesa_tests PRIVATE tools)

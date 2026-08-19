@@ -361,6 +361,15 @@ export const TOOLS = [
       'bypassed. MODE is a two-position switch: CHORUS mixes dry and wet (the ' +
       'familiar swirl), VIBRATO is the wet path alone (pitch wobble, no comb). ' +
       'Try it AFTER the dirt for classic late-60s swirl), ' +
+      "'drop' (the 'Cellar' DROP-TUNE — a polyphonic pitch shifter that " +
+      'retunes the WHOLE guitar downward without changing a string. ONE control, ' +
+      'AMOUNT, and it is a 9-position ROTARY not a sweep: DROP 1 through DROP 7 ' +
+      'semitones, then OCTAVE, then OCTAVE+DRY (the octave stacked under the ' +
+      'unshifted note, for a fatter single-line sound). DROP 1 is E flat ' +
+      'standard, DROP 2 is D standard, DROP 4 is C sharp/C standard territory. ' +
+      'It is TRANSPARENT — no drive, no filter, no mix knob (the reference has ' +
+      'none, and this board does not invent one). Put it FIRST, before the dirt, ' +
+      'so the amp distorts the retuned note rather than the other way round), ' +
       "'gate' (the 'Curfew' NOISE GATE — a utility, not a voice: it makes no " +
       'sound of its own, it takes one away. Two knobs, THRESHOLD and DECAY. ' +
       'THRESHOLD really IS a threshold (unlike the compressor\'s SUSTAIN): below ' +
@@ -409,7 +418,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'vibe', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'vibe', 'drop', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -603,7 +612,7 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'vibe' | 'tuner' =
+    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'vibe' | 'drop' | 'tuner' =
       input.type === 'tuner' ? 'tuner'
       : input.type === 'sd1' ? 'sd1'
       : input.type === 'ts' ? 'ts'
@@ -617,6 +626,7 @@ export function executeTool(
       : input.type === 'chorus' ? 'chorus'
       : input.type === 'delay' ? 'delay'
       : input.type === 'vibe' ? 'vibe'
+      : input.type === 'drop' ? 'drop'
       : 'rat';
     const rawPos = input.position;
     const position =
@@ -636,6 +646,7 @@ export function executeTool(
                     : type === 'chorus' ? 'Ensemble'
                     : type === 'delay' ? 'Echoman'
                     : type === 'vibe' ? 'Swirl'
+                    : type === 'drop' ? 'Cellar'
                     : 'RAT';
     return {
       content: JSON.stringify({ applied: { added: type, index } }),

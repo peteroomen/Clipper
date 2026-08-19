@@ -649,7 +649,24 @@ keeps these slices small:
    not a new model. Supersedes the older CE-2 line item below.
 8. **M13.8 — Standalone reverb pedal** *(M)* — spring exists but only *inside*
    amps. Wanted: hall / plate / room as a pedal.
-9. **M13.9 — Octavia** *(S–M)* — **cheaper than it looks**: octave-UP needs no
+9. ~~**M13.10 — Drop-tune (DigiTech Drop-style polyphonic pitch shifter)**~~ —
+   **SHIPPED 2026-08-19 (docs §70)** as pedal type `drop`, slot 13, wordmark
+   "Cellar", GRAPHITE-CYAN. The owner's "grunge unlock" ask of 2026-08-17,
+   shipped as the second half of that sentence (§69 is the Mesa). **A whole new
+   DSP family, and the FIRST voice on this board with no schematic to find** — a
+   Drop is a DSP box, so §57's rule has no target and the acceptance shape is
+   cents accuracy / latency / a measured artifact floor instead. It is
+   polyphonic BY CONSTRUCTION rather than by tuning: the mechanism is
+   resampling, which scales every frequency present and never forms an opinion
+   about pitch. **Measured 0.00 cents on single notes at all nine detents and on
+   power chords**; one XFAIL (`drop-triad-spread-at-minus-2`, a 2.0000-cent
+   spread against this slice's own 2-cent target, with the 5-cent perceptual bar
+   met by 3.75). The reusable deliverable is
+   `core/include/clipper/dsp/PitchShifter.h`, `DelayLine`'s second consumer —
+   a future harmoniser or detune holds one without inheriting a drop pedal.
+   Shipped with ONE knob and NO MIX, faithful to the reference by owner
+   decision. **Named follow-up: a frequency-domain shifter owns the XFAIL.**
+10. **M13.9 — Octavia** *(S–M)* — **cheaper than it looks**: octave-UP needs no
    pitch tracking at all (full-wave rectifier → transformer → fuzz). Octave-DOWN
    is the hard one and is not in this item. *(Not selected in the 2026-07-31
    planning pass — recorded because the cost is widely over-estimated.)*

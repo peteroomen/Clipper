@@ -81,6 +81,15 @@ inline constexpr const char* vibeOn            = "vibeOn";
 inline constexpr const char* vibeSpeed         = "vibeSpeed";
 inline constexpr const char* vibeIntensity     = "vibeIntensity";
 inline constexpr const char* vibeMode          = "vibeMode";
+// M13.10 the "Cellar" drop-tune. ONE real control, AMOUNT — a 9-position
+// ROTARY that the core quantizes (docs §70.2), kept as a plain 0..1 knob rather
+// than a Choice for the same reason ce1Mode is: it is the shared slot-0 of the
+// pedal-agnostic positional ABI, and making it a Choice here would put the
+// native and web parameter spaces out of step for one pedal. Slots 1/2 are not
+// exposed at all, because the reference has no MIX and this board does not ship
+// a knob that does nothing.
+inline constexpr const char* dropOn            = "dropOn";
+inline constexpr const char* dropAmount        = "dropAmount";
 // M13.7: the CE-1 "Ensemble" chorus. THREE knobs — RATE, DEPTH and MODE. MODE is
 // a plain 0..1 knob rather than a Choice deliberately: it is the shared slot-2 of
 // the pedal-agnostic positional ABI, so making it a Choice here would put the

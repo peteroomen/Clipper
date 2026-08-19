@@ -229,14 +229,175 @@ footswitch does is not shippable here. Documented, not built.
 
 ## What actually happened
 
+**Step 1 of the plan — "measure first, build second" — did its job, and it took two
+structural corrections to get a working shifter. Neither was a tuning change.**
+
+**Correction 1: the textbook two-tap arrangement is wrong.** Taps a half window
+apart, sin/cos crossfaded across the whole cycle, is what the plan described and
+what was built first. Both taps then sit at ~0.707 gain for most of the cycle with
+a fixed W/2 delay between them, so the output is a permanent deep comb: **96 % of
+the energy landed off the harmonics**, and the apparent pitch was up to **150 cents**
+wrong. Replaced by ONE live tap at unity gain for 75 % of the window, with a short
+equal-power handover.
+
+**Correction 2: a fixed splice point gives a systematic pitch error.** With the
+structure fixed the output was still sharp, by a margin that scaled with the shift:
+`r_eff = 0.9697*r + 0.0303`, i.e. +3.1 cents at a semitone and **+51.7 cents at an
+octave**, with the exact target sitting **60 dB below the spectral peak**. Bisected:
+the resampling itself is EXACT (0.000 cents with the wrap disabled), so the splice
+was the whole error. A fixed splice jumps the read by a fixed number of samples,
+which is a fixed FRACTION of any given input period — so every grain slips the
+phase the same way, and a constant phase slip per unit time *is* a frequency
+offset. Fixed with **SOLA**: choose the splice by normalised cross-correlation.
+It stays polyphonic because a correlation search forms no opinion about pitch.
+
+**After both: single notes 0.006–0.084 cents, power chords 0.00 cents.**
+
+**The open item was triads, and it was NOT settled by paying latency.** The first
+shipped triple read 9.75 / 22.75 cents, and the trade table below says a wider
+search span fixes it for 2x the latency. **That is not what shipped.** The search
+span is what is left of the WINDOW after the crossfade, so shortening `kCrossfade`
+from 0.25 to **0.10** bought the span for free: the window stays 65 ms, the mean
+algorithmic delay stays ~36 ms, and the search now reaches the triad's composite
+period. The comb is also present for less of the time, so the artifact floor
+improved in the same change.
+
+**One target is still missed and is an XFAIL, not a loosened bar.** A major triad
+at −2 semitones measures a partial spread of exactly **2.0000 cents** against this
+slice's own 2-cent target. The 5-cent PERCEPTUAL bar is met everywhere with
+3.75 cents to spare. Two candidate fixes were built and measured and **neither
+works** — a wider SOLA span (55 and 58 ms) does nothing, and sub-sample lag
+refinement moved it 2.0280 → 2.0291, i.e. nothing. **A comment claiming the latter
+fixed it to 0.30 cents was written during the slice and was FALSE; the mechanism
+was reverted and both failed attempts are recorded in the header so they are not
+tried a third time.** The honest diagnosis: one SOLA lag cannot align three
+partials at once. The fix is a frequency-domain shifter, and it owns the ledger
+entry.
+
+**The second half of the slice — the pedal and its wiring — went as planned, with
+one recurring trap and two test bugs.**
+
+The trap is the one §60 and §64 both record and §69 hit again days earlier:
+**`build-wasm.sh`'s emcc source list is EXPLICIT**, so `DropModel.cpp` had to be
+added inside the `STAMP:EMCC-ARGS` markers. A malformed edit to
+`EXPORTED_FUNCTIONS` (comma-separated names crammed into single JSON strings) was
+caught by reading the file back rather than by any build failure — the C++ built
+clean either way.
+
+**Both test bugs made the pedal look different from what it is, and both were in
+the measurement:**
+1. The XFAIL predicate keyed on "three partials present", which an
+   E5-plus-octave stimulus also satisfies — so the ledger entry **wrongly
+   XPASSed** on a stimulus that was never the defect. Re-keyed on the major third
+   (103.83 Hz).
+2. A Hann-windowed DFT was read for amplitudes **without correcting its 0.5
+   coherent gain**, which under-counted harmonic POWER 4x and reported the
+   artifact floor as **−1.35 dB** — a number that would have condemned a working
+   pedal. Replaced by a rectangular Goertzel on an integer number of periods:
+   **−18.94 dB**. (§60 records the mirror-image trap. The rule covering both: pick
+   the window for the quantity you are measuring, and correct for it.)
+
+**And a third gap was found by measuring the ctest LISTING rather than trusting
+the CMake call.** `clipper_add_xfail_ledger(clipper_drop_tests)` was registered,
+but the test's `main` did not call `ledgerMain()`, so the ledger entry ran the
+whole suite and reported **Passed** instead of `***Skipped` — the known defect
+would never have appeared in a plain `ctest` run, which is the entire point of the
+ratchet. Fixed; the entry now exits 77.
+
 ## Measured results
+
+**Final, 48 kHz, 65 ms window, `kCrossfade` 0.10:**
+
+| Property | Measured | Bar |
+| --- | --- | --- |
+| Single note, −1…−12 semitones | **0.00 cents** at all nine detents | 5.0 |
+| E5 power chord, −1 / −2 | 0.00 / 0.25 cents (spread 0.00 / 0.25) | 5.0 |
+| E5 + octave, −1 / −2 | 0.00 / 0.25 cents | 5.0 |
+| E major triad, −1 / −2 | 0.50 / **1.25** cents (spread 0.75 / **2.00**) | 5.0 |
+| Pick attack | **−0.00 dB** re dry over its first 20 ms, onset +21.94 ms | — |
+| Non-harmonic energy | −18.94 / −18.35 / −17.42 dB at −1 / −5 / −12 | — |
+| OCTAVE+DRY dry path | 220 Hz component **2205x** the OCTAVE position's | — |
+| `latencySamples()` | **0**, mean algorithmic delay **35.8 ms** | 0 |
+| 1x vs 8x oversampling | **0 / 5120 samples differ** (bit-identical) | 0 |
+| Ragged vs 128-frame blocks | **0.000e+00** | 0 |
+| `reset()` vs a fresh model | **0.000e+00** | 0 |
+| Non-finite after one NaN + reset | **0 / 5120** | 0 |
+
+**Through the whole web delivery path** (`drop worklet` Playwright spec, zero
+crossings on the rendered output): DROP 1 **207.65 Hz**, DROP 4 **174.61 Hz**,
+OCTAVE **110.00 Hz** — exact against 207.652 / 174.614 / 110.000.
+
+**The two structural errors, for the record:**
+
+| stage | E major triad | single note |
+| --- | --- | --- |
+| textbook two-tap | — | up to 150 cents wrong, 96 % of energy off-harmonic |
+| one live tap, fixed splice | — | `r_eff = 0.9697·r + 0.0303` (+51.7 cents at an octave) |
+| one live tap, SOLA, 17.5 ms span | 9.75 / 22.75 cents | 0.006 … 0.084 cents |
+| **shipped** (SOLA, `kCrossfade` 0.10) | **0.50 / 1.25 cents** | **0.00 cents** |
+
+**Suites.** Core ctest **38 entries, 38/38** (32 targets + 6 skipped ledgers →
+`clipper_drop_tests` adds a target AND the repo's 6th ledger; it was 36 with 5
+before this slice). Native **3/3** including a new tenth `identical_core_test`
+board (`Cellar -> RAT -> JCM800`). Playwright **85 passed**. Node 15/10/12,
+electron 20. WASM artifact rebuilt (**107** hashed inputs). **ALL FIVE GOLDENS
+UNCHANGED, nothing blessed** — the drop is in no golden rig and touches no other
+model.
 
 ## Files created / modified
 
+**Core**
+- `core/include/clipper/dsp/PitchShifter.h` — NEW. The primitive: `DelayLine`'s
+  second consumer, ignorant of the pedal round it.
+- `core/include/clipper/dsp/DropModel.h`, `core/src/dsp/DropModel.cpp` — NEW. The
+  pedal: the 9-position quantizer, the OCTAVE+DRY sum, the smoothed dry weight.
+- `core/tests/test_drop.cpp` — NEW. Six bars, housekeeping, one XFAIL ledger.
+- `core/CMakeLists.txt` — the new target + `clipper_add_xfail_ledger`.
+- `core/src/clipper_c_api.cpp` — the `drop_*` export block.
+
+**Web**
+- `web/worklet/clipper-processor.js` — the three dispatch chains.
+- `web/src/rig.ts` — `PedalType`, `AVAILABLE_PEDAL_TYPES`, `DROP_KNOB_DEFAULTS`,
+  the normalizer.
+- `web/src/components/Pedal.tsx` — the one-knob `single` face.
+- `web/src/components/Board.tsx`, `web/src/styles/pedal.css`,
+  `web/src/styles/tokens.css` — the gear-tray label and the GRAPHITE-CYAN accent
+  in all three token contexts.
+- `web/src/assistant/tools.ts`, `web/src/assistant/prompt.ts` — the `add_pedal`
+  type plus the tuning map and the honest limits.
+- `web/tests/audio.spec.ts` — the `drop worklet` delivery-path spec.
+- `web/public/generated/*` — rebuilt artifact + stamp.
+
+**Native**
+- `native/src/ClipperEngine.h/.cpp` — `PEDAL_DROP = 13`, `PEDAL_TYPE_COUNT` → 14,
+  the engine slot, params, dispatch, latency, `setOversampling`.
+- `native/src/PluginProcessor.h/.cpp` — the two APVTS parameters.
+- `native/src/PedalCard.cpp`, `native/src/ClipperLookAndFeel.h/.cpp` — the face,
+  the menu label, the accent.
+- `native/tests/identical_core_test.cpp` — the tenth board case.
+
+**Build/docs**
+- `scripts/build-wasm.sh` — `DropModel.cpp` inside the STAMP markers + the seven
+  `_drop_*` exports.
+- `docs/DEVELOPMENT.md` §70, `ROADMAP.md` M13.10, `CLAUDE.md` Current State.
+
 ## Deferred to next session
+
+- **A frequency-domain shifter** (`FFT.h`) — owns `drop-triad-spread-at-minus-2`,
+  and would also let a future harmoniser share this primitive.
+- **Formant preservation** — not modelled, and correct for a drop pedal (a real
+  one does not either). Named so nobody reads it as a defect.
+- **A `--no-splice` flag on `clipper-render`** — deliberately not added; the
+  isolation that proved error 2 was a scratch patch, and a permanent flag belongs
+  to whichever slice next probes the splice.
+- **The Mesa is still absent from `identical_core_test`'s reference driver**, so
+  this slice's own board case uses the JCM800. §64's standing note about
+  comp/gate/delay/wah/chorus is open too.
+- **No ADR was written.** Two decisions here are ones a future slice could
+  reasonably "fix" back — one live tap rather than the textbook two, and
+  `latencySamples()` returning 0 for a sawtooth read — and both are argued in the
+  `PitchShifter.h` banner and §70 instead. If either is re-litigated, promote it.
 
 ## Status
 
-- [ ] In progress
-- [ ] Complete
-- [ ] Partial — see deferred
+- [x] Complete

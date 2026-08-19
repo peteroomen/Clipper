@@ -15504,3 +15504,230 @@ silence).
    topology and different values. A shared component is defensible — but ADR 021's
    rule applies: extract it when a slice can MEASURE that the union is not a union,
    not because the pictures rhyme.
+
+## 70. M13.10 — the "Cellar" polyphonic drop-tune: the lineup's FIRST PITCH effect
+
+The owner's ask on 2026-08-17 was two pedals in one sentence — *"the mesa finally
+and the drop-pedal. it's the grunge unlock, I can play AIC down tuned half step
+with the drop pedal through a mesa"* — and it deliberately shipped as two slices.
+§69 is the amp. This is the pedal, and it is a whole new DSP family: nothing on
+this board has ever changed a pitch.
+
+**That is also why the acceptance shape is different from every voice before it.**
+There is no schematic, no netlist and no component values — a DigiTech Drop is a
+DSP box, so there is nothing to transcribe and §57's "find the schematic" rule has
+no target. What replaces it is arithmetic: the interval a drop pedal produces is
+`2^(-n/12)` EXACTLY, and that is checkable against nothing but itself. So the bars
+here are **cents accuracy, latency, and a measured artifact floor**, and the
+project's usual defence — an external reference — is supplied by the fact that the
+target numbers are exact rather than fitted.
+
+### 70.1 What shipped
+
+Pedal type `drop`, slot **13** (`PEDAL_TYPE_COUNT` 13 → 14), GRAPHITE-CYAN accent,
+wordmark "Cellar", `PITCH Nº1 · POLY`. **ONE knob, AMOUNT**, and it is a
+**9-position ROTARY** the core quantizes, not a sweep: DROP 1…DROP 7 semitones,
+OCTAVE, OCTAVE+DRY. Wired end to end in one slice (core, C ABI `drop_*`, worklet,
+web face + tokens + assistant, native engine + APVTS + `PedalCard`, and its own
+case in `identical_core_test`'s plugin driver).
+
+**Slots 1 and 2 are carried and UNUSED, and that is a research decision rather
+than an omission.** The reference has one control and deliberately no MIX — the
+whole point of the box is that it replaces your tuning, so a wet/dry blend would
+be two guitars a semitone apart. The owner was asked and chose "go for faithfull".
+Shipping a MIX knob would have been dead UI, which this codebase forbids in terms;
+shipping it as a real control would have been inventing a feature the reference
+refuses. The face therefore draws ONE knob, like the Ninety's.
+
+**The deliverable is the PRIMITIVE, not the pedal.**
+`core/include/clipper/dsp/PitchShifter.h` knows nothing about semitone selectors,
+dry blends or footswitches, and is the second consumer of M13.4's `DelayLine`. A
+future detune, harmoniser or flanger can hold one without inheriting a drop pedal
+— the same separation §60 made for the BBD line and for the same reason.
+
+### 70.2 The mechanism, and the two structural errors it took to find it
+
+To shift by ratio `r`, read a delay line at a position advancing `r` samples per
+written sample. That is RESAMPLING, so it scales EVERY frequency present by
+exactly `r`. **It is polyphonic without trying, because it never forms an opinion
+about pitch** — which is precisely what a tracker-based shifter gets wrong on a
+chord. The polyphony bar in the suite is a consequence of the algorithm rather
+than an achievement, and it is asserted anyway, because an implementation error (a
+wrong ratio, a mis-wrapped tap) would still break it.
+
+Downward, the read falls behind at `(1 - r)` samples per sample, so a tap cannot
+run forever and must be re-seated. **The re-seat is the only hard part, and both
+of this slice's real errors were in it.**
+
+**ERROR 1 — the textbook two-tap arrangement is not merely suboptimal, it is
+wrong.** The first implementation was the standard one: two taps a HALF window
+apart, crossfaded sin/cos across the whole cycle. Both taps then sit at ~0.707
+gain for most of the cycle with a fixed `W/2` delay between them, so the output is
+a permanent deep comb rather than a shifted signal. Measured on a 220 Hz tone at a
+semitone down: **96 % of the output energy landed OFF the harmonics**, and the
+apparent pitch was **up to 150 cents wrong at an octave** because the modulation
+sidebands were larger than the fundamental. The fix is structural, not a tuning
+change: **keep the second tap OFF except during the handover.** For the first
+`1 - kCrossfade` of the window there is a SINGLE tap at unity — no second read, no
+comb, no modulation at all.
+
+**ERROR 2 — a fixed splice does not give you the pitch you asked for, and the
+error grows with the shift.** With the one-live-tap structure in place the pitch
+was still wrong, and the reason is arithmetic: a fixed splice jumps the read by a
+FIXED number of samples, which for a given input period is a FIXED fraction of a
+cycle, so every grain slips the phase by the same amount in the same direction —
+and a constant phase slip per unit time IS a frequency offset. Measured:
+`r_eff = 0.9697·r + 0.0303`, i.e. **+3.1 cents at a semitone and +51.7 cents at an
+octave**, with the exact target sitting 60 dB below the spectral peak. **The
+attribution was isolated, not assumed:** disabling the wrap entirely (a single tap
+running off the end) measured the resampling itself at **exactly 0.000 cents**, so
+the splice carried the whole error.
+
+The fix is **SOLA** — search a window of candidate splice positions for the one
+whose waveform best matches what the outgoing tap is playing, by normalised cross
+correlation, so the handover lands in phase. **It stays polyphonic**: a
+correlation search forms no opinion about pitch either, it only asks "where does
+this waveform repeat", which a chord answers as readily as a note.
+
+**The knob is a rotary because the reference's is.** `positionFor()` quantizes
+slot 0 to nine detents at 0, 12.5, 25 … 100. Detent 0 is DROP 1 — one semitone
+down, E flat standard — so the pedal's DEFAULT is the setting it was asked for.
+There is no bypass detent; bypass is the footswitch, as on every pedal here.
+
+### 70.3 The cost, named up front rather than tuned away
+
+During the crossfade — and only then — two taps read at delays `(1-x)·W` apart,
+which is a comb. It recurs at the GRAIN RATE, `(1 - r)/W` Hz: **1.1 Hz at a
+semitone with the shipped 65 ms window, 10 Hz at an octave.** So the artifact is
+(a) present for only `kCrossfade` of the time and (b) far rarer at small shifts
+than at large — which matters, because a semitone down is what this pedal is
+mostly bought for.
+
+**This is what the algorithm IS, not a defect to be fixed**, and the suite
+measures it per position rather than asserting it inaudible, which this shape
+cannot honestly claim. Non-harmonic energy: **−18.94 dB at −1, −18.35 dB at −5,
+−17.42 dB at −12.** Reported, with a bar, not hidden.
+
+The equal-power (`cos²+sin² = 1`) gain pair is load-bearing and is commented as
+such: a linear pair sums to 1 in AMPLITUDE, which for two decorrelated taps is a
+**3 dB dip in POWER** halfway through every crossfade — an audible periodic
+suckout at the grain rate.
+
+### 70.4 Measured (48 kHz, shipped constants)
+
+| Property | Measured | Bar |
+| --- | --- | --- |
+| Single note, −1…−12 semitones | **0.00 cents** at every one of the nine detents | 5.0 |
+| E5 power chord, −1 / −2 | 0.00 / 0.25 cents (spread 0.00 / 0.25) | 5.0 |
+| E5 + octave, −1 / −2 | 0.00 / 0.25 cents | 5.0 |
+| E major triad, −1 / −2 | 0.50 / **1.25** cents (spread 0.75 / **2.00**) | 5.0 |
+| Pick attack | **−0.00 dB** re dry over its first 20 ms, onset +21.94 ms | — |
+| Non-harmonic energy | −18.94 / −18.35 / −17.42 dB at −1 / −5 / −12 | — |
+| OCTAVE+DRY dry path | 220 Hz component **2205×** the OCTAVE position's | — |
+| `latencySamples()` | **0**, mean algorithmic delay **35.8 ms** | 0 |
+| 1× vs 8× oversampling | **0 / 5120 samples differ** (bit-identical) | 0 |
+| Ragged vs 128-frame blocks | **0.000e+00** | 0 |
+| `reset()` vs a fresh model | **0.000e+00** | 0 |
+| Non-finite after one NaN + reset | **0 / 5120** | 0 |
+
+**`latencySamples()` returns 0 BY DESIGN and the ~36 ms is REPORTED, not
+compensated.** The read tap is a SAWTOOTH — its delay sweeps from `dMin` to
+`dMin + W` and wraps — so there is no single group delay to subtract. Reporting
+the mean would make the host compensate by a number that is right on average and
+wrong at every instant. This is the same call §60 made for the BBD delay, for a
+different reason, and it is asserted.
+
+**It is NOT oversampled, and that was checked rather than assumed.** The signal
+path is an interpolating read plus a crossfade — linear time-varying, with no
+nonlinearity for an oversampler to band-limit. `setOversampling` is accepted and
+ignored (the phaser's and the gate's convention), and the test asserts the render
+is **bit-identical at 1× and 8×**, so a future slice cannot quietly add 72 samples
+of latency to a pedal that gains nothing from it.
+
+### 70.5 The triad, and how a bar was met without buying latency
+
+The triad row is the one that took work. At the first shipped constants it read
+**9.75 / 22.75 cents**, and the cause was structural rather than a tuning miss:
+SOLA aligns to where the waveform REPEATS, and a 4:5:6 major triad only repeats at
+its **composite** period (~48 ms on E2), which the 17.5 ms search span could not
+reach.
+
+**The fix was NOT more latency.** The search span is what is left of the window
+after the crossfade, so shortening `kCrossfade` from 0.25 to **0.10** bought span
+for free: the window stays 65 ms, the algorithmic delay stays ~36 ms, and the
+search reaches far enough to find the composite period. A shorter crossfade also
+means the comb is present for less of the time, so the artifact floor improved in
+the same change.
+
+### 70.6 One target missed, registered as an XFAIL rather than loosened
+
+`drop-triad-spread-at-minus-2`. **The 5-cent perceptual bar is MET everywhere with
+3.75 cents to spare.** What is missed is **this slice's own 2-cent spread target**
+for a major triad at −2 semitones, which measures exactly **2.0000**. It is
+registered rather than widened because the number is a real property of the
+algorithm and a future slice should be able to see it move.
+
+**Two candidate fixes were BUILT AND MEASURED, and neither works** — recorded so
+they are not tried again:
+1. **A wider SOLA span** (55 and 58 ms, i.e. past the composite period): no
+   improvement.
+2. **Sub-sample lag refinement** (parabolic interpolation of the correlation
+   peak): moved the number **2.0280 → 2.0291**, i.e. nothing. *A comment claiming
+   this fixed it to 0.30 cents was written during the slice and was FALSE; the
+   mechanism was reverted and both failed attempts are recorded in the header.*
+
+The honest diagnosis is in the ledger entry: **one SOLA lag cannot align three
+partials at once.** The fix is a frequency-domain shifter (`FFT.h` exists), which
+has no splice and therefore none of this trade — at the cost of transient
+smearing, which this pedal currently does not have (the attack survives at
+−0.00 dB). The plan said to build one only when a measurement demanded it. This
+measurement asks for it; the perceptual bar does not.
+
+`clipper_drop_tests` therefore opens a ledger with exactly one entry.
+
+### 70.7 Two TEST bugs found, both of which had made the pedal look better or
+worse than it is
+
+Both were in the measurement, not the model, and both are worth knowing before
+writing the next spectral bar.
+
+1. **The XFAIL predicate keyed on the wrong thing.** It was written against "three
+   partials present", which an E5-plus-octave stimulus also satisfies — so the
+   ledger entry **wrongly XPASSed** on a stimulus that was never the defect. Keyed
+   on the major third (103.83 Hz) instead, it fails where it should.
+2. **A Hann-windowed DFT was read for amplitudes without correcting its coherent
+   gain.** Hann's coherent gain is 0.5, so every harmonic amplitude came out half
+   its true value and harmonic POWER came out a quarter — which under-counted the
+   harmonic side of the artifact ratio 4× and reported the floor as **−1.35 dB**,
+   a number that would have condemned a working pedal. Replaced by a rectangular
+   Goertzel on an integer number of periods: **−18.94 dB.** (§60 records the
+   mirror-image trap — a RECTANGULAR window's sidelobe read as an alias floor. The
+   rule that covers both: pick the window for the quantity you are measuring, and
+   correct for it.)
+
+### 70.8 Where it sits on the board, and what the assistant says about it
+
+**FIRST in the chain, before the dirt**, and the coaching says so with the reason:
+the shifter wants a clean single-source signal to track, and putting it after the
+dirt means the amp distorts the ORIGINAL pitch and the shift lands on top of that.
+
+The assistant is given the tuning map in player language — DROP 1 = E flat
+standard, DROP 2 = D standard, DROP 3 = C sharp standard, DROP 4 = C standard —
+plus the honest limit, stated plainly rather than sold around: **big open chords
+get glassy the further down you go, and the octave settings are the roughest.**
+That is true of every pedal of this kind, and §64's honesty gate is the precedent
+for saying it in the prompt rather than only in the docs.
+
+### 70.9 Named follow-ups this slice leaves
+
+- **A frequency-domain shifter** (`FFT.h`) — owns the triad XFAIL, and would also
+  let a future harmoniser share this pedal's primitive.
+- **The formant question.** Nothing here preserves formants, so at −7 and below a
+  guitar takes on a slightly "big" character. Correct for a drop pedal (a real one
+  does not either) — named so nobody reads it as a defect.
+- **A `--no-splice` flag on `clipper-render`**, deliberately not added: the
+  isolation that proved error 2 was done with a scratch patch, and a permanent
+  flag belongs to whichever slice next probes the splice.
+- **The Mesa is still absent from `identical_core_test`'s reference driver** —
+  this slice's own case uses the JCM800 for that reason, and §64's standing note
+  about comp/gate/delay/wah/chorus is still open too.

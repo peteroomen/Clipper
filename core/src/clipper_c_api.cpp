@@ -13,6 +13,7 @@
 #include "clipper/dsp/TwinAmp.h"
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/OrangeAmp.h"
+#include "clipper/dsp/DropModel.h"
 #include "clipper/dsp/MesaAmp.h"
 #include "clipper/dsp/ParamGuard.h"
 #include "clipper/dsp/RockerverbAmp.h"
@@ -797,6 +798,73 @@ void vibe_process(void* handle, const float* in_ptr, float* out_ptr,
                   int num_frames) {
     if (!handle) return;
     static_cast<clipper::dsp::VibeModel*>(handle)->process(in_ptr, out_ptr,
+                                                           num_frames);
+}
+
+// --- M13.10: polyphonic drop-tune exports -------------------------------------
+//
+// Additive alongside every other pedal's exports. Two things a caller should
+// know, and both are deliberate rather than oversights:
+//
+//   * `drop_latency_samples` returns 0 even though the shifter's mean read delay
+//     is ~36 ms. The delay is a SAWTOOTH by construction (it sweeps a window and
+//     re-seats), so there is no single group delay to hand a host; reporting a
+//     fixed number would be a lie about a varying quantity, and compensating it
+//     would misalign the dry path at OCT+DRY. Same call, same reason, as the BBD
+//     delay's (docs §60).
+//   * `drop_set_oversampling` is accepted and IGNORED. The signal path is a
+//     delay-line read plus a crossfade multiply — linear, time-varying, no
+//     nonlinearity — and the test suite proves a render at 1x and 8x is
+//     BIT-IDENTICAL rather than taking that on trust. The phaser's arrangement.
+//
+// The AMOUNT knob is quantized to nine detents inside the model, so a host
+// sweeping it lands only on real selector positions. Knob 0.0 is ONE SEMITONE
+// DOWN — the setting the pedal exists for.
+
+EMSCRIPTEN_KEEPALIVE
+void* drop_create(float sample_rate) {
+    auto* m = new clipper::dsp::DropModel();
+    m->prepare(static_cast<double>(sample_rate), 128);
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void drop_destroy(void* handle) {
+    delete static_cast<clipper::dsp::DropModel*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void drop_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
+    static_cast<clipper::dsp::DropModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clear the delay ring and re-seat the shifter's phase, keeping
+// the selected position. See the banner above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void drop_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::DropModel*>(handle)->reset();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void drop_set_oversampling(void* handle, int factor) {
+    if (!handle) return;
+    static_cast<clipper::dsp::DropModel*>(handle)->setOversampling(factor);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int drop_latency_samples(void* handle) {
+    if (!handle) return 0;
+    return static_cast<clipper::dsp::DropModel*>(handle)->latencySamples();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void drop_process(void* handle, const float* in_ptr, float* out_ptr,
+                  int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::DropModel*>(handle)->process(in_ptr, out_ptr,
                                                            num_frames);
 }
 
