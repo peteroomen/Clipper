@@ -48,6 +48,7 @@
 
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/RockerverbAmp.h"
+#include "clipper/dsp/MesaAmp.h"
 #include "clipper/dsp/AmpModel.h"
 #include "clipper/dsp/CabConvolver.h"
 #include "clipper/dsp/CabIR.h"
@@ -81,6 +82,7 @@ constexpr int kAmpJcm800 = 1;        // Params::ampModel value for the JCM head
 constexpr int kAmpTwin = 2;          // Params::ampModel value for the Twin combo
 constexpr int kAmpAc30 = 3;          // Params::ampModel value for the AC30 combo
 constexpr int kAmpRockerverb = 5;    // Params::ampModel value for the Rockerverb
+constexpr int kAmpMesa = 6;          // Params::ampModel value for the Mesa (M10.4)
 
 // The CLEAN 120 parameter set (both pedals on, cab + bright, stereo chorus + spring
 // reverb, 4x OS) — the linear clean-platform path.
@@ -333,6 +335,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     const bool twin = p.ampModel == kAmpTwin;
     const bool ac30 = p.ampModel == kAmpAc30;
     const bool rockerverb = p.ampModel == kAmpRockerverb;
+    const bool mesa = p.ampModel == kAmpMesa;
 
     RatModel rat;
     SdModel sd;
@@ -351,6 +354,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     TwinAmp twinAmp;     // Twin combo
     Ac30Amp ac30Amp;     // AC30 combo
     RockerverbAmp rvAmp; // Rockerverb 100 dirty channel (M10.7)
+    MesaAmp mesaAmp;     // Mesa Dual Rectifier Solo Head (M10.4)
     CabConvolver cabL, cabR;
     OutputLimiter limiter;
 
@@ -426,6 +430,33 @@ void renderReference(const Params& p, const std::vector<float>& in,
         rvAmp.setParameter(RockerverbAmp::PARAM_MID, p.middle);
         rvAmp.setParameter(RockerverbAmp::PARAM_TREBLE, p.treble);
         rvAmp.setParameter(RockerverbAmp::PARAM_REVERB, p.reverb);
+    } else if (mesa) {
+        // Mirror ClipperEngine::applyParamsToModels' Mesa routing exactly: jcmGain
+        // is its GAIN, jcmMaster its MASTER, jcmPresence its PRESENCE, and
+        // bass/middle/treble/reverb the shared fields. NOT volume (slot 0).
+        mesaAmp.setParameter(MesaAmp::PARAM_GAIN, p.jcmGain);
+        mesaAmp.setParameter(MesaAmp::PARAM_MASTER, p.jcmMaster);
+        mesaAmp.setParameter(MesaAmp::PARAM_PRESENCE, p.jcmPresence);
+        mesaAmp.setParameter(MesaAmp::PARAM_BASS, p.bass);
+        mesaAmp.setParameter(MesaAmp::PARAM_MID, p.middle);
+        mesaAmp.setParameter(MesaAmp::PARAM_TREBLE, p.treble);
+        mesaAmp.setParameter(MesaAmp::PARAM_REVERB, p.reverb);
+        // The three switches, quantized the SAME way ClipperEngine::applyMesaSwitches
+        // does. Written out here rather than shared, deliberately: this driver's
+        // whole job is to be an independent reconstruction of the engine's routing,
+        // and calling the engine's own helper would make the comparison circular.
+        {
+            const float m = p.mesaMode < 0.0f ? 0.0f : (p.mesaMode > 1.0f ? 1.0f : p.mesaMode);
+            const int n = static_cast<int>(clipper::dsp::MesaMode::MESA_MODE_COUNT);
+            int idx = static_cast<int>(m * static_cast<float>(n - 1) + 0.5f);
+            if (idx < 0) idx = 0;
+            if (idx > n - 1) idx = n - 1;
+            mesaAmp.setMode(static_cast<clipper::dsp::MesaMode>(idx));
+        }
+        mesaAmp.setRectifier(p.mesaRectifier < 0.5f ? clipper::dsp::MesaRectifier::Silicon
+                                                    : clipper::dsp::MesaRectifier::Valve5U4);
+        mesaAmp.setPowerMode(p.mesaPowerMode < 0.5f ? clipper::dsp::MesaPowerMode::Bold
+                                                    : clipper::dsp::MesaPowerMode::Spongy);
     } else {
         amp.setParameter(AmpModel::PARAM_VOLUME, p.volume);
         amp.setParameter(AmpModel::PARAM_BASS, p.bass);
@@ -461,6 +492,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     ac30Amp.prepare(kFs, kBlock);
     rvAmp.setOversampling(kAc30Oversampling);  // every tube amp here runs 4x
     rvAmp.prepare(kFs, kBlock);
+    mesaAmp.prepare(kFs, kBlock);
     rat.setOversampling(p.oversampling);
     sd.setOversampling(p.oversampling);
     ts.setOversampling(p.oversampling);
@@ -525,6 +557,9 @@ void renderReference(const Params& p, const std::vector<float>& in,
             } else if (rockerverb) {
                 rvAmp.process(cur, l.data(), n);                 // mono head
                 for (int i = 0; i < n; ++i) r[static_cast<size_t>(i)] = l[static_cast<size_t>(i)];  // dual-mono
+            } else if (mesa) {
+                mesaAmp.process(cur, l.data(), n);               // mono head
+                for (int i = 0; i < n; ++i) r[static_cast<size_t>(i)] = l[static_cast<size_t>(i)];  // dual-mono
             } else {
                 amp.processStereo(cur, l.data(), r.data(), n);   // stereo split
             }
@@ -566,6 +601,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
                  (p.ampOn && twin ? twinAmp.latencySamples() : 0) +
                  (p.ampOn && ac30 ? ac30Amp.latencySamples() : 0) +
                  (p.ampOn && rockerverb ? rvAmp.latencySamples() : 0) +
+                 (p.ampOn && mesa ? mesaAmp.latencySamples() : 0) +
                  (p.ampOn && p.cab ? cabL.latencySamples() : 0) +
                  limiter.latencySamples();
 }
@@ -614,6 +650,12 @@ void renderPlugin(const Params& p, const std::vector<float>& in,
     set(vibeMode, p.vibeMode);
     set(dropOn, p.dropOn ? 1.0f : 0.0f);
     set(dropAmount, p.dropAmount);
+    // M10.4: the Mesa's three switches. Pushed explicitly for the same reason as
+    // the opto's and the drop's — a parameter the plugin driver never writes is a
+    // parameter this test cannot prove is plumbed.
+    set(mesaMode, p.mesaMode);
+    set(mesaRectifier, p.mesaRectifier);
+    set(mesaPowerMode, p.mesaPowerMode);
     // The BOARD is state, not a parameter: push it through the processor's chain API
     // (which also publishes the packed snapshot the audio thread reads).
     {
@@ -785,7 +827,7 @@ Params vibeBoardParams() {
 }
 
 // NATIVE PARITY case 10 (M13.10) — a board carrying the "Cellar" drop-tune:
-// Cellar -> RAT -> JCM800. Two things make it worth its runtime. (1) It is the
+// Cellar -> RAT -> Mesa. Two things make it worth its runtime. (1) It is the
 // FIRST case whose pedal has ONE knob and whose knob is QUANTIZED, so a plugin
 // that rounded slot 0 differently from the core would render a different
 // INTERVAL — the loudest possible disagreement — while every other case passed.
@@ -793,10 +835,10 @@ Params vibeBoardParams() {
 // coaching puts it: the shifter's grain splice has to agree across a
 // multi-hundred-millisecond search history and then be amplified by a clipper
 // and five triodes, so any per-block divergence is magnified rather than hidden.
-// The amp is the JCM800 and not the Mesa deliberately: this test's REFERENCE
-// chain has no Mesa case at all (M10.4 wired the engine but not this driver), so
-// naming it here would compare the plugin against a reference that cannot build
-// it. That gap is real and belongs to the Mesa's own follow-up.
+// The amp is the MESA, which §70 could not use: this driver had no Mesa case at
+// all until the §71 slice added one, so naming it then would have compared the
+// plugin against a reference that could not build it. It can now, and this is
+// also the ONLY case that drives the Mesa's three switches end to end.
 Params dropBoardParams() {
     Params p;
     p.inputTrim = 0.5f;
@@ -809,9 +851,13 @@ Params dropBoardParams() {
     p.ratOn = true;   p.ratDist = 0.4f; p.ratFilter = 0.5f; p.ratLevel = 0.6f;
     p.vibeOn = true;  // ON, but NOT on the board — must be inaudible
     p.optoOn = true;  // likewise
-    p.ampModel = kAmpJcm800;
+    p.ampModel = kAmpMesa;
     p.ampOn = true;  p.volume = 0.5f; p.bass = 0.5f; p.middle = 0.5f; p.treble = 0.6f;
-    p.jcmGain = 0.5f;  p.jcmMaster = 0.35f;
+    p.jcmGain = 0.5f;  p.jcmMaster = 0.35f;  p.jcmPresence = 0.6f;
+    // All three Mesa switches AWAY from their defaults, so a plugin that dropped
+    // any one of them diverges: RED VINTAGE (not the default RED MODERN), the 5U4
+    // valve rectifier (not silicon) and SPONGY (not bold).
+    p.mesaMode = 0.75f;  p.mesaRectifier = 1.0f;  p.mesaPowerMode = 1.0f;
     p.bright = false; p.cab = true;
     p.chorusMode = 0;
     return p;
@@ -918,7 +964,7 @@ int main() {
     // M13.5: the Uni-Vibe on the native board.
     ok &= runCase("Board: RAT -> Swirl -> JCM800", vibeBoardParams(), in);
     // M13.10: the drop-tune on the native board, FIRST in the chain.
-    ok &= runCase("Board: Cellar -> RAT -> JCM800", dropBoardParams(), in);
+    ok &= runCase("Board: Cellar -> RAT -> Mesa (all three Recto switches off-default)", dropBoardParams(), in);
 
     if (ok) {
         std::printf(

@@ -134,6 +134,16 @@ inline constexpr const char* jcmMaster   = "jcmMaster";
 inline constexpr const char* jcmPresence = "jcmPresence";
 // M10.3 Orange OR120 F.A.C. — a 0..1 knob the core snaps to six detents.
 inline constexpr const char* orangeFac   = "orangeFac";
+// M10.4 Mesa Dual Rectifier (docs §69). THREE NEW IDS rather than reused amp
+// slots, for the reason §57 gives for the OR120's F.A.C.: no other voice has a
+// five-position channel/mode selector or a rectifier select, so reusing a slot
+// would make a stale saved rig silently mean something else. All three are plain
+// 0..1 knobs — MODE is FIVE positions and the core quantizes it, which no
+// two-or-three-state switch widget could express, and the web ships them as
+// knobs for the same reason.
+inline constexpr const char* mesaMode      = "mesaMode";
+inline constexpr const char* mesaRectifier = "mesaRectifier";
+inline constexpr const char* mesaPowerMode = "mesaPowerMode";
 inline constexpr const char* oversampling = "oversampling";
 }  // namespace pid
 
