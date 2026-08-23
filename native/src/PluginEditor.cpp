@@ -179,8 +179,12 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     knob(modSpeed_, modSpeedAttach_, pid::chorusSpeed, "Speed", skin::accent(skin::AccentId::Clean));
     knob(modDepth_, modDepthAttach_, pid::chorusDepth, "Depth", skin::accent(skin::AccentId::Clean));
     knob(fac_, facAttach_, pid::orangeFac, "F.A.C.", skin::accent(skin::AccentId::Orange));
+    knob(mesaMode_, mesaModeAttach_, pid::mesaMode, "Mode", skin::accent(skin::AccentId::Mesa));
+    knob(mesaRect_, mesaRectAttach_, pid::mesaRectifier, "Rect", skin::accent(skin::AccentId::Mesa));
+    knob(mesaPower_, mesaPowerAttach_, pid::mesaPowerMode, "Power", skin::accent(skin::AccentId::Mesa));
     for (NeuKnob* k : {&volume_, &bass_, &middle_, &treble_, &presence_, &master_, &gain_,
-                       &reverb_, &modSpeed_, &modDepth_, &fac_})
+                       &reverb_, &modSpeed_, &modDepth_, &fac_,
+                       &mesaMode_, &mesaRect_, &mesaPower_})
         k->setScheme(skin::benchScheme());
 
     // Levers + power + chorus mode.
@@ -625,11 +629,13 @@ void ClipperAudioProcessorEditor::updateAutoScroll() {
 
 void ClipperAudioProcessorEditor::updateAmpFace() {
     auto* mp = proc_.apvts.getParameter(pid::ampModel);
-    ampModel_ = juce::jlimit(0, 5, (int)(mp->convertFrom0to1(mp->getValue()) + 0.5f));
+    ampModel_ = juce::jlimit(0, clipper::native::AMP_MODEL_COUNT - 1,
+                             (int)(mp->convertFrom0to1(mp->getValue()) + 0.5f));
 
     // Hide the whole superset, then re-show per voice.
     for (NeuKnob* k : {&volume_, &bass_, &middle_, &treble_, &presence_, &master_, &gain_,
-                       &reverb_, &modSpeed_, &modDepth_, &fac_})
+                       &reverb_, &modSpeed_, &modDepth_, &fac_,
+                       &mesaMode_, &mesaRect_, &mesaPower_})
         k->setVisible(false);
     ampPrimaryKnobs_.clear();
     ampModKnobs_.clear();
@@ -723,6 +729,39 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
             show(master_, "Volume", ampAccent_);  // pid::master — printed VOLUME here
             show(reverb_, "Reverb", ampAccent_);
             ampPrimaryKnobs_ = {&gain_, &bass_, &middle_, &treble_, &master_, &reverb_};
+            break;
+        case clipper::native::AMP_MESA:
+            // M10.4 the Dual Rectifier (docs §69) — crimson, and the busiest panel
+            // on the board at NINE knobs. GAIN rides pid::jcmGain and the MASTER
+            // pid::jcmMaster, the house reuse; the three switches take their own
+            // ids because no other voice has them.
+            //
+            // NO REVERB and NO BRIGHT, and both are circuit facts rather than
+            // omissions: a reverb tank makes it a Trem-O-Verb, which is a
+            // different amp, and the Recto has no bright switch.
+            //
+            // PRESENCE is shown although it does NOTHING in the two MODERN modes —
+            // sheet mbdr7 opens the power amp's feedback loop there, measured at
+            // exactly zero loop depth (§69), and presence works through that loop.
+            // Hiding it per mode would be worse: the knob is real, the amp is what
+            // makes it inert, and the assistant coaches that rather than apologising
+            // for it.
+            ampWordmark_ = "Dual Rectifier";
+            ampEyebrow_ = juce::String::fromUTF8("Head Nº7 · Rectifier");
+            ampAccentId_ = skin::AccentId::Mesa;
+            ampAccent_ = skin::accent(ampAccentId_);
+            showBright_ = false;
+            show(gain_, "Gain", ampAccent_);
+            show(bass_, "Bass", ampAccent_);
+            show(middle_, "Mid", ampAccent_);
+            show(treble_, "Treble", ampAccent_);
+            show(master_, "Master", ampAccent_);
+            show(presence_, "Presence", ampAccent_);
+            show(mesaMode_, "Mode", ampAccent_);
+            show(mesaRect_, "Rect", ampAccent_);
+            show(mesaPower_, "Power", ampAccent_);
+            ampPrimaryKnobs_ = {&gain_, &bass_, &middle_, &treble_, &master_, &presence_,
+                                &mesaMode_, &mesaRect_, &mesaPower_};
             break;
         case 3:  // AC30 "Thirty" — copper. Vol Bass Treble Cut Reverb
             ampWordmark_ = "Thirty";

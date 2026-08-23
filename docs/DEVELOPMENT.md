@@ -15731,3 +15731,135 @@ for saying it in the prompt rather than only in the docs.
 - **The Mesa is still absent from `identical_core_test`'s reference driver** —
   this slice's own case uses the JCM800 for that reason, and §64's standing note
   about comp/gate/delay/wah/chorus is still open too.
+
+## 71. The Mesa was unreachable in the plugin — a wiring defect M10.4 shipped, and the structural fix
+
+The owner, on a build one day old: *"I can see cellar, the drop pedal. I can't see
+my mesa."*
+
+He was right, and the diagnosis is worth more than the fix. **The Mesa's DSP was
+never broken.** §69 wired `MesaAmp` into `ClipperEngine` correctly — the head is
+constructed, kept current, driven by `process()`, and `Params` carries all three
+switches. The slice then stopped at the engine boundary and never touched the
+plugin's parameter layer or its editor.
+
+### 71.1 Three gaps, and why every suite stayed green
+
+1. **`kAmpModelChoices` had six entries and the Mesa is the seventh.** The
+   `ampModel` APVTS Choice parameter therefore could not *express* the value 6.
+   Not "it was hard to find" — no host, no automation lane and no UI could ever
+   select it.
+2. **No APVTS parameters existed for MODE / RECTIFIER / POWER**, so
+   `updateParamsFromApvts` never wrote them and they sat at the `Params` defaults
+   permanently. Even with (1) fixed, MODE would have been frozen on RED MODERN.
+3. **`updateAmpFace()` clamped `jlimit(0, 5, …)` with no `case 6`**, so the panel
+   would have fallen through to `default:` — silently relabelling itself Clean 120
+   *and assigning `ampModel_ = 0`*.
+
+**Why the whole test suite passed anyway, which is the real lesson.**
+`identical_core_test` compares the plugin against a hand-built reference chain for
+each voice — but it can only test a voice it can *select*, and no parameter could
+name this one. A test that enumerates what the system offers cannot notice
+something the system never offers. **The bug lived in the gap between "every voice
+I can name renders correctly" and "every voice that exists can be named."**
+
+This is the same shape as §61.10's `kFaces` ordering bug and §67.10's missing
+`case PEDAL_OPTO` — a keyed table right and a switch incomplete — appearing on the
+amp side for the first time.
+
+### 71.2 The structural fix: `AMP_MODEL_COUNT`
+
+The voice ids were a **comment** in `ClipperEngine.h`, so nothing could compare the
+engine's voice count against the plugin's. They are now an `enum AmpModel` with
+`AMP_MODEL_COUNT`, and three things read it:
+
+- a `jassert` in `createParameterLayout()`,
+- `updateAmpFace()`'s clamp, which was a hardcoded `5`,
+- and the new reachability test's headline bar.
+
+So a voice added to the engine and not to the plugin is now a **failing test**,
+not an invisible amp. That is the part worth keeping; the Mesa itself is four
+lines of it.
+
+### 71.3 The measurement: reachability, not tone
+
+The core is untouched, so **no golden can move and no WASM rebuild is required** —
+this is a plugin-layer defect only. A render comparison could not have been the
+bar either, because the pre-fix editor cannot *produce* voice 6 to compare against.
+
+`native/tests/amp_voice_test.cpp` (new ctest entry `clipper_amp_voice`) asserts:
+
+| Bar | Measured |
+| --- | --- |
+| The Choice parameter offers exactly `AMP_MODEL_COUNT` voices | engine 7, parameter 7 |
+| "Dual Rectifier" is specifically among them | present |
+| Selecting the Mesa renders the Mesa, not the fall-through | tail rms **0.1637** vs Clean 120's 0.0414, max\|diff\| **0.6760** |
+| MODE reaches the engine | the two modes differ |
+| PRESENCE is inert in a MODERN mode (§69's open loop) | **0.0000 dB** |
+| PRESENCE has more authority with the loop closed | **0.3109 dB** vs 0.0000 |
+
+**The MODE bar is deliberately structural rather than a level check.** §69 measured
+that sheet `mbdr7` opens the power amp's feedback loop in the two MODERN modes, so
+PRESENCE — which works *through* that loop — must be dead there and live elsewhere.
+A wrong mode table can pass "the output changed"; it cannot pass a bar whose two
+halves disagree in opposite directions.
+
+### 71.4 Perturbation, and one bar that was NOT sufficient on its own
+
+Reverting `kAmpModelChoices` to its six-entry pre-fix state takes **4 of 6 bars
+red**, restore green.
+
+**One honest finding from that run, reported because it changes how the test should
+be read:** the bar *"the Mesa render differs from the Clean 120"* stayed **GREEN**
+under the perturbation. With six choices the parameter clamps a request for index 6
+down to **5 — the Rockerverb** — which is a real, different, loud amp, so a
+"differs from Clean 120" check sails through while the user still cannot get a
+Mesa. That bar catches a `default:` fall-through and nothing else. **The bars that
+actually caught the shipped defect are the count bar and the MODE bar**, and the
+render bar is kept only because it covers the *other* failure mode.
+
+### 71.5 §70's named gap, closed
+
+§70 recorded that "the Mesa is still absent from `identical_core_test`'s REFERENCE
+driver", which is why the drop pedal's board case had to name the JCM800. The
+driver now builds a `MesaAmp`, and the drop case runs **`Cellar -> RAT -> Mesa`**
+with **all three Recto switches off-default** (RED VINTAGE, 5U4 valve rectifier,
+SPONGY) — so it is also the only case driving those switches end to end.
+**max |plugin − ref| = 0.000e+00.**
+
+The switch quantization is written out **again** in the driver rather than calling
+`ClipperEngine::applyMesaSwitches`. That is deliberate: this driver's whole job is
+to be an independent reconstruction of the engine's routing, and sharing the
+engine's helper would make the comparison circular.
+
+### 71.6 The panel
+
+Nine knobs — GAIN, BASS, MID, TREBLE, MASTER, PRESENCE, MODE, RECT, POWER — the
+busiest on the board, crimson (`--accent-mesa`, verbatim from `tokens.css` in both
+themes). **No reverb and no bright, and both are circuit facts:** a reverb tank
+makes it a Trem-O-Verb, a different amp, and a Recto has no bright switch.
+
+All three switches are **knobs, not switch widgets**, mirroring the web. MODE has
+five positions and `ModeSwitch` does two and three; the core already quantizes the
+0..1 value, so a knob is the honest widget rather than a lie about the control.
+
+**PRESENCE is shown although it does nothing in the two MODERN modes.** Hiding it
+per mode was considered and rejected: the knob is real, the *amp* is what makes it
+inert, and the assistant already coaches that (§69) rather than apologising for it.
+
+### 71.7 CI
+
+`.github/workflows/ci.yml`'s native job builds and filters an explicit list, and
+this file's own comment records `clipper_cab_state` landing red in PR #35 for
+exactly this reason — added to the filter and not the build list. `clipper_amp_voice`
+was added to **both** in the same change.
+
+### 71.8 Named follow-ups
+
+- **The editor still has no automated behaviour test.** CI compiles
+  `PluginEditor.cpp` and nothing exercises it, so `updateAmpFace()`'s `case 6` is
+  covered by *review* rather than by a test. The reachability test proves the
+  parameter and the engine agree, which is what made the amp invisible — but a
+  panel that drew the wrong knobs would still ship green.
+- The Mesa's own cab IR (it reuses `brit412`), the effects loop and the EL34 bias
+  option remain §69's open items.

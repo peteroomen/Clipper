@@ -242,7 +242,7 @@ jobs:
       # exactly how clipper_cab_state landed red: PR #35 added it to the filter and
       # not to this list.
       - name: Build console tests
-        run: cmake --build native/build -j --target clipper_identical_test clipper_chain_edit_test clipper_cab_state_test
+        run: cmake --build native/build -j --target clipper_identical_test clipper_chain_edit_test clipper_cab_state_test clipper_amp_voice_test
 
       # The console tests above link the ENGINE, not the EDITOR, so until this step
       # existed nothing in CI ever compiled PluginEditor.cpp, PedalCard.cpp,
@@ -261,4 +261,4 @@ jobs:
       # hid it. Filter to the two tests this job exists to run; the core suite has
       # its own job.
       - name: Run identical-core test
-        run: ctest --test-dir native/build -R 'clipper_identical_core|clipper_chain_edit|clipper_cab_state' --output-on-failure
+        run: ctest --test-dir native/build -R 'clipper_identical_core|clipper_chain_edit|clipper_cab_state|clipper_amp_voice' --output-on-failure
