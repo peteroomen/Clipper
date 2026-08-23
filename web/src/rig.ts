@@ -11,7 +11,7 @@
 // migrates an old single-`pedal` rig (M4..M6.3) into a one-element chain, so old
 // saved rigs and preset JSON keep loading.
 
-import { OVERSAMPLING_FACTORS, INPUT_TRIM_UNITY_KNOB } from './params';
+import { OVERSAMPLING_FACTORS, INPUT_TRIM_UNITY_KNOB, EQ_BAND_PARAMS } from './params';
 
 export type SourceKind = 'test' | 'live';
 // M7 adds 'tuner' (chromatic needle tuner: no audio DSP, engaged = mutes the
@@ -144,7 +144,24 @@ export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
   'mesa',
 ];
 
-export type ParamName = 'distortion' | 'filter' | 'level';
+export type EqBandParamName =
+  | 'band31'
+  | 'band63'
+  | 'band125'
+  | 'band250'
+  | 'band500'
+  | 'band1k'
+  | 'band2k'
+  | 'band4k'
+  | 'band8k'
+  | 'band16k';
+// The three slots EVERY pedal has. Non-optional on PedalParams, so anything
+// addressing only these (the knob row on a pedal face) reads a plain number.
+export type CoreParamName = 'distortion' | 'filter' | 'level';
+// Every addressable pedal param: the three shared slots plus the EQ's ten band
+// sliders (M13.6). A band is optional on PedalParams, so a reader that can see
+// one has to say what it does when the pedal does not carry it.
+export type ParamName = CoreParamName | EqBandParamName;
 export type AmpParamName =
   | 'volume'
   | 'bass'
@@ -170,6 +187,30 @@ export interface PedalParams {
   distortion: number; // 0..1 knob position
   filter: number; // 0..1 knob position
   level: number; // 0..1 knob position
+  // M13.6: the ten graphic-EQ band sliders. OPTIONAL, and absent on every pedal
+  // shipped before the EQ — absence IS the statement "this is a three-slot
+  // pedal", which is what keeps the widening free for everything already on the
+  // board.
+  //
+  // This mirrors AmpParams' own established shape rather than inventing a second
+  // one: that interface has carried per-voice optional fields since M9.4 (the
+  // JCM's gain/presence/master, the Orange's fac, the Mesa's switches) with the
+  // same contract — a voice that does not own a field ignores it. One shape for
+  // the whole board beats a discriminated union the serializer, the worklet, the
+  // assistant and the native snapshot would each have to re-narrow.
+  //
+  // 0..1 slider positions, 0.5 == flat. The EQ's other two controls are ordinary
+  // slot reuse and are NOT here: GAIN is `distortion` and VOLUME is `level`.
+  band31?: number;
+  band63?: number;
+  band125?: number;
+  band250?: number;
+  band500?: number;
+  band1k?: number;
+  band2k?: number;
+  band4k?: number;
+  band8k?: number;
+  band16k?: number;
 }
 
 // A pedal INSTANCE in the chain (M6.4). `id` is a stable, unique handle used by
@@ -551,15 +592,27 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
     : p.type === 'vibe' ? 'vibe'
     : p.type === 'drop' ? 'drop'
     : 'rat';
+  const params: PedalParams = {
+    distortion: clamp01(pr.distortion, dp.params.distortion),
+    filter: clamp01(pr.filter, dp.params.filter),
+    level: clamp01(pr.level, dp.params.level),
+  };
+  // M13.6: carry the optional extra slots. Deliberately driven by what the INPUT
+  // and the type's DEFAULTS actually have rather than by a per-type table: a
+  // three-slot pedal has neither, so it takes this branch zero times and its
+  // serialized shape is byte-for-byte what it was before the EQ existed. That is
+  // what makes the widening free for every pedal already on the board, and it is
+  // the property the Phase A bit-identity check measures.
+  for (const name of EQ_BAND_PARAMS) {
+    const fallback = dp.params[name];
+    if (fallback === undefined && pr[name] === undefined) continue;
+    params[name] = clamp01(pr[name], fallback ?? 0.5);
+  }
   return {
     id,
     type,
     engaged: typeof p.engaged === 'boolean' ? p.engaged : dp.engaged,
-    params: {
-      distortion: clamp01(pr.distortion, dp.params.distortion),
-      filter: clamp01(pr.filter, dp.params.filter),
-      level: clamp01(pr.level, dp.params.level),
-    },
+    params,
   };
 }
 

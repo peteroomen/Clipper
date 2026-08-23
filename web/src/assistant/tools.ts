@@ -137,6 +137,20 @@ export const TOOLS = [
             'presence',
             'master',
             'fac',
+            // M13.6 ten-band EQ sliders. Named by their nominal ISO centre so
+            // the assistant addresses a band the way the faceplate prints it.
+            // The EQ's other two controls need no new names: its GAIN is the
+            // shared 'gain'/'dist' slot and its VOLUME the shared 'level' slot.
+            'band31',
+            'band63',
+            'band125',
+            'band250',
+            'band500',
+            'band1k',
+            'band2k',
+            'band4k',
+            'band8k',
+            'band16k',
             'trim',
           ],
         },
@@ -473,6 +487,19 @@ const PEDAL_PARAM: Record<string, string> = {
   tone: 'filter', // SD-1/Muff Tone shares the filter slot (id 1)
   level: 'level',
   volume: 'level', // Muff VOLUME shares the level slot (id 2)
+  // M13.6: the ten-band EQ's band sliders are the first pedal params that are
+  // NOT one of the three shared slots — they are their own ids (3..12). 1:1,
+  // because a band is named by its frequency and has no synonym worth aliasing.
+  band31: 'band31',
+  band63: 'band63',
+  band125: 'band125',
+  band250: 'band250',
+  band500: 'band500',
+  band1k: 'band1k',
+  band2k: 'band2k',
+  band4k: 'band4k',
+  band8k: 'band8k',
+  band16k: 'band16k',
 };
 const AMP_PARAM: Record<string, string> = {
   volume: 'volume',
@@ -515,6 +542,17 @@ const PARAM_LABEL: Record<string, string> = {
   presence: 'Presence',
   master: 'Master',
   fac: 'F.A.C.',
+  // M13.6 ten-band EQ sliders — labelled as the faceplate prints them.
+  band31: '31 Hz',
+  band63: '63 Hz',
+  band125: '125 Hz',
+  band250: '250 Hz',
+  band500: '500 Hz',
+  band1k: '1 kHz',
+  band2k: '2 kHz',
+  band4k: '4 kHz',
+  band8k: '8 kHz',
+  band16k: '16 kHz',
   trim: 'Trim',
 };
 

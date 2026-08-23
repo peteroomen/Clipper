@@ -4,6 +4,24 @@ export const PARAM_DISTORTION = 0;
 export const PARAM_FILTER = 1;
 export const PARAM_LEVEL = 2;
 
+// M13.6: the first pedal whose control surface is LARGER THAN THREE SLOTS.
+//
+// Every pedal before the ten-band EQ fitted the three shared slots, so the whole
+// path — this map, `PedalParams`, `toChainPayload`, the worklet's create/refresh,
+// the assistant's allowlist — was written as three literal lines. A ten-band
+// graphic EQ is twelve controls, and the C ABI was never the constraint:
+// `*_set_param(handle, int id, float)` has always taken any id.
+//
+// The widening is deliberately SMALL, because two of the twelve are ordinary
+// slot reuse in the house style (the phaser takes slot 0 as SPEED, the wah takes
+// it as POSITION, the delay as DELAY): the EQ's **GAIN rides slot 0** and its
+// **VOLUME rides slot 2**, which is literally what that slot means. Slot 1 is
+// carried and unused, exactly as the compressor and the gate carry it. So only
+// the TEN BANDS need new ids, and they are 3..12 — purely additive, above every
+// id any existing pedal speaks.
+export const PARAM_EQ_BAND_BASE = 3;
+export const PARAM_EQ_BAND_COUNT = 10;
+
 // Amp parameter ids — must mirror clipper::dsp::AmpModel::ParamId in
 // core/include/clipper/dsp/AmpModel.h, plus the chain-level cab toggle
 // (AMP_PARAM_CAB == PARAM_COUNT == 5, handled by the C ABI wrapper).
@@ -98,11 +116,39 @@ export const CHORUS_VIBRATO = 2;
 
 // Map a rig pedal param name to its worklet/core id. Keeps the RigState shape
 // (named params) decoupled from the numeric ABI the worklet speaks.
+//
+// M13.6 appends the ten EQ band ids (3..12). A name absent from this map is not
+// addressable — `pedalParamId` returns undefined and the caller drops the write,
+// which is what keeps the numeric ABI closed to anything the rig cannot name.
 export const PARAM_ID = {
   distortion: PARAM_DISTORTION,
   filter: PARAM_FILTER,
   level: PARAM_LEVEL,
+  band31: PARAM_EQ_BAND_BASE + 0,
+  band63: PARAM_EQ_BAND_BASE + 1,
+  band125: PARAM_EQ_BAND_BASE + 2,
+  band250: PARAM_EQ_BAND_BASE + 3,
+  band500: PARAM_EQ_BAND_BASE + 4,
+  band1k: PARAM_EQ_BAND_BASE + 5,
+  band2k: PARAM_EQ_BAND_BASE + 6,
+  band4k: PARAM_EQ_BAND_BASE + 7,
+  band8k: PARAM_EQ_BAND_BASE + 8,
+  band16k: PARAM_EQ_BAND_BASE + 9,
 } as const;
+
+// The ten band param names, IN ABI ORDER (index i is id PARAM_EQ_BAND_BASE + i).
+// One ordered list, so the rig shape, the worklet dispatch, the face and the
+// assistant's allowlist can never disagree about which slider is which band.
+export const EQ_BAND_PARAMS = [
+  'band31', 'band63', 'band125', 'band250', 'band500',
+  'band1k', 'band2k', 'band4k', 'band8k', 'band16k',
+] as const;
+
+// The nominal ISO centre of each band, in Hz, in the same order. Display and
+// coaching only — the CORE owns the real centres, which come from the
+// transcribed gyrator design equation and land a few percent off nominal
+// exactly as real component values do (docs §71).
+export const EQ_BAND_HZ = [31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000] as const;
 
 // Map a rig amp param name to its worklet/core id.
 export const AMP_PARAM_ID = {

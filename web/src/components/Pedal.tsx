@@ -29,7 +29,13 @@
 
 import { Knob } from './Knob';
 import { thunk } from '../ui-sound';
-import { PEDAL_KNOB_DEFAULTS, type PedalState, type ParamName, type PedalType } from '../rig';
+import {
+  PEDAL_KNOB_DEFAULTS,
+  type PedalState,
+  type ParamName,
+  type CoreParamName,
+  type PedalType,
+} from '../rig';
 
 export interface PedalProps {
   pedal: PedalState;
@@ -43,7 +49,12 @@ export interface PedalProps {
 interface KnobSpec {
   name: string;
   aria: string;
-  param: ParamName;
+  // A KNOB always addresses one of the three shared slots — that is what a knob
+  // row on this board is. M13.6's EQ bands are NOT reachable from here: they are
+  // optional on PedalParams and are drawn by the slider bank, which reads them
+  // with its own accessor. Typing this as the narrow `CoreParamName` is what
+  // keeps `params[k.param]` a plain number instead of `number | undefined`.
+  param: CoreParamName;
   testId: string;
 }
 type FaceLayout = 'stack' | 'compact' | 'slim' | 'single' | 'wide' | 'plate' | 'rocker' | 'bank';
