@@ -28,6 +28,8 @@
 // parent owns; nothing is stored here.
 
 import { Knob } from './Knob';
+import { RotarySelector, SegmentSwitch, type SelectorPosition } from './Selector';
+import { DROP_POSITIONS, OPTO_MODES, VIBE_MODES, CE1_MODES } from '../params';
 import { thunk } from '../ui-sound';
 import { PEDAL_KNOB_DEFAULTS, type PedalState, type ParamName, type PedalType } from '../rig';
 
@@ -45,6 +47,15 @@ interface KnobSpec {
   aria: string;
   param: ParamName;
   testId: string;
+  // A DISCRETE control's detent table. Present => the slot is not a pot, and
+  // Pedal renders a switch (2..3 states) or a detented rotary (4+) instead of a
+  // Knob. Absent => a continuous knob, which is most of the board.
+  //
+  // These slots were ALL drawn as 0-100 knobs until 2026-08-25, although the
+  // models quantize them and the comments below already said "genuinely
+  // DISCRETE" — so the readout named nothing and nothing stopped the UI emitting
+  // a value between two clicks. See components/Selector.tsx.
+  positions?: readonly SelectorPosition[];
 }
 type FaceLayout = 'stack' | 'compact' | 'slim' | 'single' | 'wide' | 'plate' | 'rocker' | 'bank';
 interface PedalFace {
@@ -192,7 +203,13 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       // Slot 2 = GAIN, the make-up level, which moves the output 32 dB and the
       // gain reduction 0.0000 dB.
       { name: 'Peak', aria: 'Peak reduction', param: 'distortion', testId: 'knob-peak' },
-      { name: 'Mode', aria: 'Mode (compress / limit)', param: 'filter', testId: 'knob-mode' },
+      {
+        name: 'Mode',
+        aria: 'Mode (compress / limit)',
+        param: 'filter',
+        testId: 'switch-mode',
+        positions: OPTO_MODES,
+      },
       { name: 'Gain', aria: 'Gain', param: 'level', testId: 'knob-gain' },
     ],
   },
@@ -217,7 +234,13 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       // equal-weight mixer), >= 0.5 VIBRATO (the wet phase line alone).
       { name: 'Speed', aria: 'Speed', param: 'distortion', testId: 'knob-speed' },
       { name: 'Intensity', aria: 'Intensity', param: 'filter', testId: 'knob-intensity' },
-      { name: 'Mode', aria: 'Mode (chorus / vibrato)', param: 'level', testId: 'knob-mode' },
+      {
+        name: 'Mode',
+        aria: 'Mode (chorus / vibrato)',
+        param: 'level',
+        testId: 'switch-mode',
+        positions: VIBE_MODES,
+      },
     ],
   },
   // M13.6a "Curfew": the lineup's first UTILITY — it makes no sound of its own,
@@ -307,7 +330,13 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       // keep them independent so no knob is dead in either mode (docs §62.6).
       { name: 'Rate', aria: 'Rate', param: 'distortion', testId: 'knob-rate' },
       { name: 'Depth', aria: 'Depth', param: 'filter', testId: 'knob-depth' },
-      { name: 'Mode', aria: 'Mode (chorus / vibrato)', param: 'level', testId: 'knob-mode' },
+      {
+        name: 'Mode',
+        aria: 'Mode (chorus / vibrato)',
+        param: 'level',
+        testId: 'switch-mode',
+        positions: CE1_MODES,
+      },
     ],
   },
   // M13.10 "Cellar": the drop-tune, and its face has ONE knob for the same
@@ -327,7 +356,13 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       // the core quantizes slot 0 to DROP 1..7 semitones, OCTAVE, OCTAVE+DRY
       // (docs §70.2). Slots 1/2 are carried and unused. Detent 0 is DROP 1 —
       // one semitone down, E flat standard.
-      { name: 'Amount', aria: 'Drop amount', param: 'distortion', testId: 'knob-amount' },
+      {
+        name: 'Drop',
+        aria: 'Drop amount in semitones',
+        param: 'distortion',
+        testId: 'knob-amount',
+        positions: DROP_POSITIONS,
+      },
     ],
   },
   phaser: {
@@ -350,19 +385,49 @@ export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
   const face: PedalFace = (FACES as Partial<Record<PedalType, PedalFace>>)[type] ?? FACES.rat;
   const defaults = PEDAL_KNOB_DEFAULTS[type] ?? PEDAL_KNOB_DEFAULTS.rat;
 
+  // A slot carrying a detent table is NOT a pot: two or three states get the
+  // carved segmented switch, four or more get a detented rotary that reads its
+  // position by name. Everything else stays a knob.
   const knobs = (
     <div className="knob-row">
-      {face.knobs.map((k) => (
-        <Knob
-          key={k.testId}
-          name={k.name}
-          ariaLabel={k.aria}
-          value={params[k.param]}
-          defaultValue={defaults[k.param]}
-          onChange={(v) => onParam(k.param, v)}
-          testId={k.testId}
-        />
-      ))}
+      {face.knobs.map((k) => {
+        if (k.positions && k.positions.length <= 3)
+          return (
+            <SegmentSwitch
+              key={k.testId}
+              name={k.name}
+              ariaLabel={k.aria}
+              positions={k.positions}
+              value={params[k.param]}
+              onChange={(v) => onParam(k.param, v)}
+              testId={k.testId}
+            />
+          );
+        if (k.positions)
+          return (
+            <RotarySelector
+              key={k.testId}
+              name={k.name}
+              ariaLabel={k.aria}
+              positions={k.positions}
+              value={params[k.param]}
+              defaultValue={defaults[k.param]}
+              onChange={(v) => onParam(k.param, v)}
+              testId={k.testId}
+            />
+          );
+        return (
+          <Knob
+            key={k.testId}
+            name={k.name}
+            ariaLabel={k.aria}
+            value={params[k.param]}
+            defaultValue={defaults[k.param]}
+            onChange={(v) => onParam(k.param, v)}
+            testId={k.testId}
+          />
+        );
+      })}
     </div>
   );
 

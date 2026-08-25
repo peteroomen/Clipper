@@ -216,10 +216,16 @@ int main(int argc, char** argv) {
         const char* file;
         const char* label;
     };
+    // EVERY voice, not the first four. This list was stale in exactly the way the
+    // editor's own selector was — three voices existed and were never photographed,
+    // so no visual pass ever looked at the Dual Rectifier's panel.
     const Voice voices[] = {{0, "clipper_native_clean120.png", "Clean 120"},
                             {1, "clipper_native_eight_hundred.png", "Eight Hundred"},
                             {2, "clipper_native_twin.png", "Twin Sixty-Five"},
-                            {3, "clipper_native_thirty.png", "Thirty"}};
+                            {3, "clipper_native_thirty.png", "Thirty"},
+                            {4, "clipper_native_overdrive.png", "Overdrive 120"},
+                            {5, "clipper_native_rockerverb.png", "Rocker Verb"},
+                            {6, "clipper_native_mesa.png", "Dual Rectifier"}};
 
     proc.setChainOrder({PEDAL_RAT, PEDAL_SD});
     editor->setSize(1360, 640);
@@ -287,6 +293,26 @@ int main(int argc, char** argv) {
                       .toRawUTF8());
         }
         editor->setThemeMode(clipper::native::skin::ThemeMode::Light, /*persist=*/false);
+    }
+
+    // ---- 4b. the DISCRETE-CONTROL pedals (2026-08-25) ------------------------
+    // The four pedal slots the models QUANTIZE: the Cellar's nine-position drop
+    // selector and the three two-state MODE switches. They were all drawn as 0-100
+    // dials until this pass, so the readout named nothing — "the cellar pedal knob
+    // is a pain, it's a drop pedal give me semitones not a 0-100 knob". Nothing had
+    // ever photographed these cards, which is part of why it survived.
+    {
+        proc.setChainOrder({PEDAL_DROP, PEDAL_OPTO});
+        editor->setSize(1360, 640);
+        setParam(proc.apvts, pid::ampModel, 6.0f);
+        shoot(*editor, outDir, "native_discrete_controls.png",
+              "Cellar drop selector + the three MODE switches - named positions");
+        // The far end of the drop selector: OCT+DRY, the position that sums the dry
+        // signal back in and reads as "the pitch jumped back up" if it is unlabelled.
+        setParam(proc.apvts, pid::dropAmount, 1.0f);
+        shoot(*editor, outDir, "native_discrete_drop_octdry.png",
+              "Cellar at the last detent - OCT+DRY, named rather than \"100\"");
+        setParam(proc.apvts, pid::dropAmount, 0.0f);
     }
 
     // ---- 5. the CAB / IR PICKER, in BOTH themes (2026-07-31) -----------------

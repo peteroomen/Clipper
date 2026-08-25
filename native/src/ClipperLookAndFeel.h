@@ -276,6 +276,21 @@ public:
     void setName(const juce::String&);
     void setAccent(juce::Colour);
     void setDimmed(bool);  // bypassed → arc + readout dim (.pedal:not(.on))
+    // Turn this dial into a DETENTED SELECTOR of N named positions: the readout
+    // becomes the position's NAME and the slider's interval is set so it can only
+    // land on a detent centre. Pass an empty array to go back to a 0-100 pot.
+    //
+    // Several core parameters are quantized — the drop-tune's nine positions, the
+    // Mesa's five MODE states, the OR120's six-position F.A.C. — and every one of
+    // them used to read as a percentage that named nothing and could sit visually
+    // between two clicks. The core snapped the value anyway, so this is about
+    // telling the player what the control actually did.
+    //
+    // The interval works THROUGH a SliderAttachment (JUCE snaps in the slider's
+    // own value space), so host automation of the raw 0..1 lane lands on detents
+    // too rather than somewhere between them.
+    void setPositions(juce::StringArray labels);
+    int positionCount() const { return positions_.size(); }
     // Which token context the dial paints in (web parity: amp knobs resolve the
     // LIGHT tokens, pedal knobs the pinned-dark ones). Default dark.
     void setScheme(const skin::Scheme&);
@@ -290,6 +305,7 @@ private:
     bool dimmed_{false};
     const skin::Scheme* scheme_{nullptr};  // set in ctor (darkIsland)
     double lastTickValue_{0.0};            // ui-sound detent tracking
+    juce::StringArray positions_;          // empty => continuous 0-100 pot
 };
 
 // The FOOTSWITCH — the pedal's morphology cue, translated from the web recipes in
@@ -466,6 +482,11 @@ public:
         repaint();
     }
     void setAccent(juce::Colour accent) { accent_ = accent; repaint(); }
+    // The caption printed beneath the segments. Defaults to "MODE" — which is
+    // right for the chorus/tremolo switch it was written for and WRONG for any
+    // other switch on the panel (the Mesa's RECT and POWER both read "MODE"
+    // until this existed).
+    void setCaption(juce::String c) { caption_ = std::move(c); repaint(); }
     std::function<void(int)> onSelect;
 
     // The width the web's 78 px segment plus the active segment's cast-shadow
@@ -477,6 +498,7 @@ public:
     void mouseUp(const juce::MouseEvent&) override;
 
 private:
+    juce::String caption_{"MODE"};
     juce::StringArray labels_{"Off", "Chorus", "Vibrato"};
     int selected_{0};
     juce::Colour accent_{skin::accent(skin::AccentId::Clean)};

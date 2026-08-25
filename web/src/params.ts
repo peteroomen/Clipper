@@ -62,6 +62,79 @@ export const MESA_MODES = [
   { id: 'redModern', label: 'Red Modern', value: 1.0 },
 ] as const;
 
+// ---- Discrete position tables ------------------------------------------------
+// Every rotary/switch parameter the core QUANTIZES gets its detent centres and
+// its player-facing labels here, once, so the UI, the tests and the ABI cannot
+// drift. All of these quantize the same way in the core — nearest detent,
+// `round(v * (N-1))` — so centre i is exactly i/(N-1).
+//
+// These exist because the UI used to draw all of them as continuous 0-100 knobs
+// (see components/Selector.tsx): the readout named nothing, and nothing stopped
+// the control emitting a value between two clicks.
+
+// M10.4 the Mesa's RECTIFIER: silicon diodes vs a pair of 5U4 valve rectifiers.
+// The core threshold is < 0.5 silicon, >= 0.5 valve.
+export const MESA_RECTIFIERS = [
+  { id: 'silicon', label: 'Silicon', value: 0.0 },
+  { id: 'valve5u4', label: '5U4', value: 1.0 },
+] as const;
+
+// M10.4 the Mesa's POWER switch — a MAINS-PRIMARY-side control, commonly
+// confused with the rectifier selector; they are different switches (docs §69).
+export const MESA_POWER_MODES = [
+  { id: 'bold', label: 'Bold', value: 0.0 },
+  { id: 'spongy', label: 'Spongy', value: 1.0 },
+] as const;
+
+// M10.3 the OR120's F.A.C. — a six-position rotary of series coupling caps
+// ([through] 4n7 4n7 2n2 1n 330p; positions 2 and 3 really do carry the SAME
+// 4n7 on both factory sheets, docs §57). The real amp's panel numbers the
+// positions, so the readout does too.
+export const ORANGE_FAC_POSITIONS = [
+  { id: 'fac1', label: '1', value: 0.0 },
+  { id: 'fac2', label: '2', value: 0.2 },
+  { id: 'fac3', label: '3', value: 0.4 },
+  { id: 'fac4', label: '4', value: 0.6 },
+  { id: 'fac5', label: '5', value: 0.8 },
+  { id: 'fac6', label: '6', value: 1.0 },
+] as const;
+
+// M13.10 the Cellar's AMOUNT — NINE positions: 1..7 semitones down, then the
+// octave, then the octave WITH the dry signal summed. Detent 0 is DROP 1 (E flat
+// standard), which is why it is the default.
+//
+// OCT+DRY is the last click and it sums your DRY signal with the octave, so the
+// original pitch is audible alongside it — which is what "the pitch jumped back
+// up at 100" describes. It is faithful to the reference (docs §70.2) and the
+// pure octave is the click BEFORE it. Naming the positions is what makes that
+// legible; a knob reading "100" cannot.
+export const DROP_POSITIONS = [
+  { id: 'drop1', label: '−1', value: 0.0 },
+  { id: 'drop2', label: '−2', value: 0.125 },
+  { id: 'drop3', label: '−3', value: 0.25 },
+  { id: 'drop4', label: '−4', value: 0.375 },
+  { id: 'drop5', label: '−5', value: 0.5 },
+  { id: 'drop6', label: '−6', value: 0.625 },
+  { id: 'drop7', label: '−7', value: 0.75 },
+  { id: 'dropOct', label: 'OCT', value: 0.875 },
+  { id: 'dropOctDry', label: 'OCT+DRY', value: 1.0 },
+] as const;
+
+// The two-position MODE slots on three pedals. Each is a real switch in the
+// model (< 0.5 / >= 0.5), never a blend.
+export const OPTO_MODES = [
+  { id: 'compress', label: 'Comp', value: 0.0 },
+  { id: 'limit', label: 'Limit', value: 1.0 },
+] as const;
+export const VIBE_MODES = [
+  { id: 'chorus', label: 'Chorus', value: 0.0 },
+  { id: 'vibrato', label: 'Vibrato', value: 1.0 },
+] as const;
+export const CE1_MODES = [
+  { id: 'chorus', label: 'Chorus', value: 0.0 },
+  { id: 'vibrato', label: 'Vibrato', value: 1.0 },
+] as const;
+
 // M10.7 Orange Rockerverb 100: NO new param id, deliberately. Its GAIN and its
 // post-tone-stack VOLUME mean exactly what the JCM800's GAIN (10) and MASTER (12)
 // mean to a player, and its BASS/MIDDLE/TREBLE are the shared tone ids (1/2/3) —

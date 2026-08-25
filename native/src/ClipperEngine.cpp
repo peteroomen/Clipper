@@ -170,91 +170,150 @@ void ClipperEngine::applyParamsToModels() {
     delay_.setParameter(clipper::dsp::DelayModel::PARAM_FEEDBACK, p.delayFeedback);
     delay_.setParameter(clipper::dsp::DelayModel::PARAM_BLEND, p.delayBlend);
 
-    // Amp tone stack + volume + bright, then the routed chorus params.
-    amp_.setParameter(clipper::dsp::AmpModel::PARAM_VOLUME, p.volume);
-    amp_.setParameter(clipper::dsp::AmpModel::PARAM_BASS, p.bass);
-    amp_.setParameter(clipper::dsp::AmpModel::PARAM_MIDDLE, p.middle);
-    amp_.setParameter(clipper::dsp::AmpModel::PARAM_TREBLE, p.treble);
-    amp_.setParameter(clipper::dsp::AmpModel::PARAM_BRIGHT, p.bright ? 1.0f : 0.0f);
-    amp_.setParameter(clipper::dsp::AmpModel::PARAM_CHORUS_SPEED, p.chorusSpeed);
-    amp_.setParameter(clipper::dsp::AmpModel::PARAM_CHORUS_DEPTH, p.chorusDepth);
-    amp_.setParameter(clipper::dsp::AmpModel::PARAM_CHORUS_MODE,
-                      static_cast<float>(p.chorusMode));
-    amp_.setParameter(clipper::dsp::AmpModel::PARAM_REVERB, p.reverb);
+    applyAmpRouting(p, nullptr);
+}
 
-    // JCM800 (M9.4): kept current alongside the Clean 120 so a live model switch is
-    // instant. bass/middle/treble are SHARED (same knob values feed both tone
-    // stacks); gain/master/presence are JCM-only.
-    using J = clipper::dsp::Jcm800Amp;
-    jcm_.setParameter(J::PARAM_GAIN, p.jcmGain);
-    jcm_.setParameter(J::PARAM_MASTER, p.jcmMaster);
-    jcm_.setParameter(J::PARAM_BASS, p.bass);
-    jcm_.setParameter(J::PARAM_MID, p.middle);
-    jcm_.setParameter(J::PARAM_TREBLE, p.treble);
-    jcm_.setParameter(J::PARAM_PRESENCE, p.jcmPresence);
-    jcm_.setParameter(J::PARAM_REVERB, p.reverb);  // M10.1 usability add
+// ============================================================================
+//  AMP ROUTING — ONE BODY, TWO CALLERS
+// ============================================================================
+// `old == nullptr` applies EVERY row (the setup path, ClipperEngine::setParams
+// -> applyParamsToModels). Otherwise only the rows whose field actually changed
+// are applied — the per-block path PluginProcessor::processBlock drives, which
+// must never re-seed a steady high-gain smoother (that is what keeps a static
+// chain bit-identical to a single-shot core render).
+//
+// THIS IS ONE FUNCTION BECAUSE IT USED TO BE TWO, AND THEY DRIFTED — TWICE.
+// M10.4 wired the Mesa into the engine and §71 found the PLUGIN could not
+// express voice 6 at all. §71 then fixed applyParamsToModels() and left THIS
+// path untouched: `updateParams` had no Mesa branch of any kind, so the Mesa was
+// parameterized exactly once at prepareToPlay and every knob move afterwards was
+// dropped. The owner's report was "my dual rectifier's knobs don't do anything,
+// it only has one voice, unchanging" — which is precisely what a live path that
+// skips a voice sounds like.
+//
+// A voice added to one path and not the other is now not expressible: there is
+// only one path. Do NOT re-split this for the sake of the setup path's slightly
+// cheaper unconditional writes — the cost is a float compare per row.
+void ClipperEngine::applyAmpRouting(const Params& p, const Params* old) {
+    using clipper::dsp::Ac30Amp;
+    using clipper::dsp::AmpModel;
+    using clipper::dsp::Jcm800Amp;
+    using clipper::dsp::MesaAmp;
+    using clipper::dsp::OrangeAmp;
+    using clipper::dsp::RockerverbAmp;
+    using clipper::dsp::TwinAmp;
 
-    // Twin (M10.1): kept current alongside the others. Reuses the shared knobs —
-    // volume/bright + bass/mid/treble + reverb + speed/depth (→ tremolo).
-    using T = clipper::dsp::TwinAmp;
-    twin_.setParameter(T::PARAM_VOLUME, p.volume);
-    twin_.setParameter(T::PARAM_BASS, p.bass);
-    twin_.setParameter(T::PARAM_MID, p.middle);
-    twin_.setParameter(T::PARAM_TREBLE, p.treble);
-    twin_.setParameter(T::PARAM_BRIGHT, p.bright ? 1.0f : 0.0f);
-    twin_.setParameter(T::PARAM_REVERB, p.reverb);
-    twin_.setParameter(T::PARAM_SPEED, p.chorusSpeed);
-    twin_.setParameter(T::PARAM_INTENSITY, p.chorusDepth);
-    // The Twin has no chorus → the 'chorusMode' slot is reused as its TREMOLO ON/OFF
-    // (docs §20). 0 = off (bit-exact bypass), ≥1 = on. Matches the C-ABI routing.
-    twin_.setParameter(T::PARAM_TREMOLO_ENABLE, p.chorusMode >= 1 ? 1.0f : 0.0f);
+    // "Apply this row?" — always on the setup path, only on a real change live.
+    const auto changed = [old](float a, float b) { return old == nullptr || a != b; };
+    const auto changedI = [old](int a, int b) { return old == nullptr || a != b; };
+    const auto changedB = [old](bool a, bool b) { return old == nullptr || a != b; };
 
-    // AC30 (M10.2): kept current alongside the others. Reuses the shared knobs —
-    // volume + bass/treble + reverb — and REUSES the presence field as its TOP CUT
-    // (docs §23). The AC30 top-boost has NO mid control, so 'middle' never routes here.
-    using X = clipper::dsp::Ac30Amp;
-    ac30_.setParameter(X::PARAM_VOLUME, p.volume);
-    ac30_.setParameter(X::PARAM_BASS, p.bass);
-    ac30_.setParameter(X::PARAM_TREBLE, p.treble);
-    ac30_.setParameter(X::PARAM_TOPCUT, p.jcmPresence);  // presence slot reused as TOP CUT
-    ac30_.setParameter(X::PARAM_REVERB, p.reverb);
+    // VOLUME feeds clean120 + twin + ac30 + the OR120 (whose GAIN it is printed as).
+    // It never reaches the JCM, the Rockerverb or the Mesa: those three have their
+    // own GAIN/MASTER pair on the jcmGain/jcmMaster slots.
+    if (changed(p.volume, old ? old->volume : 0.f)) {
+        amp_.setParameter(AmpModel::PARAM_VOLUME, p.volume);
+        twin_.setParameter(TwinAmp::PARAM_VOLUME, p.volume);
+        ac30_.setParameter(Ac30Amp::PARAM_VOLUME, p.volume);
+        orange_.setParameter(OrangeAmp::PARAM_VOLUME, p.volume);
+    }
+    // BASS/TREBLE are SHARED across every voice that has them; MIDDLE reaches all
+    // but the AC30 and the OR120 (a top-boost and a James stack have no mid).
+    // Every inactive voice is kept current so a live model switch is instant.
+    if (changed(p.bass, old ? old->bass : 0.f)) {
+        amp_.setParameter(AmpModel::PARAM_BASS, p.bass);
+        jcm_.setParameter(Jcm800Amp::PARAM_BASS, p.bass);
+        twin_.setParameter(TwinAmp::PARAM_BASS, p.bass);
+        ac30_.setParameter(Ac30Amp::PARAM_BASS, p.bass);
+        orange_.setParameter(OrangeAmp::PARAM_BASS, p.bass);
+        rockerverb_.setParameter(RockerverbAmp::PARAM_BASS, p.bass);
+        mesa_.setParameter(MesaAmp::PARAM_BASS, p.bass);
+    }
+    if (changed(p.middle, old ? old->middle : 0.f)) {
+        amp_.setParameter(AmpModel::PARAM_MIDDLE, p.middle);
+        jcm_.setParameter(Jcm800Amp::PARAM_MID, p.middle);
+        twin_.setParameter(TwinAmp::PARAM_MID, p.middle);
+        // AC30 top-boost has NO mid control and the OR120's James stack has none;
+        // the Rockerverb's FMV (M10.7) and the Mesa's FMV (M10.4) both do.
+        rockerverb_.setParameter(RockerverbAmp::PARAM_MID, p.middle);
+        mesa_.setParameter(MesaAmp::PARAM_MID, p.middle);
+    }
+    if (changed(p.treble, old ? old->treble : 0.f)) {
+        amp_.setParameter(AmpModel::PARAM_TREBLE, p.treble);
+        jcm_.setParameter(Jcm800Amp::PARAM_TREBLE, p.treble);
+        twin_.setParameter(TwinAmp::PARAM_TREBLE, p.treble);
+        ac30_.setParameter(Ac30Amp::PARAM_TREBLE, p.treble);
+        orange_.setParameter(OrangeAmp::PARAM_TREBLE, p.treble);
+        rockerverb_.setParameter(RockerverbAmp::PARAM_TREBLE, p.treble);
+        mesa_.setParameter(MesaAmp::PARAM_TREBLE, p.treble);
+    }
+    // BRIGHT feeds clean120 + twin (the only two voices with the switch).
+    if (changedB(p.bright, old ? old->bright : false)) {
+        amp_.setParameter(AmpModel::PARAM_BRIGHT, p.bright ? 1.0f : 0.0f);
+        twin_.setParameter(TwinAmp::PARAM_BRIGHT, p.bright ? 1.0f : 0.0f);
+    }
+    // SPEED/DEPTH feed the clean120 chorus + the twin tremolo SPEED/INTENSITY.
+    if (changed(p.chorusSpeed, old ? old->chorusSpeed : 0.f)) {
+        amp_.setParameter(AmpModel::PARAM_CHORUS_SPEED, p.chorusSpeed);
+        twin_.setParameter(TwinAmp::PARAM_SPEED, p.chorusSpeed);
+    }
+    if (changed(p.chorusDepth, old ? old->chorusDepth : 0.f)) {
+        amp_.setParameter(AmpModel::PARAM_CHORUS_DEPTH, p.chorusDepth);
+        twin_.setParameter(TwinAmp::PARAM_INTENSITY, p.chorusDepth);
+    }
+    if (changedI(p.chorusMode, old ? old->chorusMode : 0)) {
+        amp_.setParameter(AmpModel::PARAM_CHORUS_MODE, static_cast<float>(p.chorusMode));
+        // chorusMode reused as the Twin's TREMOLO ON/OFF (docs §20); live toggle is
+        // click-free (the OptoTremolo enable-ramp).
+        twin_.setParameter(TwinAmp::PARAM_TREMOLO_ENABLE, p.chorusMode >= 1 ? 1.0f : 0.0f);
+    }
+    // REVERB feeds every voice that carries a tank — which is all of them except
+    // the Mesa's reference (a Recto with a tank is a Trem-O-Verb), and the Mesa
+    // carries a mix-0 pass-through for lineup parity, so it takes the value too.
+    if (changed(p.reverb, old ? old->reverb : 0.f)) {
+        amp_.setParameter(AmpModel::PARAM_REVERB, p.reverb);
+        jcm_.setParameter(Jcm800Amp::PARAM_REVERB, p.reverb);
+        twin_.setParameter(TwinAmp::PARAM_REVERB, p.reverb);
+        ac30_.setParameter(Ac30Amp::PARAM_REVERB, p.reverb);
+        orange_.setParameter(OrangeAmp::PARAM_REVERB, p.reverb);
+        rockerverb_.setParameter(RockerverbAmp::PARAM_REVERB, p.reverb);
+        mesa_.setParameter(MesaAmp::PARAM_REVERB, p.reverb);
+    }
 
-    // Orange OR120 (M10.3): reuses volume + bass/treble + reverb from the shared
-    // fields and REUSES the presence field as its H.F. BOOST (docs §57). It has NO
-    // mid control (a James stack is bass + treble), so 'middle' never routes here,
-    // and NO master (VOLUME is the whole amp). Its one own field is the F.A.C.
-    using O = clipper::dsp::OrangeAmp;
-    orange_.setParameter(O::PARAM_VOLUME, p.volume);
-    orange_.setParameter(O::PARAM_BASS, p.bass);
-    orange_.setParameter(O::PARAM_TREBLE, p.treble);
-    orange_.setParameter(O::PARAM_FAC, p.orangeFac);
-    orange_.setParameter(O::PARAM_HF_DRIVE, p.jcmPresence);  // presence slot = HF DRIVE
-    orange_.setParameter(O::PARAM_REVERB, p.reverb);
+    // The GAIN/MASTER pair. Three voices carry their own: the JCM800, the
+    // Rockerverb (whose post-stack knob is printed VOLUME but is a master by
+    // function) and the Mesa.
+    if (changed(p.jcmGain, old ? old->jcmGain : 0.f)) {
+        jcm_.setParameter(Jcm800Amp::PARAM_GAIN, p.jcmGain);
+        rockerverb_.setParameter(RockerverbAmp::PARAM_GAIN, p.jcmGain);   // M10.7
+        mesa_.setParameter(MesaAmp::PARAM_GAIN, p.jcmGain);               // M10.4
+    }
+    if (changed(p.jcmMaster, old ? old->jcmMaster : 0.f)) {
+        jcm_.setParameter(Jcm800Amp::PARAM_MASTER, p.jcmMaster);
+        rockerverb_.setParameter(RockerverbAmp::PARAM_VOLUME, p.jcmMaster);  // M10.7
+        mesa_.setParameter(MesaAmp::PARAM_MASTER, p.jcmMaster);              // M10.4
+    }
+    // The presence slot is SHARED FOUR WAYS: the JCM's presence, the AC30's TOP
+    // CUT, the OR120's H.F. BOOST and the Mesa's presence (docs §23, §57, §69).
+    // The Rockerverb has no presence control of any kind, so it is absent here.
+    if (changed(p.jcmPresence, old ? old->jcmPresence : 0.f)) {
+        jcm_.setParameter(Jcm800Amp::PARAM_PRESENCE, p.jcmPresence);
+        ac30_.setParameter(Ac30Amp::PARAM_TOPCUT, p.jcmPresence);
+        orange_.setParameter(OrangeAmp::PARAM_HF_DRIVE, p.jcmPresence);
+        mesa_.setParameter(MesaAmp::PARAM_PRESENCE, p.jcmPresence);
+    }
 
-    // Rockerverb 100 (M10.7): NO fields of its own. jcmGain is its GAIN, jcmMaster
-    // its post-tone-stack VOLUME, and bass/middle/treble/reverb the shared ones —
-    // it is the first Orange here with a MID control. No presence of any kind.
-    using RV = clipper::dsp::RockerverbAmp;
-    rockerverb_.setParameter(RV::PARAM_GAIN, p.jcmGain);
-    rockerverb_.setParameter(RV::PARAM_VOLUME, p.jcmMaster);
-    rockerverb_.setParameter(RV::PARAM_BASS, p.bass);
-    rockerverb_.setParameter(RV::PARAM_MID, p.middle);
-    rockerverb_.setParameter(RV::PARAM_TREBLE, p.treble);
-    rockerverb_.setParameter(RV::PARAM_REVERB, p.reverb);
+    // M10.3 Orange-only knob: the F.A.C. rotary.
+    if (changed(p.orangeFac, old ? old->orangeFac : 0.f))
+        orange_.setParameter(OrangeAmp::PARAM_FAC, p.orangeFac);
 
-    // Mesa Dual Rectifier (M10.4). jcmGain / jcmMaster / jcmPresence carry its
-    // GAIN / MASTER / PRESENCE — the same meaning in each case. Its three
-    // SWITCHES are its own, and they are quantized HERE, at the boundary, so the
-    // model never sees an in-between state (the C ABI does the same).
-    using MZ = clipper::dsp::MesaAmp;
-    mesa_.setParameter(MZ::PARAM_GAIN, p.jcmGain);
-    mesa_.setParameter(MZ::PARAM_MASTER, p.jcmMaster);
-    mesa_.setParameter(MZ::PARAM_PRESENCE, p.jcmPresence);
-    mesa_.setParameter(MZ::PARAM_BASS, p.bass);
-    mesa_.setParameter(MZ::PARAM_MID, p.middle);
-    mesa_.setParameter(MZ::PARAM_TREBLE, p.treble);
-    mesa_.setParameter(MZ::PARAM_REVERB, p.reverb);
-    applyMesaSwitches(p);
+    // M10.4 the Mesa's three DISCRETE switches. Quantized at this boundary (see
+    // applyMesaSwitches) so the model never sees an in-between state, exactly as
+    // the C ABI does it.
+    if (changed(p.mesaMode, old ? old->mesaMode : 0.f) ||
+        changed(p.mesaRectifier, old ? old->mesaRectifier : 0.f) ||
+        changed(p.mesaPowerMode, old ? old->mesaPowerMode : 0.f))
+        applyMesaSwitches(p);
 }
 
 // The three discrete switches, quantized from their 0..1 carriers. Split out so
@@ -308,10 +367,6 @@ bool ClipperEngine::chainEditPending() const {
 }
 
 void ClipperEngine::updateParams(const Params& p) {
-    using clipper::dsp::Ac30Amp;
-    using clipper::dsp::OrangeAmp;
-    using clipper::dsp::RockerverbAmp;
-    using clipper::dsp::AmpModel;
     using clipper::dsp::GoldModel;
     using clipper::dsp::WahModel;
     using clipper::dsp::CompModel;
@@ -319,13 +374,11 @@ void ClipperEngine::updateParams(const Params& p) {
     using clipper::dsp::GateModel;
     using clipper::dsp::OptoModel;
     using clipper::dsp::VibeModel;
-    using clipper::dsp::Jcm800Amp;
     using clipper::dsp::MuffModel;
     using clipper::dsp::PhaserModel;
     using clipper::dsp::RatModel;
     using clipper::dsp::SdModel;
     using clipper::dsp::TsModel;
-    using clipper::dsp::TwinAmp;
     const Params& o = params_;  // old snapshot
 
     // Dirt-pedal knobs (only the changed ones — never re-seed a steady smoother).
@@ -367,89 +420,10 @@ void ClipperEngine::updateParams(const Params& p) {
     if (p.delayFeedback != o.delayFeedback) delay_.setParameter(DelayModel::PARAM_FEEDBACK, p.delayFeedback);
     if (p.delayBlend != o.delayBlend)       delay_.setParameter(DelayModel::PARAM_BLEND, p.delayBlend);
 
-    // Amp knobs + toggles. VOLUME feeds clean120 + twin + ac30.
-    if (p.volume != o.volume) {
-        amp_.setParameter(AmpModel::PARAM_VOLUME, p.volume);
-        twin_.setParameter(TwinAmp::PARAM_VOLUME, p.volume);
-        ac30_.setParameter(Ac30Amp::PARAM_VOLUME, p.volume);
-        orange_.setParameter(OrangeAmp::PARAM_VOLUME, p.volume);
-    }
-    // bass/treble are SHARED across ALL FOUR amp voices; middle feeds all but the AC30
-    // (top-boost has no mid) — update every tone stack so the inactive voices are
-    // already correct at a live switch.
-    if (p.bass != o.bass) {
-        amp_.setParameter(AmpModel::PARAM_BASS, p.bass);
-        jcm_.setParameter(Jcm800Amp::PARAM_BASS, p.bass);
-        twin_.setParameter(TwinAmp::PARAM_BASS, p.bass);
-        ac30_.setParameter(Ac30Amp::PARAM_BASS, p.bass);
-        orange_.setParameter(OrangeAmp::PARAM_BASS, p.bass);
-        rockerverb_.setParameter(RockerverbAmp::PARAM_BASS, p.bass);
-    }
-    if (p.middle != o.middle) {
-        amp_.setParameter(AmpModel::PARAM_MIDDLE, p.middle);
-        jcm_.setParameter(Jcm800Amp::PARAM_MID, p.middle);
-        twin_.setParameter(TwinAmp::PARAM_MID, p.middle);
-        // AC30 top-boost has NO mid control — 'middle' never reaches it. The
-        // Rockerverb's FMV stack DOES have one (M10.7).
-        rockerverb_.setParameter(RockerverbAmp::PARAM_MID, p.middle);
-    }
-    if (p.treble != o.treble) {
-        amp_.setParameter(AmpModel::PARAM_TREBLE, p.treble);
-        jcm_.setParameter(Jcm800Amp::PARAM_TREBLE, p.treble);
-        twin_.setParameter(TwinAmp::PARAM_TREBLE, p.treble);
-        ac30_.setParameter(Ac30Amp::PARAM_TREBLE, p.treble);
-        orange_.setParameter(OrangeAmp::PARAM_TREBLE, p.treble);
-        rockerverb_.setParameter(RockerverbAmp::PARAM_TREBLE, p.treble);
-    }
-    // BRIGHT feeds clean120 + twin.
-    if (p.bright != o.bright) {
-        amp_.setParameter(AmpModel::PARAM_BRIGHT, p.bright ? 1.0f : 0.0f);
-        twin_.setParameter(TwinAmp::PARAM_BRIGHT, p.bright ? 1.0f : 0.0f);
-    }
-    // SPEED/DEPTH feed clean120 chorus + twin tremolo SPEED/INTENSITY.
-    if (p.chorusSpeed != o.chorusSpeed) {
-        amp_.setParameter(AmpModel::PARAM_CHORUS_SPEED, p.chorusSpeed);
-        twin_.setParameter(TwinAmp::PARAM_SPEED, p.chorusSpeed);
-    }
-    if (p.chorusDepth != o.chorusDepth) {
-        amp_.setParameter(AmpModel::PARAM_CHORUS_DEPTH, p.chorusDepth);
-        twin_.setParameter(TwinAmp::PARAM_INTENSITY, p.chorusDepth);
-    }
-    if (p.chorusMode != o.chorusMode) {
-        amp_.setParameter(AmpModel::PARAM_CHORUS_MODE, static_cast<float>(p.chorusMode));
-        // chorusMode reused as the Twin's TREMOLO ON/OFF (docs §20); live toggle is
-        // click-free (the OptoTremolo enable-ramp).
-        twin_.setParameter(TwinAmp::PARAM_TREMOLO_ENABLE, p.chorusMode >= 1 ? 1.0f : 0.0f);
-    }
-    // REVERB feeds all four voices (clean120 + jcm + twin + ac30).
-    if (p.reverb != o.reverb) {
-        amp_.setParameter(AmpModel::PARAM_REVERB, p.reverb);
-        jcm_.setParameter(Jcm800Amp::PARAM_REVERB, p.reverb);
-        twin_.setParameter(TwinAmp::PARAM_REVERB, p.reverb);
-        ac30_.setParameter(Ac30Amp::PARAM_REVERB, p.reverb);
-        orange_.setParameter(OrangeAmp::PARAM_REVERB, p.reverb);
-        rockerverb_.setParameter(RockerverbAmp::PARAM_REVERB, p.reverb);
-    }
-
-    // JCM800-only knobs. The presence field is SHARED: it is the JCM's presence AND
-    // the AC30's TOP CUT (both are power-amp HF controls, docs §23).
-    if (p.jcmGain != o.jcmGain) {
-        jcm_.setParameter(Jcm800Amp::PARAM_GAIN, p.jcmGain);
-        rockerverb_.setParameter(RockerverbAmp::PARAM_GAIN, p.jcmGain);  // M10.7
-    }
-    if (p.jcmMaster != o.jcmMaster) {
-        jcm_.setParameter(Jcm800Amp::PARAM_MASTER, p.jcmMaster);
-        rockerverb_.setParameter(RockerverbAmp::PARAM_VOLUME, p.jcmMaster);  // M10.7
-    }
-    if (p.jcmPresence != o.jcmPresence) {
-        jcm_.setParameter(Jcm800Amp::PARAM_PRESENCE, p.jcmPresence);
-        ac30_.setParameter(Ac30Amp::PARAM_TOPCUT, p.jcmPresence);  // reused as TOP CUT
-        orange_.setParameter(OrangeAmp::PARAM_HF_DRIVE, p.jcmPresence);  // …and HF DRIVE
-    }
-
-    // M10.3 Orange-only knob: the F.A.C. rotary.
-    if (p.orangeFac != o.orangeFac)
-        orange_.setParameter(OrangeAmp::PARAM_FAC, p.orangeFac);
+    // Amp routing: tone stack, volume/bright, the mod knobs, the GAIN/MASTER
+    // pair, presence, the F.A.C. and the Mesa's three switches. ONE body shared
+    // with the setup path — see applyAmpRouting for why that is not optional.
+    applyAmpRouting(p, &o);
 
     // Oversampling change: reset only the pedals' OS filter state (like the web
     // worklet's per-node setOversampling), not a full re-prepare.

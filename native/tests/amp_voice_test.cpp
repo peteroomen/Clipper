@@ -221,6 +221,128 @@ void testMesaSwitchesReachTheEngine(const std::vector<float>& in) {
 
 }  // namespace
 
+
+// ---------------------------------------------------------------------------
+// A LIVE edit, the way a host makes one: prepareToPlay first, then move the
+// parameter BETWEEN processBlock calls.
+//
+// Everything above sets parameters BEFORE prepareToPlay, which reaches the models
+// through ClipperEngine::setParams -> applyParamsToModels. That is a DIFFERENT
+// code path from the one a turning knob uses (processBlock -> updateParams), and
+// the difference is not academic: §71 fixed the Mesa in the first path and left
+// the second with no Mesa branch at all, so the amp took its parameters exactly
+// once at prepareToPlay and ignored every knob move afterwards. The whole suite
+// stayed green because nothing here had ever moved a knob after prepare.
+std::vector<float> renderPluginLiveEdit(int ampModel, const std::vector<float>& in,
+                                        const char* liveId, float from, float to,
+                                        double holdMesaMode = -1.0) {
+    ClipperAudioProcessor proc;
+    auto set = [&proc](const char* id, float v) {
+        if (auto* p = proc.apvts.getParameter(id)) p->setValueNotifyingHost(p->convertTo0to1(v));
+    };
+    set(pid::ratOn, 0.0f);
+    set(pid::sdOn, 0.0f);
+    set(pid::ampOn, 1.0f);
+    set(pid::ampModel, static_cast<float>(ampModel));
+    set(pid::cab, 1.0f);
+    // Some rows must be probed in a specific MODE — PRESENCE is inert in the two
+    // MODERN modes by TOPOLOGY (docs §69 opens the power amp's feedback loop
+    // there), so probing it at the default would measure the amp, not the wiring.
+    if (holdMesaMode >= 0.0) set(pid::mesaMode, static_cast<float>(holdMesaMode));
+    if (liveId != nullptr) set(liveId, from);
+
+    proc.prepareToPlay(kFs, kBlock);
+
+    std::vector<float> out;
+    out.reserve(in.size());
+    juce::AudioBuffer<float> buf(2, kBlock);
+    juce::MidiBuffer midi;
+    const int editAt = kBlocks / 4;  // early, so the tail is fully settled after it
+    for (int b = 0; b < kBlocks; ++b) {
+        // The edit lands between blocks — exactly where a host automation write or
+        // a UI gesture lands.
+        if (b == editAt && liveId != nullptr) set(liveId, to);
+        buf.clear();
+        buf.copyFrom(0, 0, in.data() + static_cast<size_t>(b) * kBlock, kBlock);
+        buf.copyFrom(1, 0, in.data() + static_cast<size_t>(b) * kBlock, kBlock);
+        proc.processBlock(buf, midi);
+        const float* l = buf.getReadPointer(0);
+        for (int n = 0; n < kBlock; ++n) out.push_back(l[n]);
+    }
+    return out;
+}
+
+// Every Mesa control must CHANGE THE AUDIO when moved after prepareToPlay.
+//
+// The bar is deliberately "the render differs from the one that never moved",
+// not "the render matches a reference": the defect was a dropped write, and a
+// dropped write is exactly a render that is bit-identical to not having touched
+// the knob. Held-vs-moved is the shape that catches it.
+void testMesaKnobsRespondLive(const std::vector<float>& in) {
+    std::printf("\n-- Mesa knobs respond to a LIVE edit (post-prepare) --\n");
+    const size_t tail = in.size() / 2;
+
+    // `mode` < 0 => leave MODE at its default. 0.25 is Orange NORMAL, whose
+    // feedback loop is CLOSED — the only condition under which PRESENCE is a
+    // control at all.
+    struct Row { const char* id; const char* nm; float from; float to; double mode; };
+    const Row rows[] = {
+        {pid::jcmGain,       "GAIN",      0.20f, 0.90f, -1.0},
+        {pid::jcmMaster,     "MASTER",    0.15f, 0.80f, -1.0},
+        {pid::jcmPresence,   "PRESENCE",  0.00f, 1.00f, 0.25},
+        {pid::bass,          "BASS",      0.10f, 0.90f, -1.0},
+        {pid::middle,        "MID",       0.10f, 0.90f, -1.0},
+        {pid::treble,        "TREBLE",    0.10f, 0.90f, -1.0},
+        {pid::mesaMode,      "MODE",      0.00f, 0.50f, -1.0},
+        {pid::mesaRectifier, "RECTIFIER", 0.00f, 1.00f, -1.0},
+        {pid::mesaPowerMode, "POWER",     0.00f, 1.00f, -1.0},
+    };
+
+    for (const Row& r : rows) {
+        const std::vector<float> held =
+            renderPluginLiveEdit(AMP_MESA, in, r.id, r.from, r.from, r.mode);
+        const std::vector<float> moved =
+            renderPluginLiveEdit(AMP_MESA, in, r.id, r.from, r.to, r.mode);
+
+        double worst = 0.0;
+        for (size_t i = tail; i < held.size() && i < moved.size(); ++i)
+            worst = std::max(worst, std::abs(static_cast<double>(moved[i]) - held[i]));
+        const double a = rms(held, tail), b = rms(moved, tail);
+        const double dB = 20.0 * std::log10((b + 1e-12) / (a + 1e-12));
+
+        // 1e-4 against renders whose tail RMS is order 1e-1: a dropped write reads
+        // EXACTLY 0.0 here, so the bar is nowhere near the noise.
+        const bool ok = worst > 1.0e-4;
+        std::printf("   %-9s %.2f -> %.2f   max|d| %.3e   level %+6.2f dB   %s\n", r.nm,
+                    r.from, r.to, worst, dB, ok ? "ok" : "INERT");
+        if (!ok) {
+            failed = true;
+            std::printf("      FAIL: moving %s after prepareToPlay changed nothing — the "
+                        "live parameter path is not reaching the Mesa.\n", r.nm);
+        }
+    }
+}
+
+// The editor's voice selector must offer every voice the parameter can express.
+// It used to be a second hardcoded list of FIVE against a seven-choice parameter,
+// so two voices were unlistable and a ComboBoxAttachment mapped item i to choice
+// i for items that no longer lined up.
+void testSelectorListsEveryVoice() {
+    std::printf("\n-- the editor's amp selector offers every voice --\n");
+    const juce::StringArray& choices = ClipperAudioProcessor::ampModelChoices();
+    std::printf("   selector entries %d   AMP_MODEL_COUNT %d\n", choices.size(),
+                AMP_MODEL_COUNT);
+    if (choices.size() != AMP_MODEL_COUNT) {
+        failed = true;
+        std::printf("      FAIL: the selector cannot name every engine voice.\n");
+    }
+    // The Mesa specifically, by name — the voice both list bugs hid.
+    if (!choices.contains("Dual Rectifier")) {
+        failed = true;
+        std::printf("      FAIL: \"Dual Rectifier\" is not offered.\n");
+    }
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -228,8 +350,10 @@ int main() {
 
     const std::vector<float> in = stimulus();
     testEveryVoiceIsOfferable();
+    testSelectorListsEveryVoice();
     testSelectingMesaRendersMesa(in);
     testMesaSwitchesReachTheEngine(in);
+    testMesaKnobsRespondLive(in);
 
     if (failed) {
         std::printf("\nFAIL: an amp voice is not reachable from the plugin.\n");
