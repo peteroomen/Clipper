@@ -75,13 +75,18 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   drop: 'Cellar drop-tune (graphite, polyphonic pitch)',
   tuner: 'Chromatic tuner',
 };
-const AMP_TYPE_LABEL: Record<string, string> = {
+// Typed Record<AmpType, string>, NOT Record<string, string>: this map was missing
+// its 'mesa' entry, and a string-keyed record let that compile — so the Dual
+// Rectifier rendered as a BLANK menu item and a blank amp-slot button. Keying it
+// by AmpType makes a missing voice a build error instead.
+const AMP_TYPE_LABEL: Record<AmpType, string> = {
   clean120: 'Clean 120 (JC-120 style)',
   jcm800: 'JCM800 (Marshall style)',
   twin: 'Twin Sixty-Five (Fender style)',
   ac30: 'AC30 (Vox top boost)',
   orange: 'Overdrive 120 (Orange style)',
   rockerverb: 'Rocker Verb (modern Orange)',
+  mesa: 'Dual Rectifier (Mesa style)',
 };
 const CAB_LABEL: Record<'clean212' | 'brit412' | 'orange412', string> = {
   clean212: 'Clean 2×12 (JC platform)',

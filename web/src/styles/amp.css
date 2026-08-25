@@ -135,8 +135,12 @@
   background: var(--well); box-shadow: inset 3px 3px 7px var(--sh-darker),
   inset -3px -3px 6px var(--sh-light); }
 .mode-opt + .mode-opt { margin-top: -1px; }
-.mode-switch .mode-opt:nth-of-type(1) { border-radius: 12px 12px 0 0; }
-.mode-switch .mode-opt:nth-of-type(3) { border-radius: 0 0 12px 12px; }
+/* first/last rather than nth-of-type(1)/(3): the switch is no longer always
+   three segments — the Mesa's RECTIFIER and POWER and the three pedal MODE
+   slots are two-position, and a hardcoded :nth-of-type(3) left a 2-segment
+   switch with square bottom corners. */
+.mode-switch .mode-opt:first-of-type { border-radius: 12px 12px 0 0; }
+.mode-switch .mode-opt:last-of-type { border-radius: 0 0 12px 12px; }
 .mode-opt.on { color: var(--ink); background: linear-gradient(145deg,
   color-mix(in srgb, var(--led) 55%, var(--ground)),
   color-mix(in srgb, var(--led) 82%, #000));
@@ -183,3 +187,23 @@
 .amp[data-amp-type="mesa"] .jewel {
   background: color-mix(in srgb, var(--accent-mesa) 18%, var(--well));
 }
+
+
+/* ---- Discrete controls (Selector.tsx) --------------------------------------
+   A parameter with N named states is a switch or a rotary selector, never a
+   0-100 pot. See Selector.tsx for which control each core parameter earns. */
+
+/* The segmented switch, wrapped with a caption so it sits in a knob row. */
+.selector-switch { display: flex; flex-direction: column; align-items: center; gap: 9px; }
+.selector-switch .k-name { margin-top: 2px; }
+
+/* The detented rotary. It IS a .knob (same skirt, cap, pointer and arc) with a
+   ring of detent marks and a NAME instead of a percentage in the readout. */
+.selector-rotary .k-val { font-size: 11px; letter-spacing: .02em; text-transform: uppercase;
+  white-space: nowrap; }
+.k-detents { position: absolute; inset: 0; pointer-events: none; }
+.k-detent { position: absolute; left: 50%; top: 50%; width: 2px; height: 4px;
+  margin-left: -1px; border-radius: 1px; background: var(--ink-dim); opacity: .45;
+  transform: rotate(var(--d)) translateY(-25px); transform-origin: 50% 0;
+  transition: opacity .12s, background .12s; }
+.k-detent.on { background: var(--led); opacity: 1; }

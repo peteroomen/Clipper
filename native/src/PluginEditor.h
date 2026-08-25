@@ -215,11 +215,11 @@ private:
     // Knobs rather than ModeSwitch widgets: MODE has FIVE states and ModeSwitch
     // does two and three, and the core already quantizes the 0..1 value. The web
     // ships all three as knobs for the same reason.
-    NeuKnob mesaMode_, mesaRect_, mesaPower_;
+    NeuKnob mesaMode_;  // FIVE positions -> a detented rotary, not a switch
     NeuKnob modSpeed_, modDepth_;  // chorus/tremolo speed + depth/intensity
     std::unique_ptr<SliderAttach> volumeAttach_, bassAttach_, middleAttach_, trebleAttach_,
         presenceAttach_, masterAttach_, gainAttach_, reverbAttach_, modSpeedAttach_,
-        modDepthAttach_, facAttach_, mesaModeAttach_, mesaRectAttach_, mesaPowerAttach_;
+        modDepthAttach_, facAttach_, mesaModeAttach_;
     LeverToggle bright_, cab_;
     // THE CAB / IR PICKER. A chip under the Cab lever, opening a popup with the two
     // built-ins, the loaded custom IR (if any) and "Load IR…". Not a ComboBox: the
@@ -234,6 +234,14 @@ private:
 
     PowerControl power_;
     ModeSwitch chorusMode_;
+    // M10.4 the Mesa's two TWO-STATE controls. They are real switches on the
+    // amp (silicon vs 5U4 rectifier; a mains-primary-side BOLD/SPONGY), so they
+    // get the carved segmented switch rather than a dial — the same widget the
+    // silverface Twin's tremolo and the Clean 120's chorus mode already use.
+    // MODE stays a detented rotary: it has FIVE positions, which is past what a
+    // segmented switch can show legibly.
+    ModeSwitch mesaRectSw_, mesaPowerSw_;
+    std::unique_ptr<ParamAttach> mesaRectSwAttach_, mesaPowerSwAttach_;
     std::unique_ptr<ParamAttach> brightAttach_, cabAttach_, ampOnAttach_, chorusModeAttach_,
         ampModelListen_;
 
@@ -247,6 +255,9 @@ private:
     juce::String ampWordmark_{"Clean 120"}, ampEyebrow_{"Solid State · Stereo"};
     skin::AccentId ampAccentId_{skin::AccentId::Clean};
     juce::Colour ampAccent_{skin::accent(skin::AccentId::Clean)};
+    // Switches shown in the PRIMARY row, laid out after the knobs in the same
+    // grid (the Mesa's RECT and POWER).
+    std::vector<ModeSwitch*> ampPrimarySwitches_;
     std::vector<NeuKnob*> ampPrimaryKnobs_;  // ordered tone knobs for this voice
     std::vector<NeuKnob*> ampModKnobs_;      // speed/depth (chorus/tremolo), if any
     juce::String modCaption_;                // "Chorus" / "Tremolo" / ""

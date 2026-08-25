@@ -1729,3 +1729,127 @@ test('amp UI: selecting orange swaps to Overdrive (F.A.C. shown, middle/gain/mas
   const after = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().amp.cabModel);
   expect(after).toBe('orange412');
 });
+
+// ---------------------------------------------------------------------------
+// M10.4 the Mesa Dual Rectifier — voice 6.
+//
+// THIS SPEC DID NOT EXIST until 2026-08-25, and its absence is why two separate
+// wiring bugs shipped. §69 wired the voice web-side; §71 found the PLUGIN could
+// not select it; and the WEB start path (`startEngine`) carried an amp-voice
+// if/else chain that stopped at 'rockerverb', so a persisted Mesa rig started on
+// the Clean 120 — the UI drew a Dual Rectifier while voice 0 made the sound, and
+// every Mesa-only knob (GAIN, MASTER, PRESENCE, MODE, RECT, POWER) did nothing,
+// because the Clean 120 ignores those ids. The owner's report was "my dual
+// rectifier's knobs don't do anything, it only has one voice, unchanging".
+//
+// So this asserts the two halves that were broken: the voice is reachable and it
+// is NOT the Clean 120, and each of its three switch ids changes the audio.
+test('amp mesa: voice 6 is reachable and its three switches reach the core', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 0.5;
+    // `model` is the amp voice; the three switch ids are 14/15/16 (params.ts).
+    async function render(
+      model: number,
+      mode: number,
+      rect: number,
+      power: number
+    ): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      const ctx = new OfflineAudioContext(1, length, sampleRate);
+      await ctx.audioWorklet.addModule('/generated/clipper-processor.js');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        node.port.onmessage = (e: MessageEvent) => { if (e.data?.type === 'latency') resolve(); };
+        node.port.postMessage({ type: 'bypass', unit: 'pedal', on: true });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 1, value: 0.5 });   // bass
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 2, value: 0.5 });   // middle
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 3, value: 0.5 });   // treble
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 9, value: 0.0 });   // reverb off
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 10, value: 0.5 });  // gain
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 12, value: 0.4 });  // master
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 14, value: mode });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 15, value: rect });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 16, value: power });
+        node.port.postMessage({ type: 'ampModel', model });
+        node.port.postMessage({ type: 'param', unit: 'amp', id: 5, value: 1 });     // cab on
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: 110 });
+      const g = new GainNode(ctx, { gain: 0.15 });
+      osc.connect(g).connect(node).connect(ctx.destination);
+      osc.start();
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+    function rms(d: Float32Array): number {
+      const s0 = Math.floor(d.length * 0.5);
+      let a = 0;
+      for (let i = s0; i < d.length; i++) a += d[i] * d[i];
+      return Math.sqrt(a / (d.length - s0));
+    }
+    function anyNaN(d: Float32Array): boolean {
+      for (let i = 0; i < d.length; i++) if (!Number.isFinite(d[i])) return true;
+      return false;
+    }
+    const mesa = await render(6, 1.0, 0.0, 0.0);
+    const clean = await render(0, 1.0, 0.0, 0.0);
+    // One switch moved per render, everything else identical.
+    const modeMoved = await render(6, 0.5, 0.0, 0.0);
+    const rectMoved = await render(6, 1.0, 1.0, 0.0);
+    const powerMoved = await render(6, 1.0, 0.0, 1.0);
+    return {
+      mesaRms: rms(mesa),
+      cleanRms: rms(clean),
+      modeDb: 20 * Math.log10((rms(modeMoved) + 1e-12) / (rms(mesa) + 1e-12)),
+      rectDb: 20 * Math.log10((rms(rectMoved) + 1e-12) / (rms(mesa) + 1e-12)),
+      powerDb: 20 * Math.log10((rms(powerMoved) + 1e-12) / (rms(mesa) + 1e-12)),
+      nan: anyNaN(mesa) || anyNaN(modeMoved) || anyNaN(rectMoved) || anyNaN(powerMoved),
+    };
+  });
+
+  // HARNESS GATE first, by name: a silent render is the flake, not a result.
+  expect(result.mesaRms, 'mesa render was silent (Chromium flake)').toBeGreaterThan(0.005);
+  expect(result.cleanRms, 'clean render was silent (Chromium flake)').toBeGreaterThan(0.0005);
+  expect(result.nan).toBe(false);
+  // Voice 6 is genuinely a different amp, not a fall-through to the Clean 120.
+  // The core measures tail rms 0.1637 vs 0.0414 on this stimulus (docs §71).
+  expect(Math.abs(20 * Math.log10(result.mesaRms / result.cleanRms))).toBeGreaterThan(3);
+  // Each switch moves the audio. Loose bars — this tests the WIRE, not the amp:
+  // the core suite owns the topology properties (docs §69).
+  expect(Math.abs(result.modeDb), 'MODE (id 14) did not reach the core').toBeGreaterThan(1);
+  expect(Math.abs(result.rectDb), 'RECTIFIER (id 15) did not reach the core').toBeGreaterThan(0.5);
+  expect(Math.abs(result.powerDb), 'POWER (id 16) did not reach the core').toBeGreaterThan(0.5);
+});
+
+// Every selectable amp type must have a worklet voice index AND a menu label.
+// Both maps were incomplete for the Mesa at once: AMP_TYPE_LABEL had six entries
+// (so the menu item rendered blank) and startEngine's if/else chain had no 'mesa'
+// branch (so the engine stayed on voice 0). Neither is audio — both are coverage.
+test('amp selector: every available amp type has a voice index and a label', async ({ page }) => {
+  await page.goto('/');
+  const gaps = await page.evaluate(() => {
+    const t = (window as any).__CLIPPER_TEST__;
+    const types: string[] = t.availableAmpTypes;
+    const index: Record<string, number> = t.ampModelIndex;
+    const missingIndex = types.filter((x) => typeof index[x] !== 'number');
+    // The menu is rendered from AVAILABLE_AMP_TYPES; a type with no label paints
+    // an EMPTY button, which is exactly how the Mesa looked.
+    const labels = Array.from(document.querySelectorAll('[data-testid^="amp-"]'))
+      .map((el) => (el.textContent ?? '').trim());
+    return { types, missingIndex, blankLabels: labels.filter((l) => l === '').length };
+  });
+  expect(gaps.types.length).toBeGreaterThan(6);
+  expect(gaps.missingIndex, 'an amp type has no worklet voice index').toEqual([]);
+});

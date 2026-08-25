@@ -62,6 +62,12 @@ struct PedalFace {
     struct Knob {
         const char* name;
         const char* paramId;
+        // A DISCRETE slot's detent labels, in order (nullptr => a continuous pot).
+        // The models quantize these slots — the drop-tune's nine positions, the
+        // three two-state MODE switches — but the card drew all of them as 0-100
+        // dials, so the readout named nothing. NeuKnob::setPositions turns the
+        // dial into a detented selector reading the position's name.
+        std::vector<const char*> positions{};
     };
     std::vector<Knob> knobs;  // 1..3, in display order (Squash/Curfew carry 2)
     const char* onParamId;    // the engaged-flag parameter

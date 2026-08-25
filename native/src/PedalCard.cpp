@@ -99,7 +99,9 @@ const PedalFace kFaces[] = {
     // and the Muff's magenta-violet. No Teletronix/UREI/LA-2A text.
     {"Dynamics N\xc2\xba""2 \xc2\xb7 Leveler", "Lumen", skin::AccentId::Opto,
      Footswitch::Shape::Pad, PedalFace::Layout::Stack, 30.0f,
-     {{"Peak", pid::optoPeakReduction}, {"Mode", pid::optoMode}, {"Gain", pid::optoGain}},
+     {{"Peak", pid::optoPeakReduction},
+      {"Mode", pid::optoMode, {"COMP", "LIMIT"}},
+      {"Gain", pid::optoGain}},
      pid::optoOn, PEDAL_OPTO},
     // SWIRL — M13.5, the Uni-Vibe: the board's SECOND phaser, and the face has to
     // say so before a knob is touched. Morphology cue is the real thing's tall,
@@ -110,7 +112,9 @@ const PedalFace kFaces[] = {
     // and MODE is a DISCRETE two-position switch in the model.
     {"Modulation N\xc2\xba""2 \xc2\xb7 Photocell", "Swirl", skin::AccentId::Vibe,
      Footswitch::Shape::Round, PedalFace::Layout::Stack, 34.0f,
-     {{"Speed", pid::vibeSpeed}, {"Intensity", pid::vibeIntensity}, {"Mode", pid::vibeMode}},
+     {{"Speed", pid::vibeSpeed},
+      {"Intensity", pid::vibeIntensity},
+      {"Mode", pid::vibeMode, {"CHORUS", "VIBRATO"}}},
      pid::vibeOn, PEDAL_VIBE},
     // BASEMENT — M13.10, the board's FIRST pitch shifter and its SECOND
     // one-knob face, so the accent has to carry the whole distinction from the
@@ -120,7 +124,12 @@ const PedalFace kFaces[] = {
     // Drop / Whammy wording anywhere.
     {"Pitch N\xc2\xba""1 \xc2\xb7 Poly", "Cellar", skin::AccentId::Drop,
      Footswitch::Shape::Round, PedalFace::Layout::Single, 34.0f,
-     {{"Amount", pid::dropAmount}},
+     // NINE positions: 1..7 semitones down, the octave, then the octave WITH the
+     // dry signal summed. OCT+DRY is the last click and the original pitch is
+     // audible alongside the octave there — faithful to the reference, and the
+     // reason the position has to be NAMED rather than read "100".
+     {{"Drop", pid::dropAmount,
+       {"-1", "-2", "-3", "-4", "-5", "-6", "-7", "OCT", "OCT+DRY"}}},
      pid::dropOn, PEDAL_DROP},
     // ENSEMBLE — M13.7, the CE-1 Chorus Ensemble: the second MODULATION pedal and
     // the first whose circuit the project already owned (it is the JC-120 amp's
@@ -131,7 +140,9 @@ const PedalFace kFaces[] = {
     // RATE / DEPTH / MODE, and MODE is a DISCRETE two-position switch in the model.
     {"Modulation N\xc2\xba""1 \xc2\xb7 Ensemble", "Ensemble", skin::AccentId::Chorus,
      Footswitch::Shape::Round, PedalFace::Layout::Plate, 34.0f,
-     {{"Rate", pid::ce1Rate}, {"Depth", pid::ce1Depth}, {"Mode", pid::ce1Mode}},
+     {{"Rate", pid::ce1Rate},
+      {"Depth", pid::ce1Depth},
+      {"Mode", pid::ce1Mode, {"CHORUS", "VIBRATO"}}},
      pid::ce1On, PEDAL_CHORUS},
     // ECHOMAN (docs §60) — M13.4, the board's FIRST DELAY and a new DSP family.
     // Its morphology cue is simply that a Memory Man is a WIDE box: the card is a
@@ -195,6 +206,11 @@ PedalCard::PedalCard(ClipperAudioProcessor& p, int type) : proc_(p), type_(type)
         auto knob = std::make_unique<NeuKnob>();
         knob->setName(k.name);
         knob->setAccent(skin::accent(face.accent));
+        if (!k.positions.empty()) {
+            juce::StringArray labels;
+            for (const char* l : k.positions) labels.add(l);
+            knob->setPositions(labels);
+        }
         addAndMakeVisible(*knob);
         knobAttach_.push_back(
             std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(

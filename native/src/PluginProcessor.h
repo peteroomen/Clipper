@@ -179,6 +179,15 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    // The amp voice labels the `ampModel` Choice parameter is built from,
+    // indexed by clipper::native::AmpModel. The EDITOR's top-bar selector is
+    // populated from this same array rather than a second hardcoded list —
+    // it used to carry its own five-entry copy against a seven-choice
+    // parameter, so two voices were unlisted and every item after AC30 chose
+    // the wrong amp (the owner's "missing amps, don't line up"). One array,
+    // one order, checked against AMP_MODEL_COUNT.
+    static const juce::StringArray& ampModelChoices();
+
     // Read the current APVTS values into a Params snapshot (used by processBlock
     // and reusable by the editor / tests).
     Params snapshotParams() const;

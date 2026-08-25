@@ -568,6 +568,11 @@ private:
     clipper::dsp::RockerverbAmp rockerverb_;  // Rockerverb 100 dirty ch. (M10.7)
     clipper::dsp::MesaAmp mesa_;              // Mesa Dual Rectifier (M10.4)
 
+    // Amp parameter routing, shared by the setup path (applyParamsToModels,
+    // old == nullptr => apply every row) and the per-block live path
+    // (updateParams, old => apply only what changed). ONE body on purpose:
+    // the two used to be separate and the Mesa was missed by the second.
+    void applyAmpRouting(const Params& p, const Params* old);
     void applyMesaSwitches(const Params& p);
     // THE DOUBLE-BUFFERED CAB. cab_[pair][0] is the left side, cab_[pair][1] the
     // right. Exactly one pair is live at a time; the message thread only ever

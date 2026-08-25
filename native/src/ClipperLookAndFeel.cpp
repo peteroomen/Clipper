@@ -782,7 +782,35 @@ void NeuKnob::setDimmed(bool d) {
     repaint();
 }
 
+void NeuKnob::setPositions(juce::StringArray labels) {
+    positions_ = std::move(labels);
+    const int n = positions_.size();
+    if (n >= 2) {
+        // Nearest-detent centres are i/(n-1) — the same law the core quantizes
+        // with (round(v * (n-1))), so the UI and the model agree by construction
+        // rather than by both happening to round the same way.
+        slider_.setRange(0.0, 1.0, 1.0 / (double)(n - 1));
+        // A named position is wider than "100", so give the readout the room.
+        valueLabel_.setFont(skin::monoFont(10.0f).boldened());
+    } else {
+        slider_.setRange(0.0, 1.0, 0.0);
+        valueLabel_.setFont(skin::monoFont(11.5f).boldened());
+    }
+    refreshReadout();
+    repaint();
+}
+
 void NeuKnob::refreshReadout() {
+    const int n = positions_.size();
+    if (n >= 2) {
+        // Read the DETENT, not the raw value: a session written by an older build
+        // (or a host sweeping the lane) still resolves to a real position rather
+        // than rendering as something between two clicks.
+        int i = (int)std::lround(slider_.getValue() * (double)(n - 1));
+        i = juce::jlimit(0, n - 1, i);
+        valueLabel_.setText(positions_[i], juce::dontSendNotification);
+        return;
+    }
     valueLabel_.setText(juce::String(juce::roundToInt(slider_.getValue() * 100.0)),
                         juce::dontSendNotification);
 }
@@ -1386,7 +1414,7 @@ void ModeSwitch::paint(juce::Graphics& g) {
 
     g.setColour(sc.inkDim);
     g.setFont(skin::monoFont(9.5f));
-    g.drawText("MODE", full.withTop(r.getBottom() + 4.0f), juce::Justification::centredTop);
+    g.drawText(caption_, full.withTop(r.getBottom() + 4.0f), juce::Justification::centredTop);
 }
 
 }  // namespace clipper::native

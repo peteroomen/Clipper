@@ -452,6 +452,8 @@ void ClipperAudioProcessor::handleAsyncUpdate() {
     applyCabFromState(/*immediate=*/false);
 }
 
+const juce::StringArray& ClipperAudioProcessor::ampModelChoices() { return kAmpModelChoices; }
+
 Params ClipperAudioProcessor::snapshotParams() const {
     Params p;
     auto f = [this](const char* id) {
