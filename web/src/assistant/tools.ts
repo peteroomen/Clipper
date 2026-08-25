@@ -375,6 +375,8 @@ export const TOOLS = [
       'bypassed. MODE is a two-position switch: CHORUS mixes dry and wet (the ' +
       'familiar swirl), VIBRATO is the wet path alone (pitch wobble, no comb). ' +
       'Try it AFTER the dirt for classic late-60s swirl), ' +
+      "'eq' (the 'Decade' TEN-BAND GRAPHIC EQ — ten band sliders plus gain " +
+      "and volume; every slider is 0..1 with 0.5 FLAT), " +
       "'drop' (the 'Cellar' DROP-TUNE — a polyphonic pitch shifter that " +
       'retunes the WHOLE guitar downward without changing a string. ONE control, ' +
       'AMOUNT, and it is a 9-position ROTARY not a sweep: DROP 1 through DROP 7 ' +
@@ -432,7 +434,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'vibe', 'drop', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'vibe', 'drop', 'eq', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -650,7 +652,7 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'vibe' | 'drop' | 'tuner' =
+    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'vibe' | 'drop' | 'eq' | 'tuner' =
       input.type === 'tuner' ? 'tuner'
       : input.type === 'sd1' ? 'sd1'
       : input.type === 'ts' ? 'ts'
@@ -664,6 +666,7 @@ export function executeTool(
       : input.type === 'chorus' ? 'chorus'
       : input.type === 'delay' ? 'delay'
       : input.type === 'vibe' ? 'vibe'
+      : input.type === 'eq' ? 'eq'
       : input.type === 'drop' ? 'drop'
       : 'rat';
     const rawPos = input.position;
@@ -684,6 +687,7 @@ export function executeTool(
                     : type === 'chorus' ? 'Ensemble'
                     : type === 'delay' ? 'Echoman'
                     : type === 'vibe' ? 'Swirl'
+                    : type === 'eq' ? 'Decade'
                     : type === 'drop' ? 'Cellar'
                     : 'RAT';
     return {

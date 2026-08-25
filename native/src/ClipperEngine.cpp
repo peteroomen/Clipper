@@ -26,7 +26,7 @@ const char* const kPedalKeys[PEDAL_TYPE_COUNT] = {"rat",    "sd1",  "ts",
                                                   "wah",   "comp",
                                                   "delay", "gate", "chorus",
                                                   "opto",  "vibe",
-                                                  "drop"};
+                                                  "drop",  "eq"};
 constexpr int   kCabPartition = 128;  // == worklet render quantum / cab partition
 // Extra samples to HOLD the output at zero after a CAB swap, before the fade back
 // in. Mirrors CAB_SWAP_DEAD_SAMPLES in web/worklet/clipper-processor.js and exists
@@ -85,6 +85,7 @@ bool Params::pedalOn(int type) const {
         case PEDAL_OPTO:   return optoOn;
         case PEDAL_VIBE:   return vibeOn;
         case PEDAL_DROP:   return dropOn;
+        case PEDAL_EQ:     return eqOn;
         case PEDAL_CHORUS: return ce1On;
         case PEDAL_DELAY:  return delayOn;
         default:           return false;
@@ -159,6 +160,14 @@ void ClipperEngine::applyParamsToModels() {
     // M13.10 the drop-tune — ONE real knob, AMOUNT, quantized by the core to a
     // 9-position rotary. Slots 1/2 are carried and unused.
     drop_.setParameter(clipper::dsp::DropModel::PARAM_AMOUNT, p.dropAmount);
+
+    // M13.6 the ten-band EQ. GAIN/VOLUME on the shared slots, then the ten bands
+    // on their OWN ids (3..12) — the first pedal here whose parameters are not
+    // all three-slot.
+    eq_.setParameter(clipper::dsp::EqModel::PARAM_GAIN, p.eqGain);
+    eq_.setParameter(clipper::dsp::EqModel::PARAM_VOLUME, p.eqVolume);
+    for (int i = 0; i < clipper::dsp::EqModel::kNumBands; ++i)
+        eq_.setBand(i, p.eqBand[i]);
     // CE-1 "Ensemble" chorus (M13.7) — the same positional slot ABI, reading as
     // RATE / DEPTH / MODE. MODE is DISCRETE inside the model (< 0.5 chorus,
     // >= 0.5 vibrato); it is a float here only because the slot is.
@@ -363,6 +372,12 @@ void ClipperEngine::updateParams(const Params& p) {
     if (p.vibeMode != o.vibeMode) vibe_.setParameter(VibeModel::PARAM_MODE, p.vibeMode);
     if (p.dropAmount != o.dropAmount)
         drop_.setParameter(clipper::dsp::DropModel::PARAM_AMOUNT, p.dropAmount);
+    if (p.eqGain != o.eqGain)
+        eq_.setParameter(clipper::dsp::EqModel::PARAM_GAIN, p.eqGain);
+    if (p.eqVolume != o.eqVolume)
+        eq_.setParameter(clipper::dsp::EqModel::PARAM_VOLUME, p.eqVolume);
+    for (int i = 0; i < clipper::dsp::EqModel::kNumBands; ++i)
+        if (p.eqBand[i] != o.eqBand[i]) eq_.setBand(i, p.eqBand[i]);
     if (p.delayTime != o.delayTime)         delay_.setParameter(DelayModel::PARAM_DELAY, p.delayTime);
     if (p.delayFeedback != o.delayFeedback) delay_.setParameter(DelayModel::PARAM_FEEDBACK, p.delayFeedback);
     if (p.delayBlend != o.delayBlend)       delay_.setParameter(DelayModel::PARAM_BLEND, p.delayBlend);
@@ -491,6 +506,8 @@ void ClipperEngine::setPedalOversampling(int factor) {
     // read tap is a resampling delay, not a nonlinearity, and it was measured
     // BIT-IDENTICAL at 1x and 8x (docs §70.6).
     drop_.setOversampling(factor);
+    // The EQ accepts and IGNORES it too: linear and time-invariant (docs §71).
+    eq_.setOversampling(factor);
     // ce1_ has no nonlinearity: setOversampling would be a no-op, so it is not called.
     // NOTE: the delay is deliberately NOT re-factored here. Its oversampling is
     // set by the DEVICE (the BBD clock reaches 136.5 kHz, so the internal rate
@@ -636,6 +653,7 @@ void ClipperEngine::processPedal(int type, const float* in, float* out, int numF
         case PEDAL_OPTO:   opto_.process(in, out, numFrames); break;
         case PEDAL_VIBE:   vibe_.process(in, out, numFrames); break;
         case PEDAL_DROP:   drop_.process(in, out, numFrames); break;
+        case PEDAL_EQ:     eq_.process(in, out, numFrames); break;
         case PEDAL_CHORUS: ce1_.process(in, out, numFrames); break;
         case PEDAL_DELAY:  delay_.process(in, out, numFrames); break;
         default: break;
@@ -661,6 +679,7 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     opto_.prepare(sampleRate_, maxBlock_);
     vibe_.prepare(sampleRate_, maxBlock_);
     drop_.prepare(sampleRate_, maxBlock_);
+    eq_.prepare(sampleRate_);
     ce1_.prepare(sampleRate_, maxBlock_);
     delay_.prepare(sampleRate_, maxBlock_);
     amp_.prepare(sampleRate_, maxBlock_);
@@ -891,6 +910,8 @@ int ClipperEngine::latencySamples() const {
             // The drop-tune reports 0 by design: the read tap is a sawtooth, so
             // there is no single group delay to compensate (docs §70.6).
             case PEDAL_DROP: n += drop_.latencySamples(); break;
+            // The EQ reports 0: linear and time-invariant, nothing oversampled.
+            case PEDAL_EQ:   n += eq_.latencySamples(); break;
             // The CE-1 chorus is linear time-varying — no oversampling, and its
             // modulated delay IS the effect rather than a compensable latency.
             case PEDAL_CHORUS: break;

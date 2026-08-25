@@ -90,6 +90,25 @@ inline constexpr const char* vibeMode          = "vibeMode";
 // a knob that does nothing.
 inline constexpr const char* dropOn            = "dropOn";
 inline constexpr const char* dropAmount        = "dropAmount";
+// M13.6: the "Decade" ten-band graphic EQ — the first pedal here with more than
+// three parameters. GAIN and VOLUME ride the shared slots (eqGain/eqVolume); the
+// ten BANDS are their own ids, named by their nominal ISO centre so a saved
+// session is readable and a band can never be silently re-pointed by a
+// renumbering. Every one defaults to 0.5, which for this pedal is EXACT
+// transparency rather than a convention (docs §71.3).
+inline constexpr const char* eqOn               = "eqOn";
+inline constexpr const char* eqGain             = "eqGain";
+inline constexpr const char* eqVolume           = "eqVolume";
+inline constexpr const char* eqBand31          = "eqBand31";
+inline constexpr const char* eqBand63          = "eqBand63";
+inline constexpr const char* eqBand125         = "eqBand125";
+inline constexpr const char* eqBand250         = "eqBand250";
+inline constexpr const char* eqBand500         = "eqBand500";
+inline constexpr const char* eqBand1k          = "eqBand1k";
+inline constexpr const char* eqBand2k          = "eqBand2k";
+inline constexpr const char* eqBand4k          = "eqBand4k";
+inline constexpr const char* eqBand8k          = "eqBand8k";
+inline constexpr const char* eqBand16k         = "eqBand16k";
 // M13.7: the CE-1 "Ensemble" chorus. THREE knobs — RATE, DEPTH and MODE. MODE is
 // a plain 0..1 knob rather than a Choice deliberately: it is the shared slot-2 of
 // the pedal-agnostic positional ABI, so making it a Choice here would put the

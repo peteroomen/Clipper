@@ -2920,3 +2920,102 @@ test('delay worklet: the DELAY knob moves the echo half a second, and BLEND 0 is
   // (c) BLEND 0 is dry: nothing survives past the burst's own ring-down.
   expect(result.dryAfter).toBeLessThan(0.01 * result.dryBurst);
 });
+
+test('eq worklet: the ten band sliders reach the core by their own param ids', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
+
+  // THE PROPERTY THIS OWNS. The core suite proves the EQ's SHAPE (docs §71); what
+  // only the web can prove is the DELIVERY PATH — that a band slider addressed by
+  // NAME in the rig reaches the right numeric id in the core (§57.13's split).
+  // That matters more here than for any previous pedal: the EQ is the first one
+  // whose params are not the three shared slots, so ids 3..12 are new plumbing.
+  //
+  // Three renders only. Chromium's OfflineAudioContext starts returning SILENCE
+  // once enough contexts exist in one process (playwright.config.ts documents it;
+  // the comp spec was seen tripping at six).
+  const result = await page.evaluate(async () => {
+    const sampleRate = 48000;
+    const seconds = 1.0;
+
+    async function render(bands: Record<string, number>, toneHz: number): Promise<Float32Array> {
+      const length = Math.floor(sampleRate * seconds);
+      let ctx: OfflineAudioContext | null = null;
+      for (let attempt = 0; attempt < 4 && !ctx; attempt++) {
+        const c = new OfflineAudioContext(1, length, sampleRate);
+        try {
+          await Promise.race([
+            c.audioWorklet.addModule('/generated/clipper-processor.js'),
+            new Promise((_r, rej) => setTimeout(() => rej(new Error('addModule timeout')), 6000)),
+          ]);
+          ctx = c;
+        } catch {
+          /* fresh context, retry */
+        }
+      }
+      if (!ctx) throw new Error('addModule failed after retries');
+      const node = new AudioWorkletNode(ctx, 'clipper-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('worklet not ready')), 5000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'ready') { clearTimeout(t); resolve(); }
+          else if (e.data?.type === 'error') { clearTimeout(t); reject(new Error(e.data.message)); }
+        };
+      });
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => resolve(), 6000);
+        node.port.onmessage = (e: MessageEvent) => {
+          if (e.data?.type === 'latency') { clearTimeout(t); resolve(); }
+        };
+        node.port.postMessage({ type: 'bypass', unit: 'amp', on: true }); // pure pedal proof
+        node.port.postMessage({
+          type: 'chain',
+          pedals: [{
+            id: 'e', type: 'eq', engaged: true,
+            params: { distortion: 0.5, filter: 0.5, level: 0.5, ...bands },
+          }],
+        });
+      });
+      const osc = new OscillatorNode(ctx, { type: 'sine', frequency: toneHz });
+      const g = new GainNode(ctx, { gain: 0.2 });
+      osc.connect(g);
+      osc.start();
+      g.connect(node).connect(ctx.destination);
+      const buffer = await ctx.startRendering();
+      return buffer.getChannelData(0).slice();
+    }
+    function rms(data: Float32Array): number {
+      // Settled tail only — the first blocks carry the slider smoothers' ramp.
+      const from = Math.floor(data.length * 0.5);
+      let sum = 0;
+      for (let i = from; i < data.length; i++) sum += data[i] * data[i];
+      return Math.sqrt(sum / (data.length - from));
+    }
+
+    const flat = await render({}, 1000);
+    const up1k = await render({ band1k: 1.0 }, 1000);
+    // The SAME slider name, measured at a DIFFERENT band's centre. If the name
+    // were wired to the wrong id this would move and the 1 kHz probe would not.
+    const up1kAt125 = await render({ band1k: 1.0 }, 125);
+    const flatRms = rms(flat);
+    return {
+      flatRms,
+      boostDb: 20 * Math.log10(rms(up1k) / flatRms),
+      offBandDb: 20 * Math.log10(rms(up1kAt125) / flatRms),
+    };
+  });
+
+  // Flat must be transparent — the structural property, delivered end to end.
+  expect(result.flatRms).toBeGreaterThan(0.1);
+  // band1k reaches the core: about +12 dB at its own centre. A generous window,
+  // because this bar is about ROUTING, not about the curve (the core owns that).
+  expect(result.boostDb).toBeGreaterThan(9);
+  expect(result.boostDb).toBeLessThan(15);
+  // ... and does essentially nothing three octaves below, which is what fails if
+  // the name were mapped to the wrong band id.
+  expect(Math.abs(result.offBandDb)).toBeLessThan(1.5);
+});

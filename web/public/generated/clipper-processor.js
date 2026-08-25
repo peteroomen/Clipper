@@ -369,8 +369,8 @@ class ClipperProcessor extends AudioWorkletProcessor {
     // is a no-op and latency is 0 because the read tap is a sawtooth with no
     // single group delay — docs §70),
     // anything else = RAT.
-    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'muff' ? 'muff' : type === 'gold' ? 'gold' : type === 'comp' ? 'comp' : type === 'opto' ? 'opto' : type === 'vibe' ? 'vibe' : type === 'gate' ? 'gate' : type === 'phaser' ? 'phaser' : type === 'wah' ? 'wah' : type === 'chorus' ? 'chorus' : type === 'delay' ? 'delay' : type === 'drop' ? 'drop' : 'rat';
-    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'muff' ? '_muff' : t === 'gold' ? '_gold' : t === 'comp' ? '_comp' : t === 'opto' ? '_opto' : t === 'vibe' ? '_vibe' : t === 'gate' ? '_gate' : t === 'phaser' ? '_phaser' : t === 'wah' ? '_wah' : t === 'chorus' ? '_chorus' : t === 'delay' ? '_delay' : t === 'drop' ? '_drop' : '_rat';
+    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'muff' ? 'muff' : type === 'gold' ? 'gold' : type === 'comp' ? 'comp' : type === 'opto' ? 'opto' : type === 'vibe' ? 'vibe' : type === 'gate' ? 'gate' : type === 'phaser' ? 'phaser' : type === 'wah' ? 'wah' : type === 'chorus' ? 'chorus' : type === 'delay' ? 'delay' : type === 'drop' ? 'drop' : type === 'eq' ? 'eq' : 'rat';
+    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'muff' ? '_muff' : t === 'gold' ? '_gold' : t === 'comp' ? '_comp' : t === 'opto' ? '_opto' : t === 'vibe' ? '_vibe' : t === 'gate' ? '_gate' : t === 'phaser' ? '_phaser' : t === 'wah' ? '_wah' : t === 'chorus' ? '_chorus' : t === 'delay' ? '_delay' : t === 'drop' ? '_drop' : t === 'eq' ? '_eq' : '_rat';
     const handle = mod[P + '_create'](this._sr);
     mod[P + '_set_oversampling'](handle, this._oversampling | 0);
     if (params) {
@@ -388,7 +388,7 @@ class ClipperProcessor extends AudioWorkletProcessor {
   // ('_sd' | '_ts' | '_muff' | '_gold' | '_comp' | '_opto' | '_vibe' | '_gate' | '_phaser' | '_wah' |
   // '_chorus' | '_delay' | '_drop' | '_rat').
   _prefix(node) {
-    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'muff' ? '_muff' : node.type === 'gold' ? '_gold' : node.type === 'comp' ? '_comp' : node.type === 'opto' ? '_opto' : node.type === 'vibe' ? '_vibe' : node.type === 'gate' ? '_gate' : node.type === 'phaser' ? '_phaser' : node.type === 'wah' ? '_wah' : node.type === 'chorus' ? '_chorus' : node.type === 'delay' ? '_delay' : node.type === 'drop' ? '_drop' : '_rat';
+    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'muff' ? '_muff' : node.type === 'gold' ? '_gold' : node.type === 'comp' ? '_comp' : node.type === 'opto' ? '_opto' : node.type === 'vibe' ? '_vibe' : node.type === 'gate' ? '_gate' : node.type === 'phaser' ? '_phaser' : node.type === 'wah' ? '_wah' : node.type === 'chorus' ? '_chorus' : node.type === 'delay' ? '_delay' : node.type === 'drop' ? '_drop' : node.type === 'eq' ? '_eq' : '_rat';
   }
 
   _destroyPedal(node) {

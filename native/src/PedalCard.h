@@ -47,7 +47,10 @@ struct PedalFace {
     //   Single   the phaser's ONE big centred knob.
     //   Plate    the GOLD box: knob row over an ENGRAVED NAMEPLATE band carrying the
     //            wordmark (so this face has no hero wordmark of its own), round stomp.
-    enum class Layout { Stack, Triangle, Single, Plate };
+    //   Bank     M13.6's ten-band EQ: the ten band knobs in a 2x5 grid with
+    //            GAIN/VOLUME on a row beneath. The only face with more than three
+    //            controls.
+    enum class Layout { Stack, Triangle, Single, Plate, Bank };
 
     const char* eyebrow;      // the small model line (.pedal-model)
     const char* wordmark;     // the hero name (.pedal-logo) / the nameplate engraving
@@ -63,7 +66,9 @@ struct PedalFace {
         const char* name;
         const char* paramId;
     };
-    std::vector<Knob> knobs;  // 1..3, in display order (Squash/Curfew carry 2)
+    // In display order. 1..3 for every face except Bank, which carries TWELVE
+    // (the ten bands, then GAIN and VOLUME) — see Layout::Bank.
+    std::vector<Knob> knobs;
     const char* onParamId;    // the engaged-flag parameter
     // The PedalType this face belongs to. It is a FIELD rather than the entry's
     // POSITION for two measured reasons found by M13.6a (docs §61.10): the table

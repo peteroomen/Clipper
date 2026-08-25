@@ -148,6 +148,11 @@ export const EQ_BAND_PARAMS = [
 // coaching only — the CORE owns the real centres, which come from the
 // transcribed gyrator design equation and land a few percent off nominal
 // exactly as real component values do (docs §71).
+// The +/- dB the band sliders reach at the ends of their travel. Mirrors
+// kLevelRangeDb / the range the leg loss is pinned to in EqModel.cpp — display
+// and coaching only; the CORE owns the real curve.
+export const EQ_BAND_RANGE_DB = 12;
+
 export const EQ_BAND_HZ = [31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000] as const;
 
 // Map a rig amp param name to its worklet/core id.

@@ -69,7 +69,7 @@ export type SourceKind = 'test' | 'live';
 // than after a stab at the same depth, against the OTA voice's 1.000x — docs
 // §64.4), its attack does not move with the knob, and its PEAK REDUCTION moves a
 // THRESHOLD by 45.44 dB where the Squash's SUSTAIN moves GAIN by 25.33 dB.
-export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'vibe' | 'drop' | 'tuner';
+export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'vibe' | 'drop' | 'eq' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
@@ -131,7 +131,7 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412' | 'orange412', num
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'vibe', 'drop', 'tuner'];
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'vibe', 'drop', 'eq', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
@@ -454,6 +454,28 @@ export const DROP_KNOB_DEFAULTS: PedalParams = {
   level: 0.5,
 };
 
+// M13.6 ten-band graphic EQ ("Decade"). Every slider opens at CENTRE, which for
+// this pedal is not a convention but a structural property: at centre each band
+// leg injects nothing into the summing node, so a freshly added EQ is exactly
+// transparent (measured +0.00000 dB, docs §71.3). GAIN rides slot 0 and VOLUME
+// slot 2, both 0.5 == unity. Slot 1 is carried and unused.
+// These must match the C++ constructor defaults in EqModel.cpp.
+export const EQ_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.5,
+  filter: 0.5,
+  level: 0.5,
+  band31: 0.5,
+  band63: 0.5,
+  band125: 0.5,
+  band250: 0.5,
+  band500: 0.5,
+  band1k: 0.5,
+  band2k: 0.5,
+  band4k: 0.5,
+  band8k: 0.5,
+  band16k: 0.5,
+};
+
 export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   rat: KNOB_DEFAULTS,
   sd1: SD1_KNOB_DEFAULTS,
@@ -469,6 +491,7 @@ export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   delay: DELAY_KNOB_DEFAULTS,
   vibe: VIBE_KNOB_DEFAULTS,
   drop: DROP_KNOB_DEFAULTS,
+  eq: EQ_KNOB_DEFAULTS,
   // The tuner has no knobs; params are unused but keep the shared shape.
   tuner: KNOB_DEFAULTS,
 };
@@ -591,6 +614,7 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
     : p.type === 'delay' ? 'delay'
     : p.type === 'vibe' ? 'vibe'
     : p.type === 'drop' ? 'drop'
+    : p.type === 'eq' ? 'eq'
     : 'rat';
   const params: PedalParams = {
     distortion: clamp01(pr.distortion, dp.params.distortion),

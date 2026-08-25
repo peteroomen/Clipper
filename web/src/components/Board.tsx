@@ -67,6 +67,7 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   comp: 'Squash compressor (teal, 2-knob)',
   opto: 'Lumen optical compressor (periwinkle, leveler)',
   gate: 'Curfew noise gate (slate, 2-knob)',
+  eq: 'Decade ten-band graphic EQ (silver)',
   phaser: 'Script phaser',
   wah: 'Weeper wah / envelope filter',
   chorus: 'Ensemble chorus / vibrato',

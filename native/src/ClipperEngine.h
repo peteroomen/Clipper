@@ -98,6 +98,7 @@
 #include "clipper/dsp/OptoModel.h"
 #include "clipper/dsp/VibeModel.h"
 #include "clipper/dsp/DropModel.h"
+#include "clipper/dsp/EqModel.h"
 #include "clipper/dsp/GoldModel.h"
 #include "clipper/dsp/WahModel.h"
 #include "clipper/dsp/Jcm800Amp.h"
@@ -163,7 +164,19 @@ enum PedalType : int {
     // ARE the packed-snapshot encoding and the APVTS chain-order state, so
     // renumbering one silently re-points every saved board.
     PEDAL_DROP = 13,
-    PEDAL_TYPE_COUNT = 14,
+
+    // M13.6: the "Decade" ten-band graphic EQ — the board's first EQ, and the
+    // first pedal whose control surface is larger than three slots. APPENDED at
+    // 14 for the same reason as every type above it: these integers ARE the
+    // packed-snapshot encoding and the APVTS chain-order state.
+    //
+    // NOTE FOR THE NEXT PEDAL SLICE: this one exactly fills the packed chain
+    // word. PluginProcessor.cpp asserts kChainField * (kMaxChain + 1) <= 64 with
+    // kChainField = 4, which at PEDAL_TYPE_COUNT = 15 is 4 * 16 = 64. A
+    // SIXTEENTH type fires that static_assert, exactly as the EIGHTH fired the
+    // uint32 one it replaced. Widen the field or the word first.
+    PEDAL_EQ = 14,
+    PEDAL_TYPE_COUNT = 15,
 };
 
 // Each type is instantiable once, so the board can never be longer than this.
@@ -302,6 +315,18 @@ struct Params {
     // reference has one control and no MIX.
     bool  dropOn = true;
     float dropAmount = 0.0f;
+
+    // M13.6 the ten-band graphic EQ. Defaults MUST match EQ_KNOB_DEFAULTS in
+    // web/src/rig.ts and EqModel's constructor. EVERY slider opens at 0.5, which
+    // for this pedal is not a convention but a structural property: at centre
+    // each band leg injects nothing into the summing node, so a freshly added EQ
+    // is exactly transparent (docs §71.3). GAIN rides slot 0 and VOLUME slot 2 —
+    // ordinary slot reuse, the way the phaser takes slot 0 as SPEED; slot 1 is
+    // carried and unused. The ten bands are their OWN param ids (3..12).
+    bool  eqOn = true;
+    float eqGain = 0.5f;
+    float eqVolume = 0.5f;
+    float eqBand[10] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
 
     // "Echoman" BBD analog delay (M13.4) — the lineup's FIRST DELAY, and a new
     // DSP family. Three real knobs, the shared positional slots reading as
@@ -538,6 +563,7 @@ private:
     clipper::dsp::OptoModel opto_;    // the "Lumen" optical compressor (M13.3)
     clipper::dsp::VibeModel vibe_;    // the "Swirl" Uni-Vibe (M13.5)
     clipper::dsp::DropModel drop_;    // the "Cellar" drop-tune (M13.10)
+    clipper::dsp::EqModel eq_;        // the "Decade" ten-band graphic EQ (M13.6)
     clipper::dsp::Ce1Model  ce1_;     // the CE-1 "Ensemble" chorus (M13.7)
     clipper::dsp::DelayModel delay_;  // the "Echoman" BBD analog delay (M13.4)
     clipper::dsp::AmpModel amp_;      // Clean 120

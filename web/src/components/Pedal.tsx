@@ -34,8 +34,11 @@ import {
   type PedalState,
   type ParamName,
   type CoreParamName,
+  type EqBandParamName,
   type PedalType,
 } from '../rig';
+import { Fader } from './Fader';
+import { EQ_BAND_RANGE_DB } from '../params';
 
 export interface PedalProps {
   pedal: PedalState;
@@ -57,7 +60,19 @@ interface KnobSpec {
   param: CoreParamName;
   testId: string;
 }
-type FaceLayout = 'stack' | 'compact' | 'slim' | 'single' | 'wide' | 'plate' | 'rocker' | 'bank';
+type FaceLayout =
+  | 'stack'
+  | 'compact'
+  | 'slim'
+  | 'single'
+  | 'wide'
+  | 'plate'
+  | 'rocker'
+  | 'bank'
+  // M13.6: a ten-fader bank. The first face whose controls are not knobs, and
+  // the first whose control count is not 1..3 — a graphic EQ's whole point is
+  // that you read the curve off the physical slider positions.
+  | 'graphic';
 interface PedalFace {
   layout: FaceLayout;
   model: string; // small model line (top eyebrow)
@@ -65,6 +80,18 @@ interface PedalFace {
   // 1..3 knobs. The dirt faces carry three; the phaser's 'single' face carries
   // exactly one (the iconic one-knob face).
   knobs: KnobSpec[];
+  // M13.6: the band FADERS, for the 'graphic' layout only. Present exactly when
+  // the pedal's control surface is larger than the three shared slots; every
+  // other face leaves it undefined, which is what "this is a three-slot pedal"
+  // looks like on the UI side.
+  faders?: FaderSpec[];
+}
+interface FaderSpec {
+  name: string; // the band label, e.g. "125"
+  unit?: string; // "Hz" / "kHz"
+  aria: string;
+  param: EqBandParamName; // its own param id, NOT one of the three shared slots
+  testId: string;
 }
 // Every KNOB pedal gets a faceplate here; the tuner renders via its own component
 // (Tuner.tsx) and never reaches Pedal. To add a future pedal's face, add an entry
@@ -341,6 +368,36 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       { name: 'Amount', aria: 'Drop amount', param: 'distortion', testId: 'knob-amount' },
     ],
   },
+  // M13.6 "Decade": the ten-band graphic EQ, and the board's first non-knob
+  // face. A GRAPHITE-over-CHARCOAL chassis with a SILVER accent — the reference
+  // family is a plain metal box whose identity is the fader bank itself, so the
+  // face leans on morphology rather than colour, and silver is the one accent no
+  // other pedal on this board uses. "Decade" is the wink (ten bands, and decades
+  // of frequency); the model line names the type. No MXR / M108 / Dunlop wording
+  // anywhere (docs §17 doctrine).
+  eq: {
+    layout: 'graphic',
+    model: 'EQ Nº1 · TEN BAND',
+    wordmark: 'Decade',
+    knobs: [
+      // GAIN and VOLUME ride the shared slots 0 and 2 — ordinary slot reuse, the
+      // way the phaser takes slot 0 as SPEED. Slot 1 is carried and unused.
+      { name: 'Gain', aria: 'Input gain', param: 'distortion', testId: 'knob-eq-gain' },
+      { name: 'Vol', aria: 'Output volume', param: 'level', testId: 'knob-eq-volume' },
+    ],
+    faders: [
+      { name: '31', unit: 'Hz', aria: '31 Hz band', param: 'band31', testId: 'fader-band31' },
+      { name: '63', unit: 'Hz', aria: '63 Hz band', param: 'band63', testId: 'fader-band63' },
+      { name: '125', unit: 'Hz', aria: '125 Hz band', param: 'band125', testId: 'fader-band125' },
+      { name: '250', unit: 'Hz', aria: '250 Hz band', param: 'band250', testId: 'fader-band250' },
+      { name: '500', unit: 'Hz', aria: '500 Hz band', param: 'band500', testId: 'fader-band500' },
+      { name: '1', unit: 'kHz', aria: '1 kHz band', param: 'band1k', testId: 'fader-band1k' },
+      { name: '2', unit: 'kHz', aria: '2 kHz band', param: 'band2k', testId: 'fader-band2k' },
+      { name: '4', unit: 'kHz', aria: '4 kHz band', param: 'band4k', testId: 'fader-band4k' },
+      { name: '8', unit: 'kHz', aria: '8 kHz band', param: 'band8k', testId: 'fader-band8k' },
+      { name: '16', unit: 'kHz', aria: '16 kHz band', param: 'band16k', testId: 'fader-band16k' },
+    ],
+  },
   phaser: {
     // The iconic ONE-KNOB face: a single big centered SPEED knob on a dark chassis
     // with an ORANGE accent (the orange box, instantly read). "Ninety" is the wink
@@ -456,6 +513,37 @@ export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
           <div className="name-plate" aria-hidden="true">
             <span className="name-plate-text">{face.wordmark}</span>
           </div>
+          <div className="fsw-zone">
+            {footswitch}
+            <span className="fsw-label">Stomp</span>
+          </div>
+        </>
+      ) : face.layout === 'graphic' ? (
+        // 'graphic' (the ten-band EQ): the wordmark, then the FADER BANK owning
+        // most of the body, then GAIN/VOLUME on a strip below it, then the stomp.
+        // The bank is the pedal's whole identity, so it gets the space.
+        <>
+          <div className="pedal-logo display">{face.wordmark}</div>
+          <div className="fader-bank" data-testid="fader-bank">
+            {(face.faders ?? []).map((f) => (
+              <Fader
+                key={f.testId}
+                name={f.name}
+                unit={f.unit}
+                ariaLabel={f.aria}
+                rangeDb={EQ_BAND_RANGE_DB}
+                // A band the pedal carries is always present in params; the
+                // fallback is the type's own default, never a bare literal, so a
+                // rig saved before a band existed opens at FLAT rather than at a
+                // full cut.
+                value={params[f.param] ?? defaults[f.param] ?? 0.5}
+                defaultValue={defaults[f.param] ?? 0.5}
+                onChange={(v) => onParam(f.param, v)}
+                testId={f.testId}
+              />
+            ))}
+          </div>
+          {knobs}
           <div className="fsw-zone">
             {footswitch}
             <span className="fsw-label">Stomp</span>
