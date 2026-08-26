@@ -148,6 +148,10 @@ juce::Colour accent(AccentId id) {
         // (--accent-mesa), and deliberately cooler and deeper than AccentId::Clean's
         // orange-red so the Recto and the Clean 120 never read as the same panel.
         case AccentId::Mesa:   return d ? juce::Colour(0xffE4566E) : juce::Colour(0xff9E2235);
+        // M10.10 Champ — LACQUERED TWEED wheat (--accent-champ). Lighter and
+        // yellower than the AC30's copper and far from the Orange's tolex, so the
+        // five amp accents stay distinguishable in one menu.
+        case AccentId::Champ:  return d ? juce::Colour(0xffD8B872) : juce::Colour(0xff9A7433);
         case AccentId::Clean:  return d ? juce::Colour(0xffFF4A34) : juce::Colour(0xffF03B24);
     }
     return d ? juce::Colour(0xffFF4A34) : juce::Colour(0xffF03B24);

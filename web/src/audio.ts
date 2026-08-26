@@ -152,7 +152,7 @@ export interface Engine {
   setOversampling(factor: number): void;
   setAmpBypass(on: boolean): void; // amp power off = bypass
   // Cab expansion: swap the BUILT-IN cab IR (click-free in the worklet).
-  setCabBuiltin(which: 'clean212' | 'brit412' | 'orange412'): void;
+  setCabBuiltin(which: 'clean212' | 'brit412' | 'orange412' | 'tweed8'): void;
   // Cab expansion: load a user IR (engine-rate mono samples). The buffer is
   // TRANSFERRED to the worklet; the core peak-normalizes it.
   loadCustomIr(samples: Float32Array): void;

@@ -95,7 +95,7 @@ inline constexpr const char* dropAmount        = "dropAmount";
 // ten BANDS are their own ids, named by their nominal ISO centre so a saved
 // session is readable and a band can never be silently re-pointed by a
 // renumbering. Every one defaults to 0.5, which for this pedal is EXACT
-// transparency rather than a convention (docs §72.3).
+// transparency rather than a convention (docs §73.3).
 inline constexpr const char* eqOn               = "eqOn";
 inline constexpr const char* eqGain             = "eqGain";
 inline constexpr const char* eqVolume           = "eqVolume";
@@ -163,6 +163,10 @@ inline constexpr const char* orangeFac   = "orangeFac";
 inline constexpr const char* mesaMode      = "mesaMode";
 inline constexpr const char* mesaRectifier = "mesaRectifier";
 inline constexpr const char* mesaPowerMode = "mesaPowerMode";
+// M10.10 Champ (docs §73) — its OWN id, not the shared `volume`. This knob is
+// the amp's only gain control and needs its own default; see the web's
+// AMP_PARAM_CHAMP_VOLUME for the full reasoning.
+inline constexpr const char* champVolume = "champVolume";
 inline constexpr const char* oversampling = "oversampling";
 }  // namespace pid
 

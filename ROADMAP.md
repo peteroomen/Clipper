@@ -392,11 +392,35 @@ independent slices that can interleave anywhere:
   **cheapest amp on this list per unit of tone**: mostly a re-voice of machinery
   M9 already built, minus the master volume, plus the shared cathode / jumpered
   channels.
-- **M10.10 — Fender Champ (5F1)** *(S–M)* — the small tweed. Single-ended
-  class A 6V6, ONE tone control, no negative feedback, breaks up almost
-  immediately. Fills the "dirty Fender" hole: the lineup has a clean Twin but
-  no Fender that distorts. New machinery is the single-ended output stage
-  (the plate load line — see audit finding 10).
+- ~~**M10.10 — Fender Champ (5F1)**~~ — **SHIPPED 2026-08-25 (docs §73)** as amp
+  voice **7** (`champ`), wordmark "Cadet", plus a synthesised **`tweed8`** 1×8
+  open-back cab. **This entry's own text was WRONG and the slice corrected it:**
+  it said "ONE tone control", and a tweed 5F1 has **NO tone control at all** —
+  one knob, VOLUME. Fender did not put one on a Champ until the 1964 blackface
+  AA764. So this is the first amp voice here with no tone stack whatsoever, and
+  its face has two knobs (the second is the §19 reverb convenience).
+  The "new machinery" estimate was right: it is **the first SINGLE-ENDED output
+  stage in the project** — every other power section is a push-pull pair behind a
+  phase inverter — and three properties fall out of that, each a hard assert:
+  **(a) nothing cancels the even harmonics** (h2 **−14.84 dBc** against the
+  balanced Twin's **−39.72** on the identical stimulus, 24.88 dB of contrast);
+  **(b) audit finding 9 from the other side** — `Vp = rail − (i − iq)·Rload` is a
+  single-ended relation, exactly correct here and approximate in the push-pull
+  amps, so the plate reaches the knee at **88.4 mA** where finding 9 measured
+  **530 mA from ONE EL34**; **(c) there is no negative feedback at all**
+  (open- vs closed-loop renders bit-identical).
+  **The 6V6 device card is DERIVED and that closes audit finding 10 on a third
+  tube:** two published Koren fits are reachable and disagree, both put the screen
+  **2.1–2.2×** over the datasheet, and at this amp's idle the published fit sits
+  at **2.53 W against the 6V6GT's 2.75 W rating** — the AC30's exact "exceeds its
+  rating at idle" pathology. `kg2` derived (4500 → 10148.2) → **1.12 W**.
+  Validated against **TWO absolute external references**: the RCA/TAD datasheet at
+  two operating points, and **Fender's own published 5F1 node voltages** — only
+  ONE constant is fitted to the latter, and cathode/Ip/Ik/Vpk all fall out within
+  **0.5–2 %**. Power **reported, not chased** (§57.3): the power section's own
+  sine ceiling is 5.17 W against a rated ~5 W; the composed cranked amp makes
+  3.89 W because the preamp hands it a blocking-limited waveform.
+  All five goldens unchanged; nothing blessed; zero XFAILs.
 - **M10.11 — Soldano SLO-100** *(M–L)* — the origin of modern high gain and the
   ancestor of nearly every boutique lead channel. Best done AFTER the Mesa, so
   the cascaded-preamp machinery already exists to reuse.
@@ -641,7 +665,7 @@ keeps these slices small:
 6. **M13.6 — Utility + modulation batch** *(M, splittable)* — **Boss NS-2-style
    noise gate** (mandatory companion to M10.4; reuses 13.2's detector) ✅ shipped
    as the "Curfew", **MXR 10-band graphic EQ** ✅ **SHIPPED 2026-08-25 as the
-   "Decade" (docs §72)**, **Electric Mistress flanger** (cheap once the delay
+   "Decade" (docs §73)**, **Electric Mistress flanger** (cheap once the delay
    line exists), **Mu-Tron III envelope filter** (falls out of 13.1 if that slice
    builds it).
    *(The EQ's entry above said "10 biquads, trivial DSP". **That was true about

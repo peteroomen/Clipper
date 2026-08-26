@@ -216,10 +216,11 @@ private:
     // does two and three, and the core already quantizes the 0..1 value. The web
     // ships all three as knobs for the same reason.
     NeuKnob mesaMode_;  // FIVE positions -> a detented rotary, not a switch
+    NeuKnob champVol_;  // M10.10 — the Champ's ONE knob (its own param id)
     NeuKnob modSpeed_, modDepth_;  // chorus/tremolo speed + depth/intensity
     std::unique_ptr<SliderAttach> volumeAttach_, bassAttach_, middleAttach_, trebleAttach_,
         presenceAttach_, masterAttach_, gainAttach_, reverbAttach_, modSpeedAttach_,
-        modDepthAttach_, facAttach_, mesaModeAttach_;
+        modDepthAttach_, facAttach_, mesaModeAttach_, champVolAttach_;
     LeverToggle bright_, cab_;
     // THE CAB / IR PICKER. A chip under the Cab lever, opening a popup with the two
     // built-ins, the loaded custom IR (if any) and "Load IR…". Not a ComboBox: the
