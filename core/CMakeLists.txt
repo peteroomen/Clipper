@@ -132,6 +132,9 @@ add_library(clipper_dsp STATIC
     src/dsp/RockerverbPreamp.cpp
     src/dsp/MesaPreamp.cpp
     src/dsp/MesaPowerAmp.cpp
+    src/dsp/ChampAmp.cpp
+    src/dsp/ChampPowerAmp.cpp
+    src/dsp/ChampPreamp.cpp
     src/dsp/MesaAmp.cpp
     src/dsp/DropModel.cpp
     src/dsp/RockerverbPowerAmp.cpp
@@ -438,6 +441,15 @@ if(NOT EMSCRIPTEN)
     # OWN 2-cent spread target, not the perceptual bar (which is met with 3.7
     # cents to spare) — see test_drop.cpp.
     clipper_add_xfail_ledger(clipper_drop_tests)
+
+    add_executable(clipper_champ_tests tests/test_champ_amp.cpp)
+    target_link_libraries(clipper_champ_tests PRIVATE clipper_dsp)
+    target_include_directories(clipper_champ_tests PRIVATE tools)
+    clipper_add_test_flags(clipper_champ_tests)
+    add_test(NAME clipper_champ_tests COMMAND clipper_champ_tests)
+    # NO XFAIL LEDGER — zero known-bad properties. Built with ONE shared
+    # oversampling domain from its first commit (docs §63.14), so it does not
+    # inherit the 44.1 kHz alias defect the OR120 and the Rockerverb opened.
 
     add_executable(clipper_mesa_tests tests/test_mesa_amp.cpp)
     target_link_libraries(clipper_mesa_tests PRIVATE clipper_dsp)

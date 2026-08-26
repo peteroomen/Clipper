@@ -214,6 +214,110 @@ mapped in code.
 
 ## What actually happened
 
+## Research results (2026-08-25, before any code)
+
+**Owner decisions:** Q1 → **(b)** one knob + the house REVERB slot (§19 JCM precedent).
+Q2 → **(a)** synthesise a `tweed8` cab.
+
+### The netlist, transcribed
+
+From `valtyr/rust-5f1` `src/circuit/netlist.rs` + its capacitor table (component
+values only; RULE ZERO boundary held — `tube_models.rs`, `solver.rs`, `sim.rs`'s
+simulation loop and the whole `dsp/` directory were NOT opened):
+
+| Part | Value | Part | Value |
+|---|---|---|---|
+| V1A/V1B grid leak | 1 MΩ | V1A/V1B plate load | 100 kΩ |
+| V1A/V1B cathode | 1.5 kΩ, bypassed 25 µF | Volume pot | 1 MΩ **log** |
+| Input coupling | 25 nF | Interstage coupling | 20 nF ×2 |
+| 6V6 grid leak | 1 MΩ | 6V6 cathode | **470 Ω** |
+| OT reflected load | **5 kΩ** (25:1) | Supply | 325 V, 5Y3, 16 µF ×3 |
+| PS filter B1→B2 | 1 kΩ | B2→B3 | 10 kΩ |
+
+**Two corrections to that source, both sourced independently and both shipping:**
+
+1. **It omits the 6V6 cathode bypass cap.** The real 5F1 bypasses the 470 Ω with
+   **25 µF**; search extracts confirm it ("the cathode bypass capacitor is 25 µF…
+   a '25-25' attached to the cathode of the 6V6"). Unbypassed, that 470 Ω is strong
+   local degeneration and a materially different amp. **We ship the cap.**
+2. **Its supply is a 100 Ω series resistance**, which drops only ~4 V and lands the
+   plate node at 320 V. A 5Y3 is a notoriously saggy directly-heated rectifier and
+   Fender's own measured plate node is **305 V**. We take §55's Thévenin form instead
+   (a constant `kRsupply` behind the raw HT), derived below — which also makes SAG a
+   first-class property of this amp rather than an afterthought.
+
+It also models the OT primary as a **DC** 5 kΩ to B+, which would sit the plate 170 V
+below the rail. This project already does the correct thing (plate at the rail at idle,
+`Vp = rail − (i − iq)·R_reflected` as the AC load line), so that simplification is
+**not inherited**.
+
+### The 6V6 device card — DERIVED, and validated against two absolute references
+
+The Koren form makes `Ig2/Ip = (kg1/kg2)/atan(Vp/kvb)`. Evaluated against the
+**RCA/TAD datasheet** at two operating points — P1 (Vp 250, Vg2 250, Vg1 −12.5 →
+Ip 45 mA, Ig2 5 mA) and P2 (Vp 315, Vg2 225, Vg1 −13 → Ip 34 mA):
+
+| fit | P1 Ip | P2 Ip | P1 Ig2 | P2 Ig2 |
+|---|---|---|---|---|
+| A `pedalkernel` | 0.66× | 0.59× | 1.40× | 1.96× |
+| B `vgreff` Koren | **1.03×** | **0.98×** | 2.26× | 3.68× |
+
+**Fit B's shape and `kg1` are right and its `kg2` is not** — the plate current lands
+within 2–3 % at two different `Vp` AND `Vg2`, with errors of opposite sign, which is a
+real external check rather than a self-fit. So B's `mu/ex/kg1/kp/kvb` are kept
+**unmodified** (deliberately NOT trimmed to P1 exactly — that would worsen P2) and
+only `kg2` is derived, against P1's screen current, the one screen figure actually
+returned by search:
+
+    kg2: 4500 -> 10148.2      (Ig2 at P1 exactly 5.000 mA)
+
+**Shipped card: `mu=10.70  ex=1.310  kg1=1672.0  kp=41.16  kvb=12.7  kg2=10148.2`.**
+
+### The second absolute reference: FENDER'S OWN measured 5F1 voltages
+
+Fender publish the 5F1's operating point — **19 V across the 470 Ω cathode resistor**
+(= 40.4 mA total), **plate node ~305 V** (so Vpk = Vg2k = 286 V) and **37 mA** of
+plate current, leaving ~3.4 mA of screen current by difference. Evaluating each card
+at *those node voltages* — nothing fitted, the currents are the model's prediction:
+
+| card | Ip vs 37 mA | Ig2 vs 3.4 mA | Ik vs 40.4 mA | screen diss |
+|---|---|---|---|---|
+| **derived (shipped)** | 35.84 mA **0.969×** | 3.87 mA 1.138× | 39.71 mA **0.983×** | **1.11 W** |
+| A published | 15.36 mA **0.415×** | 3.45 mA 1.015× | 18.81 mA 0.466× | 0.99 W |
+| B published | 35.84 mA 0.969× | 8.72 mA **2.566×** | 44.57 mA 1.103× | **2.50 W** |
+
+**3.1 % on plate current and 1.7 % on total cathode current**, from a card fitted to a
+different manufacturer's datasheet and checked at Fender's operating point. Comparable
+to §69's Mesa figures (1.25–3.98 %), and this project's second amp with an absolute
+external DC reference.
+
+### Audit finding 10, confirmed on a third tube — and this one is FIXED
+
+Finding 10's table is EL34 0.102 / 6L6 **0.210** / EL84 **0.363** against real screen
+ratios near 0.10. The 6V6 continues it exactly: both published fits predict
+`Ig2/Ip ≈ 0.237–0.244` against the datasheet's **0.111**, i.e. **2.1–2.2× too high**.
+At the Champ's own idle the published fit B puts screen dissipation at **2.75 W —
+precisely the 6V6GT's rating**, the same "exceeds its rating at idle" pathology the
+audit measured on the AC30's EL84. The derived card sits at **1.11–1.32 W**.
+
+*(Correction to this plan's pre-work estimate: it quoted "2.2× and 3.3× too high" from
+the bare `kg1/kg2` ratio. The Koren law divides that by `atan(Vp/kvb)`, so the correct
+figures are 2.14× and 2.20×. The conclusion — both fits wrong, `kg2` must be derived —
+is unchanged.)*
+
+**Known residual, reported not fitted:** one `kg2` cannot match both datasheet points
+(P2's screen lands 1.63× high) because **the Koren screen law has no `Vp` dependence**
+— which is finding 10's own closing paragraph, and the reason a real power amp's screen
+current surges when `Vp` falls below `Vg2`. Not modelled here; named.
+
+### Free corroboration for the Twin
+
+`pedalkernel/models/pentodes.model`'s 6L6GC row is
+`MU=8.7 EX=1.35 KG1=1460 KG2=4500 KP=48 KVB=12` — **byte-for-byte this repo's shipped
+`Tube6L6Params`** (§20). An independent source arriving for free. Note its `kg1/kg2` =
+0.210 is finding 10's exact figure, so that corroboration is of the *plate* fit only.
+
+
 ## Measured results
 
 ## Files created / modified
