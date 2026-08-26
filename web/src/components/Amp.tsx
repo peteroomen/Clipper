@@ -539,6 +539,63 @@ function Ac30Face({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
   );
 }
 
+// The Champ face (docs §72) — the tweed 5F1, and THE SPARSEST PANEL IN THE APP.
+// A knowing homage: "Cadet" (model line COMBO Nº8 · TWEED) · a lacquered wheat
+// accent (--accent-champ). Control row: VOLUME · REVERB, and that is the whole
+// amp.
+//
+// WHAT IS ABSENT IS THE POINT, so it is listed rather than left to be noticed as a
+// gap: there is NO tone stack on a 5F1 — no bass, no middle, no treble — because
+// Fender did not put one on a Champ until the 1964 blackface AA764. There is no
+// gain, no master, no presence, no bright switch and no chorus either. The one
+// knob sits BETWEEN the two preamp triodes with nothing downstream to trim, so how
+// far it is up IS how much distortion you get, and how hard you pick is the rest
+// of the tone control. REVERB is the §19 usability convenience every voice here
+// carries (a real 5F1 has no tank).
+//
+// The knob binds to `champVolume`, its OWN param — not the shared `volume` — so it
+// can carry its own default. See AMP_PARAM_CHAMP_VOLUME in params.ts.
+function ChampFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
+  const { params } = amp;
+  return (
+    <div
+      className={`amp raised champ${amp.engaged ? ' on' : ''}`}
+      data-testid="amp"
+      data-engaged={amp.engaged}
+      data-amp-type="champ"
+    >
+      <div className="amp-head">
+        <div className="amp-name display" data-testid="amp-name">
+          Cadet<small>Combo Nº8 · Tweed</small>
+        </div>
+      </div>
+
+      {/* The entire 5F1 panel: one volume knob. Reverb is ours, not Fender's. */}
+      <div className="amp-controls">
+        <Knob
+          name="Vol"
+          ariaLabel="Volume"
+          value={params.champVolume}
+          defaultValue={AMP_KNOB_DEFAULTS.champVolume}
+          onChange={(v) => onParam('champVolume', v)}
+          testId="knob-champ-volume"
+        />
+        <Knob
+          name="Reverb"
+          ariaLabel="Reverb"
+          value={params.reverb}
+          defaultValue={AMP_KNOB_DEFAULTS.reverb}
+          onChange={(v) => onParam('reverb', v)}
+          testId="knob-reverb"
+        />
+
+        {/* Cab lever + Power rocker only — a 5F1 has no bright switch. */}
+        <AmpRight amp={amp} onToggle={onToggle} onTogglePower={onTogglePower} showBright={false} />
+      </div>
+    </div>
+  );
+}
+
 // The Orange OR120 face — an early-70s "Overdrive" HEAD, the MID-FORWARD voice
 // (docs §57). A knowing homage: "Overdrive" (model line HEAD Nº5 · ONE-TWENTY) ·
 // a saturated ORANGE accent (--accent-orange). Control row: GAIN · BASS ·
@@ -872,6 +929,8 @@ export function Amp(props: AmpProps) {
         <RockerverbFace {...props} />
       ) : props.amp.type === 'mesa' ? (
         <MesaFace {...props} />
+      ) : props.amp.type === 'champ' ? (
+        <ChampFace {...props} />
       ) : (
         <Clean120Face {...props} />
       )}

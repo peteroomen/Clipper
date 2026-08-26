@@ -27,6 +27,7 @@
 //     carry, so nobody "restores" kg2 = 4500 thinking the derived value is the bug.
 //   * testPlateKneeIsPhysical is audit finding 9 from the other side.
 
+#include "clipper/dsp/CabIR.h"
 #include "clipper/dsp/ChampAmp.h"
 #include "clipper/dsp/ChampPowerAmp.h"
 #include "clipper/dsp/ChampPreamp.h"
@@ -621,6 +622,62 @@ void testRatedPower() {
     assert(a.power().lastOutputPeak() > 0.7 && a.power().lastOutputPeak() < 1.05);
 }
 
+// ---------------------------------------------------------------------------
+// 10. THE `tweed8` CAB. A Champ's speaker is an 8" driver in a small open-back
+// pine box, and it is the only voice here whose real speaker is SMALLER than every
+// cab that existed before it — which is why it could not just reuse one. Asserted
+// as an ORDERING against the three 12" cabs rather than as absolute numbers, so
+// the properties survive a future re-voicing of any single cab.
+// ---------------------------------------------------------------------------
+void testTweed8Cab() {
+    const double fs = kSr;
+    auto magDb = [&](const std::vector<float>& h, double f) {
+        double re = 0.0, im = 0.0;
+        for (size_t n = 0; n < h.size(); ++n) {
+            const double t = -2.0 * kPi * f * double(n) / fs;
+            re += h[n] * std::cos(t);
+            im += h[n] * std::sin(t);
+        }
+        return 20.0 * std::log10(std::sqrt(re * re + im * im) + 1e-30);
+    };
+    auto corner = [&](const std::vector<float>& h) {
+        double pk = -1e9;
+        for (double f = 40.0; f < 12000.0; f *= 1.01) pk = std::max(pk, magDb(h, f));
+        for (double f = 40.0; f < 1000.0; f *= 1.005)
+            if (magDb(h, f) >= pk - 6.0) return f;
+        return 0.0;
+    };
+
+    const std::vector<float> tweed = generateTweed1x8IR(fs);
+    const std::vector<float> clean = generateDefaultCab2x12IR(fs);
+    const std::vector<float> brit = generateBrit4x12IR(fs);
+    const std::vector<float> orange = generateOrange4x12IR(fs);
+
+    const double cT = corner(tweed), cC = corner(clean);
+    const double cB = corner(brit), cO = corner(orange);
+    auto tilt = [&](const std::vector<float>& h, double f) { return magDb(h, f) - magDb(h, 400.0); };
+    std::printf("    -6 dB corner: tweed8 %6.1f  clean212 %6.1f  brit412 %6.1f  orange412 %6.1f Hz\n",
+                cT, cC, cB, cO);
+    std::printf("    1.9k re 400 : tweed8 %+6.2f  clean212 %+6.2f  brit412 %+6.2f  orange412 %+6.2f dB\n",
+                tilt(tweed, 1900.0), tilt(clean, 1900.0), tilt(brit, 1900.0), tilt(orange, 1900.0));
+    std::printf("    5k   re 400 : tweed8 %+6.2f  clean212 %+6.2f  brit412 %+6.2f  orange412 %+6.2f dB\n",
+                tilt(tweed, 5000.0), tilt(clean, 5000.0), tilt(brit, 5000.0), tilt(orange, 5000.0));
+
+    // (a) An 8" in a small open-back box has no bottom: its corner must sit well
+    //     above EVERY 12" cab's.
+    assert(cT > 1.5 * cC && cT > 1.5 * cB && cT > 1.5 * cO);
+    // (b) The tweed bark: the most upper-mid-forward of the four.
+    assert(tilt(tweed, 1900.0) > tilt(clean, 1900.0));
+    assert(tilt(tweed, 1900.0) > tilt(brit, 1900.0));
+    assert(tilt(tweed, 1900.0) > tilt(orange, 1900.0));
+    // (c) A light cone stays coupled higher: the most top of the four.
+    assert(tilt(tweed, 5000.0) > tilt(clean, 5000.0));
+    assert(tilt(tweed, 5000.0) > tilt(brit, 5000.0));
+    assert(tilt(tweed, 5000.0) > tilt(orange, 5000.0));
+    // (d) A small box rings for less time — a shorter IR, which is also cheaper.
+    assert(tweed.size() < clean.size());
+}
+
 }  // namespace
 
 int main() {
@@ -652,6 +709,8 @@ int main() {
     testRestingState();
     std::printf("- rate independence\n");
     testRateIndependence();
+    std::printf("- the tweed8 cab vs the three 12\" cabs\n");
+    testTweed8Cab();
     std::printf("- rated power (reported, not chased)\n");
     testRatedPower();
     std::printf("== all Champ tests passed ==\n");

@@ -51,6 +51,7 @@ constexpr int   kAmpAc30 = 3;    // Params::ampModel value for the AC30
 constexpr int   kAmpOrange = 4;  // Params::ampModel value for the Orange OR120
 constexpr int   kAmpRockerverb = 5;  // Params::ampModel value for the Rockerverb
 constexpr int   kAmpMesa = 6;        // Params::ampModel value for the Mesa (M10.4)
+constexpr int   kAmpChamp = 7;       // Params::ampModel value for the Champ (M10.10)
 }  // namespace
 
 float trimKnobToGain(float knob01) {
@@ -254,6 +255,10 @@ void ClipperEngine::applyParamsToModels() {
     mesa_.setParameter(MZ::PARAM_MID, p.middle);
     mesa_.setParameter(MZ::PARAM_TREBLE, p.treble);
     mesa_.setParameter(MZ::PARAM_REVERB, p.reverb);
+    // M10.10: the Champ has exactly two parameters, and its VOLUME is its own
+    // field rather than the shared one (see Params::champVolume).
+    champ_.setParameter(clipper::dsp::ChampAmp::PARAM_VOLUME, p.champVolume);
+    champ_.setParameter(clipper::dsp::ChampAmp::PARAM_REVERB, p.reverb);
     applyMesaSwitches(p);
 }
 
@@ -548,6 +553,7 @@ void ClipperEngine::loadCurrentCabIntoPair(int pair) {
         // the enum's comment) — mapped HERE, in code, rather than by index maths.
         ir = cabSource_ == CAB_BRIT412   ? clipper::dsp::generateBrit4x12IR(sampleRate_)
            : cabSource_ == CAB_ORANGE412 ? clipper::dsp::generateOrange4x12IR(sampleRate_)
+           : cabSource_ == CAB_TWEED8    ? clipper::dsp::generateTweed1x8IR(sampleRate_)
                                          : clipper::dsp::generateDefaultCab2x12IR(sampleRate_);
     }
     if (ir.empty()) return;
@@ -685,6 +691,8 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     // rather than one per triode.
     mesa_.setOversampling(kOrangeOversampling);
     mesa_.prepare(sampleRate_, maxBlock_);
+    champ_.setOversampling(kOrangeOversampling);
+    champ_.prepare(sampleRate_, maxBlock_);
 
     setPedalOversampling(params_.oversampling);
 
@@ -798,6 +806,12 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
             // oversized 4x12 IR — named as a follow-up in docs §68.11.
             mesa_.process(cur, outL, numFrames);
             for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
+        } else if (p.ampModel == kAmpChamp) {
+            // The Champ is a tiny 1x8 COMBO -> dual-mono into the identical cab
+            // pair (M10.10). Its own cab is the tweed8; it is the only voice here
+            // whose real speaker is smaller than every cab that preceded it.
+            champ_.process(cur, outL, numFrames);
+            for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
         } else {
             amp_.processStereo(cur, outL, outR, numFrames);
         }
@@ -910,6 +924,7 @@ int ClipperEngine::latencySamples() const {
     if (p.ampOn && p.ampModel == kAmpOrange) n += orange_.latencySamples();
     if (p.ampOn && p.ampModel == kAmpRockerverb) n += rockerverb_.latencySamples();
     if (p.ampOn && p.ampModel == kAmpMesa) n += mesa_.latencySamples();
+    if (p.ampOn && p.ampModel == kAmpChamp) n += champ_.latencySamples();
     if (p.ampOn && p.cab) n += kCabPartition;      // cab adds one partition (128)
     n += limiter_.latencySamples();                // lookahead (64)
     return n;

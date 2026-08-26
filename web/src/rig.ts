@@ -101,6 +101,15 @@ export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto'
 // (spongy vs bold — a separate mains-side switch, not the rectifier selector).
 // Its two MODERN modes run the power amp with global feedback switched OFF
 // entirely, which is why a Recto's low end is loose. Docs §69.
+// M10.10 adds 'champ' — the Fender tweed Champ 5F1, and the SMALLEST amp here by
+// a wide margin: ONE 12AX7 (two stages) into ONE cathode-biased 6V6, and that is
+// the entire signal path. It is the first single-ended output stage in the app
+// (every other voice is push-pull behind a phase inverter), which is why its even
+// harmonics do not cancel, and the first voice with NO TONE STACK AT ALL — the
+// 5F1 has one knob, VOLUME, and nothing else. It has no master volume either, so
+// how hard you pick IS the gain control. Params: volume (0) and the shared
+// reverb (9) as the §19 usability convenience. bass/middle/treble are NOT routed
+// to it and its face does not draw them. Docs §72.
 export type AmpType =
   | 'clean120'
   | 'jcm800'
@@ -108,26 +117,32 @@ export type AmpType =
   | 'ac30'
   | 'orange'
   | 'rockerverb'
-  | 'mesa';
+  | 'mesa'
+  | 'champ';
 
 // Cab expansion: which speaker cabinet IR the amp runs. 'clean212' is the
 // built-in Clean 2x12 (the JC-120 platform), 'brit412' the darker/thicker Brit
 // 4x12 (pairs with a Marshall-style amp), and 'custom' a user-uploaded IR (its
 // samples live in a SEPARATE localStorage key, never in the rig/preset JSON —
 // see cab.ts; the rig only records the choice + a short label).
-export type CabChoice = 'clean212' | 'brit412' | 'orange412' | 'custom';
+// M10.10 appends 'tweed8' — a small 1x8 open-back tweed combo box, the Champ's
+// own, and the only cab here whose driver is smaller than a 12". APPENDED, never
+// inserted: CAB_BUILTIN_INDEX values are stored in saved rigs.
+export type CabChoice = 'clean212' | 'brit412' | 'orange412' | 'tweed8' | 'custom';
 // The two BUILT-IN cabs offered in the amp menu (and the ones the assistant may
 // switch between). 'custom' is reached only via Upload IR, never listed here.
-export const AVAILABLE_CABS: readonly ('clean212' | 'brit412' | 'orange412')[] = [
+export const AVAILABLE_CABS: readonly ('clean212' | 'brit412' | 'orange412' | 'tweed8')[] = [
   'clean212',
   'brit412',
   'orange412',
+  'tweed8',
 ];
 // The worklet's built-in cab index (mirrors CabBuiltin in clipper_c_api.cpp).
-export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412' | 'orange412', number> = {
+export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412' | 'orange412' | 'tweed8', number> = {
   clean212: 0,
   brit412: 1,
   orange412: 2,
+  tweed8: 3,
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
@@ -142,6 +157,7 @@ export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
   'orange',
   'rockerverb',
   'mesa',
+  'champ',
 ];
 
 export type ParamName = 'distortion' | 'filter' | 'level';
@@ -164,7 +180,9 @@ export type AmpParamName =
   | 'fac'
   | 'mesaMode'
   | 'rectifier'
-  | 'powerMode';
+  | 'powerMode'
+  // M10.10 Champ-only knob — the whole amp (ignored by every other voice).
+  | 'champVolume';
 
 export interface PedalParams {
   distortion: number; // 0..1 knob position
@@ -229,6 +247,10 @@ export interface AmpParams {
   mesaMode: number;
   rectifier: number;
   powerMode: number;
+  // M10.10 Champ (docs §72): the amp's ONE knob, on its own id so it can carry
+  // its own default — see AMP_PARAM_CHAMP_VOLUME in params.ts for why it is not
+  // the shared VOLUME.
+  champVolume: number;
 }
 
 export interface AmpState {
@@ -462,6 +484,14 @@ export const AMP_KNOB_DEFAULTS: AmpParams = {
   mesaMode: 1.0,
   rectifier: 0.0,
   powerMode: 0.0,
+  // M10.10: DERIVED from the amp's own measured geometry rather than inherited
+  // (§63.14's lesson — the Rockerverb opened "at the wall" by inheriting the
+  // JCM's). At the house unity-trim probe this amp measures 3.9 % THD at 0.05,
+  // 7.6 % at 0.10, 16.6 % at 0.20 and 28.6 % at 0.30, so 0.20 opens it at the
+  // EDGE OF BREAKUP — audibly driven with a hard pick, and measurably cleaner
+  // (5.9 %) with a soft one, which is the property the amp exists for. It is not
+  // near the wall (60 %+) and the knob has real range in both directions.
+  champVolume: 0.2,
 };
 
 // Default input trim: unity (0 dB).
@@ -601,7 +631,8 @@ export function normalizeRig(raw: unknown): RigState {
   // custom IR data actually EXISTS is resolved at load time (App falls back to
   // clean212 with a note if it's missing) — the rig JSON alone can't know.
   const cabModel: CabChoice =
-    a.cabModel === 'brit412' || a.cabModel === 'orange412' || a.cabModel === 'custom'
+    a.cabModel === 'brit412' || a.cabModel === 'orange412' ||
+    a.cabModel === 'tweed8' || a.cabModel === 'custom'
       ? a.cabModel
       : 'clean212';
   const customCabLabel =
@@ -617,6 +648,7 @@ export function normalizeRig(raw: unknown): RigState {
     : a.type === 'orange' ? 'orange'
     : a.type === 'rockerverb' ? 'rockerverb'
     : a.type === 'mesa' ? 'mesa'
+    : a.type === 'champ' ? 'champ'
     : 'clean120';
 
   return {
@@ -651,6 +683,7 @@ export function normalizeRig(raw: unknown): RigState {
         mesaMode: clamp01(ar.mesaMode, d.amp.params.mesaMode),
         rectifier: clamp01(ar.rectifier, d.amp.params.rectifier),
         powerMode: clamp01(ar.powerMode, d.amp.params.powerMode),
+        champVolume: clamp01(ar.champVolume, d.amp.params.champVolume),
       },
     },
     oversampling,

@@ -86,6 +86,7 @@
 
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/OrangeAmp.h"
+#include "clipper/dsp/ChampAmp.h"
 #include "clipper/dsp/MesaAmp.h"
 #include "clipper/dsp/RockerverbAmp.h"
 #include "clipper/dsp/AmpModel.h"
@@ -189,7 +190,8 @@ enum AmpModel : int {
     AMP_ORANGE = 4,      // M10.3 Orange OR120 Overdrive head
     AMP_ROCKERVERB = 5,  // M10.7 Orange Rockerverb 100 head
     AMP_MESA = 6,        // M10.4 Mesa/Boogie Dual Rectifier Solo Head
-    AMP_MODEL_COUNT = 7,
+    AMP_CHAMP = 7,       // M10.10 Fender tweed Champ 5F1 (single-ended 6V6)
+    AMP_MODEL_COUNT = 8,
 };
 
 // Which cabinet IR the convolver pair is loaded with. 0/1 are ALSO the C ABI's
@@ -209,7 +211,12 @@ enum CabChoice : int {
     // IR" into "Orange 4x12". The engine maps the two spaces in code
     // (loadCurrentCabIntoPair), never by assuming they are the same integer.
     CAB_ORANGE412 = 3,
-    CAB_CHOICE_COUNT = 4,
+    // M10.10: the Tweed 1x8 (generateTweed1x8IR) is APPENDED at 4, for exactly the
+    // reason CAB_ORANGE412 is appended at 3 — this integer is stored in the APVTS
+    // choice parameter and in saved sessions. Its C ABI built-in index is 3, so
+    // the two spaces diverge again; loadCurrentCabIntoPair maps them in code.
+    CAB_TWEED8 = 4,
+    CAB_CHOICE_COUNT = 5,
 };
 
 // The short, stable key each type serializes as in the APVTS chain-order state
@@ -401,6 +408,12 @@ struct Params {
     float mesaMode = 1.0f;
     float mesaRectifier = 0.0f;
     float mesaPowerMode = 0.0f;
+    // M10.10 Champ (docs §72): its own field, NOT the shared `volume`. This knob is
+    // the amp's only gain control (no master anywhere downstream) and it needs its
+    // own default — the shared 0.40 would open this amp at ~50 % THD, which is
+    // §63.14's "the amp opens at the wall" defect. Measured: 0.20 is the edge of
+    // breakup, and it cleans up when you play softer.
+    float champVolume = 0.2f;
 
     // Nonlinear-stage oversampling for the dirt pedals (1/2/4/8, default 4).
     int oversampling = 4;
@@ -567,6 +580,7 @@ private:
     clipper::dsp::OrangeAmp orange_;  // Orange OR120 Overdrive (mono head, M10.3)
     clipper::dsp::RockerverbAmp rockerverb_;  // Rockerverb 100 dirty ch. (M10.7)
     clipper::dsp::MesaAmp mesa_;              // Mesa Dual Rectifier (M10.4)
+    clipper::dsp::ChampAmp champ_;            // Fender tweed Champ 5F1 (M10.10)
 
     void applyMesaSwitches(const Params& p);
     // THE DOUBLE-BUFFERED CAB. cab_[pair][0] is the left side, cab_[pair][1] the

@@ -182,9 +182,10 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     knob(mesaMode_, mesaModeAttach_, pid::mesaMode, "Mode", skin::accent(skin::AccentId::Mesa));
     knob(mesaRect_, mesaRectAttach_, pid::mesaRectifier, "Rect", skin::accent(skin::AccentId::Mesa));
     knob(mesaPower_, mesaPowerAttach_, pid::mesaPowerMode, "Power", skin::accent(skin::AccentId::Mesa));
+    knob(champVol_, champVolAttach_, pid::champVolume, "Vol", skin::accent(skin::AccentId::Champ));
     for (NeuKnob* k : {&volume_, &bass_, &middle_, &treble_, &presence_, &master_, &gain_,
                        &reverb_, &modSpeed_, &modDepth_, &fac_,
-                       &mesaMode_, &mesaRect_, &mesaPower_})
+                       &mesaMode_, &mesaRect_, &mesaPower_, &champVol_})
         k->setScheme(skin::benchScheme());
 
     // Levers + power + chorus mode.
@@ -635,7 +636,7 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
     // Hide the whole superset, then re-show per voice.
     for (NeuKnob* k : {&volume_, &bass_, &middle_, &treble_, &presence_, &master_, &gain_,
                        &reverb_, &modSpeed_, &modDepth_, &fac_,
-                       &mesaMode_, &mesaRect_, &mesaPower_})
+                       &mesaMode_, &mesaRect_, &mesaPower_, &champVol_})
         k->setVisible(false);
     ampPrimaryKnobs_.clear();
     ampModKnobs_.clear();
@@ -775,6 +776,31 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
             show(presence_, "Cut", ampAccent_);  // presence param reused as TOP CUT
             show(reverb_, "Reverb", ampAccent_);
             ampPrimaryKnobs_ = {&volume_, &bass_, &treble_, &presence_, &reverb_};
+            break;
+        case 7:  // M10.10 Champ "Cadet" — lacquered tweed wheat. TWO knobs, and the
+                 // sparsest panel in the app by a wide margin.
+            //
+            // WHAT IS ABSENT IS THE POINT and is listed so it does not read as an
+            // unfinished face: a tweed 5F1 has NO TONE STACK AT ALL — no bass, no
+            // middle, no treble — because Fender did not put a tone control on a
+            // Champ until the 1964 blackface AA764. It has no gain, no master, no
+            // presence, no bright switch and no chorus either. The one knob sits
+            // BETWEEN the two preamp triodes with nothing downstream to trim it,
+            // so how far up it is IS how much distortion you get.
+            //
+            // The knob rides pid::champVolume, its OWN id rather than the shared
+            // pid::volume, because it needs its own DEFAULT: the shared 0.40 opens
+            // this amp at ~50 % THD, which is exactly §63.14's "the amp opens at
+            // the wall". REVERB is the §19 usability convenience (a real 5F1 has
+            // no tank), same as the JCM's.
+            ampWordmark_ = "Cadet";
+            ampEyebrow_ = juce::String::fromUTF8("Combo Nº8 · Tweed");
+            ampAccentId_ = skin::AccentId::Champ;
+            ampAccent_ = skin::accent(ampAccentId_);
+            showBright_ = false;
+            show(champVol_, "Vol", ampAccent_);
+            show(reverb_, "Reverb", ampAccent_);
+            ampPrimaryKnobs_ = {&champVol_, &reverb_};
             break;
         default:  // Clean 120 — red. Vol Bass Mid Treble Reverb + chorus
             ampModel_ = 0;

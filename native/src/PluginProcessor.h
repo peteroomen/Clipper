@@ -144,6 +144,10 @@ inline constexpr const char* orangeFac   = "orangeFac";
 inline constexpr const char* mesaMode      = "mesaMode";
 inline constexpr const char* mesaRectifier = "mesaRectifier";
 inline constexpr const char* mesaPowerMode = "mesaPowerMode";
+// M10.10 Champ (docs §72) — its OWN id, not the shared `volume`. This knob is
+// the amp's only gain control and needs its own default; see the web's
+// AMP_PARAM_CHAMP_VOLUME for the full reasoning.
+inline constexpr const char* champVolume = "champVolume";
 inline constexpr const char* oversampling = "oversampling";
 }  // namespace pid
 

@@ -142,6 +142,14 @@
      the board at the same time. */
   --accent-mesa: #9E2235;
   --accent-mesa-glow: rgba(190, 55, 75, 0.5);
+  /* M10.10 Fender tweed Champ amp — a WHEAT / lacquered-tweed yellow-brown (the
+     tweed covering wink). Deliberately lighter and yellower than --accent-ac30's
+     copper and far from --accent-orange's tolex, because the amp menu can list
+     ac30, orange, rockerverb, mesa and champ all at once. Read against the light
+     porcelain panel it needs to stay dark enough to be legible, so this is the
+     LACQUER (aged, darkened) rather than raw cloth. */
+  --accent-champ: #9A7433;
+  --accent-champ-glow: rgba(190, 150, 80, 0.5);
   /* M6.8 tuner — segmented meter LEDs (recessed neumorphic wells) + the 7-seg
      note "screen" (a dark readout window in both themes; lit segments glow, unlit
      stay faintly visible). */

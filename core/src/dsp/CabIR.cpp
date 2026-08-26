@@ -308,6 +308,50 @@ std::vector<float> generateOrange4x12IR(double sampleRate) {
     return h;
 }
 
+std::vector<float> generateTweed1x8IR(double sampleRate) {
+    const double fs = sampleRate > 0.0 ? sampleRate : 48000.0;
+    // A small box rings for LESS time than a 4x12 — half the length is enough and
+    // it keeps the convolution cheap.
+    const int len = static_cast<int>(std::lround(512.0 * fs / 48000.0));
+    const double rr = fs / 48000.0;
+    // The mic is closer on a tiny combo, so a shorter direct delay than the 4x12s'.
+    const int direct = static_cast<int>(std::lround(3.0 * rr));
+
+    // Tiny amplitudes (see the 2x12 note). Everything here sits ABOVE the 4x12
+    // equivalents, which is the whole point of the cab.
+    static const std::vector<Mode> kModes = {
+        // Box modes. The Champ cabinet's longest internal dimension is ~16", so the
+        // fundamental lands near 420 Hz rather than the ~72-104 Hz of a 4x12 — there
+        // is no low box mode to have. These are SHORT (an open back does not store
+        // energy the way a sealed box does).
+        {420.0, 1.1, 0.0016}, {560.0, 1.0, 0.0013},
+        // Cone body — an 8" driver's mass corner is high, so the "body" of this
+        // speaker is where a 12"'s low mids would be.
+        {760.0, 0.9, 0.0014}, {1050.0, 0.8, 0.0013},
+        // THE TWEED HONK: a hard upper-mid cluster. An 8" cone breaks up higher and
+        // less gracefully than a 12", and that boxy bark is most of what people mean
+        // by "tweed".
+        {1750.0, 0.7, 0.0018}, {2300.0, 0.6, 0.0016}, {3200.0, 0.5, 0.0012},
+        // A little more top than a Celestion 4x12 keeps — a light cone stays coupled
+        // higher, which is why a small tweed can sound spitty when you dig in.
+        {4600.0, 0.4, 0.0009},
+    };
+
+    std::vector<float> h = modalRaw(len, fs, 1.0, direct, kModes);
+
+    // The low corner is the headline number. 62 Hz (Orange) / 72 Hz-ish (Brit)
+    // against 145 Hz here, and Q 0.5 because an open back rolls off gently rather
+    // than with a sealed box's steeper knee.
+    applyBiquad(h, rbj::highPass(120.0, 0.5, fs));
+    applyBiquad(h, rbj::peaking(1900.0, 3.5, 1.0, fs));   // the tweed bark
+    // Three passes rather than the 4x12s' four: an 8" keeps more top.
+    for (int i = 0; i < 3; ++i) applyBiquad(h, rbj::lowPass(5600.0, 0.707, fs));
+
+    applyTailFade(h, fs, 1.2, 3.5);  // a small box: gate the tail early
+    peakNormalize(h, fs);
+    return h;
+}
+
 // Public entry point (see CabIR.h): peak-normalize any IR to unity spectral peak
 // in place. Delegates to the same dense-grid normalizer the generators use, so a
 // user-uploaded cab is held to the exact same "never boosts" rule (M6.6).

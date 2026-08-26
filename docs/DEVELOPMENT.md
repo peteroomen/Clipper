@@ -15863,3 +15863,227 @@ was added to **both** in the same change.
   panel that drew the wrong knobs would still ship green.
 - The Mesa's own cab IR (it reuses `brit412`), the effects loop and the EL34 bias
   option remain §69's open items.
+
+---
+
+## 72. The Fender tweed Champ 5F1 — the first SINGLE-ENDED output stage (M10.10)
+
+**Date:** 2026-08-25 · **Plan:** `docs/work/2026-08-25-fender-champ-5f1.md` · **No ADR**
+(the two decisions a future slice could reasonably "fix" back — the derived `kg2`
+and the Champ's own param id — are argued in `ChampPowerAmp.h` and `params.ts`).
+
+The small tweed, the lineup's first Fender that distorts, and the eighth amp voice.
+Every power section in this project until now is a push-pull pair behind a phase
+inverter; this one is a single cathode-biased 6V6GT straight into a small output
+transformer. **All five goldens UNCHANGED, nothing blessed** — no shared class was
+edited. Core ctest **38 → 39 entries**; `clipper_champ_tests` registers **no XFAIL
+ledger** (zero known-bad properties). WASM artifact rebuilt (**113** hashed inputs,
+was 107).
+
+**The roadmap's own entry for this amp was wrong and the slice corrected it.** M10.10
+read *"Single-ended class A 6V6, ONE tone control, no negative feedback"*. **The 5F1
+has NO tone control** — one knob, VOLUME. Fender did not put one on a Champ until the
+1964 blackface AA764. Same class of error as §69's and §67's roadmap framings.
+
+### 72.1 What is sourced and what is not
+
+Honest position: **better than §57's OR120 (a full reconstruction), worse than §69's
+Mesa (factory sheets)** — a *partial transcription*.
+
+Reachable: `valtyr/rust-5f1`'s `src/circuit/netlist.rs` and capacitor table (all R/C
+values, the 1 MΩ log volume pot, the 5 kΩ reflected OT, the 325 V supply and its
+16 µF RC ladder); two published Koren 6V6 fits (`ajmwagar/pedalkernel`,
+`vgreff/LTSpiceLibraries`); the RCA/TAD 6V6GT datasheet at two operating points via
+search; Fender's own published 5F1 node voltages via search; the 5Y3GT's published
+60 V drop at 125 mA.
+
+**Unreachable, confirmed:** `robrobinette.com`, `ampbooks.com`, `frank.pocnet.net` and
+`prowessamplifiers.com` all fail at the egress proxy; GitHub's *code search API* is
+repository-scoped (public `git clone` works, which is how the device cards were read).
+**§57's rule applies to everything not sourced: do not re-tune it toward a sound.**
+
+**RULE ZERO boundary, held.** `valtyr/rust-5f1` is another vendor's model of this same
+amp. §63's line was applied: a **netlist is a circuit description** (LiveSPICE's
+`.schx` was parsed node by node) while a **tube fit, a solver or a voicing constant is
+someone's model**. `netlist.rs` was read for R/C values; `tube_models.rs`, `solver.rs`,
+`sim.rs`'s loop and the whole `dsp/` directory were **not opened**, and no constant here
+is justified by agreement with that project's output.
+
+**Two corrections to that source, both independently sourced, both shipping.**
+1. **It omits the 6V6's cathode bypass cap.** The real 5F1 bypasses the 470 Ω with
+   25 µF; search extracts confirm it. Unbypassed, that resistor is strong local
+   degeneration and a materially different amp. **We ship the cap.**
+2. **Its supply is a 100 Ω series resistance**, dropping ~4 V and landing the plate
+   node at 320 V against Fender's own measured 305 V. Replaced by §55's Thévenin form.
+It also models the OT primary as a **DC** 5 kΩ to B+, which would sit the plate 170 V
+below the rail; this project's `Vp = rail − (i − iq)·Rload` AC load line is correct and
+that simplification is **not inherited**.
+
+### 72.2 The 6V6 device card is DERIVED — audit finding 10 on a third tube, FIXED
+
+Two published Koren 6V6 fits are reachable and they **disagree substantially**. Both
+were evaluated against the datasheet at two points *before any code was written* —
+P1 (Vp 250, Vg2 250, Vg1 −12.5 → Ip 45 mA, Ig2 5 mA) and P2 (Vp 315, Vg2 225,
+Vg1 −13 → Ip 34 mA):
+
+| fit | P1 Ip | P2 Ip | P1 Ig2 | P2 Ig2 |
+|---|---|---|---|---|
+| A `pedalkernel` (mu 12, kg1 1100, kp 300, kvb 150) | 0.66× | 0.59× | 1.40× | 1.96× |
+| B `vgreff` Koren (mu 10.70, kg1 1672, kp 41.16, kvb 12.7) | **1.03×** | **0.98×** | 2.26× | 3.68× |
+
+**Fit B's shape and `kg1` are right and its `kg2` is not.** The plate current lands
+within 2–3 % at two *different* Vp and Vg2 with errors of **opposite sign**, which is a
+real external check rather than a self-fit — so B's `mu/ex/kg1/kp/kvb` ship
+**unmodified** (deliberately NOT trimmed to hit P1 exactly, which would worsen P2) and
+only `kg2` is derived, against P1's screen current: **4500 → 10148.2**.
+
+Finding 10's table reads EL34 0.102 / 6L6 **0.210** / EL84 **0.363** for `Ig2/Ip`
+against real ratios near 0.10. The 6V6 continues it exactly: both published fits
+predict **0.237–0.244** against the datasheet's 5/45 = **0.111**, i.e. **2.1–2.2×**
+too high. At this amp's own idle the published fit puts screen dissipation at
+**2.53 W against the 6V6GT's 2.75 W rating** — the same "exceeds its rating at idle"
+pathology the audit measured on the AC30's EL84. The derived card sits at **1.12 W**.
+
+**Known residual, reported not fitted:** one `kg2` cannot match both datasheet points
+(P2's screen lands 1.63× high) because **the Koren screen law has no `Vp` dependence**
+— finding 10's own closing paragraph, and the reason a real power tube's screen current
+surges when `Vp` falls below `Vg2`. Not modelled; named.
+
+**Free corroboration for the Twin:** `pedalkernel`'s 6L6GC row is
+`MU=8.7 EX=1.35 KG1=1460 KG2=4500 KP=48 KVB=12` — **byte-for-byte this repo's shipped
+`Tube6L6Params`** (§20). Note its `kg1/kg2` = 0.210 is finding 10's exact figure, so
+that corroboration covers the *plate* fit only.
+
+### 72.3 The second absolute reference: Fender's own measured 5F1 voltages
+
+Fender publish this amp's operating point — **19 V across the 470 Ω cathode resistor**
+(= 40.4 mA), a **plate node of ~305 V** (so Vpk = Vg2k = 286 V) and **37 mA** of plate
+current, leaving ~3.4 mA of screen current by difference. Only the **second** amp in
+this project with an absolute external DC reference (§69's Mesa was the first).
+
+**Exactly ONE constant is fitted to it** — `kVsupply`, which pins the 305 V node.
+Everything else is the device card's own prediction:
+
+| | model | Fender | ratio |
+|---|---|---|---|
+| plate node | 305.000 V | 305 | 1.0000× *(the one pinned number)* |
+| cathode | 18.892 V | 19 | **0.9943×** |
+| Ip | 36.280 mA | 37 | **0.9805×** |
+| Ig2 | 3.916 mA | ~3.4 | 1.1517× |
+| Ik | 40.196 mA | 40.4 | **0.9950×** |
+| Vpk | 286.108 V | 286 | **1.0004×** |
+
+Plate dissipation **10.38 W of a 14 W rating (74 %)** — a Champ runs its tube hot, and
+that is correct. Screen **1.12 W of ~2.75 W (41 %)**.
+
+### 72.4 The supply, and why this amp sags
+
+`kRsupply` is CONSTANT (§55's call): `kRrect5Y3` **480 Ω** (SOURCED — the 5Y3GT's
+published 60 V drop at 125 mA, the same method §55 used for the GZ34's 75.6 Ω) plus
+`kRptSecondary` **200 Ω** (a RECONSTRUCTION, named as one). **680 Ω against the AC30's
+134.6** is the headline: a directly-heated rectifier in a very small amp, and with the
+transcribed 16 µF reservoir the supply RC is **10.9 ms**. That is why a cranked Champ
+compresses and blooms, and it acts where a supply acts — on the rail, the screen and
+the bias the tube itself sees, never as a saturator after the transformer.
+
+### 72.5 The acceptance bars, measured
+
+| bar | measured |
+|---|---|
+| **Single-ended h2 does not cancel** (vs the balanced Twin, identical stimulus) | Champ **−14.84 dBc** vs Twin **−39.72** = **24.88 dB** of contrast; h2 > h3 |
+| **Audit finding 9 from the other side** — the plate knee at a PHYSICAL current | **88.4 mA**, inside a real 6V6's capability, where finding 9 measured **530 mA from ONE EL34** in the push-pull sections |
+| **No negative feedback** | feedback seam on vs off **bit-identical, 0 of 24000 samples differ** |
+| **Breaks up almost immediately** (0.15 V in) | VOL 0.05 → **3.89 %**, 0.10 → **7.55 %**, 0.30 → **28.61 %** |
+| **…and CLEANS UP when you play softer** | VOL 0.20: hard pick **16.63 %**, soft **5.86 %** = **2.84×** |
+| vs the clean Fender at the same volume | Champ **7.55 %** vs Twin **0.53 %** = **14.11×** |
+| **ONE oversampling domain** (§63.14 up front) | latency **72 samples / 1.50 ms**, against **216** measured for per-stage domains |
+| Preamp DC | V1A **0.953 mA** at 293.53 V, V1B **0.986 mA** at 303.06 V |
+| VOLUME law (bare audio taper — the pot IS its own grid leak) | **11.92029 %** at half rotation, the house `1/(e^{k/2}+1)` exactly |
+| Ragged-100 block invariance · `reset()` vs fresh | both **0.000e+00** |
+| One NaN | **0** non-finite of 24000 |
+| DC on signal (and with +0.1 V input offset) | **0.2498 %** of peak, both |
+| Rate spread 44.1–96 kHz | **0.014 dB** |
+
+**`kInterstageScale` is an UN-FITTING to 1.0** (§57's OR120 / §63's Rockerverb
+precedent), and here it is simply the circuit: a real 5F1 has **no interstage divider**
+— V1B's plate goes through the transcribed 20 nF cap straight to the 6V6 grid.
+
+**THE POWER IS REPORTED, NOT CHASED** (§57.3). The power section's **own sine ceiling
+is 5.17 W into 8 Ω** against a rated ~5 W and the datasheet's 4.5 W @ 10 % THD — so the
+device card and the load line are right. The **composed cranked amp makes 3.89 W**,
+because the preamp hands it a blocking-limited waveform (crest factor ~2.5). §42's
+"smallest scale that reaches rated power" criterion is therefore **unsatisfiable**, and
+the sweep is recorded rather than snugged: 0.80 → 3.896, 1.00 → 3.890, and **above 1.0
+the power DECLINES** (2.00 → 3.788, 3.00 → 3.772) — §57.9's exact signature, grid
+conduction charging the coupling cap and shifting the bias toward cutoff. **Do NOT
+close the 1.4 W with a higher `kVsupply` or a softer grid coupling.**
+
+`kFullScaleSecV = 15.6969` is DERIVED from the measured cranked secondary swing
+(14.1272 V peak at the house 0.9 convention), and the cranked render measures **0.9000**.
+
+### 72.6 Resting state — ADR 006 decided by MEASUREMENT, and it is the §69 case
+
+The three zero-resting states would rest at exactly zero if their input did. It does
+not: `TriodeStage`'s grid Newton exits at a **residual tolerance**, so `vCc_` carries
+that floor and re-injects it into the plate solve and the OT pair every sample. Measured
+at 1 / 4 / 8 / 20 / 41 s of silence they decay and then **PLATEAU**, identical to five
+digits at every one:
+
+    otLpS_  2.7159e-12    otHpS_  2.7159e-12    vCc_  5.4341e-11
+    output  5.223e-27     subnormal output samples  0 / 128
+
+~27 decades above the float subnormal boundary, so the `flushDenormal` calls are
+**guard-rails, not fixes**. The test therefore asserts **what the policy is actually
+about — no subnormal float leaves the model (0 over the whole silent tail)** — plus
+that the plateau is *settled* (unchanged to a part in 1e6 over a further 30 s), rather
+than a zero this amp does not have. `vRail_` (305 V) and `vk_` (18.9 V) are real DC
+operating points and are deliberately unguarded.
+
+### 72.7 The panel, the cab, and the one new param id
+
+**The face has TWO knobs and that is the whole amp.** No tone stack, no gain, no
+master, no presence, no bright, no chorus. REVERB is the **§19 JCM800 precedent**
+verbatim (a real 5F1 has no tank; mix 0 is a bit-exact pass-through). Wordmark
+**"Cadet"**, `Combo Nº8 · Tweed`, a lacquered wheat accent (`--accent-champ`).
+
+**The one knob gets its OWN param id (17, `champVolume`), and the reason is the
+DEFAULT.** §63.14 measured the cost of getting this wrong — the Rockerverb inherited
+`AMP_KNOB_DEFAULTS`' JCM values and "the amp opens at the wall". A Champ at the shared
+volume default of 0.40 measures **~50 % THD**. Shipped default **0.20**, derived from
+this amp's own measured geometry: the **edge of breakup**, audibly driven with a hard
+pick and measurably cleaner (5.9 %) with a soft one, not near the wall (60 %+), with
+real range both ways. It is also genuinely a different function — on every other voice
+VOLUME is an output level *after* the preamp; this one sits *between* the two preamp
+triodes with no master downstream, so how far it is up **is** the distortion.
+
+**A new cab, `tweed8`**, synthesised in the §15 modal house style (never a captured
+third-party IR). It is the only voice here whose real speaker is **smaller than every
+cab that preceded it**, which is why none could be reused. Measured against the three
+12" cabs (−6 dB corner relative to each cab's own peak; tilts re 400 Hz):
+
+| cab | −6 dB corner | 1.9 kHz | 5 kHz |
+|---|---|---|---|
+| brit412 | 75.0 Hz | −0.04 dB | −19.06 dB |
+| orange412 | 103.2 Hz | +1.24 | −13.98 |
+| clean212 | 104.7 Hz | +2.45 | −11.01 |
+| **tweed8** | **198.3 Hz** | **+3.04** | **−6.02** |
+
+1.9–2.6× the low corner of any 12" cab, the most upper-mid-forward, and the one that
+keeps the most top — all consequences of an 8" driver in a small open-back box, and all
+asserted as an **ordering** so a future re-voicing of any single cab cannot break them
+silently. **Appended at 3 (C ABI) / 4 (native `CabChoice`)**, never inserted — §57.11's
+divergence, for the same stored-session reason.
+
+### 72.8 Named follow-ups this slice leaves
+
+- **The editor has no automated behaviour test** — §71's named gap, still open and now
+  covering one more face. `updateAmpFace()`'s `case 7` is covered by review.
+- **A Vibro-Champ** (the 5F1's tremolo sibling) is cheap now: `OptoTremolo` exists.
+- **Audit findings 9 and 10 on the existing push-pull amps.** This slice built the
+  plate load line correctly for a genuinely single-ended stage and derived ONE screen
+  fit against a datasheet; it did not touch `Jcm800PowerAmp` / `TwinPowerAmp` /
+  `Ac30PowerAmp`, because that moves four goldens and is its own slice.
+- **The Koren screen law's missing `Vp` dependence** (72.2's residual) — the mechanism
+  behind real screen sag, absent in every pentode in this project.
+- **`kRptSecondary` (200 Ω) is a reconstruction** — find a Champ power-transformer
+  winding resistance and the supply becomes fully sourced.

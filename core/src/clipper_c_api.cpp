@@ -14,6 +14,7 @@
 #include "clipper/dsp/Ac30Amp.h"
 #include "clipper/dsp/OrangeAmp.h"
 #include "clipper/dsp/DropModel.h"
+#include "clipper/dsp/ChampAmp.h"
 #include "clipper/dsp/MesaAmp.h"
 #include "clipper/dsp/ParamGuard.h"
 #include "clipper/dsp/RockerverbAmp.h"
@@ -990,6 +991,12 @@ constexpr int kAmpParamOrangeFac = 13;
 constexpr int kAmpParamMesaMode = 14;
 constexpr int kAmpParamMesaRectifier = 15;
 constexpr int kAmpParamMesaPowerMode = 16;
+// M10.10 (docs §72): the Champ's ONE knob, on its own id. Not a reuse of VOLUME
+// (0) — see AMP_PARAM_CHAMP_VOLUME in web/src/params.ts. Short version: this knob
+// sits BETWEEN the two preamp triodes with no master downstream, so it is the
+// amp's gain control rather than an output level, and it needs its own DEFAULT
+// (the shared 0.40 would open this amp at ~50 % THD — §63.14's "at the wall").
+constexpr int kAmpParamChampVolume = 17;
 
 // Which amp model the chain's single handle is currently voicing. M10.1 adds the
 // Twin as the THIRD voice (index 2); M10.2 adds the AC30 as the FOURTH voice (index
@@ -1012,6 +1019,14 @@ enum AmpModelId {
     // voice (index 6), purely additive. Unlike every amp before it this one is
     // TRANSCRIBED from the factory drawing set rather than reconstructed.
     kAmpMesa = 6,
+    // M10.10 (docs §72) adds the Fender tweed Champ 5F1 as the EIGHTH voice
+    // (index 7), purely additive. It needs NO new param id — and it needs almost
+    // no param at all: the 5F1 has ONE knob. VOLUME rides the shared slot 0, and
+    // REVERB (9) is the §19 usability convenience every other voice here carries.
+    // It has NO tone stack, so bass/mid/treble simply are not routed to it: this
+    // is the first voice where those ids reach nothing, which is correct rather
+    // than an omission (see amp_set_param).
+    kAmpChamp = 7,
 };
 
 // The tube amps' fixed internal oversampling. Docs §18/§20/§23 measured 4× as the
@@ -1024,6 +1039,7 @@ constexpr int kAc30Oversampling = 4;
 constexpr int kOrangeOversampling = 4;
 constexpr int kRockerverbOversampling = 4;
 constexpr int kMesaOversampling = 4;
+constexpr int kChampOversampling = 4;
 
 // One per-side cab convolver pair (L/R). Two of these live in every AmpChain so a
 // cab change can be BUILT into the spare while the render path keeps using the
@@ -1044,6 +1060,7 @@ struct AmpChain {
     clipper::dsp::OrangeAmp orange;     // Orange OR120 Overdrive (mono head)
     clipper::dsp::RockerverbAmp rockerverb;  // Orange Rockerverb 100 dirty ch.
     clipper::dsp::MesaAmp mesa;              // Mesa Dual Rectifier Solo Head
+    clipper::dsp::ChampAmp champ;            // Fender tweed Champ 5F1 (combo)
     int model = kAmpClean120;
     // M6.3: the amp goes STEREO from the chorus stage on, so the cab IR runs PER
     // SIDE. Two independent CabConvolver instances (same IR) — the wet R side is
@@ -1069,7 +1086,12 @@ struct AmpChain {
 
 // Built-in cab selector for amp_set_cab_builtin. Kept as small ints so the ABI
 // stays language-neutral (the worklet passes 0/1).
-enum CabBuiltin { kCabClean212 = 0, kCabBrit412 = 1, kCabOrange412 = 2 };
+enum CabBuiltin { kCabClean212 = 0, kCabBrit412 = 1, kCabOrange412 = 2,
+                  // M10.10: APPENDED, never inserted — these integers are
+                  // stored in saved rigs and in the native APVTS choice
+                  // parameter, so inserting one would silently re-point
+                  // every existing session at a different cab (§57.11).
+                  kCabTweed8 = 3 };
 
 // Synthesise a built-in cab IR at the chain rate into `out`. `which` selects;
 // anything other than kCabBrit412 falls back to the default 2x12 (matches the
@@ -1080,6 +1102,7 @@ enum CabBuiltin { kCabClean212 = 0, kCabBrit412 = 1, kCabOrange412 = 2 };
 void builtinIr(const AmpChain* c, int which, std::vector<float>& out) {
     out = which == kCabBrit412    ? clipper::dsp::generateBrit4x12IR(c->sr)
         : which == kCabOrange412  ? clipper::dsp::generateOrange4x12IR(c->sr)
+        : which == kCabTweed8     ? clipper::dsp::generateTweed1x8IR(c->sr)
                                   : clipper::dsp::generateDefaultCab2x12IR(c->sr);
 }
 
@@ -1124,6 +1147,10 @@ void* amp_create(float sample_rate) {
     // Prepare the Mesa up front as well (M10.4) — same discipline.
     c->mesa.setOversampling(kMesaOversampling);
     c->mesa.prepare(sr, 128);
+    // ... and the Champ (M10.10). setOversampling BEFORE prepare so the single
+    // shared domain is built once at the right rate.
+    c->champ.setOversampling(kChampOversampling);
+    c->champ.prepare(sr, 128);
     // Load the default IR into BOTH double-buffered pairs. Only the active pair is
     // strictly needed at t=0, but preparing both means every pair is always a valid
     // convolver — amp_commit_cab can never activate an unprepared one, even if a
@@ -1146,13 +1173,14 @@ void amp_set_model(void* handle, int which) {
     if (!handle) return;
     auto* c = static_cast<AmpChain*>(handle);
     // 0 = Clean 120, 1 = JCM800, 2 = Twin, 3 = AC30, 4 = Orange, 5 = Rockerverb,
-    // 6 = Mesa Dual Rectifier. Unknown → Clean 120.
+    // 6 = Mesa Dual Rectifier, 7 = Champ 5F1. Unknown → Clean 120.
     c->model = (which == kAmpJcm800) ? kAmpJcm800
              : (which == kAmpTwin)   ? kAmpTwin
              : (which == kAmpAc30)   ? kAmpAc30
              : (which == kAmpOrange) ? kAmpOrange
              : (which == kAmpRockerverb) ? kAmpRockerverb
              : (which == kAmpMesa)   ? kAmpMesa
+             : (which == kAmpChamp)  ? kAmpChamp
                                      : kAmpClean120;
 }
 
@@ -1279,6 +1307,7 @@ void amp_reset(void* handle) {
     c->orange.reset();
     c->rockerverb.reset();
     c->mesa.reset();
+    c->champ.reset();
     for (auto& pair : c->cabs) { pair.l.reset(); pair.r.reset(); }
 }
 
@@ -1322,6 +1351,7 @@ void amp_set_param(void* handle, int param_id, float value) {
     using O = clipper::dsp::OrangeAmp;
     using R = clipper::dsp::RockerverbAmp;
     using M = clipper::dsp::MesaAmp;
+    using C = clipper::dsp::ChampAmp;
     switch (param_id) {
         case A::PARAM_VOLUME:
             c->amp.setParameter(A::PARAM_VOLUME, value);
@@ -1378,6 +1408,9 @@ void amp_set_param(void* handle, int param_id, float value) {
             // so old rigs (chorusMode 0) round-trip with the trem bypassed bit-exact.
             c->twin.setParameter(T::PARAM_TREMOLO_ENABLE, value >= 0.5f ? 1.0f : 0.0f);
             break;
+        case kAmpParamChampVolume:
+            c->champ.setParameter(C::PARAM_VOLUME, value);
+            break;
         case A::PARAM_REVERB:
             c->amp.setParameter(A::PARAM_REVERB, value);
             c->jcm.setParameter(J::PARAM_REVERB, value);
@@ -1386,6 +1419,7 @@ void amp_set_param(void* handle, int param_id, float value) {
             c->orange.setParameter(O::PARAM_REVERB, value);
             c->rockerverb.setParameter(R::PARAM_REVERB, value);
             c->mesa.setParameter(M::PARAM_REVERB, value);
+            c->champ.setParameter(C::PARAM_REVERB, value);
             break;
         case kAmpParamJcmGain:
             c->jcm.setParameter(J::PARAM_GAIN, value);
@@ -1457,6 +1491,7 @@ int amp_latency_samples(void* handle) {
     else if (c->model == kAmpOrange) n = c->orange.latencySamples();
     else if (c->model == kAmpRockerverb) n = c->rockerverb.latencySamples();
     else if (c->model == kAmpMesa) n = c->mesa.latencySamples();
+    else if (c->model == kAmpChamp) n = c->champ.latencySamples();
     // Both double-buffered pairs share the 128 partition, so a pending cab change
     // never moves reported latency — but read the ACTIVE pair anyway so this stays
     // correct if a future cab ever uses a different partition size.
@@ -1479,6 +1514,8 @@ void amp_process(void* handle, const float* in_ptr, float* out_ptr,
         c->rockerverb.process(in_ptr, out_ptr, num_frames);
     else if (c->model == kAmpMesa)
         c->mesa.process(in_ptr, out_ptr, num_frames);
+    else if (c->model == kAmpChamp)
+        c->champ.process(in_ptr, out_ptr, num_frames);
     else c->amp.process(in_ptr, out_ptr, num_frames);
     if (c->cabOn) c->active().l.process(out_ptr, out_ptr, num_frames);  // in-place ok
 }
@@ -1522,6 +1559,14 @@ void amp_process_stereo(void* handle, const float* in_ptr, float* out_l_ptr,
         // yet, so the closest shipped 4x12 is reused rather than inventing one.
         // Named as a follow-up in docs §69.11.
         c->mesa.process(in_ptr, out_l_ptr, num_frames);
+        for (int i = 0; i < num_frames; ++i) out_r_ptr[i] = out_l_ptr[i];
+    } else if (c->model == kAmpChamp) {
+        // The Champ is a tiny 1x8 open-back COMBO — mono, dual-mono into the
+        // identical cab pair (M10.10). Its natural pairing is the `tweed8` this
+        // slice synthesises; the app hints at it. Note this is the ONLY voice in
+        // the lineup whose real speaker is smaller than every cab that existed
+        // before it, which is why it could not simply reuse one.
+        c->champ.process(in_ptr, out_l_ptr, num_frames);
         for (int i = 0; i < num_frames; ++i) out_r_ptr[i] = out_l_ptr[i];
     } else if (c->model == kAmpRockerverb) {
         // The Rockerverb 100 is a HEAD into a separate 4x12 — mono, dual-mono into

@@ -83,10 +83,11 @@ const AMP_TYPE_LABEL: Record<string, string> = {
   orange: 'Overdrive 120 (Orange style)',
   rockerverb: 'Rocker Verb (modern Orange)',
 };
-const CAB_LABEL: Record<'clean212' | 'brit412' | 'orange412', string> = {
+const CAB_LABEL: Record<'clean212' | 'brit412' | 'orange412' | 'tweed8', string> = {
   clean212: 'Clean 2×12 (JC platform)',
   brit412: 'Brit 4×12 (Marshall-style)',
   orange412: 'Orange 4×12 (barky, big bottom)',
+  tweed8: 'Tweed 1×8 (small, barky, no bottom)',
 };
 
 interface Segment {
