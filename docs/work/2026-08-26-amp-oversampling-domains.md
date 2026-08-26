@@ -104,14 +104,36 @@ rule is that the only defensible CPU claim is an interleaved same-machine A/B. E
 halfband passes were deleted and the interstage networks now run at 192 kHz; they
 plausibly cancel, as §63.14 found. **The latency is the win, not the CPU.**
 
+**Core suite: 39/40.** Every voicing suite passes, the amps' own included
+(`clipper_jcm800_tests`, `clipper_ac30_tests`, `clipper_twin_tests`,
+`clipper_rockerverb_tests`, `clipper_mesa_tests`). The single failure is
+`clipper_player_expectations_tests`, and it aborts on ONE assertion — the golden
+drift gate, which is **1.5 dB worst-band**:
+
+    [C ] sd1_twin_reverb  vs golden: rms Δ -0.03 dB, worst band Δ 5.44 dB @ 252 Hz
+
+**That bound is what turns this into a clean split.** `rat_jcm800` (0.35 dB),
+`ts_ac30` (0.52) and `muff_twin` (0.17) are all INSIDE the 1.5 dB gate, so the
+JCM800 and AC30 consolidations pass with **no bless required** — the §45 precedent
+("inside the gates, NO bless, drift documented"). Only the Twin's tank exceeds it.
+
 ## The decisions this needs
 
-1. **Bless `rat_jcm800` and `ts_ac30`?** 0.35 and 0.52 dB worst-band, ≤0.00 dB
-   broadband, alias floor better at 44.1 kHz. Recommended.
-2. **The Twin: ship, or leave it at 216 samples?** −3.00 ms costs a 5.44 dB move in
-   the spring tank's low end. The alternative shape — decimating after the preamp so
-   the tank stays at base rate — is TWO domains (144 samples, −1.50 ms) and an extra
-   resampler pair. Owner's call; A/B renders sent.
+1. **JCM800 + AC30 — nothing to decide.** Both land inside the project's own 1.5 dB
+   golden gate, so no bless is needed and the suite is green on them. −6.00 ms and
+   −4.50 ms respectively, with the alias floor better at 44.1 kHz. They can ship.
+2. **THE TWIN IS THE ONLY DECISION.** −3.00 ms costs a **5.44 dB** move at 252 Hz in
+   the spring tank, which trips the 1.5 dB gate. Three ways:
+   * **Bless it** — the tank re-discretized at 192 kHz is arguably MORE accurate
+     (less bilinear warping), and the change is a rate change, not a re-voicing.
+     Needs owner authorization and a `GOLDENS.md` justification.
+   * **Revert the Twin only** — keep it at 216 samples / 4.50 ms. JCM800 and AC30
+     still ship. Zero risk, zero bless.
+   * **Two domains instead of one** — decimate after the preamp so the tank stays at
+     base rate: 144 samples (−1.50 ms), an extra resampler pair of CPU, and the
+     reverb untouched. More code, half the win.
+   A/B renders (`twin_reverb_before_base_tank.wav` / `_after_4x_tank.wav`) are with
+   the owner.
 3. **The OR120 stays at 216** unless someone wants to re-open §63.14's refutation.
 
 ## Out of scope
