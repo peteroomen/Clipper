@@ -182,6 +182,29 @@ enum PedalType : int {
 // Each type is instantiable once, so the board can never be longer than this.
 constexpr int kMaxChain = PEDAL_TYPE_COUNT;
 
+// Which amp head the engine drives. These integers are the `ampModel` Params
+// field, the APVTS `ampModel` Choice index and the C ABI's built-in voice id all
+// at once, so they are STABLE and APPEND-ONLY: inserting one would silently
+// re-voice every saved session and every host automation lane.
+//
+// AMP_MODEL_COUNT exists so the PLUGIN cannot drift from the ENGINE. The Mesa
+// shipped in M10.4 (docs §69) with the engine wired and the plugin's
+// `kAmpModelChoices` left at six entries, which made the voice unreachable from
+// the UI for anyone using the plugin — the Choice parameter simply could not
+// express the value 6. `native/tests/amp_voice_test.cpp` now asserts the choice
+// count equals this constant, so the same omission goes RED for any future voice
+// rather than shipping as an invisible one.
+enum AmpModel : int {
+    AMP_CLEAN120 = 0,    // M6.x  solid-state stereo clean + chorus
+    AMP_JCM800 = 1,      // M9.4  Marshall 2204 head
+    AMP_TWIN = 2,        // M10.1 blackface Twin combo
+    AMP_AC30 = 3,        // M10.2 AC30 top boost combo
+    AMP_ORANGE = 4,      // M10.3 Orange OR120 Overdrive head
+    AMP_ROCKERVERB = 5,  // M10.7 Orange Rockerverb 100 head
+    AMP_MESA = 6,        // M10.4 Mesa/Boogie Dual Rectifier Solo Head
+    AMP_MODEL_COUNT = 7,
+};
+
 // Which cabinet IR the convolver pair is loaded with. 0/1 are ALSO the C ABI's
 // built-in indices (amp_prepare_cab_builtin) and the web's CabChoice order
 // ('clean212' | 'brit412' | 'custom' — web/src/rig.ts), so the integer round-trips
@@ -320,7 +343,7 @@ struct Params {
     // web/src/rig.ts and EqModel's constructor. EVERY slider opens at 0.5, which
     // for this pedal is not a convention but a structural property: at centre
     // each band leg injects nothing into the summing node, so a freshly added EQ
-    // is exactly transparent (docs §71.3). GAIN rides slot 0 and VOLUME slot 2 —
+    // is exactly transparent (docs §72.3). GAIN rides slot 0 and VOLUME slot 2 —
     // ordinary slot reuse, the way the phaser takes slot 0 as SPEED; slot 1 is
     // carried and unused. The ten bands are their OWN param ids (3..12).
     bool  eqOn = true;
@@ -349,11 +372,8 @@ struct Params {
     int   chain[kMaxChain] = {PEDAL_RAT, PEDAL_SD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     int   chainLength = 2;
 
-    // Amp voice (M9.4/M10.1/M10.2/M10.3/M10.7): 0 = Clean 120, 1 = JCM800,
-    // 2 = Twin, 3 = AC30, 4 = Orange OR120, 5 = Orange Rockerverb 100,
-    // 6 = Mesa Dual Rectifier Solo Head (M10.4).
-    // Selects which head process() drives; all are always kept current so a live
-    // switch is instant.
+    // Amp voice — see AmpModel below. Selects which head process() drives; all are
+    // always kept current so a live switch is instant.
     int   ampModel = 0;
 
     // Clean 120 / Twin shared amp knobs. volume/bright feed clean120 + twin;

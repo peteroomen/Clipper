@@ -211,10 +211,15 @@ private:
     // AMP card — the full superset of knobs; visibility/labels set per voice.
     NeuKnob volume_, bass_, middle_, treble_, presence_, master_, gain_, reverb_;
     NeuKnob fac_;  // M10.3 Orange OR120 F.A.C. (six detents, shown on that voice only)
+    // M10.4 Mesa Dual Rectifier — MODE (five positions), RECTIFIER and POWER.
+    // Knobs rather than ModeSwitch widgets: MODE has FIVE states and ModeSwitch
+    // does two and three, and the core already quantizes the 0..1 value. The web
+    // ships all three as knobs for the same reason.
+    NeuKnob mesaMode_, mesaRect_, mesaPower_;
     NeuKnob modSpeed_, modDepth_;  // chorus/tremolo speed + depth/intensity
     std::unique_ptr<SliderAttach> volumeAttach_, bassAttach_, middleAttach_, trebleAttach_,
         presenceAttach_, masterAttach_, gainAttach_, reverbAttach_, modSpeedAttach_,
-        modDepthAttach_, facAttach_;
+        modDepthAttach_, facAttach_, mesaModeAttach_, mesaRectAttach_, mesaPowerAttach_;
     LeverToggle bright_, cab_;
     // THE CAB / IR PICKER. A chip under the Cab lever, opening a popup with the two
     // built-ins, the loaded custom IR (if any) and "Load IR…". Not a ComboBox: the

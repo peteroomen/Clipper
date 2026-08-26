@@ -457,7 +457,7 @@ export const DROP_KNOB_DEFAULTS: PedalParams = {
 // M13.6 ten-band graphic EQ ("Decade"). Every slider opens at CENTRE, which for
 // this pedal is not a convention but a structural property: at centre each band
 // leg injects nothing into the summing node, so a freshly added EQ is exactly
-// transparent (measured +0.00000 dB, docs §71.3). GAIN rides slot 0 and VOLUME
+// transparent (measured +0.00000 dB, docs §72.3). GAIN rides slot 0 and VOLUME
 // slot 2, both 0.5 == unity. Slot 1 is carried and unused.
 // These must match the C++ constructor defaults in EqModel.cpp.
 export const EQ_KNOB_DEFAULTS: PedalParams = {

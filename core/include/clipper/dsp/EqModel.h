@@ -4,7 +4,7 @@
 // board's first EQ voice. TEN gyrator band legs summed around one inverting
 // op-amp stage, plus a GAIN slider in front and a VOLUME slider behind.
 //
-// TOPOLOGY (transcribed — see docs §71.1 for the sourced/derived/reconstructed
+// TOPOLOGY (transcribed — see docs §72.1 for the sourced/derived/reconstructed
 // table). The reference ten-band's own schematic is NOT reachable from this
 // container; what IS reachable is a complete annotated netlist for a SEVEN-band
 // gyrator EQ of the same family (Boss GE-7, in the same LTspice repository §59

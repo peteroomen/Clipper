@@ -147,7 +147,7 @@ export const EQ_BAND_PARAMS = [
 // The nominal ISO centre of each band, in Hz, in the same order. Display and
 // coaching only — the CORE owns the real centres, which come from the
 // transcribed gyrator design equation and land a few percent off nominal
-// exactly as real component values do (docs §71).
+// exactly as real component values do (docs §72).
 // The +/- dB the band sliders reach at the ends of their travel. Mirrors
 // kLevelRangeDb / the range the leg loss is pinned to in EqModel.cpp — display
 // and coaching only; the CORE owns the real curve.

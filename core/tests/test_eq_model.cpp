@@ -1,4 +1,4 @@
-// Plain-assert tests for M13.6's "Decade" ten-band graphic EQ (docs §71) — the
+// Plain-assert tests for M13.6's "Decade" ten-band graphic EQ (docs §72) — the
 // board's first EQ voice, and the first pedal whose control surface is larger
 // than three slots.
 //
@@ -39,7 +39,7 @@ namespace {
 // slice's own target — which is what makes it worth ratcheting.
 const clipper::test::XfailDecl kXfailProportionalQ{
     "eq-proportional-q-shallow",
-    "M13.6 docs §71.5 (Rane note 101 / Bohn: ~1 octave at +3 dB, ~1/3 at full)",
+    "M13.6 docs §72.5 (Rane note 101 / Bohn: ~1 octave at +3 dB, ~1/3 at full)",
     "the half-gain bandwidth should narrow by about 3x from a +3 dB boost to a "
     "full boost",
     "a leg model that splits the gyrator's series and parallel losses — with ONE "
@@ -449,7 +449,7 @@ int main(int argc, char** argv) {
                                                  sizeof kLedger / sizeof kLedger[0],
                                                  "clipper_eq_tests");
     if (ledger >= 0) return ledger;
-    std::printf("== Decade ten-band graphic EQ (M13.6, docs §71) ==\n");
+    std::printf("== Decade ten-band graphic EQ (M13.6, docs §72) ==\n");
     std::printf("- BAR 1: flat is unity, exactly\n");
     testFlatIsUnity();
     std::printf("- BAR 2: range and boost/cut symmetry\n");

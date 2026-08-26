@@ -144,6 +144,10 @@ juce::Colour accent(AccentId id) {
         // (--accent-orange), and deliberately more saturated / less brown than
         // Ac30's copper so the two amps never read as the same voice.
         case AccentId::Orange: return d ? juce::Colour(0xffFF9A2E) : juce::Colour(0xffC85A00);
+        // M10.4 Mesa Dual Rectifier — CRIMSON. Verbatim from tokens.css
+        // (--accent-mesa), and deliberately cooler and deeper than AccentId::Clean's
+        // orange-red so the Recto and the Clean 120 never read as the same panel.
+        case AccentId::Mesa:   return d ? juce::Colour(0xffE4566E) : juce::Colour(0xff9E2235);
         case AccentId::Clean:  return d ? juce::Colour(0xffFF4A34) : juce::Colour(0xffF03B24);
     }
     return d ? juce::Colour(0xffFF4A34) : juce::Colour(0xffF03B24);

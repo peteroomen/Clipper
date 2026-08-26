@@ -506,7 +506,7 @@ void ClipperEngine::setPedalOversampling(int factor) {
     // read tap is a resampling delay, not a nonlinearity, and it was measured
     // BIT-IDENTICAL at 1x and 8x (docs §70.6).
     drop_.setOversampling(factor);
-    // The EQ accepts and IGNORES it too: linear and time-invariant (docs §71).
+    // The EQ accepts and IGNORES it too: linear and time-invariant (docs §72).
     eq_.setOversampling(factor);
     // ce1_ has no nonlinearity: setOversampling would be a no-op, so it is not called.
     // NOTE: the delay is deliberately NOT re-factored here. Its oversampling is

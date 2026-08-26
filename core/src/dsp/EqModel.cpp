@@ -16,7 +16,7 @@ namespace {
 constexpr double kTwoPi = 6.283185307179586;
 constexpr double kPi = 3.141592653589793;
 
-// --- Transcribed from the GE-7 netlist (docs §71.1, S5/S6) --------------------
+// --- Transcribed from the GE-7 netlist (docs §72.1, S5/S6) --------------------
 // The summing stage's input and feedback resistors. Equal, so the stage is a
 // unity inverter with every slider centred.
 constexpr double kRin = 10.0e3;

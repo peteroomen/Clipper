@@ -298,7 +298,7 @@ class ClipperProcessor extends AudioWorkletProcessor {
   // The three shared slots FIRST and unconditionally, in exactly the order they
   // were written as three literal lines before M13.6 — that ordering is why
   // every pedal that predates the EQ renders bit-identically through this
-  // function (proved by render hash, docs §71).
+  // function (proved by render hash, docs §72).
   //
   // Then the EXTRA slots, ids 3.. , for a pedal whose control surface is larger
   // than three (today: the ten-band EQ's band sliders). A three-slot pedal's

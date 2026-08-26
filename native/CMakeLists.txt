@@ -145,6 +145,22 @@ target_link_libraries(clipper_cab_state_test PRIVATE
     juce::juce_recommended_config_flags)
 target_include_directories(clipper_cab_state_test PRIVATE src)
 
+# AMP VOICE REACHABILITY (docs §71). M10.4 wired the Mesa into ClipperEngine and
+# left the plugin's kAmpModelChoices at six entries, so the Choice parameter could
+# not express voice 6 and the amp was unreachable from every host — while every
+# other suite stayed green, because identical_core_test can only compare voices it
+# can SELECT. This asserts the parameter offers exactly AMP_MODEL_COUNT voices,
+# that selecting the Mesa renders the Mesa rather than the fall-through Clean 120,
+# and that its three switch parameters reach the engine.
+juce_add_console_app(clipper_amp_voice_test PRODUCT_NAME clipper_amp_voice_test)
+target_sources(clipper_amp_voice_test PRIVATE tests/amp_voice_test.cpp)
+target_link_libraries(clipper_amp_voice_test PRIVATE
+    Clipper
+    clipper_dsp
+    juce::juce_audio_utils
+    juce::juce_recommended_config_flags)
+target_include_directories(clipper_amp_voice_test PRIVATE src)
+
 enable_testing()
 add_test(NAME clipper_identical_core COMMAND clipper_identical_test)
 add_test(NAME clipper_chain_edit COMMAND clipper_chain_edit_test)
@@ -154,6 +170,7 @@ add_test(NAME clipper_chain_edit COMMAND clipper_chain_edit_test)
 # --target list. A new entry must be added to BOTH or ctest reports it "Not Run" and
 # exits 8 — adding it to the filter alone is what turned this job red on PR #35.
 add_test(NAME clipper_cab_state COMMAND clipper_cab_state_test)
+add_test(NAME clipper_amp_voice COMMAND clipper_amp_voice_test)
 
 # --- Dev-only editor SNAPSHOT tool (NOT shipped) -----------------------------
 # A headless console app that opens the real editor and writes a

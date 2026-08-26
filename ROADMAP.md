@@ -641,7 +641,7 @@ keeps these slices small:
 6. **M13.6 — Utility + modulation batch** *(M, splittable)* — **Boss NS-2-style
    noise gate** (mandatory companion to M10.4; reuses 13.2's detector) ✅ shipped
    as the "Curfew", **MXR 10-band graphic EQ** ✅ **SHIPPED 2026-08-25 as the
-   "Decade" (docs §71)**, **Electric Mistress flanger** (cheap once the delay
+   "Decade" (docs §72)**, **Electric Mistress flanger** (cheap once the delay
    line exists), **Mu-Tron III envelope filter** (falls out of 13.1 if that slice
    builds it).
    *(The EQ's entry above said "10 biquads, trivial DSP". **That was true about

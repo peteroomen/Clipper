@@ -2925,7 +2925,7 @@ test('eq worklet: the ten band sliders reach the core by their own param ids', a
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Clipper', exact: true })).toBeVisible();
 
-  // THE PROPERTY THIS OWNS. The core suite proves the EQ's SHAPE (docs §71); what
+  // THE PROPERTY THIS OWNS. The core suite proves the EQ's SHAPE (docs §72); what
   // only the web can prove is the DELIVERY PATH — that a band slider addressed by
   // NAME in the rig reaches the right numeric id in the core (§57.13's split).
   // That matters more here than for any previous pedal: the EQ is the first one

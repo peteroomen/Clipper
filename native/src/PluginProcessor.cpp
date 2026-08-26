@@ -27,12 +27,24 @@ const juce::Identifier kCabCustomPath{"customIr"};
 const juce::StringArray kOversampleChoices{"1x", "2x", "4x", "8x"};
 constexpr int kOversampleFactors[] = {1, 2, 4, 8};
 const juce::StringArray kChorusChoices{"Off", "Chorus", "Vibrato"};
-// M9.4/M10.1/M10.2/M10.3/M10.7 amp voice: choice index 0 == Clean 120, 1 == JCM800,
-// 2 == Twin, 3 == AC30, 4 == Overdrive 120, 5 == Rocker Verb (matches
-// Params::ampModel). APPEND ONLY — the index is stored in host automation and in
-// saved sessions, so inserting one would silently re-voice every saved rig.
+// Amp voice choice labels, indexed by clipper::native::AmpModel — the index is
+// Params::ampModel, host automation and saved sessions all at once. APPEND ONLY:
+// inserting one would silently re-voice every saved rig.
+//
+// THIS LIST IS THE BUG M10.4 SHIPPED. The Mesa was wired into the engine as voice
+// 6 and this array was left at six entries, so the Choice parameter could not
+// express the value and the voice was unreachable from the plugin UI. A static
+// assert against AMP_MODEL_COUNT now makes that a build error rather than a
+// silently missing amp.
 const juce::StringArray kAmpModelChoices{"Clean 120", "JCM800", "Twin Sixty-Five",
-                                        "AC30", "Overdrive 120", "Rocker Verb"};
+                                        "AC30", "Overdrive 120", "Rocker Verb",
+                                        "Dual Rectifier"};
+// The whole point of AMP_MODEL_COUNT: a voice added to the engine and not to this
+// array is a build error here, not an amp nobody can select. juce::StringArray's
+// size is a runtime value, so this is checked in createParameterLayout() with a
+// jassert plus the reachability test in native/tests/amp_voice_test.cpp; the
+// constant below is what both compare against.
+constexpr int kAmpModelCount = clipper::native::AMP_MODEL_COUNT;
 
 // A plain 0..1 knob parameter (the core owns the taper law, so the host sees a
 // linear normalized position — identical to the web knobs).
@@ -225,6 +237,8 @@ ClipperAudioProcessor::makeLayout() {
 
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::ampOn, 1}, "Amp Power", true));
     // M9.4 amp voice (default index 0 == Clean 120).
+    // Every engine voice must be offerable, or it is unreachable from any host.
+    jassert(kAmpModelChoices.size() == kAmpModelCount);
     layout.add(std::make_unique<Choice>(juce::ParameterID{pid::ampModel, 1},
                                         "Amp Model", kAmpModelChoices, 0));
     layout.add(knob(pid::volume, "Volume", 0.4f));
@@ -247,6 +261,12 @@ ClipperAudioProcessor::makeLayout() {
     // M10.3 Orange OR120-only knob. Default 0.2 == F.A.C. position 2 of 6, the same
     // opening position the web's AMP_KNOB_DEFAULTS uses.
     layout.add(knob(pid::orangeFac, "Orange F.A.C.", 0.2f));
+    // M10.4 Mesa. Defaults MUST match ClipperEngine::Params' own and the web's
+    // AMP_KNOB_DEFAULTS: MODE 1.0 is RED MODERN (the voice a Recto is bought
+    // for), rectifier 0.0 is silicon, power 0.0 is BOLD.
+    layout.add(knob(pid::mesaMode, "Mesa Mode", 1.0f));
+    layout.add(knob(pid::mesaRectifier, "Mesa Rectifier", 0.0f));
+    layout.add(knob(pid::mesaPowerMode, "Mesa Power Mode", 0.0f));
 
     layout.add(std::make_unique<Choice>(juce::ParameterID{pid::chorusMode, 1},
                                         "Chorus Mode", kChorusChoices, 0));
@@ -533,6 +553,9 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.ampOn = f(pid::ampOn) >= 0.5f;
     p.ampModel = static_cast<int>(f(pid::ampModel));  // choice index == model id
     p.orangeFac = f(pid::orangeFac);
+    p.mesaMode = f(pid::mesaMode);
+    p.mesaRectifier = f(pid::mesaRectifier);
+    p.mesaPowerMode = f(pid::mesaPowerMode);
     p.volume = f(pid::volume);
     p.bass = f(pid::bass);
     p.middle = f(pid::middle);
