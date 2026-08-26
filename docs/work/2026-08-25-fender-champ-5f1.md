@@ -318,14 +318,91 @@ current surges when `Vp` falls below `Vg2`. Not modelled here; named.
 0.210 is finding 10's exact figure, so that corroboration is of the *plate* fit only.
 
 
+### The build, in order
+
+1. `ChampPowerAmp` (single-ended 6V6, cathode bias, §55 Thévenin supply), `ChampPreamp`
+   (two 12AX7s either side of the 1 MΩ log pot, no tone stack), `ChampAmp` (ONE shared
+   oversampling domain from the first commit).
+2. `clipper_champ_tests` — 15 tests, every bar in "How this will be measured".
+3. C ABI voice 7, the `tweed8` cab, the web front end, the native front end.
+
+### Two real bugs found and fixed during the build
+
+1. **A reference-frame bug in my own first draft, caught by a silent render.** The
+   operating-point solve used plate-to-CATHODE volts while the process loop passed
+   plate-to-GROUND — a 19 V discrepancy on a cathode-biased tube, so the idle solve and
+   the run loop sat on different load lines. It showed as a **0.23 startup transient
+   into a silent render** (should be ~0). Fixed by making the run loop cathode-referred;
+   silence now measures **3.008e-14**. The comment in `ChampPowerAmp.cpp` records how it
+   was caught, because a 19 V frame error is invisible in every steady-state number.
+2. **A PRE-EXISTING bug on `main`, found by writing the web spec.**
+   `Board.tsx`'s `AMP_TYPE_LABEL` was a `Record<string, string>` with **no `mesa`
+   entry**, so **M10.4's Dual Rectifier renders as a BLANK item in the amp menu** — the
+   lookup returns `undefined` and React draws nothing. `Record<string, …>` accepts any
+   key, so nothing could catch it. Retyped `Record<AmpType, string>`, making a missing
+   voice a **build error**. Fourth instance of this class (§61.10 `kFaces`, §62,
+   §67.10 `pedalMenuLabel`, §71 `kAmpModelChoices`) and the second fixed structurally.
+
+### One bar that had to be re-aimed, and it was NOT loosened
+
+`testRestingState` was written to assert `maxAbsRestingState() == 0.0` and went red at
+**5.434e-11**. Bisected: all three zero-resting states **PLATEAU** (identical at 1, 4, 8,
+20 and 41 s), because `TriodeStage`'s grid Newton exits at a residual tolerance and
+re-excites them — §69's case, not §56.4b's. Asserting a zero this amp does not have
+would have been wrong, so the bar became **what the anti-denormal policy is actually
+for**: no subnormal float leaves the model (**0** over the whole silent tail), the
+plateau is *settled* (unchanged to a part in 1e6 over a further 30 s), and it sits
+decades above the subnormal boundary. Strictly more informative than the original.
+
 ## Measured results
+
+All tables are in **docs §72**. Headlines:
+
+| | |
+|---|---|
+| h2, Champ vs the balanced Twin (identical stimulus) | **−14.84 vs −39.72 dBc = 24.88 dB** |
+| Plate knee current (audit finding 9) | **88.4 mA** vs finding 9's 530 mA from one EL34 |
+| No NFB | **bit-identical**, 0 of 24000 samples |
+| Fender's measured point (1 constant fitted, rest predicted) | Vk **0.9943×**, Ip **0.9805×**, Ik **0.9950×**, Vpk **1.0004×** |
+| Screen fit (audit finding 10) | ours **1.12 W** vs the published fit's **2.53 W** against a **2.75 W rating** |
+| Breakup at 0.15 V | VOL 0.05 **3.89 %** · 0.10 **7.55 %** · 0.30 **28.61 %** |
+| Touch sensitivity at VOL 0.20 | hard **16.63 %** / soft **5.86 %** = **2.84×** |
+| Power | section ceiling **5.17 W** (rated ~5); composed cranked **3.89 W**, reported |
+| Latency | **72 samples / 1.50 ms** (per-stage domains measured 216) |
+| `tweed8` −6 dB corner | **198.3 Hz** vs 75.0 / 103.2 / 104.7 for the three 12" cabs |
+| Ragged-100 · `reset()` · NaN · DC · rate spread | 0.000e+00 · 0.000e+00 · 0/24000 · 0.2498 % · 0.014 dB |
+
+**Suites:** core ctest **39/39** (was 38 — `clipper_player_expectations_tests` passes, so
+**all five goldens unchanged, nothing blessed**); native **4/4** including
+`clipper_amp_voice` (§71's reachability test); node **15 / 10 / 12**; electron **20**;
+`tsc --noEmit` clean; web build clean; WASM artifact rebuilt (**113** hashed inputs).
 
 ## Files created / modified
 
+**Core:** `ChampPowerAmp.{h,cpp}`, `ChampPreamp.{h,cpp}`, `ChampAmp.{h,cpp}` (new),
+`CabIR.{h,cpp}` (+`generateTweed1x8IR`), `clipper_c_api.cpp`, `CMakeLists.txt`,
+`tests/test_champ_amp.cpp` (new).
+**Web:** `rig.ts`, `params.ts`, `audio.ts`, `App.tsx`, `components/{Amp,Board}.tsx`,
+`styles/{tokens,amp}.css`, `assistant/{tools,prompt}.ts`, `tests/{amp,audio}.spec.ts`.
+**Native:** `ClipperEngine.{h,cpp}`, `PluginProcessor.{h,cpp}`, `PluginEditor.{h,cpp}`,
+`ClipperLookAndFeel.{h,cpp}`.
+**Build/docs:** `scripts/build-wasm.sh`, `web/public/generated/*`, `docs/DEVELOPMENT.md`
+(§72), `ROADMAP.md`, `CLAUDE.md`, this file.
+
 ## Deferred to next session
+
+- **The editor still has no automated behaviour test** (§71's named gap), now covering
+  one more face. `updateAmpFace()`'s `case 7` is covered by review.
+- **A Vibro-Champ** — cheap now, `OptoTremolo` exists.
+- **Audit findings 9 and 10 on the EXISTING push-pull amps.** Deliberately untouched:
+  that moves four goldens and is its own slice.
+- **The Koren screen law has no `Vp` dependence** — the mechanism behind real screen
+  sag, absent in every pentode in this project.
+- **`kRptSecondary` (200 Ω) is a reconstruction.** Find a Champ PT winding resistance
+  and the supply becomes fully sourced.
 
 ## Status
 
-- [x] In progress
-- [ ] Complete
+- [ ] In progress
+- [x] Complete
 - [ ] Partial — see deferred

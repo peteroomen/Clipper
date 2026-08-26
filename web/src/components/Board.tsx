@@ -75,13 +75,22 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   drop: 'Cellar drop-tune (graphite, polyphonic pitch)',
   tuner: 'Chromatic tuner',
 };
-const AMP_TYPE_LABEL: Record<string, string> = {
+// FOUND AND FIXED 2026-08-25 (docs §72.7): this was `Record<string, string>` and
+// had NO 'mesa' entry, so M10.4's Dual Rectifier rendered as a BLANK item in the
+// amp menu — `AMP_TYPE_LABEL[t]` returned undefined and React drew nothing. A
+// `Record<string, …>` accepts any key, so nothing could catch it; typed as
+// `Record<AmpType, string>` a missing voice is now a BUILD ERROR, which is the
+// same structural fix AMP_MODEL_COUNT made on the native side (§71) and the same
+// class of defect as §61.10's kFaces and §67.10's pedalMenuLabel.
+const AMP_TYPE_LABEL: Record<AmpType, string> = {
   clean120: 'Clean 120 (JC-120 style)',
   jcm800: 'JCM800 (Marshall style)',
   twin: 'Twin Sixty-Five (Fender style)',
   ac30: 'AC30 (Vox top boost)',
   orange: 'Overdrive 120 (Orange style)',
   rockerverb: 'Rocker Verb (modern Orange)',
+  mesa: 'Dual Rectifier (Mesa style)',
+  champ: 'Cadet (tweed Champ, 1 knob)',
 };
 const CAB_LABEL: Record<'clean212' | 'brit412' | 'orange412' | 'tweed8', string> = {
   clean212: 'Clean 2×12 (JC platform)',
