@@ -1856,6 +1856,8 @@ test('amp selector: every available amp type has a voice index and a label', asy
   });
   expect(gaps.types.length).toBeGreaterThan(6);
   expect(gaps.missingIndex, 'an amp type has no worklet voice index').toEqual([]);
+});
+
 // M10.10 (docs §73) — the Champ's face is the sparsest in the app, and WHAT IS
 // ABSENT is the property worth pinning. A tweed 5F1 has NO tone stack at all, so
 // this spec asserts the absence of bass/middle/treble explicitly: a future slice
