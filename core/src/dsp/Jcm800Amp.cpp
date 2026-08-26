@@ -10,23 +10,48 @@ namespace clipper::dsp {
 Jcm800Amp::Jcm800Amp() : reverb_(std::make_unique<ReverbModel>()) {}
 Jcm800Amp::~Jcm800Amp() = default;
 
+// ONE shared oversampling domain (2026-08-26), the change §63.14 made on the
+// Rockerverb. Both halves are prepared AT the oversampled rate with their OWN
+// resamplers at 1x — Oversampler.h's documented exact pass-through — so
+// Jcm800Preamp, Jcm800PowerAmp and TriodeStage need no edit at all: they simply
+// run at 4x the base rate and band-limit nothing internally.
+//
+// What it costs and what it buys is in docs; the headline is 360 -> 72 samples of
+// latency (7.50 -> 1.50 ms) because five independent domains became one.
+void Jcm800Amp::rebuild() {
+    os_.prepare(maxBlockSize_);
+    os_.setFactor(oversampling_);
+    const int f = os_.factor();
+    const double osRate = sampleRate_ * static_cast<double>(f);
+    const int osBlock = maxBlockSize_ * f;
+    preamp_.setOversampling(1);
+    preamp_.prepare(osRate, osBlock);
+    power_.setOversampling(1);
+    power_.prepare(osRate, osBlock);
+    buf_.assign(static_cast<size_t>(osBlock), 0.0f);
+}
+
 void Jcm800Amp::prepare(double sampleRate, int maxBlockSize) {
     sampleRate_ = sampleRate > 0.0 ? sampleRate : 44100.0;
     maxBlockSize_ = maxBlockSize > 0 ? maxBlockSize : 128;
-    buf_.assign(static_cast<size_t>(maxBlockSize_), 0.0f);
-    preamp_.prepare(sampleRate_, maxBlockSize_);
-    power_.prepare(sampleRate_, maxBlockSize_);
     reverb_->prepare(sampleRate_);
-    setOversampling(oversampling_);
+    rebuild();
+    prepared_ = true;
 }
 
 void Jcm800Amp::setOversampling(int factor) {
     oversampling_ = factor;
-    preamp_.setOversampling(factor);
-    power_.setOversampling(factor);
+    // The factor sets the rate every stage is discretized at, so the whole cascade
+    // re-prepares (and its DC operating points re-settle). Before prepare() this
+    // only records the choice.
+    if (prepared_) rebuild();
 }
 
 void Jcm800Amp::reset() {
+    // The shared domain's halfband delay lines are recursive state and must be
+    // cleared too, or a NaN survives in the resampler after the models are reparked
+    // (audit finding 1 / docs §28: reset() is the recovery seam).
+    os_.reset();
     preamp_.reset();
     power_.reset();
     reverb_->reset();
@@ -50,8 +75,13 @@ void Jcm800Amp::process(const float* in, float* out, int numFrames) {
     int off = 0;
     while (off < numFrames) {
         const int n = std::min(maxBlockSize_, numFrames - off);
+        const int m = n * os_.factor();
+        // ONE band-limiting in, one out (2026-08-26). `os_.buffer()` holds the
+        // upsampled block; the preamp writes the interstage scratch, the power amp
+        // writes back into the oversampler's own buffer to be decimated.
+        os_.upsample(in + off, n);
         float* w = buf_.data();
-        preamp_.process(in + off, w, n);
+        preamp_.process(os_.buffer(), w, m);
         // Preamp volts → PI grid drive. The master-volume node emits real volts;
         // trim the handoff so the POWER TUBES see a realistic drive.
         //
@@ -74,9 +104,10 @@ void Jcm800Amp::process(const float* in, float* out, int numFrames) {
         // frequency shaping and cannot be removed by a broadband trim.
         // Below clipping the model's level is therefore unchanged by finding 7; what DID
         // change is the ceiling, and that belongs to kFullScaleSecV (see its comment).
-        for (int i = 0; i < n; ++i)
+        for (int i = 0; i < m; ++i)
             w[i] = static_cast<float>(w[i] * kInterstageScale);
-        power_.process(w, out + off, n);
+        power_.process(w, os_.buffer(), m);
+        os_.downsample(out + off, n);
         off += n;
     }
     // M10.1: mono spring reverb AFTER the power amp, BEFORE the C ABI dual-mono

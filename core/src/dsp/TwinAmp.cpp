@@ -13,24 +13,41 @@ TwinAmp::TwinAmp()
       tremolo_(std::make_unique<OptoTremolo>()) {}
 TwinAmp::~TwinAmp() = default;
 
+// ONE shared oversampling domain (2026-08-26) — §63.14's change. The tank and the
+// tremolo sit BETWEEN the preamp and the PI on an AB763, so they prepare at the
+// oversampled rate too: their position in the chain is unchanged (that is what
+// docs §20 pins), only the rate they are discretized at. Both are specified in
+// SECONDS and HERTZ, so the voicing is rate-agnostic by construction.
+void TwinAmp::rebuild() {
+    os_.prepare(maxBlockSize_);
+    os_.setFactor(oversampling_);
+    const int f = os_.factor();
+    const double osRate = sampleRate_ * static_cast<double>(f);
+    const int osBlock = maxBlockSize_ * f;
+    preamp_.setOversampling(1);
+    preamp_.prepare(osRate, osBlock);
+    power_.setOversampling(1);
+    power_.prepare(osRate, osBlock);
+    reverb_->prepare(osRate);
+    tremolo_->prepare(osRate);
+    buf_.assign(static_cast<size_t>(osBlock), 0.0f);
+}
+
 void TwinAmp::prepare(double sampleRate, int maxBlockSize) {
     sampleRate_ = sampleRate > 0.0 ? sampleRate : 44100.0;
     maxBlockSize_ = maxBlockSize > 0 ? maxBlockSize : 128;
-    buf_.assign(static_cast<size_t>(maxBlockSize_), 0.0f);
-    preamp_.prepare(sampleRate_, maxBlockSize_);
-    power_.prepare(sampleRate_, maxBlockSize_);
-    reverb_->prepare(sampleRate_);
-    tremolo_->prepare(sampleRate_);
-    setOversampling(oversampling_);
+    rebuild();
+    prepared_ = true;
 }
 
 void TwinAmp::setOversampling(int factor) {
     oversampling_ = factor;
-    preamp_.setOversampling(factor);
-    power_.setOversampling(factor);
+    if (prepared_) rebuild();
 }
 
 void TwinAmp::reset() {
+    // Shared-domain halfband state is recursive: part of the recovery seam.
+    os_.reset();
     preamp_.reset();
     reverb_->reset();
     tremolo_->reset();
@@ -56,13 +73,16 @@ void TwinAmp::process(const float* in, float* out, int numFrames) {
     int off = 0;
     while (off < numFrames) {
         const int n = std::min(maxBlockSize_, numFrames - off);
+        const int m = n * os_.factor();
+        // ONE band-limiting in, one out (2026-08-26).
+        os_.upsample(in + off, n);
         float* w = buf_.data();
         // Preamp: V1 → Fender TMB → V2 → volume/bright (real volts at the volume node).
-        preamp_.process(in + off, w, n);
+        preamp_.process(os_.buffer(), w, m);
         // AB763 order: reverb blended AFTER the recovery/volume, BEFORE tremolo+PI.
-        reverb_->process(w, w, n);
+        reverb_->process(w, w, m);
         // Optical tremolo ("vibrato" on the panel) — amplitude modulation.
-        tremolo_->process(w, w, n);
+        tremolo_->process(w, w, m);
         // Preamp volts → PI grid drive (memoryless trim, documented constant).
         //
         // 0.16 -> 0.107 (2026-07-29, docs §42). 0.16 was fitted around the STARVED phase
@@ -79,9 +99,10 @@ void TwinAmp::process(const float* in, float* out, int numFrames) {
         // 0.16 / 1.490 = 0.1074 -> 0.107, so the 6L6 grids see the drive they were
         // calibrated with at every knob position below clipping. The ceiling moved too,
         // and that is kFullScaleSecV's job (see its comment in TwinPowerAmp.h).
-        for (int i = 0; i < n; ++i)
+        for (int i = 0; i < m; ++i)
             w[i] = static_cast<float>(w[i] * kInterstageScale);
-        power_.process(w, out + off, n);
+        power_.process(w, os_.buffer(), m);
+        os_.downsample(out + off, n);
         off += n;
     }
 }
