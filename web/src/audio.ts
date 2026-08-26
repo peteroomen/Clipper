@@ -19,11 +19,19 @@ import {
   AMP_PARAM_MESA_RECTIFIER,
   AMP_PARAM_MESA_POWERMODE,
   AMP_MODEL_INDEX,
+  EQ_BAND_PARAMS,
   WORKLET_URL,
   trimKnobToGain,
 } from './params';
 import { PitchDetector } from 'pitchy';
-import type { SourceKind, AmpParams, AmpType, PedalInstance, CabChoice } from './rig';
+import type {
+  SourceKind,
+  AmpParams,
+  AmpType,
+  PedalInstance,
+  PedalParams,
+  CabChoice,
+} from './rig';
 import { CAB_BUILTIN_INDEX } from './rig';
 import { resampleMono } from './cab';
 import { TUNER_FRAME_SIZE, analyzePitch, type TunerReading } from './tuner';
@@ -52,21 +60,29 @@ export interface ChainPedal {
   id: string;
   type: string;
   engaged: boolean;
-  params: { distortion: number; filter: number; level: number };
+  // The three shared slots plus, for a pedal that has them, its extra slots
+  // (M13.6's ten EQ bands). PedalParams' optional fields carry that exactly.
+  params: PedalParams;
 }
 
 // Serialize the rig chain into the worklet's `chain` message payload.
 export function toChainPayload(pedals: PedalInstance[]): ChainPedal[] {
-  return pedals.map((p) => ({
-    id: p.id,
-    type: p.type,
-    engaged: p.engaged,
-    params: {
+  return pedals.map((p) => {
+    // The three shared slots, always. Spelled out rather than spread so a future
+    // non-param field on PedalParams cannot leak across the worklet boundary.
+    const params: PedalParams = {
       distortion: p.params.distortion,
       filter: p.params.filter,
       level: p.params.level,
-    },
-  }));
+    };
+    // M13.6: the EQ's ten band sliders, only when the pedal actually has them.
+    // A three-slot pedal emits exactly the object it always did.
+    for (const name of EQ_BAND_PARAMS) {
+      const v = p.params[name];
+      if (v !== undefined) params[name] = v;
+    }
+    return { id: p.id, type: p.type, engaged: p.engaged, params };
+  });
 }
 
 export interface StartOptions {

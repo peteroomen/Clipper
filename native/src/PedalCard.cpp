@@ -131,6 +131,32 @@ const PedalFace kFaces[] = {
      {{"Drop", pid::dropAmount,
        {"-1", "-2", "-3", "-4", "-5", "-6", "-7", "OCT", "OCT+DRY"}}},
      pid::dropOn, PEDAL_DROP},
+    // DECADE — M13.6, the board's first EQ and the ONLY face with more than three
+    // controls: ten band knobs in a 2x5 grid over a GAIN/VOLUME row. SILVER
+    // accent, because the reference family is a plain metal box whose identity is
+    // the control bank itself and silver is the one accent no other pedal here
+    // uses. No MXR / M108 / Dunlop wording anywhere.
+    //
+    // KNOWN DIVERGENCE FROM THE WEB, recorded rather than left to be discovered:
+    // the web face draws ten vertical FADERS (a graphic EQ is bought so the curve
+    // can be read off the slider positions) and this one draws knobs, because the
+    // native kit has no fader widget yet and inventing one was out of this
+    // slice's scope. The PARAMETERS, their ids and their behaviour are identical;
+    // only the widget differs. A native Fader is the named follow-up.
+    {"EQ N\xc2\xba""1 \xc2\xb7 Ten Band", "Decade", skin::AccentId::Eq,
+     Footswitch::Shape::Round, PedalFace::Layout::Bank, 30.0f,
+     {{"31 Hz", pid::eqBand31},
+      {"63 Hz", pid::eqBand63},
+      {"125 Hz", pid::eqBand125},
+      {"250 Hz", pid::eqBand250},
+      {"500 Hz", pid::eqBand500},
+      {"1 kHz", pid::eqBand1k},
+      {"2 kHz", pid::eqBand2k},
+      {"4 kHz", pid::eqBand4k},
+      {"8 kHz", pid::eqBand8k},
+      {"16 kHz", pid::eqBand16k},
+      {"Gain", pid::eqGain}, {"Vol", pid::eqVolume}},
+     pid::eqOn, PEDAL_EQ},
     // ENSEMBLE — M13.7, the CE-1 Chorus Ensemble: the second MODULATION pedal and
     // the first whose circuit the project already owned (it is the JC-120 amp's
     // chorus in a floor box — docs §62). Morphology cue is the real CE-1's big,
@@ -195,6 +221,9 @@ juce::String pedalMenuLabel(int type) {
         case PEDAL_OPTO:   return "Lumen - optical compressor";
         case PEDAL_VIBE:   return "Swirl - Uni-Vibe photocell phaser";
         case PEDAL_DROP:   return "Cellar - polyphonic drop-tune";
+        // Added WITH the face, not after it: §67.10 found the Lumen shipping
+        // with a card but no menu case, showing as the bare word "Pedal".
+        case PEDAL_EQ:     return "Decade - ten-band graphic EQ";
         default:           return "Pedal";
     }
 }
@@ -361,6 +390,23 @@ void PedalCard::resized() {
         auto row = r.removeFromTop(juce::jmax(kKnobH, juce::jmin(120, r.getHeight() / 2)));
         knobs_[0]->setBounds(row.withSizeKeepingCentre(
             juce::jmin(row.getWidth(), row.getHeight()), row.getHeight()));
+    } else if (face.layout == PedalFace::Layout::Bank && knobs_.size() == 12) {
+        // The EQ bank: ten band knobs in 2 rows of 5, then GAIN/VOLUME centred
+        // under them. Deliberately NOT the generic row below — twelve controls
+        // sharing one row would give each about six pixels.
+        const int bandH = juce::jmax(kKnobH - 10, 44);
+        for (int row = 0; row < 2; ++row) {
+            auto strip = r.removeFromTop(bandH);
+            const int cw = strip.getWidth() / 5;
+            for (int i = 0; i < 5; ++i)
+                knobs_[(size_t)(row * 5 + i)]->setBounds(strip.removeFromLeft(cw).reduced(1, 0));
+        }
+        r.removeFromTop(4);
+        auto out = r.removeFromTop(kKnobH);
+        const int ow = juce::jmin(out.getWidth() / 2, 70);
+        auto centred = out.withSizeKeepingCentre(ow * 2, out.getHeight());
+        knobs_[10]->setBounds(centred.removeFromLeft(ow).reduced(3, 0));
+        knobs_[11]->setBounds(centred.reduced(3, 0));
     } else {
         auto row = r.removeFromTop(kKnobH);
         const int cw = row.getWidth() / juce::jmax(1, (int)knobs_.size());

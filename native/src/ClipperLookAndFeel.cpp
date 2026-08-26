@@ -135,6 +135,8 @@ juce::Colour accent(AccentId id) {
         case AccentId::Vibe:   return d ? juce::Colour(0xffF0B25A) : juce::Colour(0xffE8A33D);
         // M13.10 drop-tune — GRAPHITE-CYAN, tokens.css --accent-drop.
         case AccentId::Drop:   return d ? juce::Colour(0xff8FC0D4) : juce::Colour(0xff5F7D8C);
+        // M13.6 EQ — SILVER. Values verbatim from tokens.css --accent-eq.
+        case AccentId::Eq:     return d ? juce::Colour(0xffC3CAD8) : juce::Colour(0xff8C93A0);
         case AccentId::Jcm:    return d ? juce::Colour(0xffE8B84B) : juce::Colour(0xffA87A18);
         case AccentId::Twin:   return d ? juce::Colour(0xff7FB4E8) : juce::Colour(0xff4E7BA8);
         case AccentId::Ac30:   return d ? juce::Colour(0xffE08A4A) : juce::Colour(0xffB4612C);

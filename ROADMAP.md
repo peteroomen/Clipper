@@ -639,10 +639,40 @@ keeps these slices small:
    metric). `OptoCell` was reused **unwidened** — the lamp came out as its own
    component, `LampDrive.h`, exactly as that header instructed.
 6. **M13.6 — Utility + modulation batch** *(M, splittable)* — **Boss NS-2-style
-   noise gate** (mandatory companion to M10.4; reuses 13.2's detector),
-   **MXR 10-band graphic EQ** (mandatory for metal; 10 biquads, trivial DSP),
-   **Electric Mistress flanger** (cheap once the delay line exists),
-   **Mu-Tron III envelope filter** (falls out of 13.1 if that slice builds it).
+   noise gate** (mandatory companion to M10.4; reuses 13.2's detector) ✅ shipped
+   as the "Curfew", **MXR 10-band graphic EQ** ✅ **SHIPPED 2026-08-25 as the
+   "Decade" (docs §72)**, **Electric Mistress flanger** (cheap once the delay
+   line exists), **Mu-Tron III envelope filter** (falls out of 13.1 if that slice
+   builds it).
+   *(The EQ's entry above said "10 biquads, trivial DSP". **That was true about
+   the DSP and false about the slice**, in the same way §67's and §69's own
+   roadmap entries were wrong about theirs. Every pedal on this board was exactly
+   three parameters and that was the WIRE FORMAT, not a UI convention — the
+   worklet dispatched three literal lines, `PedalParams` was three named fields,
+   the native `Params` carried three floats per pedal. A ten-band EQ is twelve
+   controls, so the weight was plumbing; the C ABI was never the constraint,
+   since `*_set_param(handle, int id, float)` always took any id. That widening
+   landed FIRST and its acceptance bar was bit-identity, proved by the compiled
+   `clipper.js` coming back BYTE-IDENTICAL after a full rebuild. Two of the
+   twelve are ordinary slot reuse — GAIN rides slot 0 and VOLUME slot 2 — so only
+   the ten bands needed new ids (3..12).*
+   *The model is a gyrator EQ whose topology is TRANSCRIBED from a real netlist:
+   no ten-band schematic is reachable, but `Cushychicken/ltspice-guitar-pedals` —
+   the repo §59 parsed for the Dyna Comp and §66 for the RAT — carries a complete
+   annotated 7-band Boss GE-7, and its design equation `L = R1·R2·C2` reproduces
+   all six of its own gyrator bands' labelled centres to −4.41…+3.22 %. Three
+   player-facing properties are CONSEQUENCES of that topology rather than
+   coefficients: flat at centre is EXACT (+0.00000 dB — at centre the wiper sits
+   at (Vin+Vout)/2, identically zero while Vout = −Vin), boost and cut are exact
+   mirrors, and the bandwidth narrows as the slider leaves centre because the POT
+   is the damping element. **ONE XFAIL, and it is a PUBLISHED figure rather than
+   this slice's own target:** the proportional-Q narrowing measures 1.51× against
+   a published ~3×, because the two published figures the model is pinned to
+   OVER-DETERMINE it — one lumped leg loss governs both the range and the width.
+   Reported, not fitted; the weak band interaction (+0.004 dB) is the second
+   symptom of that same defect. **Named follow-up: this pedal exactly fills the
+   packed chain word — a SIXTEENTH pedal type fires the static_assert in
+   `PluginProcessor.cpp`.)*
 7. **M13.7 — CE-1 Chorus Ensemble** *(S — "almost free")* — worth knowing: the
    CE-1 **is** the Roland JC-120's chorus circuit put in a box, which is its
    literal design origin. So this is a re-voicing of machinery already validated,

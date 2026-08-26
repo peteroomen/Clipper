@@ -212,6 +212,22 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::dropOn, 1}, "Cellar On", true));
     layout.add(knob(pid::dropAmount, "Cellar Amount", 0.0f));
 
+    // M13.6 ten-band graphic EQ: twelve controls, all plain 0..1 knobs in the
+    // APVTS so a host can automate every band. 0.5 is flat on all of them.
+    layout.add(std::make_unique<Bool>(juce::ParameterID{pid::eqOn, 1}, "Decade On", true));
+    layout.add(knob(pid::eqGain, "Decade Gain", 0.5f));
+    layout.add(knob(pid::eqVolume, "Decade Volume", 0.5f));
+    layout.add(knob(pid::eqBand31, "Decade 31 Hz", 0.5f));
+    layout.add(knob(pid::eqBand63, "Decade 63 Hz", 0.5f));
+    layout.add(knob(pid::eqBand125, "Decade 125 Hz", 0.5f));
+    layout.add(knob(pid::eqBand250, "Decade 250 Hz", 0.5f));
+    layout.add(knob(pid::eqBand500, "Decade 500 Hz", 0.5f));
+    layout.add(knob(pid::eqBand1k, "Decade 1 kHz", 0.5f));
+    layout.add(knob(pid::eqBand2k, "Decade 2 kHz", 0.5f));
+    layout.add(knob(pid::eqBand4k, "Decade 4 kHz", 0.5f));
+    layout.add(knob(pid::eqBand8k, "Decade 8 kHz", 0.5f));
+    layout.add(knob(pid::eqBand16k, "Decade 16 kHz", 0.5f));
+
     // M13.4 — the "Echoman" BBD analog delay. Defaults mirror web
     // DELAY_KNOB_DEFAULTS: 212 ms, a few repeats, wet behind the dry.
     layout.add(std::make_unique<Bool>(juce::ParameterID{pid::delayOn, 1}, "Echoman On", true));
@@ -502,6 +518,19 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.vibeMode = f(pid::vibeMode);
     p.dropOn = f(pid::dropOn) >= 0.5f;
     p.dropAmount = f(pid::dropAmount);
+    p.eqOn = f(pid::eqOn) >= 0.5f;
+    p.eqGain = f(pid::eqGain);
+    p.eqVolume = f(pid::eqVolume);
+    p.eqBand[0] = f(pid::eqBand31);
+    p.eqBand[1] = f(pid::eqBand63);
+    p.eqBand[2] = f(pid::eqBand125);
+    p.eqBand[3] = f(pid::eqBand250);
+    p.eqBand[4] = f(pid::eqBand500);
+    p.eqBand[5] = f(pid::eqBand1k);
+    p.eqBand[6] = f(pid::eqBand2k);
+    p.eqBand[7] = f(pid::eqBand4k);
+    p.eqBand[8] = f(pid::eqBand8k);
+    p.eqBand[9] = f(pid::eqBand16k);
     p.ce1On = f(pid::ce1On) >= 0.5f;
     p.ce1Rate = f(pid::ce1Rate);
     p.ce1Depth = f(pid::ce1Depth);

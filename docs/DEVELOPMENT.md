@@ -15863,3 +15863,212 @@ was added to **both** in the same change.
   panel that drew the wrong knobs would still ship green.
 - The Mesa's own cab IR (it reuses `brit412`), the effects loop and the EL34 bias
   option remain §69's open items.
+## 72. M13.6 — the "Decade" ten-band graphic EQ: the board's FIRST EQ, and the first pedal with more than three controls
+
+Shipped 2026-08-25. Pedal type `eq`, slot **14**, SILVER accent, wordmark
+"Decade", `EQ Nº1 · TEN BAND`. The roadmap has carried this since 2026-07-31 as
+part of M13.6's utility batch, described as *"mandatory for metal; 10 biquads,
+trivial DSP"*, and §69's Mesa named it on the way out as the companion it did
+not build.
+
+### 71.0 The roadmap's cost estimate was wrong, in the same way §67's and §69's own entries were wrong about their slices
+
+"10 biquads, trivial DSP" is true about the DSP and false about the slice.
+**Every pedal on this board was exactly three parameters**, and that was not a UI
+convention — it was the wire format:
+
+| Where | What assumed three |
+| --- | --- |
+| `web/src/rig.ts` | `PedalParams` was three named fields; the serializer, the migration path and the assistant's clamped tool surface all spoke those names |
+| `web/worklet/clipper-processor.js` | the dispatch was three literal `_set_param(handle, 0\|1\|2, …)` lines, in two places |
+| `web/src/components/Pedal.tsx` | `PedalFace.knobs` was documented "1..3 knobs" |
+| `web/src/audio.ts` | `toChainPayload` copied three keys |
+| `native/src/ClipperEngine.h` | `Params` carried named floats, three per pedal |
+
+A ten-band graphic EQ is **twelve** controls. **The C ABI was never the
+constraint** — `*_set_param(handle, int id, float)` has always taken any id,
+which is why the core side really is cheap. Everything upstream of it was. So
+this is the slice that teaches the board to hold a pedal with more than three
+knobs, and its weight is plumbing.
+
+The widening came out smaller than planned, because two of the twelve are
+ordinary slot reuse in the house style (the phaser takes slot 0 as SPEED, the wah
+as POSITION, the delay as DELAY): **GAIN rides slot 0 and VOLUME rides slot 2**,
+which is what that slot already means. Only the ten bands needed new ids, 3..12.
+
+**Phase A shipped first and its acceptance bar was bit-identity**, proved by the
+strongest evidence available: after a full rebuild
+`web/public/generated/clipper.js` was **BYTE-IDENTICAL** to its pre-slice state,
+so the compiled engine was bit-for-bit the same binary and no DSP could have
+changed. Playwright 85 passed, node 15/10/12.
+
+One type got NARROWED rather than loosened: `KnobSpec.param` is now
+`CoreParamName` (the three non-optional slots), so `params[k.param]` stays a
+plain `number` instead of acquiring a `?? 0.5` fallback that could mask a face
+naming a param its pedal does not carry.
+
+### 71.1 The research channel — better than §64's, and it is a real netlist
+
+`WebFetch` is **EGRESS_BLOCKED on every host tried**, including the
+manufacturer's own manual PDF (`jimdunlop.com`), `schematicsonline.com`,
+`ranecommercial.com` and `tagboardeffects.blogspot.com` — the same wall §57, §59,
+§60, §64 and §67 all hit. **github.com is reachable**, and
+`Cushychicken/ltspice-guitar-pedals` — the SAME repository §59 parsed for the
+Dyna Comp and §66 for the RAT — carries `boss-ge7-equalizer.asc`, a complete,
+annotated **7-band gyrator graphic EQ**. Cloned and parsed by coordinate.
+
+| # | Fact | Source | Grade |
+| --- | --- | --- | --- |
+| S1 | The band leg is `C1` in series with a gyrator-simulated inductor built from `R2`, a shared `R1` and `C2` | GE-7 netlist | netlist |
+| S2 | **`L = R1 · R2 · C2`**, verified against all six of the GE-7's gyrator bands (labelled centres reproduced to **−4.41…+3.22 %**) | derived + checked | netlist |
+| S3 | Per-band values: 100 Hz `100k/330/1.5µ/56n` · 200 `82k/330/0.68µ/33n` · 400 `100k/330/0.33µ/15n` · 800 `100k/330/0.15µ/8.2n` · 1.6 k `82k/330/0.1µ/3.9n` · 3.2 k `82k/330/39n/2.2n` | GE-7 netlist | netlist |
+| S4 | **`R1` = 330 Ω on every band** — one shared Q-setting resistor | GE-7 netlist | netlist |
+| S5 | Sliders are **10 kΩ LINEAR**, wiper to the leg, ends to the summing node's input and feedback — *"All resistor pairs in this row represent linear potentiometers. 10k nominal, linear taper. When param=10k, filter shorts to Eq_Feedback. When param=0, filter shorts to Eq_Input."* | the netlist's OWN annotation | netlist |
+| S6 | The summing stage is one op-amp with equal input and feedback resistors | GE-7 netlist | netlist |
+| S7 | **The GE-7's TOP band has no gyrator** — a bare `47n + 820 Ω` series RC | GE-7 netlist | netlist |
+| S8 | Proportional-Q: **~1 octave at +3 dB, narrowing to ~1/3 octave at full boost or cut**, and "significant interaction between adjacent bands" | Rane note 101 (Bohn) | search extract |
+| S9 | The reference ten-band spans **31.25 Hz to 16 kHz** | Dunlop + retailers | search extract |
+
+**TRANSCRIBED:** the leg topology, the design equation, the shared 330 Ω, the
+10 kΩ linear slider law, the summing stage's equal pair. **DERIVED:** the ten
+per-band `L`/`C1` pairs, from S2 and S9. **RECONSTRUCTED, and §57's rule applies
+verbatim:** the ±12 dB range, the GAIN/VOLUME slider laws, and whether the
+ten-band reference also makes its top band first-order (S7 is a GE-7 fact and is
+NOT carried across — all ten bands here are gyrator legs).
+
+### 71.2 The topology, and the wrong version that looks identical
+
+```
+      Vin ──[Rin]──┬── V⁻ (op-amp inverting input, held at 0)
+                   │
+      Vout ─[Rf]───┘
+
+      per band k:  Vin ──[(1-x)·Rp]──┬──[x·Rp]── Vout
+                                     │
+                                  W_k│
+                                     ├── C1 ── L ── Rs ── V⁻
+```
+
+**THE LEG RUNS FROM THE WIPER TO THE VIRTUAL GROUND, NOT TO GROUND.** The first
+draft of this model had it to ground. The ten pots then sit end-to-end across the
+summing node's feedback, which loads it with 1 kΩ: measured **−20 dB of flat
+insertion loss with essentially NO equalisation** (+12 dB of slider travel moved
+the response 0.7 dB). Both versions read as "a pot with a resonant leg on the
+wiper", which is why it is written into `EqModel.h`'s banner.
+
+### 71.3 Three properties are CONSEQUENCES of that topology, not coefficients
+
+**FLAT AT CENTRE, EXACTLY.** At x = 0.5 the wiper sits at (Vin + Vout)/2, which
+is identically zero while Vout = −Vin, so the leg injects **nothing** — not
+"very little". Measured **+0.00000 dB** at 31.25 Hz / 100 / 440 / 1 k / 4 k /
+16 kHz, and the whole render passes through with worst |out − in| = **1.7e-19**.
+A freshly added EQ is transparent by construction, which is also why every
+slider's default is 0.5 on all three front ends.
+
+**BOOST AND CUT ARE EXACT MIRRORS**, because x and (1−x) exchange Vin and Vout in
+one expression: **+11.951 / −11.951** at 31.25 Hz, **+12.000 / −12.000** at
+250 Hz, **+12.161 / −12.161** at 16 kHz.
+
+**PROPORTIONAL Q**, because the POT is the damping element: ~Rp/4 of source
+impedance at the wiper with the slider centred, ~0 with it hard over. Measured
+**0.3326 octaves at full boost against 0.5035 at +3 dB**.
+
+### 71.4 Band centres, and the prewarp
+
+All ten land at **+0.00 %** of nominal, at 44.1 / 48 / 96 / 192 kHz, via
+frequency prewarping (`wp = (2/T)·tan(π·f0·T)`). Legitimate here rather than a
+fudge because the per-band L and C1 are DERIVED and the design intent is
+"resonate at f0"; Z0 = √(L/C1) is untouched, so the leg's Q is unchanged.
+
+Without it the bilinear map compresses the frequency axis toward Nyquist and the
+16 kHz band lands near 12.4 kHz at 48 kHz, measuring **+0.95 dB at its own
+nominal centre** instead of +12.
+
+### 71.5 THE ONE XFAIL, and why it is not fixable by tuning
+
+`eq-proportional-q-shallow`. The two reconstructed constants are pinned to two
+published figures — `kLegLossOhms` = 3215.504 Ω to the ±12 dB range, and
+`kLegZ0Ohms` = 26665.5 Ω to the ~1/3-octave width at full boost. That fixes the
+model completely, and then the THIRD published figure comes out wrong:
+
+> narrowing from +3 dB to full boost: **measured 1.514×, published ~3×**
+> (0.5035 octaves at +3 dB against 0.3326 at full)
+
+**Reported, not fitted, and the cause is structural.** Within this topology max
+boost and full-boost bandwidth are BOTH governed by the single lumped leg loss
+`Rs`, so the two published figures **OVER-DETERMINE** the model. A smaller `Rs`
+demonstrably moves the ratio the right way — at the GE-7's own sourced 330 Ω it
+measures **2.37×** — and takes the boost to **+29 dB**, which is why it cannot
+simply be lowered. The fix is the leg's real loss structure: the gyrator's series
+R1 and parallel R2 modelled separately, or whatever series element sits between
+wiper and leg in the ten-band that this reconstruction cannot see.
+
+**The weak band interaction is the SECOND SYMPTOM of the same defect, not a
+separate one.** Measured excess over dB superposition at a band's own centre with
+its neighbour also boosted: **+0.004 dB**, against the published "significant
+interaction between adjacent bands". Interaction in these designs comes from
+adjacent bands OVERLAPPING, and a +3 dB bandwidth half the published width
+overlaps correspondingly less. A slice that fixes the XFAIL should re-measure
+here rather than treating the two as unrelated.
+
+### 71.6 Three measurement bugs, all in the test, all worth knowing before the next filter bar
+
+1. **A 64-cycle analysis window at 16 kHz is 192 samples**, over which a high-Q
+   leg under-reads by **3.5 dB**. The top band measured +8.4 dB instead of +12
+   and looked exactly like a broken band — a prewarp fix was written and a
+   four-rate sweep run before the probe itself was suspected. The rate sweep is
+   what exposed it: the shortfall was **rate-INDEPENDENT** (+8.28 / +8.44 /
+   +8.38 / +8.36 dB at 44.1 / 48 / 96 / 192 kHz), which a discretization error
+   cannot be. Same family as §60's rectangular-sidelobe floor and §70's
+   uncorrected Hann gain, and the rule covering all three is the same: **check
+   the analysis window before believing what it says about the model.**
+2. **Comparing `reset()` against a model whose smoothers were still ramping**
+   measured the ramp, not the reset (3.0e-02). Both models now set their sliders
+   BEFORE `prepare()`, so §35's deferred snap lands them on target.
+3. **A 20-second silent tail reports 1.2e-26 and fails an `== 0.0` bar while the
+   model is working.** The 31.25 Hz leg at full boost is the slowest ring-down
+   here: measured 1.95e-06 at 1 s, 5.05e-24 at 5 s, 1.23e-26 at 20 s, and
+   **exactly 0.0 at 60 s**. §60 measured the same shape on the delay. There is no
+   plateau and no marginally stable mode — that was checked, because a
+   trapezoidal inductor companion has an undamped z = −1 mode if its branch loss
+   is left out.
+
+### 71.7 The rest, measured
+
+**Numerical floor −137.6 dBFS at 48 kHz and −146.6 at 96 kHz**, against the
+project's own −120 gate. This was predicted before the code was written and is
+why both networks' state is `double`: a 31.25 Hz section at 96 kHz sits at a pole
+radius over 0.998, which is §56.4's exact shape — the float direct form that put
+an audible −73 dBFS hiss on the GOLD's drive divider in code that looked fine and
+was invisible to every single-bin bar in that suite. **`Biquad` was NOT widened**
+— it is shared with all three valve tone stacks and the cab IR generator, so
+changing its state type would move every amp's renders.
+
+**No oversampling, latency 0**, asserted by rendering at 1/2/4/8× and requiring
+**0/8192 differing samples** at each, so a later slice cannot quietly add 72
+samples of latency for nothing (§70's shape). Ragged-block invariance and
+`reset()` both **0.000e+00**; a non-finite parameter yields 0/1024 non-finite
+samples.
+
+Contrast against ten independent RBJ peaking sections at matched width: **worst
+0.909 dB**, reported rather than bounded. The roadmap's "10 biquads" framing is
+therefore closer to right than this slice's Finding 2 assumed — recorded as such
+rather than quietly dropped.
+
+### 71.8 Named follow-ups
+
+- **The frequency-domain-independent leg loss** owns `eq-proportional-q-shallow`
+  and the weak interaction with it.
+- **Find the ten-band's own schematic.** Every value outside S1–S9 is a
+  reconstruction and §57's rule applies verbatim.
+- **A native FADER widget.** The web face draws ten vertical faders (a graphic EQ
+  is bought so the curve can be read off the slider positions); the native card
+  draws twelve knobs in a 2×5 grid plus a GAIN/VOLUME row, because the native kit
+  has no fader and inventing one was out of scope. Parameters, ids and behaviour
+  are identical — only the widget differs.
+- **This EQ exactly fills the packed chain word.** `PluginProcessor.cpp` asserts
+  `kChainField * (kMaxChain + 1) <= 64` with `kChainField = 4`, which at
+  `PEDAL_TYPE_COUNT = 15` is `4 × 16 = 64`. **A SIXTEENTH pedal type fires that
+  static_assert**, exactly as the EIGHTH fired the `uint32` one it replaced.
+- **The GE-7's first-order top band** (S7) is not carried across, and whether the
+  ten-band shares it is unknown.

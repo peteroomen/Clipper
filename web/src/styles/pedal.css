@@ -25,6 +25,7 @@
 .pedal[data-pedal-type="opto"]  { --pedal-accent: var(--accent-opto);  --pedal-accent-glow: var(--accent-opto-glow); }
 .pedal[data-pedal-type="vibe"]  { --pedal-accent: var(--accent-vibe);  --pedal-accent-glow: var(--accent-vibe-glow); }
 .pedal[data-pedal-type="drop"]  { --pedal-accent: var(--accent-drop);  --pedal-accent-glow: var(--accent-drop-glow); }
+.pedal[data-pedal-type="eq"]    { --pedal-accent: var(--accent-eq);    --pedal-accent-glow: var(--accent-eq-glow); }
 .pedal[data-pedal-type="gate"]  { --pedal-accent: var(--accent-gate);  --pedal-accent-glow: var(--accent-gate-glow); }
 .pedal[data-pedal-type="chorus"] { --pedal-accent: var(--accent-chorus); --pedal-accent-glow: var(--accent-chorus-glow); }
 .pedal[data-pedal-type="delay"] { --pedal-accent: var(--accent-delay); --pedal-accent-glow: var(--accent-delay-glow); }
@@ -496,3 +497,116 @@
 .pedal[data-face="bank"] .k-name { letter-spacing: .16em; }
 .pedal[data-face="bank"] .fsw-zone { margin-top: 18px; }
 .pedal[data-face="bank"] .fsw { width: 96px; height: 96px; }
+
+
+/* ---------------------------------------------------------------------------
+   M13.6 'graphic' face — the ten-band EQ's fader bank.
+   ---------------------------------------------------------------------------
+   The first face on this board whose controls are not knobs. A graphic EQ is
+   bought so the curve can be READ off the physical positions, so the bank owns
+   the body and GAIN/VOLUME sit on a small strip under it.
+
+   Everything here is token-driven (docs §17): the chassis is the shared dark
+   wash every pedal uses, and the only colour is --pedal-accent on the fill and
+   the cap, which resolves to the silver accent for this type. */
+.pedal[data-face="graphic"] {
+  /* Ten faders need a wider box than any dirt pedal — the delay's 'bank' width
+     class, one step wider. */
+  min-width: 340px;
+}
+.fader-bank {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 4px;
+  padding: 12px 10px 10px;
+  margin: 0 auto 10px;
+  border-radius: 10px;
+  /* A milled recess for the bank, matching the board rail's inset language. */
+  background: var(--pedal-recess, rgba(0, 0, 0, .22));
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, .45), inset 0 -1px 0 rgba(255, 255, 255, .05);
+}
+.fader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  cursor: ns-resize;
+  touch-action: none;
+  outline: none;
+  border-radius: 6px;
+}
+.fader:focus-visible {
+  box-shadow: 0 0 0 2px var(--pedal-accent-glow);
+}
+.f-track {
+  position: relative;
+  width: 14px;
+  height: 92px;
+}
+/* The slot the cap rides in. */
+.f-slot {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, .55);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .6);
+}
+/* The centre detent line — where flat is, and the thing a player aligns to. */
+.f-centre {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 50%;
+  height: 1px;
+  background: rgba(255, 255, 255, .22);
+}
+/* Accent fill from centre toward the cap, so a boost and a cut read differently
+   at a glance without any text. */
+.f-fill {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  border-radius: 2px;
+  background: var(--pedal-accent);
+  opacity: .85;
+  top: min(50%, calc(100% - var(--pos) * 100%));
+  bottom: min(50%, calc(var(--pos) * 100%));
+}
+/* The cap: a small ridged thumb, positioned from the bottom by --pos. */
+.f-cap {
+  position: absolute;
+  left: 50%;
+  width: 14px;
+  height: 9px;
+  border-radius: 2px;
+  transform: translate(-50%, 50%);
+  bottom: calc(var(--pos) * (100% - 9px) + 4.5px);
+  background: linear-gradient(180deg, var(--ctl-cap-hi, #4a4f57), var(--ctl-cap-lo, #23262b));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .18);
+  border-top: 1px solid var(--pedal-accent);
+}
+.f-name {
+  font-size: 9px;
+  letter-spacing: .04em;
+  color: var(--pedal-label, rgba(255, 255, 255, .72));
+}
+.f-unit {
+  font-size: 7px;
+  letter-spacing: .06em;
+  color: var(--pedal-label-dim, rgba(255, 255, 255, .42));
+}
+.f-val {
+  font-size: 8px;
+  color: var(--pedal-accent);
+  opacity: .9;
+}
+/* GAIN / VOLUME under the bank: the shared knob row, tightened up. */
+.pedal[data-face="graphic"] .knob-row {
+  gap: 26px;
+  margin-bottom: 8px;
+}
