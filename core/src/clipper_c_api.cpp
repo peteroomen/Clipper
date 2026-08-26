@@ -15,6 +15,7 @@
 #include "clipper/dsp/OrangeAmp.h"
 #include "clipper/dsp/DropModel.h"
 #include "clipper/dsp/ChampAmp.h"
+#include "clipper/dsp/EqModel.h"
 #include "clipper/dsp/MesaAmp.h"
 #include "clipper/dsp/ParamGuard.h"
 #include "clipper/dsp/RockerverbAmp.h"
@@ -869,6 +870,69 @@ void drop_process(void* handle, const float* in_ptr, float* out_ptr,
                                                            num_frames);
 }
 
+// --- M13.6: ten-band graphic EQ exports ---------------------------------------
+//
+// Additive alongside every other pedal's exports, and THE FIRST ONE WHOSE
+// PARAMETER SPACE IS LARGER THAN THREE SLOTS. The opaque-handle ABI itself does
+// not change at all — `eq_set_param(handle, int id, float)` already took any id;
+// it is the callers upstream that assumed three. Slots:
+//
+//   0  GAIN   (input level slider, 0.5 == unity)
+//   1  unused (carried for the shared pedal shape, as the phaser/comp/gate do)
+//   2  VOLUME (output level slider, 0.5 == unity)
+//   3..12  the ten band sliders, 31.25 Hz .. 16 kHz in ascending order, 0.5 flat
+//
+// `eq_set_oversampling` is accepted and IGNORED and `eq_latency_samples` returns
+// 0: the whole model is linear and time-invariant, and the test suite proves a
+// render at 1x and 8x is BIT-IDENTICAL rather than taking it on trust. The
+// phaser's arrangement (§12).
+
+EMSCRIPTEN_KEEPALIVE
+void* eq_create(float sample_rate) {
+    auto* m = new clipper::dsp::EqModel();
+    m->prepare(static_cast<double>(sample_rate));
+    return m;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void eq_destroy(void* handle) {
+    delete static_cast<clipper::dsp::EqModel*>(handle);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void eq_set_param(void* handle, int param_id, float value) {
+    if (!handle) return;
+    CLIPPER_REJECT_NON_FINITE(value);
+    static_cast<clipper::dsp::EqModel*>(handle)->setParameter(param_id, value);
+}
+
+// Recovery seam: clear the ten legs' reactive state, keeping the slider
+// positions. See the banner above clipper_reset.
+EMSCRIPTEN_KEEPALIVE
+void eq_reset(void* handle) {
+    if (!handle) return;
+    static_cast<clipper::dsp::EqModel*>(handle)->reset();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void eq_set_oversampling(void* handle, int factor) {
+    if (!handle) return;
+    static_cast<clipper::dsp::EqModel*>(handle)->setOversampling(factor);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int eq_latency_samples(void* handle) {
+    if (!handle) return 0;
+    return static_cast<clipper::dsp::EqModel*>(handle)->latencySamples();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void eq_process(void* handle, const float* in_ptr, float* out_ptr,
+                int num_frames) {
+    if (!handle) return;
+    static_cast<clipper::dsp::EqModel*>(handle)->process(in_ptr, out_ptr, num_frames);
+}
+
 // --- M13.4: BBD analog delay exports -----------------------------------------
 //
 // Additive alongside rat_*/sd_*/ts_*/muff_*/gold_*/comp_*/phaser_*/wah_*, and
@@ -991,7 +1055,7 @@ constexpr int kAmpParamOrangeFac = 13;
 constexpr int kAmpParamMesaMode = 14;
 constexpr int kAmpParamMesaRectifier = 15;
 constexpr int kAmpParamMesaPowerMode = 16;
-// M10.10 (docs §72): the Champ's ONE knob, on its own id. Not a reuse of VOLUME
+// M10.10 (docs §73): the Champ's ONE knob, on its own id. Not a reuse of VOLUME
 // (0) — see AMP_PARAM_CHAMP_VOLUME in web/src/params.ts. Short version: this knob
 // sits BETWEEN the two preamp triodes with no master downstream, so it is the
 // amp's gain control rather than an output level, and it needs its own DEFAULT
@@ -1019,7 +1083,7 @@ enum AmpModelId {
     // voice (index 6), purely additive. Unlike every amp before it this one is
     // TRANSCRIBED from the factory drawing set rather than reconstructed.
     kAmpMesa = 6,
-    // M10.10 (docs §72) adds the Fender tweed Champ 5F1 as the EIGHTH voice
+    // M10.10 (docs §73) adds the Fender tweed Champ 5F1 as the EIGHTH voice
     // (index 7), purely additive. It needs NO new param id — and it needs almost
     // no param at all: the 5F1 has ONE knob. VOLUME rides the shared slot 0, and
     // REVERB (9) is the §19 usability convenience every other voice here carries.

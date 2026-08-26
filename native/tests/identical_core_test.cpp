@@ -61,6 +61,7 @@
 #include "clipper/dsp/OptoModel.h"
 #include "clipper/dsp/VibeModel.h"
 #include "clipper/dsp/DropModel.h"
+#include "clipper/dsp/EqModel.h"
 #include "clipper/dsp/PhaserModel.h"
 #include "clipper/dsp/OutputLimiter.h"
 #include "clipper/dsp/RatModel.h"
@@ -348,6 +349,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     OptoModel opto;      // the "Lumen" optical compressor (M13.3)
     VibeModel vibe;      // the "Swirl" Uni-Vibe (M13.5)
     DropModel drop;      // the "Cellar" drop-tune (M13.10)
+    EqModel eq;          // the "Decade" ten-band graphic EQ (M13.6)
     DelayModel delayFx;  // the "Echoman" BBD analog delay (M13.4)
     AmpModel amp;        // Clean 120
     Jcm800Amp jcm;       // JCM800 head
@@ -386,6 +388,9 @@ void renderReference(const Params& p, const std::vector<float>& in,
     vibe.setParameter(VibeModel::PARAM_INTENSITY, p.vibeIntensity);
     vibe.setParameter(VibeModel::PARAM_MODE, p.vibeMode);
     drop.setParameter(DropModel::PARAM_AMOUNT, p.dropAmount);
+    eq.setParameter(EqModel::PARAM_GAIN, p.eqGain);
+    eq.setParameter(EqModel::PARAM_VOLUME, p.eqVolume);
+    for (int i = 0; i < EqModel::kNumBands; ++i) eq.setBand(i, p.eqBand[i]);
     delayFx.setParameter(DelayModel::PARAM_DELAY, p.delayTime);
     delayFx.setParameter(DelayModel::PARAM_FEEDBACK, p.delayFeedback);
     delayFx.setParameter(DelayModel::PARAM_BLEND, p.delayBlend);
@@ -480,6 +485,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     opto.prepare(kFs, kBlock);
     vibe.prepare(kFs, kBlock);
     drop.prepare(kFs, kBlock);
+    eq.prepare(kFs);
     delayFx.prepare(kFs, kBlock);
     amp.prepare(kFs, kBlock);
     // The JCM runs at its fixed 4x internally (set BEFORE prepare so its stages size
@@ -501,6 +507,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
     opto.setOversampling(p.oversampling);
     vibe.setOversampling(p.oversampling);
     drop.setOversampling(p.oversampling);
+    eq.setOversampling(p.oversampling);
     // (the phaser has no oversampler — it is linear)
 
     const std::vector<float> ir = generateDefaultCab2x12IR(kFs);
@@ -537,6 +544,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
                 case clipper::native::PEDAL_OPTO:   opto.process(cur, other, n); break;
                 case clipper::native::PEDAL_VIBE:   vibe.process(cur, other, n); break;
                 case clipper::native::PEDAL_DROP:   drop.process(cur, other, n); break;
+                case clipper::native::PEDAL_EQ:     eq.process(cur, other, n); break;
                 case clipper::native::PEDAL_DELAY:  delayFx.process(cur, other, n); break;
                 default: continue;
             }
@@ -592,6 +600,7 @@ void renderReference(const Params& p, const std::vector<float>& in,
             case clipper::native::PEDAL_OPTO: pedalLatency += opto.latencySamples(); break;
             case clipper::native::PEDAL_VIBE: pedalLatency += vibe.latencySamples(); break;
             case clipper::native::PEDAL_DROP: pedalLatency += drop.latencySamples(); break;
+            case clipper::native::PEDAL_EQ:   pedalLatency += eq.latencySamples(); break;
             case clipper::native::PEDAL_DELAY: pedalLatency += delayFx.latencySamples(); break;
             default: break;  // the phaser is linear — no group delay
         }
@@ -650,6 +659,19 @@ void renderPlugin(const Params& p, const std::vector<float>& in,
     set(vibeMode, p.vibeMode);
     set(dropOn, p.dropOn ? 1.0f : 0.0f);
     set(dropAmount, p.dropAmount);
+    set(eqOn, p.eqOn ? 1.0f : 0.0f);
+    set(eqGain, p.eqGain);
+    set(eqVolume, p.eqVolume);
+    set(eqBand31, p.eqBand[0]);
+    set(eqBand63, p.eqBand[1]);
+    set(eqBand125, p.eqBand[2]);
+    set(eqBand250, p.eqBand[3]);
+    set(eqBand500, p.eqBand[4]);
+    set(eqBand1k, p.eqBand[5]);
+    set(eqBand2k, p.eqBand[6]);
+    set(eqBand4k, p.eqBand[7]);
+    set(eqBand8k, p.eqBand[8]);
+    set(eqBand16k, p.eqBand[9]);
     // M10.4: the Mesa's three switches. Pushed explicitly for the same reason as
     // the opto's and the drop's — a parameter the plugin driver never writes is a
     // parameter this test cannot prove is plumbed.
@@ -826,6 +848,42 @@ Params vibeBoardParams() {
     return p;
 }
 
+
+// NATIVE PARITY case 11 (M13.6) — a board carrying the "Decade" ten-band EQ:
+// Decade -> RAT -> JCM800. This is the case that proves the parameter-path
+// WIDENING, which is what the whole slice rests on: the EQ is the first pedal on
+// this board whose controls are not the three shared slots, so ten of its twelve
+// parameters travel by ids 3..12 that no previous case exercises at all. A
+// plugin that dropped them, or that mapped a band name to the wrong id, would
+// render a different CURVE while every other case still passed.
+//
+// The sliders are set AWAY from flat and asymmetrically — a scoop, the setting
+// this pedal is actually bought for — because every band at 0.5 is EXACT
+// transparency (docs §72.3), so a case with flat sliders would pass against a
+// plugin whose band plumbing did nothing at all.
+Params eqBoardParams() {
+    Params p;
+    p.inputTrim = 0.5f;
+    p.chain[0] = clipper::native::PEDAL_EQ;
+    p.chain[1] = clipper::native::PEDAL_RAT;
+    p.chainLength = 2;
+    p.eqOn = true;
+    p.eqGain = 0.6f; p.eqVolume = 0.45f;
+    // A mid scoop with a low and a presence push: every band different, and none
+    // of them at the default.
+    const float bands[10] = {0.35f, 0.70f, 0.62f, 0.55f, 0.25f,
+                             0.20f, 0.48f, 0.72f, 0.58f, 0.40f};
+    for (int i = 0; i < 10; ++i) p.eqBand[i] = bands[i];
+    p.ratOn = true;   p.ratDist = 0.4f; p.ratFilter = 0.5f; p.ratLevel = 0.6f;
+    p.dropOn = true;  // ON, but NOT on the board — must be inaudible
+    p.vibeOn = true;  // likewise
+    p.ampModel = kAmpJcm800;
+    p.ampOn = true;  p.volume = 0.5f; p.bass = 0.5f; p.middle = 0.5f; p.treble = 0.6f;
+    p.jcmGain = 0.5f;  p.jcmMaster = 0.35f;
+    p.bright = false; p.cab = true;
+    return p;
+}
+
 // NATIVE PARITY case 10 (M13.10) — a board carrying the "Cellar" drop-tune:
 // Cellar -> RAT -> Mesa. Two things make it worth its runtime. (1) It is the
 // FIRST case whose pedal has ONE knob and whose knob is QUANTIZED, so a plugin
@@ -965,6 +1023,8 @@ int main() {
     ok &= runCase("Board: RAT -> Swirl -> JCM800", vibeBoardParams(), in);
     // M13.10: the drop-tune on the native board, FIRST in the chain.
     ok &= runCase("Board: Cellar -> RAT -> Mesa (all three Recto switches off-default)", dropBoardParams(), in);
+    // M13.6: the ten-band EQ, FIRST in the chain, with every slider off flat.
+    ok &= runCase("Board: Decade -> RAT -> JCM800", eqBoardParams(), in);
 
     if (ok) {
         std::printf(

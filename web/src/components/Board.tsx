@@ -67,6 +67,7 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   comp: 'Squash compressor (teal, 2-knob)',
   opto: 'Lumen optical compressor (periwinkle, leveler)',
   gate: 'Curfew noise gate (slate, 2-knob)',
+  eq: 'Decade ten-band graphic EQ (silver)',
   phaser: 'Script phaser',
   wah: 'Weeper wah / envelope filter',
   chorus: 'Ensemble chorus / vibrato',
@@ -75,13 +76,14 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
   drop: 'Cellar drop-tune (graphite, polyphonic pitch)',
   tuner: 'Chromatic tuner',
 };
-// FOUND AND FIXED 2026-08-25 (docs §72.7): this was `Record<string, string>` and
-// had NO 'mesa' entry, so M10.4's Dual Rectifier rendered as a BLANK item in the
-// amp menu — `AMP_TYPE_LABEL[t]` returned undefined and React drew nothing. A
-// `Record<string, …>` accepts any key, so nothing could catch it; typed as
-// `Record<AmpType, string>` a missing voice is now a BUILD ERROR, which is the
-// same structural fix AMP_MODEL_COUNT made on the native side (§71) and the same
-// class of defect as §61.10's kFaces and §67.10's pedalMenuLabel.
+// Typed Record<AmpType, string>, NOT Record<string, string>: this map was missing
+// its 'mesa' entry, and a string-keyed record let that compile — so the Dual
+// Rectifier rendered as a BLANK menu item and a blank amp-slot button. Keying it
+// by AmpType makes a missing voice a build error instead.
+// (Found independently by the M13.6 EQ slice and the M10.10 Champ slice in the
+// same week. It is the FOURTH keyed table in this codebase to silently lose an
+// entry — §61.10 kFaces, §62, §67.10 pedalMenuLabel, §71 kAmpModelChoices — and
+// the second fixed by making the table's TYPE carry the count.)
 const AMP_TYPE_LABEL: Record<AmpType, string> = {
   clean120: 'Clean 120 (JC-120 style)',
   jcm800: 'JCM800 (Marshall style)',

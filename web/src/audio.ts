@@ -15,12 +15,23 @@ import {
   AMP_PARAM_JCM_PRESENCE,
   AMP_PARAM_JCM_MASTER,
   AMP_PARAM_ORANGE_FAC,
+  AMP_PARAM_MESA_MODE,
+  AMP_PARAM_MESA_RECTIFIER,
+  AMP_PARAM_MESA_POWERMODE,
   AMP_MODEL_INDEX,
+  EQ_BAND_PARAMS,
   WORKLET_URL,
   trimKnobToGain,
 } from './params';
 import { PitchDetector } from 'pitchy';
-import type { SourceKind, AmpParams, AmpType, PedalInstance, CabChoice } from './rig';
+import type {
+  SourceKind,
+  AmpParams,
+  AmpType,
+  PedalInstance,
+  PedalParams,
+  CabChoice,
+} from './rig';
 import { CAB_BUILTIN_INDEX } from './rig';
 import { resampleMono } from './cab';
 import { TUNER_FRAME_SIZE, analyzePitch, type TunerReading } from './tuner';
@@ -49,21 +60,29 @@ export interface ChainPedal {
   id: string;
   type: string;
   engaged: boolean;
-  params: { distortion: number; filter: number; level: number };
+  // The three shared slots plus, for a pedal that has them, its extra slots
+  // (M13.6's ten EQ bands). PedalParams' optional fields carry that exactly.
+  params: PedalParams;
 }
 
 // Serialize the rig chain into the worklet's `chain` message payload.
 export function toChainPayload(pedals: PedalInstance[]): ChainPedal[] {
-  return pedals.map((p) => ({
-    id: p.id,
-    type: p.type,
-    engaged: p.engaged,
-    params: {
+  return pedals.map((p) => {
+    // The three shared slots, always. Spelled out rather than spread so a future
+    // non-param field on PedalParams cannot leak across the worklet boundary.
+    const params: PedalParams = {
       distortion: p.params.distortion,
       filter: p.params.filter,
       level: p.params.level,
-    },
-  }));
+    };
+    // M13.6: the EQ's ten band sliders, only when the pedal actually has them.
+    // A three-slot pedal emits exactly the object it always did.
+    for (const name of EQ_BAND_PARAMS) {
+      const v = p.params[name];
+      if (v !== undefined) params[name] = v;
+    }
+    return { id: p.id, type: p.type, engaged: p.engaged, params };
+  });
 }
 
 export interface StartOptions {
@@ -320,24 +339,24 @@ export async function startEngine(opts: StartOptions): Promise<Engine> {
   engine.setAmpParam(AMP_PARAM_JCM_MASTER, opts.amp.master);
   // M10.3 Orange F.A.C. — its own id, sent every start for the same reason.
   engine.setAmpParam(AMP_PARAM_ORANGE_FAC, opts.amp.fac);
+  // M10.4 Mesa: MODE / RECTIFIER / POWER MODE, its own three ids. These were
+  // MISSING here, so a rig saved on (say) RED MODERN with a 5U4 came back on the
+  // core's own defaults — the switches silently ignored persisted state.
+  engine.setAmpParam(AMP_PARAM_MESA_MODE, opts.amp.mesaMode);
+  engine.setAmpParam(AMP_PARAM_MESA_RECTIFIER, opts.amp.rectifier);
+  engine.setAmpParam(AMP_PARAM_MESA_POWERMODE, opts.amp.powerMode);
   // Select the amp voice (default clean120 needs no swap, but sending is harmless
   // and keeps the worklet's model + reported latency in sync from sample 0). M10.1:
   // the twin is voice 2. The reverb/speed/depth already sent above reach it (the C
   // ABI routes reverb id 9 to all three voices and speed/depth to the twin tremolo).
-  if (opts.ampType === 'jcm800') engine.setAmpModel('jcm800');
-  else if (opts.ampType === 'twin') engine.setAmpModel('twin');
-  // v1.1: the AC30 "top boost" is voice 3. It reuses the STABLE amp_* exports, so
-  // volume/bass/treble/presence(=top cut)/reverb already sent above reach it.
-  else if (opts.ampType === 'ac30') engine.setAmpModel('ac30');
-  // M10.3: the Orange OR120 is voice 4. It reuses volume/bass/treble/reverb and the
-  // presence slot as H.F. BOOST, all sent above; F.A.C. is its own id and is sent
-  // with the JCM block below.
-  else if (opts.ampType === 'orange') engine.setAmpModel('orange');
-  // M10.7: the Orange Rockerverb 100 is voice 5. It needs NO new id — its GAIN and
-  // its post-stack VOLUME ride the JCM's gain/master slots and its BASS/MIDDLE/
-  // TREBLE the shared tone ids, all sent above. It has no presence control, so id
-  // 11 never reaches it.
-  else if (opts.ampType === 'rockerverb') engine.setAmpModel('rockerverb');
+  // EVERY voice, by table lookup. This was an if/else chain that stopped at
+  // 'rockerverb', so starting with a saved Mesa rig left the engine on voice 0
+  // (the Clean 120) while the UI drew a Dual Rectifier: the tone knobs still did
+  // something, and GAIN / MASTER / PRESENCE / MODE / RECT / POWER — every id the
+  // Clean 120 ignores — did nothing at all. AMP_MODEL_INDEX is keyed by AmpType,
+  // so a new voice cannot be half-added here; sending voice 0 is harmless and
+  // keeps the worklet's model and reported latency in sync from sample 0.
+  engine.setAmpModel(opts.ampType);
   engine.setAmpBypass(!opts.ampEngaged);
 
   // Cab: the worklet's amp_create loads the Clean 2x12 by default. Apply the

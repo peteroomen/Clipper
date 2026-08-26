@@ -99,7 +99,9 @@ const PedalFace kFaces[] = {
     // and the Muff's magenta-violet. No Teletronix/UREI/LA-2A text.
     {"Dynamics N\xc2\xba""2 \xc2\xb7 Leveler", "Lumen", skin::AccentId::Opto,
      Footswitch::Shape::Pad, PedalFace::Layout::Stack, 30.0f,
-     {{"Peak", pid::optoPeakReduction}, {"Mode", pid::optoMode}, {"Gain", pid::optoGain}},
+     {{"Peak", pid::optoPeakReduction},
+      {"Mode", pid::optoMode, {"COMP", "LIMIT"}},
+      {"Gain", pid::optoGain}},
      pid::optoOn, PEDAL_OPTO},
     // SWIRL — M13.5, the Uni-Vibe: the board's SECOND phaser, and the face has to
     // say so before a knob is touched. Morphology cue is the real thing's tall,
@@ -110,7 +112,9 @@ const PedalFace kFaces[] = {
     // and MODE is a DISCRETE two-position switch in the model.
     {"Modulation N\xc2\xba""2 \xc2\xb7 Photocell", "Swirl", skin::AccentId::Vibe,
      Footswitch::Shape::Round, PedalFace::Layout::Stack, 34.0f,
-     {{"Speed", pid::vibeSpeed}, {"Intensity", pid::vibeIntensity}, {"Mode", pid::vibeMode}},
+     {{"Speed", pid::vibeSpeed},
+      {"Intensity", pid::vibeIntensity},
+      {"Mode", pid::vibeMode, {"CHORUS", "VIBRATO"}}},
      pid::vibeOn, PEDAL_VIBE},
     // BASEMENT — M13.10, the board's FIRST pitch shifter and its SECOND
     // one-knob face, so the accent has to carry the whole distinction from the
@@ -120,8 +124,39 @@ const PedalFace kFaces[] = {
     // Drop / Whammy wording anywhere.
     {"Pitch N\xc2\xba""1 \xc2\xb7 Poly", "Cellar", skin::AccentId::Drop,
      Footswitch::Shape::Round, PedalFace::Layout::Single, 34.0f,
-     {{"Amount", pid::dropAmount}},
+     // NINE positions: 1..7 semitones down, the octave, then the octave WITH the
+     // dry signal summed. OCT+DRY is the last click and the original pitch is
+     // audible alongside the octave there — faithful to the reference, and the
+     // reason the position has to be NAMED rather than read "100".
+     {{"Drop", pid::dropAmount,
+       {"-1", "-2", "-3", "-4", "-5", "-6", "-7", "OCT", "OCT+DRY"}}},
      pid::dropOn, PEDAL_DROP},
+    // DECADE — M13.6, the board's first EQ and the ONLY face with more than three
+    // controls: ten band knobs in a 2x5 grid over a GAIN/VOLUME row. SILVER
+    // accent, because the reference family is a plain metal box whose identity is
+    // the control bank itself and silver is the one accent no other pedal here
+    // uses. No MXR / M108 / Dunlop wording anywhere.
+    //
+    // KNOWN DIVERGENCE FROM THE WEB, recorded rather than left to be discovered:
+    // the web face draws ten vertical FADERS (a graphic EQ is bought so the curve
+    // can be read off the slider positions) and this one draws knobs, because the
+    // native kit has no fader widget yet and inventing one was out of this
+    // slice's scope. The PARAMETERS, their ids and their behaviour are identical;
+    // only the widget differs. A native Fader is the named follow-up.
+    {"EQ N\xc2\xba""1 \xc2\xb7 Ten Band", "Decade", skin::AccentId::Eq,
+     Footswitch::Shape::Round, PedalFace::Layout::Bank, 30.0f,
+     {{"31 Hz", pid::eqBand31},
+      {"63 Hz", pid::eqBand63},
+      {"125 Hz", pid::eqBand125},
+      {"250 Hz", pid::eqBand250},
+      {"500 Hz", pid::eqBand500},
+      {"1 kHz", pid::eqBand1k},
+      {"2 kHz", pid::eqBand2k},
+      {"4 kHz", pid::eqBand4k},
+      {"8 kHz", pid::eqBand8k},
+      {"16 kHz", pid::eqBand16k},
+      {"Gain", pid::eqGain}, {"Vol", pid::eqVolume}},
+     pid::eqOn, PEDAL_EQ},
     // ENSEMBLE — M13.7, the CE-1 Chorus Ensemble: the second MODULATION pedal and
     // the first whose circuit the project already owned (it is the JC-120 amp's
     // chorus in a floor box — docs §62). Morphology cue is the real CE-1's big,
@@ -131,7 +166,9 @@ const PedalFace kFaces[] = {
     // RATE / DEPTH / MODE, and MODE is a DISCRETE two-position switch in the model.
     {"Modulation N\xc2\xba""1 \xc2\xb7 Ensemble", "Ensemble", skin::AccentId::Chorus,
      Footswitch::Shape::Round, PedalFace::Layout::Plate, 34.0f,
-     {{"Rate", pid::ce1Rate}, {"Depth", pid::ce1Depth}, {"Mode", pid::ce1Mode}},
+     {{"Rate", pid::ce1Rate},
+      {"Depth", pid::ce1Depth},
+      {"Mode", pid::ce1Mode, {"CHORUS", "VIBRATO"}}},
      pid::ce1On, PEDAL_CHORUS},
     // ECHOMAN (docs §60) — M13.4, the board's FIRST DELAY and a new DSP family.
     // Its morphology cue is simply that a Memory Man is a WIDE box: the card is a
@@ -184,6 +221,9 @@ juce::String pedalMenuLabel(int type) {
         case PEDAL_OPTO:   return "Lumen - optical compressor";
         case PEDAL_VIBE:   return "Swirl - Uni-Vibe photocell phaser";
         case PEDAL_DROP:   return "Cellar - polyphonic drop-tune";
+        // Added WITH the face, not after it: §67.10 found the Lumen shipping
+        // with a card but no menu case, showing as the bare word "Pedal".
+        case PEDAL_EQ:     return "Decade - ten-band graphic EQ";
         default:           return "Pedal";
     }
 }
@@ -195,6 +235,11 @@ PedalCard::PedalCard(ClipperAudioProcessor& p, int type) : proc_(p), type_(type)
         auto knob = std::make_unique<NeuKnob>();
         knob->setName(k.name);
         knob->setAccent(skin::accent(face.accent));
+        if (!k.positions.empty()) {
+            juce::StringArray labels;
+            for (const char* l : k.positions) labels.add(l);
+            knob->setPositions(labels);
+        }
         addAndMakeVisible(*knob);
         knobAttach_.push_back(
             std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
@@ -345,6 +390,23 @@ void PedalCard::resized() {
         auto row = r.removeFromTop(juce::jmax(kKnobH, juce::jmin(120, r.getHeight() / 2)));
         knobs_[0]->setBounds(row.withSizeKeepingCentre(
             juce::jmin(row.getWidth(), row.getHeight()), row.getHeight()));
+    } else if (face.layout == PedalFace::Layout::Bank && knobs_.size() == 12) {
+        // The EQ bank: ten band knobs in 2 rows of 5, then GAIN/VOLUME centred
+        // under them. Deliberately NOT the generic row below — twelve controls
+        // sharing one row would give each about six pixels.
+        const int bandH = juce::jmax(kKnobH - 10, 44);
+        for (int row = 0; row < 2; ++row) {
+            auto strip = r.removeFromTop(bandH);
+            const int cw = strip.getWidth() / 5;
+            for (int i = 0; i < 5; ++i)
+                knobs_[(size_t)(row * 5 + i)]->setBounds(strip.removeFromLeft(cw).reduced(1, 0));
+        }
+        r.removeFromTop(4);
+        auto out = r.removeFromTop(kKnobH);
+        const int ow = juce::jmin(out.getWidth() / 2, 70);
+        auto centred = out.withSizeKeepingCentre(ow * 2, out.getHeight());
+        knobs_[10]->setBounds(centred.removeFromLeft(ow).reduced(3, 0));
+        knobs_[11]->setBounds(centred.reduced(3, 0));
     } else {
         auto row = r.removeFromTop(kKnobH);
         const int cw = row.getWidth() / juce::jmax(1, (int)knobs_.size());

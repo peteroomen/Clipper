@@ -4,6 +4,24 @@ export const PARAM_DISTORTION = 0;
 export const PARAM_FILTER = 1;
 export const PARAM_LEVEL = 2;
 
+// M13.6: the first pedal whose control surface is LARGER THAN THREE SLOTS.
+//
+// Every pedal before the ten-band EQ fitted the three shared slots, so the whole
+// path — this map, `PedalParams`, `toChainPayload`, the worklet's create/refresh,
+// the assistant's allowlist — was written as three literal lines. A ten-band
+// graphic EQ is twelve controls, and the C ABI was never the constraint:
+// `*_set_param(handle, int id, float)` has always taken any id.
+//
+// The widening is deliberately SMALL, because two of the twelve are ordinary
+// slot reuse in the house style (the phaser takes slot 0 as SPEED, the wah takes
+// it as POSITION, the delay as DELAY): the EQ's **GAIN rides slot 0** and its
+// **VOLUME rides slot 2**, which is literally what that slot means. Slot 1 is
+// carried and unused, exactly as the compressor and the gate carry it. So only
+// the TEN BANDS need new ids, and they are 3..12 — purely additive, above every
+// id any existing pedal speaks.
+export const PARAM_EQ_BAND_BASE = 3;
+export const PARAM_EQ_BAND_COUNT = 10;
+
 // Amp parameter ids — must mirror clipper::dsp::AmpModel::ParamId in
 // core/include/clipper/dsp/AmpModel.h, plus the chain-level cab toggle
 // (AMP_PARAM_CAB == PARAM_COUNT == 5, handled by the C ABI wrapper).
@@ -52,7 +70,7 @@ export const AMP_PARAM_MESA_MODE = 14;
 export const AMP_PARAM_MESA_RECTIFIER = 15;
 export const AMP_PARAM_MESA_POWERMODE = 16;
 
-// M10.10 (docs §72): the Champ's ONE knob gets its OWN id rather than riding the
+// M10.10 (docs §73): the Champ's ONE knob gets its OWN id rather than riding the
 // shared VOLUME (0), and the reason is NOT that the function differs in name — it
 // is that this knob is the amp's only GAIN control and needs its own DEFAULT.
 //
@@ -79,6 +97,79 @@ export const MESA_MODES = [
   { id: 'orangeModern', label: 'Modern', value: 0.5 },
   { id: 'redVintage', label: 'Red Vintage', value: 0.75 },
   { id: 'redModern', label: 'Red Modern', value: 1.0 },
+] as const;
+
+// ---- Discrete position tables ------------------------------------------------
+// Every rotary/switch parameter the core QUANTIZES gets its detent centres and
+// its player-facing labels here, once, so the UI, the tests and the ABI cannot
+// drift. All of these quantize the same way in the core — nearest detent,
+// `round(v * (N-1))` — so centre i is exactly i/(N-1).
+//
+// These exist because the UI used to draw all of them as continuous 0-100 knobs
+// (see components/Selector.tsx): the readout named nothing, and nothing stopped
+// the control emitting a value between two clicks.
+
+// M10.4 the Mesa's RECTIFIER: silicon diodes vs a pair of 5U4 valve rectifiers.
+// The core threshold is < 0.5 silicon, >= 0.5 valve.
+export const MESA_RECTIFIERS = [
+  { id: 'silicon', label: 'Silicon', value: 0.0 },
+  { id: 'valve5u4', label: '5U4', value: 1.0 },
+] as const;
+
+// M10.4 the Mesa's POWER switch — a MAINS-PRIMARY-side control, commonly
+// confused with the rectifier selector; they are different switches (docs §69).
+export const MESA_POWER_MODES = [
+  { id: 'bold', label: 'Bold', value: 0.0 },
+  { id: 'spongy', label: 'Spongy', value: 1.0 },
+] as const;
+
+// M10.3 the OR120's F.A.C. — a six-position rotary of series coupling caps
+// ([through] 4n7 4n7 2n2 1n 330p; positions 2 and 3 really do carry the SAME
+// 4n7 on both factory sheets, docs §57). The real amp's panel numbers the
+// positions, so the readout does too.
+export const ORANGE_FAC_POSITIONS = [
+  { id: 'fac1', label: '1', value: 0.0 },
+  { id: 'fac2', label: '2', value: 0.2 },
+  { id: 'fac3', label: '3', value: 0.4 },
+  { id: 'fac4', label: '4', value: 0.6 },
+  { id: 'fac5', label: '5', value: 0.8 },
+  { id: 'fac6', label: '6', value: 1.0 },
+] as const;
+
+// M13.10 the Cellar's AMOUNT — NINE positions: 1..7 semitones down, then the
+// octave, then the octave WITH the dry signal summed. Detent 0 is DROP 1 (E flat
+// standard), which is why it is the default.
+//
+// OCT+DRY is the last click and it sums your DRY signal with the octave, so the
+// original pitch is audible alongside it — which is what "the pitch jumped back
+// up at 100" describes. It is faithful to the reference (docs §70.2) and the
+// pure octave is the click BEFORE it. Naming the positions is what makes that
+// legible; a knob reading "100" cannot.
+export const DROP_POSITIONS = [
+  { id: 'drop1', label: '−1', value: 0.0 },
+  { id: 'drop2', label: '−2', value: 0.125 },
+  { id: 'drop3', label: '−3', value: 0.25 },
+  { id: 'drop4', label: '−4', value: 0.375 },
+  { id: 'drop5', label: '−5', value: 0.5 },
+  { id: 'drop6', label: '−6', value: 0.625 },
+  { id: 'drop7', label: '−7', value: 0.75 },
+  { id: 'dropOct', label: 'OCT', value: 0.875 },
+  { id: 'dropOctDry', label: 'OCT+DRY', value: 1.0 },
+] as const;
+
+// The two-position MODE slots on three pedals. Each is a real switch in the
+// model (< 0.5 / >= 0.5), never a blend.
+export const OPTO_MODES = [
+  { id: 'compress', label: 'Comp', value: 0.0 },
+  { id: 'limit', label: 'Limit', value: 1.0 },
+] as const;
+export const VIBE_MODES = [
+  { id: 'chorus', label: 'Chorus', value: 0.0 },
+  { id: 'vibrato', label: 'Vibrato', value: 1.0 },
+] as const;
+export const CE1_MODES = [
+  { id: 'chorus', label: 'Chorus', value: 0.0 },
+  { id: 'vibrato', label: 'Vibrato', value: 1.0 },
 ] as const;
 
 // M10.7 Orange Rockerverb 100: NO new param id, deliberately. Its GAIN and its
@@ -118,11 +209,44 @@ export const CHORUS_VIBRATO = 2;
 
 // Map a rig pedal param name to its worklet/core id. Keeps the RigState shape
 // (named params) decoupled from the numeric ABI the worklet speaks.
+//
+// M13.6 appends the ten EQ band ids (3..12). A name absent from this map is not
+// addressable — `pedalParamId` returns undefined and the caller drops the write,
+// which is what keeps the numeric ABI closed to anything the rig cannot name.
 export const PARAM_ID = {
   distortion: PARAM_DISTORTION,
   filter: PARAM_FILTER,
   level: PARAM_LEVEL,
+  band31: PARAM_EQ_BAND_BASE + 0,
+  band63: PARAM_EQ_BAND_BASE + 1,
+  band125: PARAM_EQ_BAND_BASE + 2,
+  band250: PARAM_EQ_BAND_BASE + 3,
+  band500: PARAM_EQ_BAND_BASE + 4,
+  band1k: PARAM_EQ_BAND_BASE + 5,
+  band2k: PARAM_EQ_BAND_BASE + 6,
+  band4k: PARAM_EQ_BAND_BASE + 7,
+  band8k: PARAM_EQ_BAND_BASE + 8,
+  band16k: PARAM_EQ_BAND_BASE + 9,
 } as const;
+
+// The ten band param names, IN ABI ORDER (index i is id PARAM_EQ_BAND_BASE + i).
+// One ordered list, so the rig shape, the worklet dispatch, the face and the
+// assistant's allowlist can never disagree about which slider is which band.
+export const EQ_BAND_PARAMS = [
+  'band31', 'band63', 'band125', 'band250', 'band500',
+  'band1k', 'band2k', 'band4k', 'band8k', 'band16k',
+] as const;
+
+// The nominal ISO centre of each band, in Hz, in the same order. Display and
+// coaching only — the CORE owns the real centres, which come from the
+// transcribed gyrator design equation and land a few percent off nominal
+// exactly as real component values do (docs §73).
+// The +/- dB the band sliders reach at the ends of their travel. Mirrors
+// kLevelRangeDb / the range the leg loss is pinned to in EqModel.cpp — display
+// and coaching only; the CORE owns the real curve.
+export const EQ_BAND_RANGE_DB = 12;
+
+export const EQ_BAND_HZ = [31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000] as const;
 
 // Map a rig amp param name to its worklet/core id.
 export const AMP_PARAM_ID = {

@@ -3,7 +3,7 @@
 // ChampPowerAmp: the Fender tweed Champ 5F1 POWER SECTION — ONE 6V6GT beam power
 // tetrode, cathode-biased, straight into the output transformer. There is no phase
 // inverter, no negative feedback, no master volume and no tone stack anywhere in
-// this amp. Modelled from circuit physics and MEASURED (docs §72), same discipline
+// this amp. Modelled from circuit physics and MEASURED (docs §73), same discipline
 // as the M9.3 Marshall, M10.1 Twin and M10.2 AC30 power sections. Convention: real
 // circuit VOLTS internally; process() output normalized so 1.0f == full scale
 // (kFullScaleSecV). Platform-free C++17.
@@ -47,7 +47,7 @@
 //      loop to tidy the distortion up.
 //
 // ===========================================================================
-// THE 6V6GT DEVICE CARD — DERIVED, NOT INHERITED (docs §72.2, audit finding 10)
+// THE 6V6GT DEVICE CARD — DERIVED, NOT INHERITED (docs §73.2, audit finding 10)
 // ===========================================================================
 // TWO published Koren 6V6 fits are reachable and they DISAGREE substantially. Both
 // were evaluated against the RCA/TAD datasheet at two operating points before any
@@ -126,7 +126,7 @@
 // models the supply as a 100 Ω series resistance, which drops ~4 V and lands the
 // plate node at 320 V against Fender's own measured 305 V. It also models the OT
 // primary as a DC 5 kΩ to B+, which would sit the plate 170 V below the rail. Both
-// are that project's simplifications and NEITHER is inherited here. See docs §72.1.
+// are that project's simplifications and NEITHER is inherited here. See docs §73.1.
 //
 #pragma once
 
@@ -207,7 +207,7 @@ public:
     // no need to reach inside the class.
     double plateAtCurrent(double vg1k, double vg2, double rail, double& ipOut) const;
 
-    // Documented constants (cited in the tests / docs §72).
+    // Documented constants (cited in the tests / docs §73).
     static constexpr double kRload = 5000.0;         // OT reflected primary load (Ω)
     static constexpr double kOtTurns = 25.0;         // 25:1, sqrt(5000/8)
     static constexpr double kRkCathode = 470.0;      // 6V6 cathode resistor (Ω)
@@ -219,7 +219,7 @@ public:
                                                      // confirm 25 µF. Unbypassed, the
                                                      // 470 Ω is strong local
                                                      // degeneration and a materially
-                                                     // different amp. Docs §72.1.
+                                                     // different amp. Docs §73.1.
     static constexpr double kRgl = 1.0e6;            // 6V6 grid leak (Ω)
     static constexpr double kCoupCc = 20.0e-9;       // V1B plate → 6V6 grid cap (F)
 
@@ -246,7 +246,7 @@ public:
     // secondary swing, not chosen: a cranked ChampAmp (VOLUME 1.0, a 0.30 V pluck
     // level at 220 Hz) swings 14.1272 V peak at the secondary, and the house
     // convention puts that at 0.9 of full scale -> 14.1272 / 0.9. Re-derive it with
-    // the same probe if the device card or the supply ever moves. Docs §72.
+    // the same probe if the device card or the supply ever moves. Docs §73.
     static constexpr double kFullScaleSecV = 15.6969;
 
     // Denormal scope (ADR 006) is decided BY MEASUREMENT in the .cpp, not here.

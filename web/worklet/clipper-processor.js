@@ -33,6 +33,18 @@ import createModule from './clipper.js';
 // mix id 9 into the ReverbModel, in the C ABI — no worklet special-casing.)
 const AMP_PARAM_CAB = 5;
 
+// M13.6: the ten-band EQ's band-slider ids (3..12) and their names in ABI order.
+// MIRRORS web/src/params.ts (PARAM_EQ_BAND_BASE / EQ_BAND_PARAMS) — this file is
+// loaded by URL as a standalone worklet module and cannot import from the app,
+// so the constants are duplicated here in the same style as AMP_PARAM_CAB above.
+// If the order changes there it must change here; the two are checked against
+// each other by the `eq worklet` spec.
+const PARAM_EQ_BAND_BASE = 3;
+const EQ_BAND_PARAMS = [
+  'band31', 'band63', 'band125', 'band250', 'band500',
+  'band1k', 'band2k', 'band4k', 'band8k', 'band16k',
+];
+
 const RENDER_QUANTUM = 128;
 
 // Peak meter: report the post-trim input block peak back to the main thread every
@@ -281,6 +293,34 @@ class ClipperProcessor extends AudioWorkletProcessor {
   // matching sd_*/rat_* export. `params` (optional) is {distortion, filter,
   // level} in 0..1 (for an SD-1 these slots ARE drive/tone/level). Returns a
   // chain node.
+  // Write a pedal's whole parameter set to its handle, in ABI id order.
+  //
+  // The three shared slots FIRST and unconditionally, in exactly the order they
+  // were written as three literal lines before M13.6 — that ordering is why
+  // every pedal that predates the EQ renders bit-identically through this
+  // function (proved by render hash, docs §72).
+  //
+  // Then the EXTRA slots, ids 3.. , for a pedal whose control surface is larger
+  // than three (today: the ten-band EQ's band sliders). A three-slot pedal's
+  // params object has none of these keys, so the loop body never runs and the
+  // ABI traffic is unchanged. `undefined` is skipped rather than coerced,
+  // because `+undefined` is NaN and the whole point of the guard below is that
+  // NaN must never cross the WASM boundary.
+  _applyPedalParams(prefix, handle, params) {
+    const mod = this._module;
+    const set = mod[prefix + '_set_param'];
+    set(handle, 0, +params.distortion);
+    set(handle, 1, +params.filter);
+    set(handle, 2, +params.level);
+    for (let i = 0; i < EQ_BAND_PARAMS.length; ++i) {
+      const v = params[EQ_BAND_PARAMS[i]];
+      if (v === undefined) continue;
+      const f = +v;
+      if (!Number.isFinite(f)) continue;
+      set(handle, PARAM_EQ_BAND_BASE + i, f);
+    }
+  }
+
   _createPedal(id, type, params, engaged) {
     if (type === 'tuner') {
       return { id, type: 'tuner', handle: 0, engaged: !!engaged };
@@ -329,17 +369,16 @@ class ClipperProcessor extends AudioWorkletProcessor {
     // is a no-op and latency is 0 because the read tap is a sawtooth with no
     // single group delay — docs §70),
     // anything else = RAT.
-    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'muff' ? 'muff' : type === 'gold' ? 'gold' : type === 'comp' ? 'comp' : type === 'opto' ? 'opto' : type === 'vibe' ? 'vibe' : type === 'gate' ? 'gate' : type === 'phaser' ? 'phaser' : type === 'wah' ? 'wah' : type === 'chorus' ? 'chorus' : type === 'delay' ? 'delay' : type === 'drop' ? 'drop' : 'rat';
-    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'muff' ? '_muff' : t === 'gold' ? '_gold' : t === 'comp' ? '_comp' : t === 'opto' ? '_opto' : t === 'vibe' ? '_vibe' : t === 'gate' ? '_gate' : t === 'phaser' ? '_phaser' : t === 'wah' ? '_wah' : t === 'chorus' ? '_chorus' : t === 'delay' ? '_delay' : t === 'drop' ? '_drop' : '_rat';
+    const t = type === 'sd1' ? 'sd1' : type === 'ts' ? 'ts' : type === 'muff' ? 'muff' : type === 'gold' ? 'gold' : type === 'comp' ? 'comp' : type === 'opto' ? 'opto' : type === 'vibe' ? 'vibe' : type === 'gate' ? 'gate' : type === 'phaser' ? 'phaser' : type === 'wah' ? 'wah' : type === 'chorus' ? 'chorus' : type === 'delay' ? 'delay' : type === 'drop' ? 'drop' : type === 'eq' ? 'eq' : 'rat';
+    const P = t === 'sd1' ? '_sd' : t === 'ts' ? '_ts' : t === 'muff' ? '_muff' : t === 'gold' ? '_gold' : t === 'comp' ? '_comp' : t === 'opto' ? '_opto' : t === 'vibe' ? '_vibe' : t === 'gate' ? '_gate' : t === 'phaser' ? '_phaser' : t === 'wah' ? '_wah' : t === 'chorus' ? '_chorus' : t === 'delay' ? '_delay' : t === 'drop' ? '_drop' : t === 'eq' ? '_eq' : '_rat';
     const handle = mod[P + '_create'](this._sr);
     mod[P + '_set_oversampling'](handle, this._oversampling | 0);
     if (params) {
       // Slot 0/1/2 are pedal-agnostic; for a phaser slot 0 = SPEED, 1/2 unused;
       // for a wah they are POSITION / SENSITIVITY / VOICE; for the CE-1 chorus
-      // they are RATE / DEPTH / MODE; for a delay they are DELAY / FEEDBACK / BLEND.
-      mod[P + '_set_param'](handle, 0, +params.distortion);
-      mod[P + '_set_param'](handle, 1, +params.filter);
-      mod[P + '_set_param'](handle, 2, +params.level);
+      // they are RATE / DEPTH / MODE; for a delay they are DELAY / FEEDBACK / BLEND;
+      // for the M13.6 ten-band EQ slot 0 = GAIN and slot 2 = VOLUME.
+      this._applyPedalParams(P, handle, params);
     }
     return { id, type: t, handle, engaged: !!engaged };
   }
@@ -349,7 +388,7 @@ class ClipperProcessor extends AudioWorkletProcessor {
   // ('_sd' | '_ts' | '_muff' | '_gold' | '_comp' | '_opto' | '_vibe' | '_gate' | '_phaser' | '_wah' |
   // '_chorus' | '_delay' | '_drop' | '_rat').
   _prefix(node) {
-    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'muff' ? '_muff' : node.type === 'gold' ? '_gold' : node.type === 'comp' ? '_comp' : node.type === 'opto' ? '_opto' : node.type === 'vibe' ? '_vibe' : node.type === 'gate' ? '_gate' : node.type === 'phaser' ? '_phaser' : node.type === 'wah' ? '_wah' : node.type === 'chorus' ? '_chorus' : node.type === 'delay' ? '_delay' : node.type === 'drop' ? '_drop' : '_rat';
+    return node.type === 'sd1' ? '_sd' : node.type === 'ts' ? '_ts' : node.type === 'muff' ? '_muff' : node.type === 'gold' ? '_gold' : node.type === 'comp' ? '_comp' : node.type === 'opto' ? '_opto' : node.type === 'vibe' ? '_vibe' : node.type === 'gate' ? '_gate' : node.type === 'phaser' ? '_phaser' : node.type === 'wah' ? '_wah' : node.type === 'chorus' ? '_chorus' : node.type === 'delay' ? '_delay' : node.type === 'drop' ? '_drop' : node.type === 'eq' ? '_eq' : '_rat';
   }
 
   _destroyPedal(node) {
@@ -484,9 +523,7 @@ class ClipperProcessor extends AudioWorkletProcessor {
         // Refresh params on reused handles (cheap; core smooths them). A reused
         // id keeps its original type (a swap mints a NEW id), so route by it.
         if (p.params) {
-          this._pedalSetParam(existing, 0, +p.params.distortion);
-          this._pedalSetParam(existing, 1, +p.params.filter);
-          this._pedalSetParam(existing, 2, +p.params.level);
+          this._applyPedalParams(this._prefix(existing), existing.handle, p.params);
         }
         nodes.push(existing);
         keep.add(p.id);

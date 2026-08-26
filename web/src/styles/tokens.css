@@ -111,6 +111,12 @@
      on the same board still separate. */
   --accent-drop: #5F7D8C;
   --accent-drop-glow: rgba(140, 185, 205, 0.5);
+  /* M13.6 ten-band EQ — SILVER. The reference family is a plain metal box whose
+     identity is the fader bank itself, so this face leans on morphology rather
+     than colour; silver is the one accent no other pedal on this board uses and
+     reads as "the utility box" next to the coloured dirt and modulation. */
+  --accent-eq: #8C93A0;
+  --accent-eq-glow: rgba(190, 200, 215, 0.5);
   --accent-gate: #4A5568;    /* M13.6a gate — SLATE: deliberately muted, it is a utility */
   --accent-gate-glow: rgba(120, 140, 165, 0.5);
   --accent-chorus: #9B2C6F;  /* M13.7 CE-1 — MAGENTA (modulation, distinct from phaser orange) */
@@ -215,6 +221,7 @@
     --accent-delay: #5AA8F0;   --accent-delay-glow: rgba(90, 168, 240, 0.55);
     --accent-gate: #9AAABF;    --accent-gate-glow: rgba(154, 170, 191, 0.5);
     --accent-drop: #8FC0D4;    --accent-drop-glow: rgba(143, 192, 212, 0.55);
+    --accent-eq: #C3CAD8;      --accent-eq-glow: rgba(195, 202, 216, 0.55);
     --accent-chorus: #E86FB8;  --accent-chorus-glow: rgba(232, 111, 184, 0.55);
     --accent-wah-glow: rgba(62, 208, 221, 0.6);
     --accent-tuner: var(--seg-green);
@@ -299,6 +306,7 @@
   --accent-delay: #5AA8F0; --accent-delay-glow: rgba(90,168,240,.55);
   --accent-gate: #9AAABF; --accent-gate-glow: rgba(154,170,191,.5);
   --accent-drop: #8FC0D4; --accent-drop-glow: rgba(143,192,212,.55);
+  --accent-eq: #C3CAD8; --accent-eq-glow: rgba(195,202,216,.55);
   --accent-chorus: #E86FB8; --accent-chorus-glow: rgba(232,111,184,.55);
   --accent-jcm: #E8B84B; --accent-jcm-glow: rgba(232,184,75,.55);
   --accent-twin: #7FB4E8; --accent-twin-glow: rgba(127,180,232,.55);

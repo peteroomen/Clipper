@@ -1,4 +1,4 @@
-// Clipper — ChampAmp (M10.10, docs §72). See ChampAmp.h.
+// Clipper — ChampAmp (M10.10, docs §73). See ChampAmp.h.
 
 #include "clipper/dsp/ChampAmp.h"
 

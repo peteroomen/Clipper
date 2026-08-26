@@ -356,7 +356,7 @@ decades above the subnormal boundary. Strictly more informative than the origina
 
 ## Measured results
 
-All tables are in **docs §72**. Headlines:
+All tables are in **docs §73**. Headlines:
 
 | | |
 |---|---|
@@ -387,7 +387,7 @@ All tables are in **docs §72**. Headlines:
 **Native:** `ClipperEngine.{h,cpp}`, `PluginProcessor.{h,cpp}`, `PluginEditor.{h,cpp}`,
 `ClipperLookAndFeel.{h,cpp}`.
 **Build/docs:** `scripts/build-wasm.sh`, `web/public/generated/*`, `docs/DEVELOPMENT.md`
-(§72), `ROADMAP.md`, `CLAUDE.md`, this file.
+(§73), `ROADMAP.md`, `CLAUDE.md`, this file.
 
 ## Deferred to next session
 

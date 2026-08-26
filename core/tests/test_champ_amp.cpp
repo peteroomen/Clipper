@@ -1,4 +1,4 @@
-// Plain-assert tests for the M10.10 Fender tweed Champ 5F1 (docs §72) — the small
+// Plain-assert tests for the M10.10 Fender tweed Champ 5F1 (docs §73) — the small
 // tweed, the lineup's first Fender that distorts, and THE FIRST SINGLE-ENDED OUTPUT
 // STAGE IN THE PROJECT.
 //
@@ -682,7 +682,7 @@ void testTweed8Cab() {
 
 int main() {
     clipper::test::requireAssertsLive();
-    std::printf("== Fender tweed Champ 5F1 (M10.10, docs §72) ==\n");
+    std::printf("== Fender tweed Champ 5F1 (M10.10, docs §73) ==\n");
     std::printf("- Fender's own measured operating point (ABSOLUTE reference)\n");
     testFenderMeasuredVoltages();
     std::printf("- the 6V6 screen fit vs the datasheet (audit finding 10)\n");

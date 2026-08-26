@@ -90,6 +90,25 @@ inline constexpr const char* vibeMode          = "vibeMode";
 // a knob that does nothing.
 inline constexpr const char* dropOn            = "dropOn";
 inline constexpr const char* dropAmount        = "dropAmount";
+// M13.6: the "Decade" ten-band graphic EQ — the first pedal here with more than
+// three parameters. GAIN and VOLUME ride the shared slots (eqGain/eqVolume); the
+// ten BANDS are their own ids, named by their nominal ISO centre so a saved
+// session is readable and a band can never be silently re-pointed by a
+// renumbering. Every one defaults to 0.5, which for this pedal is EXACT
+// transparency rather than a convention (docs §73.3).
+inline constexpr const char* eqOn               = "eqOn";
+inline constexpr const char* eqGain             = "eqGain";
+inline constexpr const char* eqVolume           = "eqVolume";
+inline constexpr const char* eqBand31          = "eqBand31";
+inline constexpr const char* eqBand63          = "eqBand63";
+inline constexpr const char* eqBand125         = "eqBand125";
+inline constexpr const char* eqBand250         = "eqBand250";
+inline constexpr const char* eqBand500         = "eqBand500";
+inline constexpr const char* eqBand1k          = "eqBand1k";
+inline constexpr const char* eqBand2k          = "eqBand2k";
+inline constexpr const char* eqBand4k          = "eqBand4k";
+inline constexpr const char* eqBand8k          = "eqBand8k";
+inline constexpr const char* eqBand16k         = "eqBand16k";
 // M13.7: the CE-1 "Ensemble" chorus. THREE knobs — RATE, DEPTH and MODE. MODE is
 // a plain 0..1 knob rather than a Choice deliberately: it is the shared slot-2 of
 // the pedal-agnostic positional ABI, so making it a Choice here would put the
@@ -144,7 +163,7 @@ inline constexpr const char* orangeFac   = "orangeFac";
 inline constexpr const char* mesaMode      = "mesaMode";
 inline constexpr const char* mesaRectifier = "mesaRectifier";
 inline constexpr const char* mesaPowerMode = "mesaPowerMode";
-// M10.10 Champ (docs §72) — its OWN id, not the shared `volume`. This knob is
+// M10.10 Champ (docs §73) — its OWN id, not the shared `volume`. This knob is
 // the amp's only gain control and needs its own default; see the web's
 // AMP_PARAM_CHAMP_VOLUME for the full reasoning.
 inline constexpr const char* champVolume = "champVolume";
@@ -182,6 +201,15 @@ public:
     void setStateInformation(const void* data, int sizeInBytes) override;
 
     juce::AudioProcessorValueTreeState apvts;
+
+    // The amp voice labels the `ampModel` Choice parameter is built from,
+    // indexed by clipper::native::AmpModel. The EDITOR's top-bar selector is
+    // populated from this same array rather than a second hardcoded list —
+    // it used to carry its own five-entry copy against a seven-choice
+    // parameter, so two voices were unlisted and every item after AC30 chose
+    // the wrong amp (the owner's "missing amps, don't line up"). One array,
+    // one order, checked against AMP_MODEL_COUNT.
+    static const juce::StringArray& ampModelChoices();
 
     // Read the current APVTS values into a Params snapshot (used by processBlock
     // and reusable by the editor / tests).

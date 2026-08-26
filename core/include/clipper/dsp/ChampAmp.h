@@ -1,4 +1,4 @@
-// Clipper — portable DSP core (M10.10, docs §72).
+// Clipper — portable DSP core (M10.10, docs §73).
 //
 // ChampAmp: the Fender tweed Champ 5F1 — two 12AX7 stages, a 1 MΩ log VOLUME pot,
 // and ONE cathode-biased 6V6GT into a small single-ended output transformer.

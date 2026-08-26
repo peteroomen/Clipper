@@ -28,8 +28,19 @@
 // parent owns; nothing is stored here.
 
 import { Knob } from './Knob';
+import { RotarySelector, SegmentSwitch, type SelectorPosition } from './Selector';
+import { DROP_POSITIONS, OPTO_MODES, VIBE_MODES, CE1_MODES } from '../params';
 import { thunk } from '../ui-sound';
-import { PEDAL_KNOB_DEFAULTS, type PedalState, type ParamName, type PedalType } from '../rig';
+import {
+  PEDAL_KNOB_DEFAULTS,
+  type PedalState,
+  type ParamName,
+  type CoreParamName,
+  type EqBandParamName,
+  type PedalType,
+} from '../rig';
+import { Fader } from './Fader';
+import { EQ_BAND_RANGE_DB } from '../params';
 
 export interface PedalProps {
   pedal: PedalState;
@@ -43,10 +54,36 @@ export interface PedalProps {
 interface KnobSpec {
   name: string;
   aria: string;
-  param: ParamName;
+  // A KNOB always addresses one of the three shared slots — that is what a knob
+  // row on this board is. M13.6's EQ bands are NOT reachable from here: they are
+  // optional on PedalParams and are drawn by the slider bank, which reads them
+  // with its own accessor. Typing this as the narrow `CoreParamName` is what
+  // keeps `params[k.param]` a plain number instead of `number | undefined`.
+  param: CoreParamName;
   testId: string;
+  // A DISCRETE control's detent table. Present => the slot is not a pot, and
+  // Pedal renders a switch (2..3 states) or a detented rotary (4+) instead of a
+  // Knob. Absent => a continuous knob, which is most of the board.
+  //
+  // These slots were ALL drawn as 0-100 knobs until 2026-08-25, although the
+  // models quantize them and the comments below already said "genuinely
+  // DISCRETE" — so the readout named nothing and nothing stopped the UI emitting
+  // a value between two clicks. See components/Selector.tsx.
+  positions?: readonly SelectorPosition[];
 }
-type FaceLayout = 'stack' | 'compact' | 'slim' | 'single' | 'wide' | 'plate' | 'rocker' | 'bank';
+type FaceLayout =
+  | 'stack'
+  | 'compact'
+  | 'slim'
+  | 'single'
+  | 'wide'
+  | 'plate'
+  | 'rocker'
+  | 'bank'
+  // M13.6: a ten-fader bank. The first face whose controls are not knobs, and
+  // the first whose control count is not 1..3 — a graphic EQ's whole point is
+  // that you read the curve off the physical slider positions.
+  | 'graphic';
 interface PedalFace {
   layout: FaceLayout;
   model: string; // small model line (top eyebrow)
@@ -54,6 +91,18 @@ interface PedalFace {
   // 1..3 knobs. The dirt faces carry three; the phaser's 'single' face carries
   // exactly one (the iconic one-knob face).
   knobs: KnobSpec[];
+  // M13.6: the band FADERS, for the 'graphic' layout only. Present exactly when
+  // the pedal's control surface is larger than the three shared slots; every
+  // other face leaves it undefined, which is what "this is a three-slot pedal"
+  // looks like on the UI side.
+  faders?: FaderSpec[];
+}
+interface FaderSpec {
+  name: string; // the band label, e.g. "125"
+  unit?: string; // "Hz" / "kHz"
+  aria: string;
+  param: EqBandParamName; // its own param id, NOT one of the three shared slots
+  testId: string;
 }
 // Every KNOB pedal gets a faceplate here; the tuner renders via its own component
 // (Tuner.tsx) and never reaches Pedal. To add a future pedal's face, add an entry
@@ -192,7 +241,13 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       // Slot 2 = GAIN, the make-up level, which moves the output 32 dB and the
       // gain reduction 0.0000 dB.
       { name: 'Peak', aria: 'Peak reduction', param: 'distortion', testId: 'knob-peak' },
-      { name: 'Mode', aria: 'Mode (compress / limit)', param: 'filter', testId: 'knob-mode' },
+      {
+        name: 'Mode',
+        aria: 'Mode (compress / limit)',
+        param: 'filter',
+        testId: 'switch-mode',
+        positions: OPTO_MODES,
+      },
       { name: 'Gain', aria: 'Gain', param: 'level', testId: 'knob-gain' },
     ],
   },
@@ -217,7 +272,13 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       // equal-weight mixer), >= 0.5 VIBRATO (the wet phase line alone).
       { name: 'Speed', aria: 'Speed', param: 'distortion', testId: 'knob-speed' },
       { name: 'Intensity', aria: 'Intensity', param: 'filter', testId: 'knob-intensity' },
-      { name: 'Mode', aria: 'Mode (chorus / vibrato)', param: 'level', testId: 'knob-mode' },
+      {
+        name: 'Mode',
+        aria: 'Mode (chorus / vibrato)',
+        param: 'level',
+        testId: 'switch-mode',
+        positions: VIBE_MODES,
+      },
     ],
   },
   // M13.6a "Curfew": the lineup's first UTILITY — it makes no sound of its own,
@@ -307,7 +368,13 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       // keep them independent so no knob is dead in either mode (docs §62.6).
       { name: 'Rate', aria: 'Rate', param: 'distortion', testId: 'knob-rate' },
       { name: 'Depth', aria: 'Depth', param: 'filter', testId: 'knob-depth' },
-      { name: 'Mode', aria: 'Mode (chorus / vibrato)', param: 'level', testId: 'knob-mode' },
+      {
+        name: 'Mode',
+        aria: 'Mode (chorus / vibrato)',
+        param: 'level',
+        testId: 'switch-mode',
+        positions: CE1_MODES,
+      },
     ],
   },
   // M13.10 "Cellar": the drop-tune, and its face has ONE knob for the same
@@ -327,7 +394,43 @@ const FACES: Record<Exclude<PedalType, 'tuner'>, PedalFace> = {
       // the core quantizes slot 0 to DROP 1..7 semitones, OCTAVE, OCTAVE+DRY
       // (docs §70.2). Slots 1/2 are carried and unused. Detent 0 is DROP 1 —
       // one semitone down, E flat standard.
-      { name: 'Amount', aria: 'Drop amount', param: 'distortion', testId: 'knob-amount' },
+      {
+        name: 'Drop',
+        aria: 'Drop amount in semitones',
+        param: 'distortion',
+        testId: 'knob-amount',
+        positions: DROP_POSITIONS,
+      },
+    ],
+  },
+  // M13.6 "Decade": the ten-band graphic EQ, and the board's first non-knob
+  // face. A GRAPHITE-over-CHARCOAL chassis with a SILVER accent — the reference
+  // family is a plain metal box whose identity is the fader bank itself, so the
+  // face leans on morphology rather than colour, and silver is the one accent no
+  // other pedal on this board uses. "Decade" is the wink (ten bands, and decades
+  // of frequency); the model line names the type. No MXR / M108 / Dunlop wording
+  // anywhere (docs §17 doctrine).
+  eq: {
+    layout: 'graphic',
+    model: 'EQ Nº1 · TEN BAND',
+    wordmark: 'Decade',
+    knobs: [
+      // GAIN and VOLUME ride the shared slots 0 and 2 — ordinary slot reuse, the
+      // way the phaser takes slot 0 as SPEED. Slot 1 is carried and unused.
+      { name: 'Gain', aria: 'Input gain', param: 'distortion', testId: 'knob-eq-gain' },
+      { name: 'Vol', aria: 'Output volume', param: 'level', testId: 'knob-eq-volume' },
+    ],
+    faders: [
+      { name: '31', unit: 'Hz', aria: '31 Hz band', param: 'band31', testId: 'fader-band31' },
+      { name: '63', unit: 'Hz', aria: '63 Hz band', param: 'band63', testId: 'fader-band63' },
+      { name: '125', unit: 'Hz', aria: '125 Hz band', param: 'band125', testId: 'fader-band125' },
+      { name: '250', unit: 'Hz', aria: '250 Hz band', param: 'band250', testId: 'fader-band250' },
+      { name: '500', unit: 'Hz', aria: '500 Hz band', param: 'band500', testId: 'fader-band500' },
+      { name: '1', unit: 'kHz', aria: '1 kHz band', param: 'band1k', testId: 'fader-band1k' },
+      { name: '2', unit: 'kHz', aria: '2 kHz band', param: 'band2k', testId: 'fader-band2k' },
+      { name: '4', unit: 'kHz', aria: '4 kHz band', param: 'band4k', testId: 'fader-band4k' },
+      { name: '8', unit: 'kHz', aria: '8 kHz band', param: 'band8k', testId: 'fader-band8k' },
+      { name: '16', unit: 'kHz', aria: '16 kHz band', param: 'band16k', testId: 'fader-band16k' },
     ],
   },
   phaser: {
@@ -350,19 +453,49 @@ export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
   const face: PedalFace = (FACES as Partial<Record<PedalType, PedalFace>>)[type] ?? FACES.rat;
   const defaults = PEDAL_KNOB_DEFAULTS[type] ?? PEDAL_KNOB_DEFAULTS.rat;
 
+  // A slot carrying a detent table is NOT a pot: two or three states get the
+  // carved segmented switch, four or more get a detented rotary that reads its
+  // position by name. Everything else stays a knob.
   const knobs = (
     <div className="knob-row">
-      {face.knobs.map((k) => (
-        <Knob
-          key={k.testId}
-          name={k.name}
-          ariaLabel={k.aria}
-          value={params[k.param]}
-          defaultValue={defaults[k.param]}
-          onChange={(v) => onParam(k.param, v)}
-          testId={k.testId}
-        />
-      ))}
+      {face.knobs.map((k) => {
+        if (k.positions && k.positions.length <= 3)
+          return (
+            <SegmentSwitch
+              key={k.testId}
+              name={k.name}
+              ariaLabel={k.aria}
+              positions={k.positions}
+              value={params[k.param]}
+              onChange={(v) => onParam(k.param, v)}
+              testId={k.testId}
+            />
+          );
+        if (k.positions)
+          return (
+            <RotarySelector
+              key={k.testId}
+              name={k.name}
+              ariaLabel={k.aria}
+              positions={k.positions}
+              value={params[k.param]}
+              defaultValue={defaults[k.param]}
+              onChange={(v) => onParam(k.param, v)}
+              testId={k.testId}
+            />
+          );
+        return (
+          <Knob
+            key={k.testId}
+            name={k.name}
+            ariaLabel={k.aria}
+            value={params[k.param]}
+            defaultValue={defaults[k.param]}
+            onChange={(v) => onParam(k.param, v)}
+            testId={k.testId}
+          />
+        );
+      })}
     </div>
   );
 
@@ -445,6 +578,37 @@ export function Pedal({ pedal, onParam, onToggleEngaged }: PedalProps) {
           <div className="name-plate" aria-hidden="true">
             <span className="name-plate-text">{face.wordmark}</span>
           </div>
+          <div className="fsw-zone">
+            {footswitch}
+            <span className="fsw-label">Stomp</span>
+          </div>
+        </>
+      ) : face.layout === 'graphic' ? (
+        // 'graphic' (the ten-band EQ): the wordmark, then the FADER BANK owning
+        // most of the body, then GAIN/VOLUME on a strip below it, then the stomp.
+        // The bank is the pedal's whole identity, so it gets the space.
+        <>
+          <div className="pedal-logo display">{face.wordmark}</div>
+          <div className="fader-bank" data-testid="fader-bank">
+            {(face.faders ?? []).map((f) => (
+              <Fader
+                key={f.testId}
+                name={f.name}
+                unit={f.unit}
+                ariaLabel={f.aria}
+                rangeDb={EQ_BAND_RANGE_DB}
+                // A band the pedal carries is always present in params; the
+                // fallback is the type's own default, never a bare literal, so a
+                // rig saved before a band existed opens at FLAT rather than at a
+                // full cut.
+                value={params[f.param] ?? defaults[f.param] ?? 0.5}
+                defaultValue={defaults[f.param] ?? 0.5}
+                onChange={(v) => onParam(f.param, v)}
+                testId={f.testId}
+              />
+            ))}
+          </div>
+          {knobs}
           <div className="fsw-zone">
             {footswitch}
             <span className="fsw-label">Stomp</span>

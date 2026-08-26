@@ -135,6 +135,8 @@ juce::Colour accent(AccentId id) {
         case AccentId::Vibe:   return d ? juce::Colour(0xffF0B25A) : juce::Colour(0xffE8A33D);
         // M13.10 drop-tune — GRAPHITE-CYAN, tokens.css --accent-drop.
         case AccentId::Drop:   return d ? juce::Colour(0xff8FC0D4) : juce::Colour(0xff5F7D8C);
+        // M13.6 EQ — SILVER. Values verbatim from tokens.css --accent-eq.
+        case AccentId::Eq:     return d ? juce::Colour(0xffC3CAD8) : juce::Colour(0xff8C93A0);
         case AccentId::Jcm:    return d ? juce::Colour(0xffE8B84B) : juce::Colour(0xffA87A18);
         case AccentId::Twin:   return d ? juce::Colour(0xff7FB4E8) : juce::Colour(0xff4E7BA8);
         case AccentId::Ac30:   return d ? juce::Colour(0xffE08A4A) : juce::Colour(0xffB4612C);
@@ -786,7 +788,35 @@ void NeuKnob::setDimmed(bool d) {
     repaint();
 }
 
+void NeuKnob::setPositions(juce::StringArray labels) {
+    positions_ = std::move(labels);
+    const int n = positions_.size();
+    if (n >= 2) {
+        // Nearest-detent centres are i/(n-1) — the same law the core quantizes
+        // with (round(v * (n-1))), so the UI and the model agree by construction
+        // rather than by both happening to round the same way.
+        slider_.setRange(0.0, 1.0, 1.0 / (double)(n - 1));
+        // A named position is wider than "100", so give the readout the room.
+        valueLabel_.setFont(skin::monoFont(10.0f).boldened());
+    } else {
+        slider_.setRange(0.0, 1.0, 0.0);
+        valueLabel_.setFont(skin::monoFont(11.5f).boldened());
+    }
+    refreshReadout();
+    repaint();
+}
+
 void NeuKnob::refreshReadout() {
+    const int n = positions_.size();
+    if (n >= 2) {
+        // Read the DETENT, not the raw value: a session written by an older build
+        // (or a host sweeping the lane) still resolves to a real position rather
+        // than rendering as something between two clicks.
+        int i = (int)std::lround(slider_.getValue() * (double)(n - 1));
+        i = juce::jlimit(0, n - 1, i);
+        valueLabel_.setText(positions_[i], juce::dontSendNotification);
+        return;
+    }
     valueLabel_.setText(juce::String(juce::roundToInt(slider_.getValue() * 100.0)),
                         juce::dontSendNotification);
 }
@@ -1390,7 +1420,7 @@ void ModeSwitch::paint(juce::Graphics& g) {
 
     g.setColour(sc.inkDim);
     g.setFont(skin::monoFont(9.5f));
-    g.drawText("MODE", full.withTop(r.getBottom() + 4.0f), juce::Justification::centredTop);
+    g.drawText(caption_, full.withTop(r.getBottom() + 4.0f), juce::Justification::centredTop);
 }
 
 }  // namespace clipper::native

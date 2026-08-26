@@ -3,7 +3,7 @@
 // ChampPreamp: the Fender tweed Champ 5F1 PREAMP — two 12AX7 common-cathode stages
 // with the 1 MΩ log VOLUME pot between them, and nothing else. There is no tone
 // stack in this amp at all. Composed from the M9.1 TriodeStage (no new device
-// model). Docs §72. Platform-free C++17.
+// model). Docs §73. Platform-free C++17.
 //
 // ===========================================================================
 // THE 5F1 HAS NO TONE CONTROL — THAT IS THE WHOLE PREAMP
@@ -16,7 +16,7 @@
 // nothing downstream to correct any of it with. That is why the tone controls a
 // player reaches for on a Champ are the guitar's.
 //
-// Transcribed values (docs §72.1): both stages Ra 100 kΩ, Rk 1.5 kΩ bypassed 25 µF,
+// Transcribed values (docs §73.1): both stages Ra 100 kΩ, Rk 1.5 kΩ bypassed 25 µF,
 // grid leak 1 MΩ; input coupling 25 nF; interstage coupling 20 nF; volume 1 MΩ LOG.
 //
 // TriodeStage's ONE (Cc, Rgl) pair is applied to BOTH that stage's input and output
@@ -70,7 +70,7 @@ public:
     const TriodeStage& v1a() const { return v1a_; }
     const TriodeStage& v1b() const { return v1b_; }
 
-    // Documented constants (cited in the tests / docs §72).
+    // Documented constants (cited in the tests / docs §73).
     static constexpr double kRa = 100.0e3;      // both plate loads (Ω)
     static constexpr double kRk = 1500.0;       // both cathode resistors (Ω)
     static constexpr double kCk = 25.0e-6;      // both cathode bypass caps (F)

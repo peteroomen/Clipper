@@ -7,13 +7,14 @@ import {
   type RenderLoad,
 } from './audio';
 import { TUNER_FRAME_SIZE, type TunerReading } from './tuner';
-import { PARAM_ID, AMP_PARAM_ID, OVERSAMPLING_FACTORS } from './params';
+import { PARAM_ID, AMP_PARAM_ID, OVERSAMPLING_FACTORS, AMP_MODEL_INDEX } from './params';
 import {
   loadRig,
   saveRig,
   serializeRig,
   deserializeRig,
   makePedal,
+  AVAILABLE_AMP_TYPES,
   type RigState,
   type ParamName,
   type AmpParamName,
@@ -133,6 +134,13 @@ export default function App() {
       getRig: () => rigRef.current,
       serializeRig,
       deserializeRig,
+      // The amp-voice coverage seam: the menu is rendered from AVAILABLE_AMP_TYPES
+      // and the engine is selected through AMP_MODEL_INDEX, and the two used to be
+      // able to disagree — the Mesa was in the first and missing from the start
+      // path and the label map, so it drew a blank menu item and started as the
+      // Clean 120. Exposed so a spec can assert the coverage rather than the audio.
+      availableAmpTypes: AVAILABLE_AMP_TYPES,
+      ampModelIndex: AMP_MODEL_INDEX,
       // M7 tuner detection seam: run the McLeod pitch path over a known frame.
       tuner: { frameSize: TUNER_FRAME_SIZE, detect: detectPitch },
       getTunerReading: () => tunerReadingRef.current,

@@ -180,13 +180,37 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     knob(modDepth_, modDepthAttach_, pid::chorusDepth, "Depth", skin::accent(skin::AccentId::Clean));
     knob(fac_, facAttach_, pid::orangeFac, "F.A.C.", skin::accent(skin::AccentId::Orange));
     knob(mesaMode_, mesaModeAttach_, pid::mesaMode, "Mode", skin::accent(skin::AccentId::Mesa));
-    knob(mesaRect_, mesaRectAttach_, pid::mesaRectifier, "Rect", skin::accent(skin::AccentId::Mesa));
-    knob(mesaPower_, mesaPowerAttach_, pid::mesaPowerMode, "Power", skin::accent(skin::AccentId::Mesa));
     knob(champVol_, champVolAttach_, pid::champVolume, "Vol", skin::accent(skin::AccentId::Champ));
+    // The DISCRETE amp controls are selectors, not pots: the core quantizes each
+    // of them, and drawing them as 0-100 dials meant the readout named nothing and
+    // the pointer could sit visually between two clicks. Labels and detent order
+    // are the ABI's own (docs §57 for the F.A.C., §69 for the Mesa's three).
+    // NOTE the Champ's knob is NOT in this list: it is a real continuous pot (the
+    // 5F1's 1 MOhm audio-taper volume), not a selector.
+    fac_.setPositions({"1", "2", "3", "4", "5", "6"});
+    mesaMode_.setPositions({"CLEAN", "VNTG", "MODRN", "R-VNT", "R-MOD"});
     for (NeuKnob* k : {&volume_, &bass_, &middle_, &treble_, &presence_, &master_, &gain_,
-                       &reverb_, &modSpeed_, &modDepth_, &fac_,
-                       &mesaMode_, &mesaRect_, &mesaPower_, &champVol_})
+                       &reverb_, &modSpeed_, &modDepth_, &fac_, &mesaMode_, &champVol_})
         k->setScheme(skin::benchScheme());
+
+    // The Mesa's two two-state switches. Bound to the same 0..1 parameters the
+    // dials used to drive, so automation, saved sessions and the C ABI are
+    // untouched — only the WIDGET changed.
+    for (auto* sw : {&mesaRectSw_, &mesaPowerSw_}) addChildComponent(*sw);
+    mesaRectSw_.setLabels({"Silicon", "5U4"});
+    mesaPowerSw_.setLabels({"Bold", "Spongy"});
+    mesaRectSwAttach_ = std::make_unique<ParamAttach>(
+        *proc_.apvts.getParameter(pid::mesaRectifier),
+        [this](float v) { mesaRectSw_.setSelected(v >= 0.5f ? 1 : 0); }, nullptr);
+    mesaPowerSwAttach_ = std::make_unique<ParamAttach>(
+        *proc_.apvts.getParameter(pid::mesaPowerMode),
+        [this](float v) { mesaPowerSw_.setSelected(v >= 0.5f ? 1 : 0); }, nullptr);
+    mesaRectSw_.onSelect = [this](int idx) {
+        mesaRectSwAttach_->setValueAsCompleteGesture(idx >= 1 ? 1.0f : 0.0f);
+    };
+    mesaPowerSw_.onSelect = [this](int idx) {
+        mesaPowerSwAttach_->setValueAsCompleteGesture(idx >= 1 ? 1.0f : 0.0f);
+    };
 
     // Levers + power + chorus mode.
     bright_.setCaption("Bright");
@@ -227,8 +251,14 @@ ClipperAudioProcessorEditor::ClipperAudioProcessorEditor(ClipperAudioProcessor& 
     };
 
     // ---- top-bar selectors ----------------------------------------------------
-    ampVoiceBox_.addItemList(
-        {"Clean 120", "Eight Hundred", "Twin Sixty-Five", "Thirty", "Overdrive"}, 1);
+    // Built from the PARAMETER's own label array, never a second hardcoded list.
+    // This used to carry five entries against a seven-choice `ampModel` parameter,
+    // so Rocker Verb and Dual Rectifier were unselectable and the ComboBox's item
+    // index no longer matched the choice index — the owner's "amp selector is
+    // dogfooded, missing amps, don't line up". A ComboBoxAttachment maps item i to
+    // choice i, so the two lists agreeing is not cosmetic, it is correctness.
+    ampVoiceBox_.addItemList(ClipperAudioProcessor::ampModelChoices(), 1);
+    jassert(ampVoiceBox_.getNumItems() == clipper::native::AMP_MODEL_COUNT);
     addAndMakeVisible(ampVoiceBox_);
     ampVoiceAttach_ = std::make_unique<ComboAttach>(proc_.apvts, pid::ampModel, ampVoiceBox_);
     oversampleBox_.addItemList({juce::String::fromUTF8("1×"), juce::String::fromUTF8("2×"),
@@ -635,9 +665,10 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
 
     // Hide the whole superset, then re-show per voice.
     for (NeuKnob* k : {&volume_, &bass_, &middle_, &treble_, &presence_, &master_, &gain_,
-                       &reverb_, &modSpeed_, &modDepth_, &fac_,
-                       &mesaMode_, &mesaRect_, &mesaPower_, &champVol_})
+                       &reverb_, &modSpeed_, &modDepth_, &fac_, &mesaMode_, &champVol_})
         k->setVisible(false);
+    for (ModeSwitch* sw : {&mesaRectSw_, &mesaPowerSw_}) sw->setVisible(false);
+    ampPrimarySwitches_.clear();
     ampPrimaryKnobs_.clear();
     ampModKnobs_.clear();
     modCaption_ = {};
@@ -759,10 +790,17 @@ void ClipperAudioProcessorEditor::updateAmpFace() {
             show(master_, "Master", ampAccent_);
             show(presence_, "Presence", ampAccent_);
             show(mesaMode_, "Mode", ampAccent_);
-            show(mesaRect_, "Rect", ampAccent_);
-            show(mesaPower_, "Power", ampAccent_);
+            // RECT and POWER are genuine two-position switches on the amp, so they
+            // are drawn as switches. They used to be 0-100 dials.
+            mesaRectSw_.setAccent(ampAccent_);
+            mesaPowerSw_.setAccent(ampAccent_);
+            mesaRectSw_.setCaption("Rect");
+            mesaPowerSw_.setCaption("Power");
+            mesaRectSw_.setVisible(true);
+            mesaPowerSw_.setVisible(true);
             ampPrimaryKnobs_ = {&gain_, &bass_, &middle_, &treble_, &master_, &presence_,
-                                &mesaMode_, &mesaRect_, &mesaPower_};
+                                &mesaMode_};
+            ampPrimarySwitches_ = {&mesaRectSw_, &mesaPowerSw_};
             break;
         case 3:  // AC30 "Thirty" — copper. Vol Bass Treble Cut Reverb
             ampWordmark_ = "Thirty";
@@ -918,6 +956,11 @@ void ClipperAudioProcessorEditor::layoutAmpCard(juce::Rectangle<int> card) {
     in.removeFromRight(kGap);
     auto knobArea = in;
     const int nPrimary = (int)ampPrimaryKnobs_.size();
+    // Switches get their OWN row beneath the knobs rather than a cell in the knob
+    // grid: a segment needs the web's 78 px to print "Silicon" or "Spongy", where a
+    // knob cell can be as little as 52 px. Squeezed into the grid they truncated to
+    // "Silic…", wrapped one-per-row and collided with the cab chip.
+    const bool hasSwitchRow = !ampPrimarySwitches_.empty();
     // Columns come from a MINIMUM cell width, not the preferred one: dividing by the
     // preferred 66 px sat on a knife edge (a 131 px area gave ONE column, five rows,
     // and the block then ran off the bottom of the card). Cells then shrink to fit
@@ -939,12 +982,13 @@ void ClipperAudioProcessorEditor::layoutAmpCard(juce::Rectangle<int> card) {
     // The cell HEIGHT adapts: a narrow amp card wraps its tone knobs onto more rows,
     // and at a small window those rows must still fit INSIDE the card. Previously
     // they simply ran off the bottom (and the last row collided with the mod row).
-    const int totalRows = rows + (hasMod ? 1 : 0);
-    const int spacing = (rows - 1) * 6 + (hasMod ? modGap : 0);
+    const int totalRows = rows + (hasMod ? 1 : 0) + (hasSwitchRow ? 1 : 0);
+    const int spacing = (rows - 1) * 6 + (hasMod ? modGap : 0) + (hasSwitchRow ? 8 : 0);
     const int cellH = juce::jlimit(kKnobCellMinH, kKnobCellH,
                                    (knobArea.getHeight() - spacing) /
                                        juce::jmax(1, totalRows));
     int blockH = rows * cellH + (rows - 1) * 6;
+    if (hasSwitchRow) blockH += 8 + cellH;
     if (hasMod) blockH += modGap + cellH;
     int startY = knobArea.getY() + juce::jmax(0, (knobArea.getHeight() - blockH) / 2);
 
@@ -962,6 +1006,19 @@ void ClipperAudioProcessorEditor::layoutAmpCard(juce::Rectangle<int> card) {
         ++col;
     }
     int primaryBottom = startY + rows * cellH + (rows - 1) * 6;
+
+    // The switch row: left-aligned under the knobs, each switch at its own
+    // preferred width so its labels are never clipped.
+    if (hasSwitchRow) {
+        const int swY = primaryBottom + 8;
+        int sx = knobArea.getX();
+        for (ModeSwitch* sw : ampPrimarySwitches_) {
+            const int w = ModeSwitch::preferredWidth();
+            sw->setBounds(sx, swY, w, cellH);
+            sx += w + 8;
+        }
+        primaryBottom = swY + cellH;
+    }
 
     // Right cluster (Bright?/Cab/Power) aligned with the FIRST primary knob row.
     // The levers' visual weight sits in their top 70 px; the power control needs

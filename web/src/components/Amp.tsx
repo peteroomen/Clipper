@@ -39,6 +39,13 @@
 // owns; nothing is stored locally.
 
 import { Knob } from './Knob';
+import { RotarySelector, SegmentSwitch } from './Selector';
+import {
+  MESA_MODES,
+  MESA_RECTIFIERS,
+  MESA_POWER_MODES,
+  ORANGE_FAC_POSITIONS,
+} from '../params';
 import { thunk } from '../ui-sound';
 import { AMP_KNOB_DEFAULTS, type AmpState, type AmpParamName } from '../rig';
 
@@ -539,7 +546,7 @@ function Ac30Face({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
   );
 }
 
-// The Champ face (docs §72) — the tweed 5F1, and THE SPARSEST PANEL IN THE APP.
+// The Champ face (docs §73) — the tweed 5F1, and THE SPARSEST PANEL IN THE APP.
 // A knowing homage: "Cadet" (model line COMBO Nº8 · TWEED) · a lacquered wheat
 // accent (--accent-champ). Control row: VOLUME · REVERB, and that is the whole
 // amp.
@@ -609,9 +616,11 @@ function ChampFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
 // driver's cathode, ~5.2 kHz, not a shelf in the feedback path). Hidden
 // accordingly: middle, gain, master, bright, chorus.
 //
-// F.A.C. is a SIX-POSITION rotary on the real amp; the knob is continuous here
-// and the core snaps it to the nearest of six detents, so every part of the
-// travel selects a real filter (measured: 17.2 dB of low-E across the switch).
+// F.A.C. is a SIX-POSITION rotary on the real amp, and it is now drawn as one:
+// a detented selector reading the panel's own position number. It used to be a
+// continuous 0-100 knob that the core snapped to the nearest of six detents —
+// the audio was right, but the readout named nothing and the travel gave no clue
+// where the clicks were (measured: 17.2 dB of low-E across the switch).
 // The PANEL NAMES come from the Field Guide (docs §57.11): the OR120 reads
 // Input - F.A.C. - Bass - Treble - H.F.Boost - Gain - Reverb. So the volume
 // control is printed GAIN and the presence control is printed H.F. BOOST. Both
@@ -661,9 +670,10 @@ function OrangeFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
           onChange={(v) => onParam('treble', v)}
           testId="knob-treble"
         />
-        <Knob
+        <RotarySelector
           name="F.A.C."
-          ariaLabel="Frequency Analysing Control"
+          ariaLabel="Frequency Analysing Control — six-position rotary"
+          positions={ORANGE_FAC_POSITIONS}
           value={params.fac}
           defaultValue={AMP_KNOB_DEFAULTS.fac}
           onChange={(v) => onParam('fac', v)}
@@ -881,29 +891,36 @@ function MesaFace({ amp, onParam, onToggle, onTogglePower }: AmpProps) {
           onChange={(v) => onParam('presence', v)}
           testId="knob-presence"
         />
-        <Knob
+        {/* The three SWITCHES. All three are discrete in the model — MODE picks
+            one of the five states sheet `mbdr7` enumerates, RECT and POWER are
+            two-position — so none of them is a pot. MODE has five positions,
+            which is past what a segmented switch can show, so it takes the
+            detented rotary; the two-state pair take the carved switch the
+            silverface Twin already uses. */}
+        <RotarySelector
           name="Mode"
           ariaLabel="Mode: Clean, Vintage, Modern, Red Vintage, Red Modern"
+          positions={MESA_MODES}
           value={params.mesaMode}
           defaultValue={AMP_KNOB_DEFAULTS.mesaMode}
           onChange={(v) => onParam('mesaMode', v)}
           testId="knob-mesa-mode"
         />
-        <Knob
+        <SegmentSwitch
           name="Rect"
-          ariaLabel="Rectifier: silicon or valve"
+          ariaLabel="Rectifier: silicon or 5U4 valve"
+          positions={MESA_RECTIFIERS}
           value={params.rectifier}
-          defaultValue={AMP_KNOB_DEFAULTS.rectifier}
           onChange={(v) => onParam('rectifier', v)}
-          testId="knob-mesa-rectifier"
+          testId="switch-mesa-rectifier"
         />
-        <Knob
+        <SegmentSwitch
           name="Power"
           ariaLabel="Power mode: bold or spongy"
+          positions={MESA_POWER_MODES}
           value={params.powerMode}
-          defaultValue={AMP_KNOB_DEFAULTS.powerMode}
           onChange={(v) => onParam('powerMode', v)}
-          testId="knob-mesa-power"
+          testId="switch-mesa-power"
         />
 
         {/* Cab lever + Power rocker only — a Recto has no bright switch and no

@@ -137,6 +137,20 @@ export const TOOLS = [
             'presence',
             'master',
             'fac',
+            // M13.6 ten-band EQ sliders. Named by their nominal ISO centre so
+            // the assistant addresses a band the way the faceplate prints it.
+            // The EQ's other two controls need no new names: its GAIN is the
+            // shared 'gain'/'dist' slot and its VOLUME the shared 'level' slot.
+            'band31',
+            'band63',
+            'band125',
+            'band250',
+            'band500',
+            'band1k',
+            'band2k',
+            'band4k',
+            'band8k',
+            'band16k',
             'champVolume',
             'trim',
           ],
@@ -391,6 +405,8 @@ export const TOOLS = [
       'bypassed. MODE is a two-position switch: CHORUS mixes dry and wet (the ' +
       'familiar swirl), VIBRATO is the wet path alone (pitch wobble, no comb). ' +
       'Try it AFTER the dirt for classic late-60s swirl), ' +
+      "'eq' (the 'Decade' TEN-BAND GRAPHIC EQ — ten band sliders plus gain " +
+      "and volume; every slider is 0..1 with 0.5 FLAT), " +
       "'drop' (the 'Cellar' DROP-TUNE — a polyphonic pitch shifter that " +
       'retunes the WHOLE guitar downward without changing a string. ONE control, ' +
       'AMOUNT, and it is a 9-position ROTARY not a sweep: DROP 1 through DROP 7 ' +
@@ -448,7 +464,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'vibe', 'drop', 'tuner'] },
+        type: { type: 'string', enum: ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'vibe', 'drop', 'eq', 'tuner'] },
         position: { type: 'integer', minimum: 0 },
       },
       required: ['type'],
@@ -503,6 +519,19 @@ const PEDAL_PARAM: Record<string, string> = {
   tone: 'filter', // SD-1/Muff Tone shares the filter slot (id 1)
   level: 'level',
   volume: 'level', // Muff VOLUME shares the level slot (id 2)
+  // M13.6: the ten-band EQ's band sliders are the first pedal params that are
+  // NOT one of the three shared slots — they are their own ids (3..12). 1:1,
+  // because a band is named by its frequency and has no synonym worth aliasing.
+  band31: 'band31',
+  band63: 'band63',
+  band125: 'band125',
+  band250: 'band250',
+  band500: 'band500',
+  band1k: 'band1k',
+  band2k: 'band2k',
+  band4k: 'band4k',
+  band8k: 'band8k',
+  band16k: 'band16k',
 };
 const AMP_PARAM: Record<string, string> = {
   volume: 'volume',
@@ -548,6 +577,17 @@ const PARAM_LABEL: Record<string, string> = {
   presence: 'Presence',
   master: 'Master',
   fac: 'F.A.C.',
+  // M13.6 ten-band EQ sliders — labelled as the faceplate prints them.
+  band31: '31 Hz',
+  band63: '63 Hz',
+  band125: '125 Hz',
+  band250: '250 Hz',
+  band500: '500 Hz',
+  band1k: '1 kHz',
+  band2k: '2 kHz',
+  band4k: '4 kHz',
+  band8k: '8 kHz',
+  band16k: '16 kHz',
   champVolume: 'Volume',
   trim: 'Trim',
 };
@@ -646,7 +686,7 @@ export function executeTool(
   }
 
   if (name === 'add_pedal') {
-    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'vibe' | 'drop' | 'tuner' =
+    const type: 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'vibe' | 'drop' | 'eq' | 'tuner' =
       input.type === 'tuner' ? 'tuner'
       : input.type === 'sd1' ? 'sd1'
       : input.type === 'ts' ? 'ts'
@@ -660,6 +700,7 @@ export function executeTool(
       : input.type === 'chorus' ? 'chorus'
       : input.type === 'delay' ? 'delay'
       : input.type === 'vibe' ? 'vibe'
+      : input.type === 'eq' ? 'eq'
       : input.type === 'drop' ? 'drop'
       : 'rat';
     const rawPos = input.position;
@@ -680,6 +721,7 @@ export function executeTool(
                     : type === 'chorus' ? 'Ensemble'
                     : type === 'delay' ? 'Echoman'
                     : type === 'vibe' ? 'Swirl'
+                    : type === 'eq' ? 'Decade'
                     : type === 'drop' ? 'Cellar'
                     : 'RAT';
     return {

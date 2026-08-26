@@ -11,7 +11,7 @@
 // migrates an old single-`pedal` rig (M4..M6.3) into a one-element chain, so old
 // saved rigs and preset JSON keep loading.
 
-import { OVERSAMPLING_FACTORS, INPUT_TRIM_UNITY_KNOB } from './params';
+import { OVERSAMPLING_FACTORS, INPUT_TRIM_UNITY_KNOB, EQ_BAND_PARAMS } from './params';
 
 export type SourceKind = 'test' | 'live';
 // M7 adds 'tuner' (chromatic needle tuner: no audio DSP, engaged = mutes the
@@ -69,7 +69,7 @@ export type SourceKind = 'test' | 'live';
 // than after a stab at the same depth, against the OTA voice's 1.000x — docs
 // §64.4), its attack does not move with the knob, and its PEAK REDUCTION moves a
 // THRESHOLD by 45.44 dB where the Squash's SUSTAIN moves GAIN by 25.33 dB.
-export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'vibe' | 'drop' | 'tuner';
+export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto' | 'gate' | 'phaser' | 'wah' | 'chorus' | 'delay' | 'vibe' | 'drop' | 'eq' | 'tuner';
 // M9.4: the JCM800 2204 joins the Clean 120 as a selectable amp voice. 'clean120'
 // is the JC-120-style linear clean platform (chorus/reverb/bright + volume live
 // here); 'jcm800' is the Marshall JCM800 (a mono valve head: gain/master/bass/mid/
@@ -109,7 +109,7 @@ export type PedalType = 'rat' | 'sd1' | 'ts' | 'muff' | 'gold' | 'comp' | 'opto'
 // 5F1 has one knob, VOLUME, and nothing else. It has no master volume either, so
 // how hard you pick IS the gain control. Params: volume (0) and the shared
 // reverb (9) as the §19 usability convenience. bass/middle/treble are NOT routed
-// to it and its face does not draw them. Docs §72.
+// to it and its face does not draw them. Docs §73.
 export type AmpType =
   | 'clean120'
   | 'jcm800'
@@ -146,7 +146,7 @@ export const CAB_BUILTIN_INDEX: Record<'clean212' | 'brit412' | 'orange412' | 't
 };
 
 // The pedal types that can be added from the gear tray (M6.4).
-export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'vibe', 'drop', 'tuner'];
+export const AVAILABLE_PEDAL_TYPES: readonly PedalType[] = ['rat', 'sd1', 'ts', 'muff', 'gold', 'comp', 'opto', 'gate', 'phaser', 'wah', 'chorus', 'delay', 'vibe', 'drop', 'eq', 'tuner'];
 // The amp types that can be selected in the amp slot (M6.4 / M9.4 / M10.1): the
 // Clean 120, the Marshall JCM800, and the Fender-blackface Twin.
 export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
@@ -160,7 +160,24 @@ export const AVAILABLE_AMP_TYPES: readonly AmpType[] = [
   'champ',
 ];
 
-export type ParamName = 'distortion' | 'filter' | 'level';
+export type EqBandParamName =
+  | 'band31'
+  | 'band63'
+  | 'band125'
+  | 'band250'
+  | 'band500'
+  | 'band1k'
+  | 'band2k'
+  | 'band4k'
+  | 'band8k'
+  | 'band16k';
+// The three slots EVERY pedal has. Non-optional on PedalParams, so anything
+// addressing only these (the knob row on a pedal face) reads a plain number.
+export type CoreParamName = 'distortion' | 'filter' | 'level';
+// Every addressable pedal param: the three shared slots plus the EQ's ten band
+// sliders (M13.6). A band is optional on PedalParams, so a reader that can see
+// one has to say what it does when the pedal does not carry it.
+export type ParamName = CoreParamName | EqBandParamName;
 export type AmpParamName =
   | 'volume'
   | 'bass'
@@ -188,6 +205,30 @@ export interface PedalParams {
   distortion: number; // 0..1 knob position
   filter: number; // 0..1 knob position
   level: number; // 0..1 knob position
+  // M13.6: the ten graphic-EQ band sliders. OPTIONAL, and absent on every pedal
+  // shipped before the EQ — absence IS the statement "this is a three-slot
+  // pedal", which is what keeps the widening free for everything already on the
+  // board.
+  //
+  // This mirrors AmpParams' own established shape rather than inventing a second
+  // one: that interface has carried per-voice optional fields since M9.4 (the
+  // JCM's gain/presence/master, the Orange's fac, the Mesa's switches) with the
+  // same contract — a voice that does not own a field ignores it. One shape for
+  // the whole board beats a discriminated union the serializer, the worklet, the
+  // assistant and the native snapshot would each have to re-narrow.
+  //
+  // 0..1 slider positions, 0.5 == flat. The EQ's other two controls are ordinary
+  // slot reuse and are NOT here: GAIN is `distortion` and VOLUME is `level`.
+  band31?: number;
+  band63?: number;
+  band125?: number;
+  band250?: number;
+  band500?: number;
+  band1k?: number;
+  band2k?: number;
+  band4k?: number;
+  band8k?: number;
+  band16k?: number;
 }
 
 // A pedal INSTANCE in the chain (M6.4). `id` is a stable, unique handle used by
@@ -247,7 +288,7 @@ export interface AmpParams {
   mesaMode: number;
   rectifier: number;
   powerMode: number;
-  // M10.10 Champ (docs §72): the amp's ONE knob, on its own id so it can carry
+  // M10.10 Champ (docs §73): the amp's ONE knob, on its own id so it can carry
   // its own default — see AMP_PARAM_CHAMP_VOLUME in params.ts for why it is not
   // the shared VOLUME.
   champVolume: number;
@@ -435,6 +476,28 @@ export const DROP_KNOB_DEFAULTS: PedalParams = {
   level: 0.5,
 };
 
+// M13.6 ten-band graphic EQ ("Decade"). Every slider opens at CENTRE, which for
+// this pedal is not a convention but a structural property: at centre each band
+// leg injects nothing into the summing node, so a freshly added EQ is exactly
+// transparent (measured +0.00000 dB, docs §73.3). GAIN rides slot 0 and VOLUME
+// slot 2, both 0.5 == unity. Slot 1 is carried and unused.
+// These must match the C++ constructor defaults in EqModel.cpp.
+export const EQ_KNOB_DEFAULTS: PedalParams = {
+  distortion: 0.5,
+  filter: 0.5,
+  level: 0.5,
+  band31: 0.5,
+  band63: 0.5,
+  band125: 0.5,
+  band250: 0.5,
+  band500: 0.5,
+  band1k: 0.5,
+  band2k: 0.5,
+  band4k: 0.5,
+  band8k: 0.5,
+  band16k: 0.5,
+};
+
 export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   rat: KNOB_DEFAULTS,
   sd1: SD1_KNOB_DEFAULTS,
@@ -450,6 +513,7 @@ export const PEDAL_KNOB_DEFAULTS: Record<PedalType, PedalParams> = {
   delay: DELAY_KNOB_DEFAULTS,
   vibe: VIBE_KNOB_DEFAULTS,
   drop: DROP_KNOB_DEFAULTS,
+  eq: EQ_KNOB_DEFAULTS,
   // The tuner has no knobs; params are unused but keep the shared shape.
   tuner: KNOB_DEFAULTS,
 };
@@ -580,16 +644,29 @@ function normalizePedal(raw: unknown, fallbackId: string): PedalInstance {
     : p.type === 'delay' ? 'delay'
     : p.type === 'vibe' ? 'vibe'
     : p.type === 'drop' ? 'drop'
+    : p.type === 'eq' ? 'eq'
     : 'rat';
+  const params: PedalParams = {
+    distortion: clamp01(pr.distortion, dp.params.distortion),
+    filter: clamp01(pr.filter, dp.params.filter),
+    level: clamp01(pr.level, dp.params.level),
+  };
+  // M13.6: carry the optional extra slots. Deliberately driven by what the INPUT
+  // and the type's DEFAULTS actually have rather than by a per-type table: a
+  // three-slot pedal has neither, so it takes this branch zero times and its
+  // serialized shape is byte-for-byte what it was before the EQ existed. That is
+  // what makes the widening free for every pedal already on the board, and it is
+  // the property the Phase A bit-identity check measures.
+  for (const name of EQ_BAND_PARAMS) {
+    const fallback = dp.params[name];
+    if (fallback === undefined && pr[name] === undefined) continue;
+    params[name] = clamp01(pr[name], fallback ?? 0.5);
+  }
   return {
     id,
     type,
     engaged: typeof p.engaged === 'boolean' ? p.engaged : dp.engaged,
-    params: {
-      distortion: clamp01(pr.distortion, dp.params.distortion),
-      filter: clamp01(pr.filter, dp.params.filter),
-      level: clamp01(pr.level, dp.params.level),
-    },
+    params,
   };
 }
 
