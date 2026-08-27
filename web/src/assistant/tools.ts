@@ -37,7 +37,7 @@ export interface RigController {
   setCab: (cab: 'clean212' | 'brit412' | 'orange412') => void;
   // M9.4/M10.1/v1.1: swap the amp voice ('clean120' | 'jcm800' | 'twin' | 'ac30').
   setAmp: (
-    type: 'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange' | 'rockerverb' | 'mesa'
+    type: 'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange' | 'rockerverb' | 'mesa' | 'champ'
   ) => void;
   // Chain edits (M6.4). addPedal returns the new instance's chain index.
   addPedal: (type: string, position?: number) => number;
@@ -151,6 +151,7 @@ export const TOOLS = [
             'band4k',
             'band8k',
             'band16k',
+            'champVolume',
             'trim',
           ],
         },
@@ -303,13 +304,42 @@ export const TOOLS = [
       'riffing, drop tunings, grunge, sludge and modern metal. Start at Red Modern ' +
       'with GAIN 5-7 and MASTER low. Note PRESENCE does nothing in the two Modern ' +
       'modes — the feedback loop it works through is open there, which is the real ' +
-      'circuit, not a fault. Pairs with the Brit 4×12. Switching is click-free.',
+      'circuit, not a fault. Pairs with the Brit 4×12. Switching is click-free. ' +
+      "'champ' — a Fender tweed Champ 5F1: the SMALLEST amp here, about 5 watts, " +
+      'one 12AX7 into a single 6V6, and it has exactly ONE KNOB. There is no tone ' +
+      'stack at all — no bass, middle or treble — because a tweed Champ does not ' +
+      'have one; Fender did not add a tone control to a Champ until 1964. So if a ' +
+      'player asks for more treble or less bass on this amp, say plainly that the ' +
+      'amp has no tone controls and reach for what actually works: their guitar ' +
+      "tone knob, their pickup selector, a pedal in front, or the cab. It is also " +
+      'the only single-ended amp here (one output tube, not a push-pull pair), ' +
+      'which is why it is so rich in even harmonics and sounds "bloomy" and vocal ' +
+      'rather than tight. It BREAKS UP ALMOST IMMEDIATELY and has no master volume, ' +
+      'so the volume knob IS the gain control: 5-15 is about as clean as it gets, ' +
+      '20-30 is the classic edge-of-breakup where it opens at, and past 40 it is ' +
+      'genuinely dirty. The most important coaching on this amp: HOW HARD THEY PICK ' +
+      'is the other half of the tone control — the same setting measures roughly ' +
+      'three times less distortion with a soft pick than a hard one, so "too dirty" ' +
+      'is often answered by playing softer or rolling the guitar volume back, not ' +
+      'by touching the amp. Reach for it for blues, slide, small-room recording, ' +
+      'early rock and roll, and anything wanting a big sound at a low volume. Pairs ' +
+      'with the Tweed 1×8, its own tiny open-back box — no bottom end at all, all ' +
+      'midrange bark, and that IS the sound. Switching is click-free.',
     input_schema: {
       type: 'object',
       properties: {
         type: {
           type: 'string',
-          enum: ['clean120', 'jcm800', 'twin', 'ac30', 'orange', 'rockerverb', 'mesa'],
+          enum: [
+            'clean120',
+            'jcm800',
+            'twin',
+            'ac30',
+            'orange',
+            'rockerverb',
+            'mesa',
+            'champ',
+          ],
         },
       },
       required: ['type'],
@@ -517,6 +547,9 @@ const AMP_PARAM: Record<string, string> = {
   master: 'master',
   // M10.3 Orange OR120 (1:1).
   fac: 'fac',
+  // M10.10 Champ — its own id, because it is the amp's only gain control and
+  // needs its own default (see params.ts).
+  champVolume: 'champVolume',
 };
 const INPUT_PARAM: Record<string, string> = {
   trim: 'trim',
@@ -555,6 +588,7 @@ const PARAM_LABEL: Record<string, string> = {
   band4k: '4 kHz',
   band8k: '8 kHz',
   band16k: '16 kHz',
+  champVolume: 'Volume',
   trim: 'Trim',
 };
 
@@ -753,6 +787,7 @@ export function executeTool(
       : input.type === 'orange' ? 'orange'
       : input.type === 'rockerverb' ? 'rockerverb'
       : input.type === 'mesa' ? 'mesa'
+      : input.type === 'champ' ? 'champ'
       : 'clean120';
     controller.setAmp(type);
     const chipName =
@@ -762,6 +797,7 @@ export function executeTool(
       : type === 'orange' ? 'Overdrive 120'
       : type === 'rockerverb' ? 'Rocker Verb'
       : type === 'mesa' ? 'Dual Rectifier'
+      : type === 'champ' ? 'Cadet'
       : 'Clean 120';
     return {
       content: JSON.stringify({ applied: { amp: type } }),

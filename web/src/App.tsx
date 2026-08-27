@@ -322,6 +322,8 @@ export default function App() {
       setCabNote('Rocker Verb loaded — try the Orange 4×12 (the same PPC-style cab the OR120 uses).');
     } else if (type === 'mesa' && rigRef.current.amp.cabModel !== 'brit412') {
       setCabNote('Dual Rectifier loaded — try the Brit 4×12 (closest shipped 4×12; a Recto wants an oversized cab).');
+    } else if (type === 'champ' && rigRef.current.amp.cabModel !== 'tweed8') {
+      setCabNote('Cadet loaded — try the Tweed 1×8 (its own box: no bottom, all bark, and that IS the sound).');
     } else {
       setCabNote(null);
     }

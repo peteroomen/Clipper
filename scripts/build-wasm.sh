@@ -142,6 +142,12 @@ EMCC_ARGS=(
     # first artifact rebuild failed at wasm-ld with undefined symbols because a
     # new .cpp was not added here. The C++ compiles clean either way.
     "$CORE_DIR/src/dsp/EqModel.cpp"
+    # M10.10 Fender tweed Champ 5F1 (docs §72) — THREE files, and they must be
+    # inside the STAMP:EMCC-ARGS markers. §60, §64 and §69 each record forgetting
+    # this exact step and hitting an undefined-symbol failure at wasm-ld.
+    "$CORE_DIR/src/dsp/ChampPreamp.cpp"
+    "$CORE_DIR/src/dsp/ChampPowerAmp.cpp"
+    "$CORE_DIR/src/dsp/ChampAmp.cpp"
     -I "$CORE_DIR/include"
     -isystem "$WDF_INC"
     -O3

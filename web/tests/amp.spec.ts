@@ -787,6 +787,7 @@ test('amp twin: a twin rig round-trips through JSON literally', async ({ page })
           fac: 0.2,
           // M10.4: part of the serialized shape for every voice.
           mesaMode: 1.0, rectifier: 0.0, powerMode: 0.0,
+          champVolume: 0.2,  // M10.10 — the Champ's one knob (its own param id)
         },
       },
       oversampling: 4,
@@ -1222,6 +1223,7 @@ test('amp ac30: an ac30 rig round-trips through JSON literally', async ({ page }
           gain: 0.5, presence: 0.35, master: 0.4,
           fac: 0.2,  // M10.3: part of the serialized shape for every voice
           mesaMode: 1.0, rectifier: 0.0, powerMode: 0.0,  // M10.4, likewise
+          champVolume: 0.2,  // M10.10 — the Champ's one knob (its own param id)
         },
       },
       oversampling: 4,
@@ -1508,6 +1510,7 @@ test('amp orange: an orange rig round-trips through JSON literally', async ({ pa
           // distinct value from the 0.2 default is what pins the round-trip.
           gain: 0.5, presence: 0.45, master: 0.4, fac: 0.6,
           mesaMode: 1.0, rectifier: 0.0, powerMode: 0.0,
+          champVolume: 0.2,  // M10.10 — the Champ's one knob (its own param id)
         },
       },
       oversampling: 4,
@@ -1630,6 +1633,7 @@ test('amp rockerverb: a rockerverb rig round-trips through JSON literally', asyn
           // must survive the round trip untouched even though it ignores them.
           gain: 0.35, presence: 0.85, master: 0.08, fac: 0.2,
           mesaMode: 1.0, rectifier: 0.0, powerMode: 0.0,
+          champVolume: 0.2,  // M10.10 — the Champ's one knob (its own param id)
         },
       },
       oversampling: 4,
@@ -1852,4 +1856,52 @@ test('amp selector: every available amp type has a voice index and a label', asy
   });
   expect(gaps.types.length).toBeGreaterThan(6);
   expect(gaps.missingIndex, 'an amp type has no worklet voice index').toEqual([]);
+});
+
+// M10.10 (docs §73) — the Champ's face is the sparsest in the app, and WHAT IS
+// ABSENT is the property worth pinning. A tweed 5F1 has NO tone stack at all, so
+// this spec asserts the absence of bass/middle/treble explicitly: a future slice
+// that "helpfully" adds an EQ to this voice, or that routes the shared VOLUME to
+// it, goes red here. The knob is bound to `champVolume` — its OWN param, so it can
+// carry its own default (the shared 0.40 would open this amp at ~50 % THD).
+test('amp UI: selecting champ swaps to Cadet (ONE volume + reverb; NO tone stack at all)', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.getByTestId('board-amp')).toBeVisible();
+  await expect(page.getByTestId('amp-name')).toContainText('Clean 120');
+
+  await page.getByTestId('amp-select').click();
+  await expect(page.getByTestId('amp-menu')).toBeVisible();
+  await page.getByTestId('amp-champ').click();
+
+  const amp = await page.evaluate(() => (window as any).__CLIPPER_TEST__.getRig().amp);
+  expect(amp.type).toBe('champ');
+  await expect(page.getByTestId('amp-name')).toContainText('Cadet');
+  await expect(page.getByTestId('amp')).toHaveAttribute('data-amp-type', 'champ');
+
+  // The ENTIRE panel: one volume knob (its own param) and the house reverb.
+  await expect(page.getByTestId('knob-champ-volume')).toBeVisible();
+  await expect(page.getByTestId('knob-reverb')).toBeVisible();
+
+  // THE POINT OF THIS VOICE: there is no tone stack. Fender did not put a tone
+  // control on a Champ until the 1964 blackface AA764.
+  await expect(page.getByTestId('knob-bass')).toHaveCount(0);
+  await expect(page.getByTestId('knob-middle')).toHaveCount(0);
+  await expect(page.getByTestId('knob-treble')).toHaveCount(0);
+  // And no gain/master/presence/F.A.C./bright either — it has one knob.
+  await expect(page.getByTestId('knob-gain')).toHaveCount(0);
+  await expect(page.getByTestId('knob-master')).toHaveCount(0);
+  await expect(page.getByTestId('knob-presence')).toHaveCount(0);
+  await expect(page.getByTestId('knob-fac')).toHaveCount(0);
+  await expect(page.getByTestId('bright-toggle')).toHaveCount(0);
+  // It does NOT read the shared slot-0 volume.
+  await expect(page.getByTestId('knob-volume')).toHaveCount(0);
+
+  // Its own default, not the shared one — this is the §63.14 guard.
+  expect(amp.params.champVolume).toBeCloseTo(0.2, 5);
+
+  // The cab was HINTED, never auto-switched.
+  await expect(page.getByTestId('cab-note')).toContainText('Tweed 1×8');
+  expect(amp.cabModel).toBe('clean212');
 });

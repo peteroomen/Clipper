@@ -70,6 +70,25 @@ export const AMP_PARAM_MESA_MODE = 14;
 export const AMP_PARAM_MESA_RECTIFIER = 15;
 export const AMP_PARAM_MESA_POWERMODE = 16;
 
+// M10.10 (docs §73): the Champ's ONE knob gets its OWN id rather than riding the
+// shared VOLUME (0), and the reason is NOT that the function differs in name — it
+// is that this knob is the amp's only GAIN control and needs its own DEFAULT.
+//
+// §63.14 measured the cost of getting that wrong: the Rockerverb inherited
+// AMP_KNOB_DEFAULTS' JCM values and "the amp opens at the wall". A Champ at the
+// shared volume default of 0.40 measures ~50 % THD at the house unity-trim level
+// — it would open past the wall. Reusing slot 0 would also make switching voices
+// carry the Clean 120's output level over as this amp's drive, which is exactly
+// the "a stale rig state silently means something else" the F.A.C. and the Mesa's
+// switches got their own ids to avoid.
+//
+// It is also genuinely a different function: on every other voice VOLUME is an
+// output level AFTER the preamp, and this one sits BETWEEN the two preamp triodes
+// with no master volume anywhere downstream — so how far it is up IS the amount of
+// distortion, not the amount of level. Must mirror kAmpParamChampVolume in
+// clipper_c_api.cpp.
+export const AMP_PARAM_CHAMP_VOLUME = 17;
+
 // The five MODE positions, in the drawing's own order, as 0..1 knob values. The
 // ABI quantizes with round(v * 4), so these are the exact centres.
 export const MESA_MODES = [
@@ -169,7 +188,7 @@ export const CE1_MODES = [
 // M10.7 adds the Orange Rockerverb 100 as voice 5 (additive; every existing index
 // unchanged).
 export const AMP_MODEL_INDEX: Record<
-  'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange' | 'rockerverb' | 'mesa',
+  'clean120' | 'jcm800' | 'twin' | 'ac30' | 'orange' | 'rockerverb' | 'mesa' | 'champ',
   number
 > = {
   clean120: 0,
@@ -179,6 +198,7 @@ export const AMP_MODEL_INDEX: Record<
   orange: 4,
   rockerverb: 5,
   mesa: 6,
+  champ: 7,
 };
 
 // Chorus mode enum (mirrors ChorusModel::Mode). Kept as plain numbers so it flows
@@ -220,7 +240,7 @@ export const EQ_BAND_PARAMS = [
 // The nominal ISO centre of each band, in Hz, in the same order. Display and
 // coaching only — the CORE owns the real centres, which come from the
 // transcribed gyrator design equation and land a few percent off nominal
-// exactly as real component values do (docs §72).
+// exactly as real component values do (docs §73).
 // The +/- dB the band sliders reach at the ends of their travel. Mirrors
 // kLevelRangeDb / the range the leg loss is pinned to in EqModel.cpp — display
 // and coaching only; the CORE owns the real curve.
@@ -250,6 +270,8 @@ export const AMP_PARAM_ID = {
   mesaMode: AMP_PARAM_MESA_MODE,
   rectifier: AMP_PARAM_MESA_RECTIFIER,
   powerMode: AMP_PARAM_MESA_POWERMODE,
+  // M10.10 Fender Champ 5F1.
+  champVolume: AMP_PARAM_CHAMP_VOLUME,
 } as const;
 
 // Valid oversampling factors for the nonlinear stage (default 4x). Other values

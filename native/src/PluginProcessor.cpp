@@ -18,7 +18,8 @@ namespace {
 const juce::StringArray kCabChoices{juce::String::fromUTF8("Clean 2\xc3\x97" "12"),
                                     juce::String::fromUTF8("Brit 4\xc3\x97" "12"),
                                     "Custom IR",
-                                    juce::String::fromUTF8("Orange 4\xc3\x97" "12")};
+                                    juce::String::fromUTF8("Orange 4\xc3\x97" "12"),
+                                    juce::String::fromUTF8("Tweed 1\xc3\x97" "8")};
 // The APVTS state child holding the custom IR's file path.
 const juce::Identifier kCabNode{"cab"};
 const juce::Identifier kCabCustomPath{"customIr"};
@@ -38,7 +39,7 @@ const juce::StringArray kChorusChoices{"Off", "Chorus", "Vibrato"};
 // silently missing amp.
 const juce::StringArray kAmpModelChoices{"Clean 120", "JCM800", "Twin Sixty-Five",
                                         "AC30", "Overdrive 120", "Rocker Verb",
-                                        "Dual Rectifier"};
+                                        "Dual Rectifier", "Cadet"};
 // The whole point of AMP_MODEL_COUNT: a voice added to the engine and not to this
 // array is a build error here, not an amp nobody can select. juce::StringArray's
 // size is a runtime value, so this is checked in createParameterLayout() with a
@@ -267,6 +268,11 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::mesaMode, "Mesa Mode", 1.0f));
     layout.add(knob(pid::mesaRectifier, "Mesa Rectifier", 0.0f));
     layout.add(knob(pid::mesaPowerMode, "Mesa Power Mode", 0.0f));
+
+    // M10.10 Champ. 0.20 is the EDGE OF BREAKUP, derived from the amp's own
+    // measured geometry rather than inherited from the shared volume default
+    // (0.40 would open this amp at ~50 % THD — §63.14's "at the wall").
+    layout.add(knob(pid::champVolume, "Champ Volume", 0.2f));
 
     layout.add(std::make_unique<Choice>(juce::ParameterID{pid::chorusMode, 1},
                                         "Chorus Mode", kChorusChoices, 0));
@@ -558,6 +564,7 @@ Params ClipperAudioProcessor::snapshotParams() const {
     p.mesaMode = f(pid::mesaMode);
     p.mesaRectifier = f(pid::mesaRectifier);
     p.mesaPowerMode = f(pid::mesaPowerMode);
+    p.champVolume = f(pid::champVolume);
     p.volume = f(pid::volume);
     p.bass = f(pid::bass);
     p.middle = f(pid::middle);

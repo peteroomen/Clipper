@@ -51,6 +51,7 @@ constexpr int   kAmpAc30 = 3;    // Params::ampModel value for the AC30
 constexpr int   kAmpOrange = 4;  // Params::ampModel value for the Orange OR120
 constexpr int   kAmpRockerverb = 5;  // Params::ampModel value for the Rockerverb
 constexpr int   kAmpMesa = 6;        // Params::ampModel value for the Mesa (M10.4)
+constexpr int   kAmpChamp = 7;       // Params::ampModel value for the Champ (M10.10)
 }  // namespace
 
 float trimKnobToGain(float knob01) {
@@ -287,6 +288,7 @@ void ClipperEngine::applyAmpRouting(const Params& p, const Params* old) {
         orange_.setParameter(OrangeAmp::PARAM_REVERB, p.reverb);
         rockerverb_.setParameter(RockerverbAmp::PARAM_REVERB, p.reverb);
         mesa_.setParameter(MesaAmp::PARAM_REVERB, p.reverb);
+        champ_.setParameter(clipper::dsp::ChampAmp::PARAM_REVERB, p.reverb);
     }
 
     // The GAIN/MASTER pair. Three voices carry their own: the JCM800, the
@@ -315,6 +317,14 @@ void ClipperEngine::applyAmpRouting(const Params& p, const Params* old) {
     // M10.3 Orange-only knob: the F.A.C. rotary.
     if (changed(p.orangeFac, old ? old->orangeFac : 0.f))
         orange_.setParameter(OrangeAmp::PARAM_FAC, p.orangeFac);
+
+    // M10.10 the Champ's ONE knob. It deliberately does NOT ride p.volume: on this
+    // voice the knob sits BETWEEN the two preamp triodes with no master anywhere
+    // downstream, so it is a gain control rather than an output level, and it needs
+    // its own default (the shared 0.40 opens this amp at ~50 % THD — §63.14's "at
+    // the wall"). See Params::champVolume.
+    if (changed(p.champVolume, old ? old->champVolume : 0.f))
+        champ_.setParameter(clipper::dsp::ChampAmp::PARAM_VOLUME, p.champVolume);
 
     // M10.4 the Mesa's three DISCRETE switches. Quantized at this boundary (see
     // applyMesaSwitches) so the model never sees an in-between state, exactly as
@@ -480,7 +490,7 @@ void ClipperEngine::setPedalOversampling(int factor) {
     // read tap is a resampling delay, not a nonlinearity, and it was measured
     // BIT-IDENTICAL at 1x and 8x (docs §70.6).
     drop_.setOversampling(factor);
-    // The EQ accepts and IGNORES it too: linear and time-invariant (docs §72).
+    // The EQ accepts and IGNORES it too: linear and time-invariant (docs §73).
     eq_.setOversampling(factor);
     // ce1_ has no nonlinearity: setOversampling would be a no-op, so it is not called.
     // NOTE: the delay is deliberately NOT re-factored here. Its oversampling is
@@ -539,6 +549,7 @@ void ClipperEngine::loadCurrentCabIntoPair(int pair) {
         // the enum's comment) — mapped HERE, in code, rather than by index maths.
         ir = cabSource_ == CAB_BRIT412   ? clipper::dsp::generateBrit4x12IR(sampleRate_)
            : cabSource_ == CAB_ORANGE412 ? clipper::dsp::generateOrange4x12IR(sampleRate_)
+           : cabSource_ == CAB_TWEED8    ? clipper::dsp::generateTweed1x8IR(sampleRate_)
                                          : clipper::dsp::generateDefaultCab2x12IR(sampleRate_);
     }
     if (ir.empty()) return;
@@ -678,6 +689,8 @@ void ClipperEngine::prepare(double sampleRate, int maxBlockSize) {
     // rather than one per triode.
     mesa_.setOversampling(kOrangeOversampling);
     mesa_.prepare(sampleRate_, maxBlock_);
+    champ_.setOversampling(kOrangeOversampling);
+    champ_.prepare(sampleRate_, maxBlock_);
 
     setPedalOversampling(params_.oversampling);
 
@@ -790,6 +803,12 @@ void ClipperEngine::process(const float* in, float* outL, float* outR,
             // pair (M10.4). It reuses the brit412 rather than shipping a Mesa
             // oversized 4x12 IR — named as a follow-up in docs §68.11.
             mesa_.process(cur, outL, numFrames);
+            for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
+        } else if (p.ampModel == kAmpChamp) {
+            // The Champ is a tiny 1x8 COMBO -> dual-mono into the identical cab
+            // pair (M10.10). Its own cab is the tweed8; it is the only voice here
+            // whose real speaker is smaller than every cab that preceded it.
+            champ_.process(cur, outL, numFrames);
             for (int i = 0; i < numFrames; ++i) outR[i] = outL[i];
         } else {
             amp_.processStereo(cur, outL, outR, numFrames);
@@ -905,6 +924,7 @@ int ClipperEngine::latencySamples() const {
     if (p.ampOn && p.ampModel == kAmpOrange) n += orange_.latencySamples();
     if (p.ampOn && p.ampModel == kAmpRockerverb) n += rockerverb_.latencySamples();
     if (p.ampOn && p.ampModel == kAmpMesa) n += mesa_.latencySamples();
+    if (p.ampOn && p.ampModel == kAmpChamp) n += champ_.latencySamples();
     if (p.ampOn && p.cab) n += kCabPartition;      // cab adds one partition (128)
     n += limiter_.latencySamples();                // lookahead (64)
     return n;

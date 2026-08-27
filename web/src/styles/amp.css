@@ -171,6 +171,23 @@
   box-shadow: inset 1px 2px 3px var(--sh-light), inset -1px -2px 4px var(--sh-darker); }
 .power:focus-visible { outline: 2px solid var(--ai); outline-offset: 4px; border-radius: 6px; }
 
+/* M10.10 Fender tweed Champ face (docs §73) — the same doctrine as every amp
+   face here: shared chassis, identity is a small-area accent, here a lacquered
+   TWEED wheat. This is the sparsest panel in the app by a wide margin — the real
+   5F1 has ONE knob — and that emptiness is the point, not a layout bug. */
+.amp[data-amp-type="champ"] {
+  --pedal-accent: var(--accent-champ);
+  --pedal-accent-glow: var(--accent-champ-glow);
+}
+.amp[data-amp-type="champ"] .amp-name { color: var(--accent-champ); }
+.amp[data-amp-type="champ"].on .jewel {
+  background: radial-gradient(circle at 35% 30%, #FFF0CE, var(--accent-champ) 55%, #3A2A0C);
+  box-shadow: 0 0 16px var(--accent-champ-glow), 0 0 5px var(--accent-champ-glow);
+}
+.amp[data-amp-type="champ"] .jewel {
+  background: color-mix(in srgb, var(--accent-champ) 18%, var(--well));
+}
+
 /* M10.4 Mesa Dual Rectifier face (docs §69) — same doctrine as every amp face
    above: the shared chassis is unchanged and identity is a small-area accent, here
    a DEEP CRIMSON (the Red channel wink). The knob arcs, wordmark and power jewel

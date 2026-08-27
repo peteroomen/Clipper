@@ -80,6 +80,10 @@ const PEDAL_TYPE_LABEL: Record<PedalType, string> = {
 // its 'mesa' entry, and a string-keyed record let that compile — so the Dual
 // Rectifier rendered as a BLANK menu item and a blank amp-slot button. Keying it
 // by AmpType makes a missing voice a build error instead.
+// (Found independently by the M13.6 EQ slice and the M10.10 Champ slice in the
+// same week. It is the FOURTH keyed table in this codebase to silently lose an
+// entry — §61.10 kFaces, §62, §67.10 pedalMenuLabel, §71 kAmpModelChoices — and
+// the second fixed by making the table's TYPE carry the count.)
 const AMP_TYPE_LABEL: Record<AmpType, string> = {
   clean120: 'Clean 120 (JC-120 style)',
   jcm800: 'JCM800 (Marshall style)',
@@ -88,11 +92,13 @@ const AMP_TYPE_LABEL: Record<AmpType, string> = {
   orange: 'Overdrive 120 (Orange style)',
   rockerverb: 'Rocker Verb (modern Orange)',
   mesa: 'Dual Rectifier (Mesa style)',
+  champ: 'Cadet (tweed Champ, 1 knob)',
 };
-const CAB_LABEL: Record<'clean212' | 'brit412' | 'orange412', string> = {
+const CAB_LABEL: Record<'clean212' | 'brit412' | 'orange412' | 'tweed8', string> = {
   clean212: 'Clean 2×12 (JC platform)',
   brit412: 'Brit 4×12 (Marshall-style)',
   orange412: 'Orange 4×12 (barky, big bottom)',
+  tweed8: 'Tweed 1×8 (small, barky, no bottom)',
 };
 
 interface Segment {
