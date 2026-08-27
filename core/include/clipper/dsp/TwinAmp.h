@@ -35,7 +35,6 @@
 #include "clipper/dsp/ReverbModel.h"
 #include "clipper/dsp/TwinPowerAmp.h"
 #include "clipper/dsp/TwinPreamp.h"
-#include "clipper/dsp/Oversampler.h"
 
 namespace clipper::dsp {
 
@@ -77,16 +76,8 @@ public:
     // Total oversampling-filter group delay in base-rate samples: the preamp's two
     // serial triode stages + the power section's own OS round trip. Reverb/tremolo
     // add no counted latency (base-rate, phase-linear at DC).
-    // ONE shared oversampling domain (2026-08-26), §63.14's change. It was 216
-    // samples / 4.50 ms: THREE independent 4x domains (V1, V2, power section).
-    //
-    // The Twin is the awkward one of the three amps this was applied to, because
-    // the AB763 puts the spring tank and the optical tremolo BETWEEN the preamp and
-    // the phase inverter — so consolidating means those two run at the oversampled
-    // rate as well. Their ORDER in the chain is unchanged, which is what §20
-    // documents; only the rate they are discretized at moves.
     int latencySamples() const {
-        return os_.latencySamples() + preamp_.latencySamples() + power_.latencySamples();
+        return preamp_.latencySamples() + power_.latencySamples();
     }
 
     // Introspection / passthrough for tests + the render CLI.
@@ -99,9 +90,6 @@ public:
     static constexpr double kInterstageScale = 0.107;
 
 private:
-    void rebuild();  // (re)prepare the whole chain at the current oversampled rate
-    Oversampler os_;
-    bool prepared_ = false;
     double sampleRate_ = 44100.0;
     int maxBlockSize_ = 128;
     int oversampling_ = 4;

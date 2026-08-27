@@ -58,7 +58,7 @@ Two things that bit during the work and are worth knowing:
 | --- | --- | --- | --- |
 | JCM800 | 360 (7.50 ms) | **72 (1.50 ms)** | **−6.00 ms** |
 | AC30 | 288 (6.00 ms) | **72 (1.50 ms)** | **−4.50 ms** |
-| Twin | 216 (4.50 ms) | **72 (1.50 ms)** | **−3.00 ms** |
+| Twin | 216 (4.50 ms) | *72 (1.50 ms) — MEASURED, NOT SHIPPED* | *(−3.00 ms)* |
 
 **Alias floor**, A/B on one probe (cranked 4186 Hz, Hann-windowed, worst
 non-harmonic bin re the fundamental). The 1x rows are IDENTICAL before and after,
@@ -81,15 +81,17 @@ claim checkable:
 | --- | --- | --- | --- |
 | `rat_jcm800` | 0.00 dB | **0.35 dB @ 3200** | yes — JCM800 |
 | `ts_ac30` | 0.01 dB | **0.52 dB @ 2016** | yes — AC30 |
-| `muff_twin` | 0.00 dB | **0.17 dB @ 5080** | yes — Twin |
-| `sd1_twin_reverb` | **0.16 dB @ 3200** | **5.44 dB @ 252** | yes — the Twin's TANK |
+| `muff_twin` | 0.00 dB | *0.17 dB @ 5080* | Twin only — REVERTED, back to 0.00 |
+| `sd1_twin_reverb` | **0.16 dB @ 3200** | *5.44 dB @ 252* | the Twin's TANK — REVERTED, back to 0.16 |
 | `clean120_chorus` | 0.11 dB (UNCHANGED) | 0.11 dB (UNCHANGED) | no |
 
 Broadband RMS moves **≤ 0.03 dB** on every rig. **Note `sd1_twin_reverb` already reads
 CHANGED at 0.16 dB on a clean tree** — a pre-existing drift on `main` that this slice
 did not cause and is reporting rather than absorbing.
 
-**The Twin is the one with a real cost, and it is structural.** An AB763 puts the
+**THE TWIN WAS BUILT, MEASURED AND THEN NOT SHIPPED (owner decision 2026-08-26).**
+It works — 216 → 72 samples, −3.00 ms — but it is the one with a real cost, and the
+cost is structural. An AB763 puts the
 spring tank and the optical tremolo BETWEEN the preamp and the phase inverter, so
 consolidating means those two run at the oversampled rate as well. Their ORDER is
 unchanged — which is what docs §20 actually pins — and both are specified in seconds
@@ -115,26 +117,47 @@ drift gate, which is **1.5 dB worst-band**:
 **That bound is what turns this into a clean split.** `rat_jcm800` (0.35 dB),
 `ts_ac30` (0.52) and `muff_twin` (0.17) are all INSIDE the 1.5 dB gate, so the
 JCM800 and AC30 consolidations pass with **no bless required** — the §45 precedent
-("inside the gates, NO bless, drift documented"). Only the Twin's tank exceeds it.
+("inside the gates, NO bless, drift documented"). Only the Twin's tank exceeded it,
+which is why the Twin was dropped — see "What shipped" below. With it reverted the
+suite is 40/40 and the golden report reads rat_jcm800 0.35, ts_ac30 0.52,
+sd1_twin_reverb back to its pre-existing 0.16 and muff_twin back to 0.00.
 
-## The decisions this needs
+## What shipped, and what was left out
 
-1. **JCM800 + AC30 — nothing to decide.** Both land inside the project's own 1.5 dB
-   golden gate, so no bless is needed and the suite is green on them. −6.00 ms and
-   −4.50 ms respectively, with the alias floor better at 44.1 kHz. They can ship.
-2. **THE TWIN IS THE ONLY DECISION.** −3.00 ms costs a **5.44 dB** move at 252 Hz in
-   the spring tank, which trips the 1.5 dB gate. Three ways:
-   * **Bless it** — the tank re-discretized at 192 kHz is arguably MORE accurate
-     (less bilinear warping), and the change is a rate change, not a re-voicing.
-     Needs owner authorization and a `GOLDENS.md` justification.
-   * **Revert the Twin only** — keep it at 216 samples / 4.50 ms. JCM800 and AC30
-     still ship. Zero risk, zero bless.
-   * **Two domains instead of one** — decimate after the preamp so the tank stays at
-     base rate: 144 samples (−1.50 ms), an extra resampler pair of CPU, and the
-     reverb untouched. More code, half the win.
-   A/B renders (`twin_reverb_before_base_tank.wav` / `_after_4x_tank.wav`) are with
-   the owner.
-3. **The OR120 stays at 216** unless someone wants to re-open §63.14's refutation.
+**Shipped: the JCM800 and the AC30.** Both land INSIDE the project's own 1.5 dB
+golden gate (0.35 and 0.52 dB), so no bless was required and the suite is green —
+the §45 precedent, "inside the gates, NO bless, drift documented". −6.00 ms and
+−4.50 ms, with the alias floor better at 44.1 kHz on both.
+
+**Not shipped: the Twin.** Its consolidation is measured and written up above, and
+it was reverted rather than blessed. Reverting restores `sd1_twin_reverb` to its
+PRE-EXISTING 0.16 dB and `muff_twin` to 0.00 — which is also the proof the revert
+is complete and that the 0.16 was never this slice's.
+
+The reasoning, recorded so the next slice does not re-litigate it: the Twin is the
+SMALLEST of the three wins (−3.00 ms against −6.00 and −4.50) and the ONLY one that
+costs a blessed voicing — 5.44 dB at 252 Hz in the spring tank. Worst value per unit
+of risk of the three, so it was the one to drop. The work is not lost: the diff, the
+numbers and the A/B renders are all here, and re-applying it is a small slice
+whenever the owner wants to bless the tank.
+
+**Process note for whoever picks this up:** the bless could not be performed from
+this session at all. `scripts/update-goldens.sh` requires an interactive terminal by
+design ("it must not be possible to bless a regression from a script, from a pipe, or
+from CI") and there is no readable `/dev/tty` here; the raw `--update-goldens` path
+the 2026-07-31 blesses used is now refused by the permission classifier. Blessing a
+golden from an agent session is, correctly, a thing that needs a human at a keyboard.
+
+## The decisions this leaves
+
+1. **The Twin, whenever it is wanted.** Two shapes, both measured: the one-domain
+   version in this write-up (−3.00 ms, needs the tank blessed at 5.44 dB), or a
+   two-domain shape that decimates after the preamp so the tank stays at base rate
+   (144 samples, −1.50 ms, an extra resampler pair of CPU, no bless). A/B renders
+   (`twin_reverb_before_base_tank.wav` / `_after_4x_tank.wav`) are with the owner.
+2. **The OR120 stays at 216** unless someone wants to re-open §63.14's refutation.
+3. **`sd1_twin_reverb` reads CHANGED at 0.16 dB on a clean tree** — a pre-existing
+   drift on `main`, unrelated to this slice and still unexplained. Worth a look.
 
 ## Out of scope
 
