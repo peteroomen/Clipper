@@ -24,6 +24,7 @@
 
 #include "clipper/dsp/Ac30PowerAmp.h"
 #include "clipper/dsp/Ac30Preamp.h"
+#include "clipper/dsp/Oversampler.h"
 #include "clipper/dsp/ReverbModel.h"
 
 namespace clipper::dsp {
@@ -58,8 +59,11 @@ public:
     // DC point. NOT prepare() — see Jcm800Amp::reset(). Knob positions survive.
     void reset();
 
+    // ONE shared oversampling domain (2026-08-26), the change §63.14 made on the
+    // Rockerverb. It was 288 samples / 6.00 ms: FOUR independent 4x domains, each
+    // paying its own 72-sample halfband group delay.
     int latencySamples() const {
-        return preamp_.latencySamples() + power_.latencySamples();
+        return os_.latencySamples() + preamp_.latencySamples() + power_.latencySamples();
     }
 
     // Introspection / passthrough for tests + the render CLI.
@@ -85,6 +89,9 @@ public:
     static constexpr double kInterstageScale = 0.03;
 
 private:
+    void rebuild();  // (re)prepare both halves at the current oversampled rate
+    Oversampler os_;
+    bool prepared_ = false;
     double sampleRate_ = 44100.0;
     int maxBlockSize_ = 128;
     int oversampling_ = 4;

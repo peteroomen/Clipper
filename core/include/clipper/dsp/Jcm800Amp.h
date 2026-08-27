@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "clipper/dsp/Jcm800Preamp.h"
+#include "clipper/dsp/Oversampler.h"
 #include "clipper/dsp/Jcm800PowerAmp.h"
 #include "clipper/dsp/ReverbModel.h"
 
@@ -75,8 +76,15 @@ public:
     // round trip. The interstage scale is a memoryless gain (no delay). Reported
     // by the C ABI so the worklet/plugin can delay-compensate the JCM path just
     // like the RAT/SD-1 oversamplers.
+    // ONE shared oversampling domain (2026-08-26). Both halves are prepared AT the
+    // oversampled rate with their own resamplers at 1x — Oversampler.h's documented
+    // exact pass-through — so this is `os_` plus whatever the halves still report,
+    // which at factor 1 is zero. It was 360 samples / 7.50 ms: FIVE independent 4x
+    // domains (one per triode stage plus one round the power section), each paying
+    // its own 72-sample halfband group delay. §63.14 made exactly this change on the
+    // Rockerverb and its alias floor IMPROVED by 19.6 dB in the same edit.
     int latencySamples() const {
-        return preamp_.latencySamples() + power_.latencySamples();
+        return os_.latencySamples() + preamp_.latencySamples() + power_.latencySamples();
     }
 
     // Introspection / passthrough for tests + the render CLI.
@@ -88,17 +96,21 @@ public:
     static constexpr double kInterstageScale = 0.16;
 
 private:
+    void rebuild();  // (re)prepare both halves at the current oversampled rate
+
     double sampleRate_ = 44100.0;
     int maxBlockSize_ = 128;
     int oversampling_ = 4;
+    bool prepared_ = false;
 
+    Oversampler os_;
     Jcm800Preamp preamp_;
     Jcm800PowerAmp power_;
     // M10.1: mono spring reverb after the power amp (usability convenience). Held
     // by unique_ptr so this header needn't inline ReverbModel's Impl. Default mix
     // 0 → bit-exact passthrough, so the M9.3 tests stay bit-exact.
     std::unique_ptr<ReverbModel> reverb_;
-    std::vector<float> buf_;  // interstage scratch (maxBlock)
+    std::vector<float> buf_;  // interstage scratch (maxBlock * factor)
 };
 
 }  // namespace clipper::dsp
