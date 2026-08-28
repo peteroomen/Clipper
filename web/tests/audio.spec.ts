@@ -2163,7 +2163,7 @@ test('rig state: JSON round-trips exactly and restores from localStorage', async
           // normalized shape for every voice and sits last.
           fac: 0.45,
           mesaMode: 1.0, rectifier: 0.0, powerMode: 0.0,
-          champVolume: 0.2,  // M10.10 — the Champ's one knob (its own param id)
+          champVolume: 0.1,  // M10.10 — the Champ's one knob (its own param id)
         },
       },
       oversampling: 8,

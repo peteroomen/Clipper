@@ -58,7 +58,25 @@ void ChampPreamp::prepare(double sampleRate, int maxBlockSize) {
     v1a_.configure(a);
 
     TriodeStage::Config b;
-    b.Ra = kRa; b.Rk = kRk; b.Ck = kCk;
+    // V1B's cathode is UNBYPASSED, and that is the stock 5F1 — not an omission.
+    // Fender left it that way deliberately: the 1.5 kOhm carries the full cathode
+    // current unbypassed, which is local negative feedback (cathode degeneration)
+    // and halves the stage's gain. Adding a bypass cap here is one of the most
+    // common 5F1 MODS precisely because it buys "a gain and treble boost" — i.e.
+    // the modders are changing it, which is the evidence it ships without one.
+    //
+    // THE ONE COMPONENT-LEVEL SOURCE FOR THIS AMP GETS IT WRONG. valtyr/rust-5f1's
+    // capacitor table carries `C_K1B: 25uF`, and docs §73.1 already records TWO
+    // other errors in that same file (it omits the 6V6's own cathode bypass cap,
+    // and its 100 Ohm supply lands the plate node 15 V above Fender's measured
+    // 305 V). This is the third, and it is the one that mattered: shipping the cap
+    // put 5.95 dB of extra drive on the 6V6 grid and made the amp distort about
+    // twice as early as it should. Field report 2026-08-28, docs §75.
+    //
+    // Measured: bypassed 59.42x, unbypassed 30.00x, against the analytic
+    // mu*RL/(RL+rp+(mu+1)*Rk) = 29.9x. clipper_champ_tests asserts the unbypassed
+    // figure so nobody "restores" the cap thinking the gain loss is a bug.
+    b.Ra = kRa; b.Rk = kRk; b.Ck = kCkV1b;
     b.Rg = 0.0;                   // no grid stopper on V1B in the 5F1
     b.Cc = kCcInter;              // 20 nF out, into the 6V6's 1 M grid leak
     b.Rgl = kRgl;

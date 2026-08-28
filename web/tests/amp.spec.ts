@@ -787,7 +787,7 @@ test('amp twin: a twin rig round-trips through JSON literally', async ({ page })
           fac: 0.2,
           // M10.4: part of the serialized shape for every voice.
           mesaMode: 1.0, rectifier: 0.0, powerMode: 0.0,
-          champVolume: 0.2,  // M10.10 — the Champ's one knob (its own param id)
+          champVolume: 0.1,  // M10.10 — the Champ's one knob (its own param id)
         },
       },
       oversampling: 4,
@@ -1223,7 +1223,7 @@ test('amp ac30: an ac30 rig round-trips through JSON literally', async ({ page }
           gain: 0.5, presence: 0.35, master: 0.4,
           fac: 0.2,  // M10.3: part of the serialized shape for every voice
           mesaMode: 1.0, rectifier: 0.0, powerMode: 0.0,  // M10.4, likewise
-          champVolume: 0.2,  // M10.10 — the Champ's one knob (its own param id)
+          champVolume: 0.1,  // M10.10 — the Champ's one knob (its own param id)
         },
       },
       oversampling: 4,
@@ -1510,7 +1510,7 @@ test('amp orange: an orange rig round-trips through JSON literally', async ({ pa
           // distinct value from the 0.2 default is what pins the round-trip.
           gain: 0.5, presence: 0.45, master: 0.4, fac: 0.6,
           mesaMode: 1.0, rectifier: 0.0, powerMode: 0.0,
-          champVolume: 0.2,  // M10.10 — the Champ's one knob (its own param id)
+          champVolume: 0.1,  // M10.10 — the Champ's one knob (its own param id)
         },
       },
       oversampling: 4,
@@ -1633,7 +1633,7 @@ test('amp rockerverb: a rockerverb rig round-trips through JSON literally', asyn
           // must survive the round trip untouched even though it ignores them.
           gain: 0.35, presence: 0.85, master: 0.08, fac: 0.2,
           mesaMode: 1.0, rectifier: 0.0, powerMode: 0.0,
-          champVolume: 0.2,  // M10.10 — the Champ's one knob (its own param id)
+          champVolume: 0.1,  // M10.10 — the Champ's one knob (its own param id)
         },
       },
       oversampling: 4,
@@ -1899,7 +1899,7 @@ test('amp UI: selecting champ swaps to Cadet (ONE volume + reverb; NO tone stack
   await expect(page.getByTestId('knob-volume')).toHaveCount(0);
 
   // Its own default, not the shared one — this is the §63.14 guard.
-  expect(amp.params.champVolume).toBeCloseTo(0.2, 5);
+  expect(amp.params.champVolume).toBeCloseTo(0.1, 5);
 
   // The cab was HINTED, never auto-switched.
   await expect(page.getByTestId('cab-note')).toContainText('Tweed 1×8');

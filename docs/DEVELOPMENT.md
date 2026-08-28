@@ -16488,3 +16488,112 @@ actually points at — "one lag cannot align three partials" is a statement abou
 count of lags, not about the domain. Also open and unchanged from §70: `findSplice`
 runs **per sample** when `span ≥ (1−x)·W` and wants a guard; and the artifact floor
 is reported per position rather than bounded.
+## 75. The Champ was 7–29 dB loud and distorting twice too early — a netlist error, and the bar that was missing
+
+**Date:** 2026-08-28 · **Plan:** `docs/work/2026-08-28-champ-gain-staging.md` · No ADR.
+
+Field report on a voice three days old: *"even on 20 it's quite distorted, maxed out
+it's completely unusable. not sure when they start saturating but not this much and
+not at 20 surely."* **The owner was right, and the cause was a transcription error
+this project inherited from the one component-level source it had.**
+
+### 75.1 Measured BEFORE anything changed (§43's rule)
+
+Identical 0.15 V / 220 Hz input, every amp at its own shipped defaults:
+
+| amp | out | THD |
+|---|---|---|
+| **Champ @ 0.20** | **−11.03 dBFS** | **16.65 %** |
+| JCM800 | −23.46 | 10.31 |
+| AC30 | −27.06 | 0.63 |
+| Twin | −40.05 | 0.64 |
+
+**12.4 dB louder than the JCM, 29.0 dB louder than the Twin.** And the knob was dead
+over most of its travel: VOL 0.30 → −8.33 dBFS / 28.6 %, 0.50 → −7.55 / 65.9 %,
+1.00 → −8.36 / 68.3 % — **0.03 dB of level across the top 70 %, and 29 → 68 % of
+THD.** §63.14's Rockerverb pathology exactly.
+
+### 75.2 What was RULED OUT first, each against an external reference
+
+Everything was checked before anything was blamed, and every individual piece was
+**right**:
+
+- **Preamp stage gains** — 59.29× and 59.42× against an analytic 59.5×.
+- **The 6V6 device card at the DATASHEET's own condition** — 5.04 W at 10 % THD
+  against a rated 4.5 W, with the datasheet's own 1.15× symmetry. The card is sound.
+- **The DC operating point** — still matching Fender's published 19 V / 37 mA / 305 V.
+- **The OT primary** — 5 kΩ, sourced and confirmed.
+- **`kFullScaleSecV`** — and this one is the useful negative result. **Cranked, all
+  four amps already agree**: Champ peak 0.834, JCM 0.839, AC30 0.939, Twin 0.421. The
+  normalisation was never wrong; what differed was how far each amp's DEFAULT sits
+  below its OWN maximum — Champ **7.8 dB**, JCM 16.4, AC30 18.9, Twin 28.7.
+
+### 75.3 THE ROOT CAUSE: a stock 5F1 leaves V1B's cathode UNBYPASSED
+
+Fender left the second triode's 1.5 kΩ cathode resistor without a bypass cap
+deliberately — it is local negative feedback (cathode degeneration) and it halves the
+stage's gain. Adding a cap there is one of the best-known 5F1 **mods**, done
+specifically to buy "a gain and treble boost"; that the modders are *adding* it is the
+evidence the amp ships without one.
+
+`valtyr/rust-5f1`'s capacitor table carries `C_K1B: 25 µF`. **This is the THIRD error
+found in that same file** — §73.1 already records that it omits the 6V6's own cathode
+bypass cap and that its 100 Ω supply lands the plate node 15 V above Fender's measured
+305 V. It is also the one that mattered.
+
+Measured: V1B **bypassed 59.42×**, **unbypassed 29.92×** against the analytic
+`µRL/(RL+rp+(µ+1)Rk)` = 29.86× (0.2 %). **−5.95 dB of drive to the 6V6 grid**, and the
+whole preamp halves from ~3600× to ~1800×.
+
+**A corroboration that the fix is physical rather than merely quieter:** composed
+cranked power went **3.89 W → 4.47 W**, closer to the rated ~5 W, because a less
+blocking-limited waveform has a lower crest factor and delivers more RMS.
+
+### 75.4 The default, re-derived
+
+`champVolume` **0.20 → 0.10**, derived from lineup staging rather than chosen:
+
+| VOL | out | THD | vs the JCM's default |
+|---|---|---|---|
+| 0.06 | −29.04 dBFS | 2.84 % | −5.58 dB |
+| **0.10** | **−23.90** | **4.41 %** | **−0.44 dB** |
+| 0.15 | −19.50 | 6.75 % | +3.96 |
+| 0.20 | −16.17 | 9.59 % | +7.29 |
+
+0.10 opens the amp on the **edge of clean**, in level with the lineup, with **16.18 dB**
+of usable travel above it (the JCM has 16.4) and touch sensitivity of **5.8×** from a
+soft to a hard pick (1.51 % → 8.75 %).
+
+`kFullScaleSecV` was **not** changed — see 74.2. This is §63.14's conclusion for the
+Rockerverb reached a second time: *the defaults were the defect, not the law.*
+
+**A re-taper was considered and REFUSED, with the arithmetic.** Spreading this amp's
+useful wiper range (0.001–0.05) across the knob needs k ≈ 10–12, which puts the wiper
+at well under 1 % at half rotation — outside §58's documented 10–20 % audio-taper
+spec, i.e. a pot that does not exist. §63.14 refused the same fix for the same reason.
+
+### 75.5 THE BAR THAT WAS MISSING, and it is the transferable lesson
+
+`clipper_champ_tests` had eleven bars and **every one of them passed** while the amp
+shipped 7–29 dB out of level. They checked the DC point, the screen fit, the h2
+contrast, the plate knee, the power ceiling, block invariance, denormals — and
+**nothing compared this voice against any other voice at its DEFAULT.**
+
+The dirt pedals have had exactly this bar since §68 (`testDirtLineupStaging`, born of
+§66's finding that the RAT was the quietest of five). **The amps did not.** New
+`testLineupStaging` asserts the Champ's default sits within 4 dB of the JCM's and that
+there is more than 12 dB of headroom above it — stated as a RANGE against a sibling so
+a future re-voicing of the JCM cannot break it spuriously.
+
+**Perturbation-proven, and both halves independently:** restoring the bypass cap turns
+it red (P1b, with the earlier bars removed per §58.8), and leaving the circuit correct
+but reverting the default to 0.20 also turns it red (P2). Both restore green.
+
+### 75.6 Follow-ups
+
+- **Every other amp voice should get the same staging bar.** This slice adds it to the
+  Champ only; the JCM/Twin/AC30/Orange/Rockerverb/Mesa defaults have never been
+  compared against each other, and the Twin sits 28.7 dB below its own maximum, which
+  may be its own version of this defect in the opposite direction.
+- The `rust-5f1` netlist now has **three** recorded errors. Nothing else from it should
+  be trusted without an independent check.

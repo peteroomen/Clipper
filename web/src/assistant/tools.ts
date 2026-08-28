@@ -315,9 +315,10 @@ export const TOOLS = [
       'the only single-ended amp here (one output tube, not a push-pull pair), ' +
       'which is why it is so rich in even harmonics and sounds "bloomy" and vocal ' +
       'rather than tight. It BREAKS UP ALMOST IMMEDIATELY and has no master volume, ' +
-      'so the volume knob IS the gain control: 5-15 is about as clean as it gets, ' +
-      '20-30 is the classic edge-of-breakup where it opens at, and past 40 it is ' +
-      'genuinely dirty. The most important coaching on this amp: HOW HARD THEY PICK ' +
+      'so the volume knob IS the gain control: under 10 is the cleanest this amp gets, ' +
+      'it opens at 10 on the edge of clean, 20-35 is the classic breakup most people ' +
+      'live in, and past 50 it is a fuzzbox that stops getting louder and only gets ' +
+      'dirtier. The most important coaching on this amp: HOW HARD THEY PICK ' +
       'is the other half of the tone control — the same setting measures roughly ' +
       'three times less distortion with a soft pick than a hard one, so "too dirty" ' +
       'is often answered by playing softer or rolling the guitar volume back, not ' +

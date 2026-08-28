@@ -31,6 +31,7 @@
 #include "clipper/dsp/ChampAmp.h"
 #include "clipper/dsp/ChampPowerAmp.h"
 #include "clipper/dsp/ChampPreamp.h"
+#include "clipper/dsp/Jcm800Amp.h"
 #include "clipper/dsp/TwinAmp.h"
 
 #include "support/AssertsLive.h"
@@ -341,15 +342,17 @@ void testBreaksUpEarlyAndCleansUp() {
         return thdPercent(y, f0, 24000);
     };
 
-    // At the house unity-trim level, breakup is essentially immediate.
+    // RE-DERIVED 2026-08-28 against the corrected circuit (V1B unbypassed, docs
+    // §75). The amp still breaks up early — that is the voice — but it now has a
+    // usable clean-ish region around its default instead of being past the wall.
     const double t05 = thdAt(0.05, 0.15);
     const double t10 = thdAt(0.10, 0.15);
     const double t30 = thdAt(0.30, 0.15);
     std::printf("    0.15 V in: VOL 0.05 -> %6.2f %%   0.10 -> %6.2f %%   0.30 -> %6.2f %%\n",
                 t05, t10, t30);
-    assert(t05 < 5.0);          // there IS a clean setting, but only just
-    assert(t10 > 5.0);          // and it is gone by 1 on the dial
-    assert(t30 > 20.0);
+    assert(t05 < 4.0);          // near-clean at the bottom
+    assert(t10 > 2.0 && t10 < 7.0);   // the DEFAULT: edge of clean, not of fizz
+    assert(t30 > 12.0);         // and a real crunch by 3 on the dial
     assert(t10 > t05 && t30 > t10);   // monotone
 
     // TOUCH SENSITIVITY: at a fixed volume, playing softer cleans it up. This is
@@ -358,7 +361,7 @@ void testBreaksUpEarlyAndCleansUp() {
     const double soft = thdAt(0.20, 0.05);
     std::printf("    VOL 0.20: hard pick (0.15 V) %6.2f %%   soft (0.05 V) %6.2f %%   ratio %5.2fx\n",
                 hard, soft, hard / soft);
-    assert(hard / soft > 2.0);
+    assert(hard / soft > 2.5);
 
     // And it breaks up FAR earlier than the clean Fender in the lineup. The Twin's
     // documented breakup onset is VOLUME ~0.9 (docs §44); the Champ is past 5 % by
@@ -377,6 +380,7 @@ void testBreaksUpEarlyAndCleansUp() {
     std::printf("    at VOL 0.10: Champ %6.2f %%  vs  Twin %6.2f %%   (%5.2fx)\n",
                 t10, twinThd, t10 / twinThd);
     assert(t10 > 3.0 * twinThd);
+    (void)0;
 }
 
 // ---------------------------------------------------------------------------
@@ -397,6 +401,38 @@ void testPreampAndVolumeLaw() {
     assert(ib > 0.7e-3 && ib < 1.3e-3);
     // The decoupling ladder must drop in the transcribed direction: B1 > B2 > B3.
     assert(p.rail1b() > p.rail1a());
+
+    // V1B's cathode is UNBYPASSED — stock 5F1, and the single most important
+    // correction this voice has had (docs §75). The one netlist source for this amp
+    // carries a 25 uF here; it is wrong, and shipping it put 5.95 dB of extra drive
+    // on the 6V6 grid. Asserted against the ANALYTIC degenerated form rather than
+    // against a remembered number, and against the BYPASSED gain, so restoring the
+    // cap goes red instead of quietly doubling the amp's gain again.
+    {
+        // Build BOTH versions of V1B and measure them, rather than asserting a
+        // remembered number: the bar is that the shipped stage matches the ANALYTIC
+        // degenerated form and is HALF the bypassed one.
+        auto stageGain = [&](double ck) {
+            TriodeStage t;
+            TriodeStage::Config c;
+            c.bPlus = p.rail1b(); c.Ra = ChampPreamp::kRa; c.Rk = ChampPreamp::kRk;
+            c.Ck = ck; c.Rg = 0.0; c.Cc = ChampPreamp::kCcInter; c.Rgl = ChampPreamp::kRgl;
+            t.configure(c); t.prepare(kSr, kBlock); t.setOversampling(4);
+            const std::vector<float> in = tone(kSr, 24000, 1000.0, 0.001);  // 1 mV: nothing clips
+            std::vector<float> out;
+            runBlocks(t, in, out);
+            return rmsOf(out, 12000) / rmsOf(in, 12000);
+        };
+        const double shipped = stageGain(ChampPreamp::kCkV1b);
+        const double bypassed = stageGain(25.0e-6);
+        const double rp = 62.0e3, RL = 100.0e3 * 1.0e6 / (100.0e3 + 1.0e6), mu = 100.0;
+        const double analytic = mu * RL / (RL + rp + (mu + 1.0) * ChampPreamp::kRk);
+        std::printf("    V1B shipped %.2fx  vs analytic degenerated %.2fx  vs bypassed %.2fx\n",
+                    shipped, analytic, bypassed);
+        assert(ChampPreamp::kCkV1b == 0.0);            // stock 5F1: no cap here
+        assert(std::fabs(shipped / analytic - 1.0) < 0.05);
+        assert(bypassed / shipped > 1.8);              // the cap would ~double it
+    }
 
     // The VOLUME pot is its own grid leak, so it is the BARE audio taper: the house
     // law puts the wiper at 1/(e^{k/2}+1) = 11.920 % at half rotation (§68's
@@ -623,6 +659,67 @@ void testRatedPower() {
 }
 
 // ---------------------------------------------------------------------------
+// 9b. LINEUP STAGING — THE BAR THIS SUITE DID NOT HAVE, and its absence is why a
+// field report was needed (docs §75).
+//
+// The original suite checked the DC point, the h2 contrast, the screen fit and the
+// power ceiling, and every one of them passed while the amp shipped 7-29 dB louder
+// than its siblings at the app's opening knobs. Nothing compared this voice with
+// any other voice AT ITS DEFAULT, so nothing could see it — the §66/§68 staging
+// question, which the dirt pedals have (`testDirtLineupStaging`) and the amps did
+// not.
+//
+// Asserted as a RANGE against the two nearest siblings rather than an absolute
+// dBFS, so a future re-voicing of the JCM or the AC30 cannot break it spuriously.
+// ---------------------------------------------------------------------------
+void testLineupStaging() {
+    const double f0 = 220.0;
+    const std::vector<float> in = tone(kSr, 48000, f0, 0.15);
+    const size_t n0 = 24000;
+
+    ChampAmp champ;
+    champ.prepare(kSr, kBlock);
+    champ.setOversampling(4);
+    champ.setParameter(ChampAmp::PARAM_VOLUME, 0.10f);   // the SHIPPED default
+    champ.setParameter(ChampAmp::PARAM_REVERB, 0.0f);
+    std::vector<float> yc;
+    runBlocks(champ, in, yc);
+    const double champDb = 20.0 * std::log10(rmsOf(yc, n0) + 1e-30);
+
+    Jcm800Amp jcm;
+    jcm.prepare(kSr, kBlock);
+    jcm.setParameter(Jcm800Amp::PARAM_GAIN, 0.5f);       // AMP_KNOB_DEFAULTS
+    jcm.setParameter(Jcm800Amp::PARAM_MASTER, 0.4f);
+    jcm.setParameter(Jcm800Amp::PARAM_BASS, 0.5f);
+    jcm.setParameter(Jcm800Amp::PARAM_MID, 0.5f);
+    jcm.setParameter(Jcm800Amp::PARAM_TREBLE, 0.6f);
+    jcm.setParameter(Jcm800Amp::PARAM_REVERB, 0.0f);
+    std::vector<float> yj;
+    runBlocks(jcm, in, yj);
+    const double jcmDb = 20.0 * std::log10(rmsOf(yj, n0) + 1e-30);
+
+    std::printf("    at each amp's own DEFAULT: Champ %7.2f dBFS   JCM800 %7.2f dBFS"
+                "   (%+.2f dB)\n", champDb, jcmDb, champDb - jcmDb);
+    // The Champ must sit WITH the lineup, not above it. It shipped at +7.29 dB.
+    assert(std::fabs(champDb - jcmDb) < 4.0);
+
+    // The second half of the same defect: how far the default sits below the amp's
+    // OWN maximum. The Champ shipped 7.8 dB below its own max where the JCM sits
+    // 16.4 dB below — i.e. the default was most of the way up the amp's range.
+    ChampAmp cranked;
+    cranked.prepare(kSr, kBlock);
+    cranked.setOversampling(4);
+    cranked.setParameter(ChampAmp::PARAM_VOLUME, 1.0f);
+    cranked.setParameter(ChampAmp::PARAM_REVERB, 0.0f);
+    std::vector<float> ycr;
+    runBlocks(cranked, in, ycr);
+    const double crankedDb = 20.0 * std::log10(rmsOf(ycr, n0) + 1e-30);
+    std::printf("    headroom above the default: %.2f dB (it shipped with 7.8)\n",
+                crankedDb - champDb);
+    assert(crankedDb - champDb > 12.0);
+}
+
+// ---------------------------------------------------------------------------
 // 10. THE `tweed8` CAB. A Champ's speaker is an 8" driver in a small open-back
 // pine box, and it is the only voice here whose real speaker is SMALLER than every
 // cab that existed before it — which is why it could not just reuse one. Asserted
@@ -709,6 +806,8 @@ int main() {
     testRestingState();
     std::printf("- rate independence\n");
     testRateIndependence();
+    std::printf("- lineup staging (the bar this suite did not have)\n");
+    testLineupStaging();
     std::printf("- the tweed8 cab vs the three 12\" cabs\n");
     testTweed8Cab();
     std::printf("- rated power (reported, not chased)\n");
