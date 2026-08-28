@@ -105,6 +105,107 @@ prose.
   PV's latency is its window and may not beat the shipped 52.8 ms mean.
 - Any other pedal or amp.
 
+## What actually happened
+
+**The candidate was built, measured and REFUSED** (docs §74, ADR 027), and the
+slice's real value is a defect it found on the way that §70 could not have seen.
+
+The plan's ship criterion was met exactly as written — *"if the PV closes the
+triad XFAIL but measurably degrades transients or the artifact floor, refuse it
+and keep SOLA"* — except that the degradation is far larger than "measurably":
+171.6 ms of latency and 112.5 ms of transient rise at the octave.
+
+Order of work, and each step changed the next:
+
+1. **The battery came first.** `tools/measure/bench_shifter.h` measures both
+   implementations identically, so nothing is compared against §70's prose.
+2. **The estimator was validated before being trusted** (+5.000-cent detune reads
+   +4.9919) and then moved to `core/tests/support/PartialFreq.h`, because a bar
+   set by an unvalidated measurement is worse than no bar — the test file's own
+   Hann-peak helper reads the E major triad at −5 as 5.25 cents where the
+   validated estimator reads 4.53, and a 5-cent bar on the first number would have
+   failed correct code.
+3. **The SOLA baseline exposed a defect nobody was looking for.** §70's polyphony
+   test drives DROP 1 and DROP 2 only; sweeping all nine detents shows the error
+   growing with depth to **12.47 cents on an ordinary E major triad at OCT**,
+   2.5× the perceptual bar §70's own XFAIL text reports as met everywhere.
+4. **The PV vindicated §70's diagnosis and failed on cost.** Exact at N = 8192
+   (0.000 cents); worse than SOLA at the largest affordable N = 4096.
+5. **This slice's own hypothesis was refuted by its own measurement.** A longer
+   SOLA window should reduce a splice-rate error; swept 2.8× it moves the octave
+   triad from 12.516 to 11.914 cents. The error is per-splice misalignment, not
+   splice frequency.
+
+Two implementation findings inside the candidate, both from measuring: the
+overlap-add group delay is the **whole window**, not `n − hop` (the obvious
+reading, and the accessor was corrected against the measurement); and the octave
+broke completely (−126.7 cents on the lowest partial) until the peak criterion
+went from ±2 bins to ±1, because a downward shift **halves the bin spacing between
+partials** on relocation.
+
+## Measured results
+
+Through `DropModel`, validated estimator, worst absolute partial error in cents:
+
+| detent | E5 power chord | E major triad |
+| --- | --- | --- |
+| DROP 1 | 0.10 | 0.63 |
+| DROP 4 | 0.42 | 3.87 |
+| DROP 6 | 0.68 | 4.62 |
+| DROP 7 | 0.82 | 3.99 |
+| **OCT** | 1.58 | **12.47** |
+
+Head to head (identical stimuli, one machine):
+
+| | SOLA (W 65 ms) | PV N=4096 | PV N=8192 |
+| --- | --- | --- | --- |
+| E major triad −2 | 1.163 | 11.997 | **0.000** |
+| rich triad −2 | **1.497** | 14.625 | 1.151 |
+| rich triad −12 | 10.069 | 9.939 | **2.518** |
+| transient rise −1 / −12 | **10.33 / 27.88 ms** | 35.81 / 39.96 | 25.65 / 112.48 |
+| true latency (envelope) | **8.83 / 19.08 ms** | 83.73 / 82.33 | 171.62 / 174.56 |
+| artifact floor −1 / −5 / −12 | −38.2 / −24.8 / −36.6 dB | −39.6 / −36.1 / −36.1 | −38.9 / −36.4 / −36.5 |
+| CPU (% of one 48 kHz stream) | 2.25 | **1.51** | 1.65 |
+
+SOLA window sweep, E major triad worst absolute error (mean latency 35.8 → 99.0 ms):
+
+| −2 | −7 | −12 |
+| --- | --- | --- |
+| 1.390 → 1.118 | 4.627 → 5.555 | **12.516 → 11.914** |
+
+Perturbation: **P1** (SOLA removed, fixed splice) trips BAR 1 first, so **P1b**
+re-ran it with the new bar ordered ahead — RED at DROP 2 on the power chord
+(**7.88 cents** against the 5-cent bar). Restore GREEN, `PitchShifter.h`
+byte-identical to its pre-perturbation state.
+
+**No file under `core/src/` or `core/include/` changed**, so no golden can move
+and no WASM rebuild was needed — the artifact gate reports 115 hashed inputs still
+in step. Core ctest is unchanged at **41 entries, 41/41** (34 targets + 7 ledger
+registrations); the new entry joins `clipper_drop_tests`' existing ledger, so the
+count of known-bad PROPERTIES goes **8 → 9**.
+
+## Files created / modified
+
+- `tools/measure/PhaseVocoderShifter.h` — the candidate, kept OUTSIDE `core/` with
+  the refusal in its banner
+- `tools/measure/bench_shifter.h`, `shifter_baseline.cpp`, `shifter_pv.cpp`,
+  `shifter_pv_probe.cpp`, `shifter_head_to_head.cpp`, `drop_rich_triad.cpp`
+- `core/tests/support/PartialFreq.h` — moved from `tools/measure/`, now shared
+- `core/tests/test_drop.cpp` — `testShiftDepthAccuracy()`, the new ledger entry,
+  and the re-scoped `fix` on the old one
+- `docs/DEVELOPMENT.md` §74 · `docs/decisions/027-…md`
+
+## Deferred to next session
+
+- **The octave triad defect has NO identified fix.** The only untried route the
+  diagnosis points at is a **multi-lag** splice (per-partial or per-band
+  alignment) — "one lag cannot align three partials" is about the count of lags,
+  not the domain.
+- `findSplice` runs **per sample** when `span ≥ (1−x)·W` (~600 000× slowdown) and
+  wants a guard. Unchanged from §70.
+- An UPWARD shift does not suffer the bin-spacing halving, so this refusal does
+  not transfer to a harmoniser or detune built on the same header.
+
 ## Status
 
-- [ ] In progress
+- [x] Complete

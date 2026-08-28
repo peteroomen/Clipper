@@ -16296,3 +16296,195 @@ divergence, for the same stored-session reason.
   behind real screen sag, absent in every pentode in this project.
 - **`kRptSecondary` (200 Ω) is a reconstruction** — find a Champ power-transformer
   winding resistance and the supply becomes fully sourced.
+
+---
+
+## 74. The frequency-domain shifter — BUILT, MEASURED AND REFUSED, and the octave defect it found on the way
+
+**Date:** 2026-08-27 · **Branch:** `feat/drop-frequency-domain` · **ADR 027** ·
+Plan: `docs/work/2026-08-27-drop-frequency-domain-shifter.md`
+
+§70 shipped the Cellar with one XFAIL, `drop-triad-spread-at-minus-2`, and named
+its fix in the ledger: *"a frequency-domain shifter (`FFT.h` exists) and it owns
+the entry."* This slice built it and **refused it on measurement**. Nothing under
+`core/src/` or `core/include/` changed, so **no golden can move and no WASM
+rebuild was needed** — the artifact gate confirms 115 hashed inputs still in step.
+Core ctest is **unchanged at 34 targets + 7 ledger registrations = 41 entries,
+41/41**; what grows is the count of known-bad PROPERTIES, **8 → 9**, because the
+new entry joins `clipper_drop_tests`' existing ledger rather than registering a
+new one.
+
+The slice is worth more for what it found than for what it refused: **the shipped
+shifter breaks the 5-cent perceptual bar at the OCT detent on an ordinary major
+triad, and §70 could not have seen it because its polyphony test only ever drove
+DROP 1 and DROP 2.**
+
+### 74.1 The measurement had to be built before anything could be judged
+
+Every number below is taken on one machine with one harness, for BOTH
+implementations, rather than compared against §70's prose. The battery is
+`tools/measure/bench_shifter.h`: pitch accuracy (worst absolute cents AND spread),
+a non-harmonic artifact floor, a transient probe (10 %→90 % envelope rise and peak
+ratio on a plucked low E), true latency, and CPU.
+
+**THE ESTIMATOR IS THE LOAD-BEARING PART AND IT IS VALIDATED AGAINST SIGNALS WHOSE
+ANSWER IS KNOWN BY CONSTRUCTION**, because §70 records two measurement bugs of
+exactly this family and the previous slice refuted two more estimators outright (a
+zero-crossing f0 locks onto the fifth of a power chord, +714 cents of pure
+measurement error; a short-window Goertzel cannot resolve 41 Hz partials 10 Hz
+apart). `core/tests/support/PartialFreq.h` — complex demodulation, six cascaded
+2 Hz one-poles, least-squares phase-slope fit — reads a pure sine at
+**−0.0000 cents**, an unshifted triad at **+0.0000**, and a deliberate
+**+5.000-cent detune at +4.9919**. That last row is the one that matters: it is
+what proves the estimator can SEE an error rather than echo the target back.
+
+It was moved OUT of `tools/measure/` and INTO `core/tests/support/`, next to
+`LtpProbe.h` and `DcOffset.h`, for the reason those exist — so every spectral bar
+in this project measures "what frequency is this partial at" the same way. It is
+under `core/tests/`, which is not in the artifact's hash closure.
+
+**A BAR SET BY AN UNVALIDATED MEASUREMENT WAS CAUGHT AND REPLACED IN THE SAME
+SLICE.** `test_drop.cpp`'s own `peakOffsetCents` searches a Hann-windowed DFT peak
+on a 0.25-cent grid; on a triad the neighbouring partial pulls that peak, and it
+reads the E major triad at −5 as **5.25 cents** where the validated estimator reads
+**4.53**. Setting a 5-cent bar with the first number would have failed correct
+code. The new test uses the estimator; the old one keeps `peakOffsetCents`, whose
+single-note and shallow-detent use it is adequate for.
+
+### 74.2 THE DEFECT §70 MISSED: the error grows with shift DEPTH, and the octave is past the bar
+
+Measured **through `DropModel`** — its own detents, its own 128-frame blocking —
+not through the bare primitive. Worst absolute partial error, validated estimator:
+
+| detent | E5 power chord | E major triad |
+| --- | --- | --- |
+| DROP 1 | 0.10 | 0.63 |
+| DROP 2 | 0.22 | 1.22 |
+| DROP 3 | 0.35 | 1.78 |
+| DROP 4 | 0.42 | 3.87 |
+| DROP 5 | 0.60 | 4.53 |
+| DROP 6 | 0.68 | 4.62 |
+| DROP 7 | 0.82 | 3.99 |
+| **OCT** | 1.58 | **12.47** |
+
+**12.47 cents is 2.5× the 5-cent perceptual bar** (under the ~6-cent JND for a
+sustained tone), on an ordinary major triad at a shipped detent. §70's own XFAIL
+text says the perceptual bar "is met everywhere with 3.75 cents to spare" — that
+claim was true of the stimuli it measured and is **false of the selector as a
+whole**. New ledger entry `drop-triad-at-octave-past-perceptual-bar`.
+
+The mechanism is the same one §70 diagnosed, scaled: one SOLA lag cannot align a
+4:5:6 triad's three partials, and the grain rate is `(1 − r)/W`, so an octave
+splices **7.7 times a second against a semitone's 1.1** — seven times as many
+misaligned handovers. The **new hard bars pin the boundary**: the power chord must
+stay inside 5 cents at every detent (worst 1.58) and the triad at all seven DROP
+positions (worst 4.62 at DROP 6 — 0.38 cents of margin, **recorded not snugged**),
+so a change that pushes DROP 6 past it fails here rather than being found by a
+player.
+
+A **harmonically rich** triad (each of the three notes with four harmonics) is
+worse still — 5.25 cents already at DROP 7 and 10.90 at OCT — and is measured in
+`tools/measure/` rather than asserted, because it is the same defect.
+
+### 74.3 The candidate, and what it actually delivers
+
+`tools/measure/PhaseVocoderShifter.h`: STFT at 75 % overlap, Hann analysis and
+synthesis, instantaneous frequency from the inter-frame phase advance, bin `k`
+relocated to `k·r` with its frequency scaled by `r`, phase re-grown from an
+accumulator, **identity phase locking** (Laroche & Dolson) so a partial's bins stay
+vertically coherent instead of drifting into the classic phasiness.
+
+**§70's DIAGNOSIS WAS RIGHT.** At N = 8192 the triad is not merely improved, it is
+exact:
+
+| E major triad | −1 | −2 | −5 | −12 |
+| --- | --- | --- | --- | --- |
+| SOLA (shipped) | 0.615 | 1.163 | 4.124 | 12.516 |
+| PV N=8192 | **0.000** | **0.000** | 0.002 | 0.001 |
+
+Two implementation findings, both caught by measuring rather than reasoning:
+
+- **`latencySamples()` was wrong as first written.** The obvious reading of an
+  overlap-add is `n − hop`; the measured group delay is the **whole window**,
+  because the newest frame is placed *starting at* the sample it completes while
+  spanning the previous `n` inputs. Corrected against the measurement.
+- **The octave broke completely until the peak criterion was changed.** At
+  N = 8192 the 82.41 Hz partial landed at 38.297 Hz — **−126.7 cents** — while the
+  other two were exact. Attributed rather than guessed, from the rendered spectrum:
+  a downward shift relocates bin `k` to `k·r`, which **halves the bin spacing
+  between partials**, so with a ±2-bin peak test the lowest partial loses its peak
+  to its neighbour and is rigidly locked to the wrong phase. A ±1-bin test fixes it
+  exactly. That halving is a structural doubling of an already-fatal resolution
+  requirement, and it is the deepest reason this shape does not fit this pedal.
+
+### 74.4 WHY IT IS REFUSED: it cannot be afforded, and at an affordable size it is WORSE
+
+Head to head, identical stimuli, identical estimator, one machine
+(`tools/measure/shifter_head_to_head.cpp`):
+
+| | SOLA (W 65 ms) | PV N=4096 | PV N=8192 |
+| --- | --- | --- | --- |
+| E major triad −2 | 1.163 | 11.997 | **0.000** |
+| rich triad −2 | **1.497** | 14.625 | 1.151 |
+| rich triad −12 | 10.069 | 9.939 | **2.518** |
+| transient rise −1 | **10.33 ms** | 35.81 | 25.65 |
+| transient rise −12 | **27.88 ms** | 39.96 | 112.48 |
+| true latency (envelope) | **8.83 / 19.08 ms** | 83.73 / 82.33 | 171.62 / 174.56 |
+| CPU (% of one stream) | 2.25 | **1.51** | 1.65 |
+
+**THE VERDICT IS TWO NUMBERS.** (a) The accuracy needs N = 8192, which is a
+measured **171.6 ms of flat latency** against SOLA's 8.83 ms envelope onset —
+on a pedal whose owner opened this round of work with *"it's too laggy"* — plus
+**112.5 ms of transient rise at the octave**, on a pedal whose §70 acceptance bar
+is that the attack survives. (b) At the largest size that could conceivably be
+afforded, **N = 4096 is WORSE THAN THE SHIPPED SOLA ON THE VERY BAR IT EXISTS TO
+FIX** (rich triad at −2: 14.625 against 1.497). There is no window at which it both
+fixes the defect and costs less than the defect does.
+
+**LATENCY IS MEASURED BY ENVELOPE, AND THAT IS NOT A CONVENIENCE.** A phase
+vocoder is magnitude-transparent but **NOT waveform-transparent** — at `r = 1` no
+lag aligns its output with its input at better than a −3.7 dB residual, so a
+waveform cross-correlation reports nothing for it at all. The envelope onset of a
+plucked note is the only measure valid for both, and it is also the perceptually
+relevant one. Note it reads SOLA at **8.83 ms**, not the 52.8 ms mean the previous
+slice measured: the read is a sawtooth, so a transient's leading edge takes the
+SHORTEST path (`dMin + x·W` = 6.5 ms) while the mean is 35.8. Both are true; they
+are different quantities and both are quoted above.
+
+### 74.5 The cheap alternative was refuted too, and it refuted THIS slice's own hypothesis
+
+If the error scales with splice rate, a longer window should reduce it
+proportionally at a latency cost the owner could be shown. **It does not.**
+Swept W = 65 / 85 / 110 / 140 / 180 ms with the SOLA span scaled to the constraint
+(mean latency 35.8 → 99.0 ms), E major triad worst absolute error:
+
+| −2 | −7 | −12 |
+| --- | --- | --- |
+| 1.390 → 1.118 | 4.627 → 5.555 | **12.516 → 11.914** |
+
+Essentially flat across a 2.8× window sweep. So the error is **per-splice
+misalignment, not splice frequency** — one lag is wrong by the same amount however
+often it is applied. That closes the last cheap route and is why the ledger entry's
+`fix` field now honestly reads *unknown*.
+
+### 74.6 What ships, and what the ledger says now
+
+Nothing on any audio path. `PhaseVocoderShifter.h` is **kept under
+`tools/measure/`, deliberately not under `core/include/`** — it is not shipped, not
+in the artifact's hash closure, and cannot reach the audio thread — because §70
+named this fix and a later slice would otherwise spend the same days rebuilding it
+to reach the same answer. Its banner carries the refusal and the numbers, in the
+shape `PitchShifter.h` already uses for its own two refuted fixes. The head-to-head
+that refused it sits beside it and runs.
+
+`drop-triad-spread-at-minus-2` keeps its measurement and loses its owner: the
+`fix` field no longer names a frequency-domain shifter, it names the refusal.
+
+**Named follow-ups.** The octave triad defect has **no identified fix** and that is
+stated rather than papered over — the two obvious ones are refuted here with
+numbers. What has NOT been tried, and is the honest next candidate: a **multi-lag**
+splice (per-partial or per-band alignment), which is the only thing the diagnosis
+actually points at — "one lag cannot align three partials" is a statement about the
+count of lags, not about the domain. Also open and unchanged from §70: `findSplice`
+runs **per sample** when `span ≥ (1−x)·W` and wants a guard; and the artifact floor
+is reported per position rather than bounded.
