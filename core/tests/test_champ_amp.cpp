@@ -343,7 +343,7 @@ void testBreaksUpEarlyAndCleansUp() {
     };
 
     // RE-DERIVED 2026-08-28 against the corrected circuit (V1B unbypassed, docs
-    // §74). The amp still breaks up early — that is the voice — but it now has a
+    // §75). The amp still breaks up early — that is the voice — but it now has a
     // usable clean-ish region around its default instead of being past the wall.
     const double t05 = thdAt(0.05, 0.15);
     const double t10 = thdAt(0.10, 0.15);
@@ -403,7 +403,7 @@ void testPreampAndVolumeLaw() {
     assert(p.rail1b() > p.rail1a());
 
     // V1B's cathode is UNBYPASSED — stock 5F1, and the single most important
-    // correction this voice has had (docs §74). The one netlist source for this amp
+    // correction this voice has had (docs §75). The one netlist source for this amp
     // carries a 25 uF here; it is wrong, and shipping it put 5.95 dB of extra drive
     // on the 6V6 grid. Asserted against the ANALYTIC degenerated form rather than
     // against a remembered number, and against the BYPASSED gain, so restoring the
@@ -660,7 +660,7 @@ void testRatedPower() {
 
 // ---------------------------------------------------------------------------
 // 9b. LINEUP STAGING — THE BAR THIS SUITE DID NOT HAVE, and its absence is why a
-// field report was needed (docs §74).
+// field report was needed (docs §75).
 //
 // The original suite checked the DC point, the h2 contrast, the screen fit and the
 // power ceiling, and every one of them passed while the amp shipped 7-29 dB louder

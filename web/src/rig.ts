@@ -548,7 +548,7 @@ export const AMP_KNOB_DEFAULTS: AmpParams = {
   mesaMode: 1.0,
   rectifier: 0.0,
   powerMode: 0.0,
-  // M10.10 default, RE-DERIVED 2026-08-28 from the corrected circuit (docs §74).
+  // M10.10 default, RE-DERIVED 2026-08-28 from the corrected circuit (docs §75).
   // It shipped at 0.20, which measured 7.29 dB LOUDER than the JCM800's default on
   // an identical input — the Champ's default sat only 7.8 dB below its own maximum
   // where every sibling's sits 16-29 dB below. 0.10 lands it within 0.44 dB of the

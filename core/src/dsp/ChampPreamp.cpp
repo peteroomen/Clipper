@@ -71,7 +71,7 @@ void ChampPreamp::prepare(double sampleRate, int maxBlockSize) {
     // and its 100 Ohm supply lands the plate node 15 V above Fender's measured
     // 305 V). This is the third, and it is the one that mattered: shipping the cap
     // put 5.95 dB of extra drive on the 6V6 grid and made the amp distort about
-    // twice as early as it should. Field report 2026-08-28, docs §74.
+    // twice as early as it should. Field report 2026-08-28, docs §75.
     //
     // Measured: bypassed 59.42x, unbypassed 30.00x, against the analytic
     // mu*RL/(RL+rp+(mu+1)*Rk) = 29.9x. clipper_champ_tests asserts the unbypassed

@@ -134,7 +134,7 @@ but default back to 0.20 → RED **on the staging bar**. All restores GREEN.
 `core/tests/test_champ_amp.cpp` (+`testLineupStaging`, re-derived breakup bars),
 `web/src/rig.ts`, `web/src/assistant/{tools,prompt}.ts`, `web/tests/{amp,audio}.spec.ts`,
 `native/src/ClipperEngine.h`, `native/src/PluginProcessor.cpp`,
-`web/public/generated/*`, `docs/DEVELOPMENT.md` (§74), this file.
+`web/public/generated/*`, `docs/DEVELOPMENT.md` (§75), this file.
 
 ## Deferred to next session
 

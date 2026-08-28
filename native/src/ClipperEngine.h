@@ -438,7 +438,7 @@ struct Params {
     // own default — the shared 0.40 would open this amp at ~50 % THD, which is
     // §63.14's "the amp opens at the wall" defect.
     //
-    // RE-DERIVED 2026-08-28 (docs §74) from 0.20 to 0.10: at 0.20 this amp measured
+    // RE-DERIVED 2026-08-28 (docs §75) from 0.20 to 0.10: at 0.20 this amp measured
     // 7.29 dB LOUDER than the JCM800 at its own default, sitting only 7.8 dB below
     // its own maximum where every sibling sits 16-29 dB below. 0.10 lands within
     // 0.44 dB of the JCM at 4.41 % THD, with 16.4 dB of level still above it.

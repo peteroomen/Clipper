@@ -269,7 +269,7 @@ ClipperAudioProcessor::makeLayout() {
     layout.add(knob(pid::mesaRectifier, "Mesa Rectifier", 0.0f));
     layout.add(knob(pid::mesaPowerMode, "Mesa Power Mode", 0.0f));
 
-    // M10.10 Champ. RE-DERIVED 2026-08-28 (docs §74) 0.20 -> 0.10: at 0.20 the amp
+    // M10.10 Champ. RE-DERIVED 2026-08-28 (docs §75) 0.20 -> 0.10: at 0.20 the amp
     // measured 7.29 dB louder than the JCM at its own default. 0.10 lands within
     // 0.44 dB of it at 4.41 % THD. See Params::champVolume.
     layout.add(knob(pid::champVolume, "Champ Volume", 0.1f));
