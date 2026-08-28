@@ -18,6 +18,7 @@
 #include "clipper/dsp/PitchShifter.h"
 
 #include "support/AssertsLive.h"
+#include "support/PartialFreq.h"
 #include "support/Xfail.h"
 
 #include <algorithm>
@@ -38,8 +39,24 @@ const clipper::test::XfailDecl kXfailTriadSpread{
     "M13.10 docs §70.6 (this slice's own 2-cent spread target)",
     "a 4:5:6 major triad's partials should all shift by the same ratio to within "
     "2 cents of spread at every position",
-    "a frequency-domain shifter — one SOLA lag cannot align three partials at "
-    "once, and neither a wider span nor sub-sample lag refinement moves it"};
+    "NOT a frequency-domain shifter at any window this pedal can afford — that "
+    "was §70's named fix and it was BUILT AND REFUSED, docs §74 / ADR 027. It "
+    "fixes the accuracy exactly (0.000 cents) and costs 171.6 ms of measured "
+    "latency; at 83.7 ms it is worse than the shipped SOLA. A longer SOLA window "
+    "is refuted too (flat across 2.8x of window). No candidate is identified."};
+
+// Found by THIS slice, and §70 could not have seen it: its polyphony test only
+// ever drove DROP_1 and DROP_2. The error grows with shift DEPTH, and at the
+// OCT detent it passes the perceptual bar §70 reported as met everywhere.
+const clipper::test::XfailDecl kXfailOctaveTriad{
+    "drop-triad-at-octave-past-perceptual-bar",
+    "docs §74.2 (the 5-cent perceptual bar, an EXTERNAL reference)",
+    "an ordinary E major triad at the OCT detent should shift every partial to "
+    "within 5 cents — the JND for a sustained tone — as it does at all seven "
+    "DROP positions",
+    "unknown, and both obvious candidates are refuted in §74: a frequency-domain "
+    "shifter fixes it exactly but costs 171.6 ms, and a longer SOLA window moves "
+    "it under 0.6 cents across a 2.8x sweep (35.8 -> 99.0 ms of latency)"};
 
 // The binary's declared ledger, for `--xfail-ledger` mode. Without this array and
 // the ledgerMain() call in main(), `clipper_add_xfail_ledger` registers a ctest
@@ -47,7 +64,7 @@ const clipper::test::XfailDecl kXfailTriadSpread{
 // the known defect never appears in a plain `ctest` run, which is the entire
 // point of the ratchet. Caught by measuring the ctest listing rather than
 // trusting the CMake call.
-const clipper::test::XfailDecl kLedger[] = {kXfailTriadSpread};
+const clipper::test::XfailDecl kLedger[] = {kXfailTriadSpread, kXfailOctaveTriad};
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr int kBlock = 128;
@@ -203,6 +220,80 @@ void testPolyphony() {
                     }());
             } else {
                 assert(hi - lo < 2.0);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BAR 2b — ACCURACY ACROSS THE WHOLE SELECTOR, which BAR 2 never measured.
+//
+// §70's polyphony test drove DROP_1 and DROP_2 only, and reported that the
+// 5-cent perceptual bar was "met everywhere with 3.75 cents to spare". It is
+// not: the error grows monotonically with shift DEPTH, because every splice
+// misaligns the partials a single SOLA lag cannot reconcile and a deeper shift
+// splices more often. Sweeping the actual detents is what found it (docs §74.2).
+//
+// The bar is the EXTERNAL one — 5 cents, under the ~6-cent JND — asserted hard
+// wherever it holds, so the boundary itself is pinned: a change that pushes
+// DROP_6 past it fails here rather than being discovered by a player.
+// ---------------------------------------------------------------------------
+void testShiftDepthAccuracy() {
+    std::printf("\n[drop] accuracy across the whole selector\n");
+    struct Shape { const char* name; std::vector<double> partials; };
+    const Shape shapes[] = {
+        {"E5 power chord", {82.41, 123.47}},
+        {"E major triad",  {82.41, 103.83, 123.47}},
+    };
+    const int N = static_cast<int>(kSr) * 5;
+    for (const Shape& s : shapes) {
+        for (int pos = DropModel::DROP_1; pos <= DropModel::DROP_OCT; ++pos) {
+            DropModel d;
+            setUp(d, pos);
+            const int semis = DropModel::semitonesFor(pos);
+            const double r = std::pow(2.0, -static_cast<double>(semis) / 12.0);
+            const std::vector<float> y = renderTone(d, s.partials, N, 0.5);
+            double lo = 1e9, hi = -1e9, worstAbs = 0.0;
+            for (double f0 : s.partials) {
+                // NOT peakOffsetCents. That helper searches a Hann-windowed DFT
+                // peak on a 0.25-cent grid, and on a triad the neighbouring
+                // partial pulls the peak: it reads this same E major triad at
+                // -5 as 5.25 cents where the validated estimator reads 4.53.
+                // A bar must not be set by an unvalidated measurement (§74.1
+                // records two more estimators refuted the same way), so this
+                // uses the phase-slope one, which reads a deliberate +5.000-cent
+                // detune as +4.9919 and an unshifted triad as 0.0000.
+                const double target = f0 * r;
+                const double off =
+                    est::cents(est::freqNear(y, target, kSr, 2.0), target);
+                lo = std::min(lo, off);
+                hi = std::max(hi, off);
+                worstAbs = std::max(worstAbs, std::fabs(off));
+            }
+            std::printf("  %-16s at -%2d: worst %5.2f cents, spread %5.2f\n", s.name,
+                        semis, worstAbs, hi - lo);
+            std::fflush(stdout);  // the table is the finding; do not lose it to an abort
+
+            const bool triad = s.partials.size() == 3;
+            if (triad && pos == DropModel::DROP_OCT) {
+                clipper::test::expectXfail(
+                    worstAbs < 5.0, kXfailOctaveTriad,
+                    [&] {
+                        static char buf[400];
+                        std::snprintf(buf, sizeof(buf),
+                                      "E major triad at the OCT detent: worst partial "
+                                      "%.3f cents (spread %.3f) against the 5-cent "
+                                      "perceptual bar. The same chord is inside the bar "
+                                      "at all seven DROP positions; the error grows with "
+                                      "depth because a deeper shift splices more often.",
+                                      worstAbs, hi - lo);
+                        return buf;
+                    }());
+            } else {
+                // Measured margins, RECORDED not snugged: the power chord's worst
+                // is 1.58 at OCT, the triad's is 4.62 at DROP_6. The triad rows
+                // are the tight ones and that is the honest state of the pedal.
+                assert(worstAbs < 5.0);
             }
         }
     }
@@ -477,6 +568,8 @@ int main(int argc, char** argv) {
     testPitchAccuracy();
     std::printf("- BAR 2: polyphony (the load-bearing one)\n");
     testPolyphony();
+
+    testShiftDepthAccuracy();
     std::printf("- BAR 3: the attack survives\n");
     testAttackSurvives();
     std::printf("- BAR 4: artifact floor, measured and reported\n");
