@@ -436,9 +436,13 @@ struct Params {
     // M10.10 Champ (docs §73): its own field, NOT the shared `volume`. This knob is
     // the amp's only gain control (no master anywhere downstream) and it needs its
     // own default — the shared 0.40 would open this amp at ~50 % THD, which is
-    // §63.14's "the amp opens at the wall" defect. Measured: 0.20 is the edge of
-    // breakup, and it cleans up when you play softer.
-    float champVolume = 0.2f;
+    // §63.14's "the amp opens at the wall" defect.
+    //
+    // RE-DERIVED 2026-08-28 (docs §74) from 0.20 to 0.10: at 0.20 this amp measured
+    // 7.29 dB LOUDER than the JCM800 at its own default, sitting only 7.8 dB below
+    // its own maximum where every sibling sits 16-29 dB below. 0.10 lands within
+    // 0.44 dB of the JCM at 4.41 % THD, with 16.4 dB of level still above it.
+    float champVolume = 0.1f;
 
     // Nonlinear-stage oversampling for the dirt pedals (1/2/4/8, default 4).
     int oversampling = 4;

@@ -73,7 +73,12 @@ public:
     // Documented constants (cited in the tests / docs §73).
     static constexpr double kRa = 100.0e3;      // both plate loads (Ω)
     static constexpr double kRk = 1500.0;       // both cathode resistors (Ω)
-    static constexpr double kCk = 25.0e-6;      // both cathode bypass caps (F)
+    static constexpr double kCk = 25.0e-6;      // V1A cathode bypass cap (F)
+    // V1B is UNBYPASSED in a stock 5F1 — local negative feedback that HALVES its
+    // gain (59.42x -> 30.00x measured). See the long note in ChampPreamp.cpp: the
+    // one netlist source for this amp has a 25 uF here and it is wrong, which is
+    // what made the shipped voice distort roughly twice as early as it should.
+    static constexpr double kCkV1b = 0.0;
     static constexpr double kRgl = 1.0e6;       // grid leaks (Ω)
     static constexpr double kCcIn = 25.0e-9;    // input coupling (F) — 6.4 Hz
     static constexpr double kCcInter = 20.0e-9; // interstage coupling (F) — 8.0 Hz

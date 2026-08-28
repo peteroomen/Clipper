@@ -548,6 +548,19 @@ export const AMP_KNOB_DEFAULTS: AmpParams = {
   mesaMode: 1.0,
   rectifier: 0.0,
   powerMode: 0.0,
+  // M10.10 default, RE-DERIVED 2026-08-28 from the corrected circuit (docs §74).
+  // It shipped at 0.20, which measured 7.29 dB LOUDER than the JCM800's default on
+  // an identical input — the Champ's default sat only 7.8 dB below its own maximum
+  // where every sibling's sits 16-29 dB below. 0.10 lands it within 0.44 dB of the
+  // JCM (-23.90 vs -23.46 dBFS) at 4.41 % THD: the edge of clean rather than the
+  // edge of fizz, with 16.4 dB of usable level still above it (the JCM has 16.4 too)
+  // and touch sensitivity of 5.8x from a soft to a hard pick.
+  //
+  // NOTE kFullScaleSecV was CHECKED and deliberately NOT changed: cranked, all four
+  // amps already agree (Champ peak 0.834, JCM 0.839, AC30 0.939), so the
+  // normalisation was right and only the default was wrong. §63.14's conclusion for
+  // the Rockerverb, reached again.
+  // Original derivation, kept for the record:
   // M10.10: DERIVED from the amp's own measured geometry rather than inherited
   // (§63.14's lesson — the Rockerverb opened "at the wall" by inheriting the
   // JCM's). At the house unity-trim probe this amp measures 3.9 % THD at 0.05,
@@ -555,7 +568,7 @@ export const AMP_KNOB_DEFAULTS: AmpParams = {
   // EDGE OF BREAKUP — audibly driven with a hard pick, and measurably cleaner
   // (5.9 %) with a soft one, which is the property the amp exists for. It is not
   // near the wall (60 %+) and the knob has real range in both directions.
-  champVolume: 0.2,
+  champVolume: 0.1,
 };
 
 // Default input trim: unity (0 dB).
